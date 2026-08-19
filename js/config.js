@@ -28,8 +28,8 @@ export const CONFIG = {
 
   // Sätts vid varje bygge av package.ps1. Visas i appen så man ser att man
   // faktiskt kör den senaste versionen och inte en cachad gammal.
-  version: '2026-08-19-33',
-  builtAt: '2026-08-19T17:00:00+02:00',
+  version: '2026-08-19-34',
+  builtAt: '2026-08-19T18:20:00+02:00',
 };
 
 /** "18 augusti 16:20" — när den här versionen byggdes. */

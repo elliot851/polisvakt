@@ -524,7 +524,7 @@ const MAX_FAST_RESTARTS = 6;      // fler i rad = något är fel, sluta snurra
 const MAX_NETWORK_RETRIES = 4;
 
 const ERROR_MESSAGES = {
-  'not-allowed': 'Mikrofonen är blockerad. Tillåt mikrofon för polisvakt.netlify.app i webbläsarens inställningar.',
+  'not-allowed': 'Mikrofonen är blockerad. Tillåt mikrofon för den här sidan i webbläsarens inställningar.',
   'service-not-allowed': 'Webbläsaren tillåter inte röstigenkänning här. Tillåt mikrofon i inställningarna.',
   'audio-capture': 'Ingen mikrofon hittades. Är ett headset eller bilstereon kopplad till något annat?',
   'network': 'Röstigenkänningen behöver internet och når det inte just nu.',
