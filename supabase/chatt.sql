@@ -192,7 +192,7 @@ begin
   -- Delsträngsmatchning, precis som klienten gör. Den fångar både hela
   -- ord och sammansättningar ("poliserna_har_drogtest_idag").
   for v_i in 1 .. array_length(v_ord_lista, 1) loop
-    if position(v_ord_lista[v_i] in v_text) > 0 then
+    if strpos(v_text, v_ord_lista[v_i]) > 0 then
       return true;
     end if;
   end loop;
@@ -216,7 +216,11 @@ create table if not exists public.chatt_meddelanden (
   id           text primary key,
   avsandare    uuid not null references auth.users(id) on delete cascade,
   text         text not null,
-  visningsnamn text not null default 'Förare',
+  -- Inget default. Namnet sätts av triggern nedan, och den kör före
+  -- NOT NULL-kontrollen. Ett default hade lagt sig i vägen: triggern hade
+  -- då fått "Förare" istället för ingenting och trott att klienten önskat
+  -- just det namnet, så det neutrala namnet aldrig räknats fram.
+  visningsnamn text not null,
   skapad_at    timestamptz not null default now()
 );
 
@@ -247,8 +251,8 @@ alter table public.chatt_meddelanden
   drop constraint if exists chatt_text_rimlig;
 alter table public.chatt_meddelanden
   add constraint chatt_text_rimlig check (
-    length(btrim(text)) between 1 and 400
-    and length(visningsnamn) between 1 and 20
+    length(btrim(chatt_meddelanden.text)) between 1 and 400
+    and length(chatt_meddelanden.visningsnamn) between 1 and 20
   );
 
 /*
@@ -263,7 +267,8 @@ alter table public.chatt_meddelanden
 alter table public.chatt_meddelanden
   drop constraint if exists chatt_nykterhet;
 alter table public.chatt_meddelanden
-  add constraint chatt_nykterhet check (not public.chatt_ar_nykterhet(text));
+  add constraint chatt_nykterhet
+  check (not public.chatt_ar_nykterhet(chatt_meddelanden.text));
 
 /* -------------------- Skrivbroms och namnsättning -------------------- */
 /*
@@ -505,6 +510,20 @@ revoke all on function public.chatt_ar_nykterhet(text)       from public;
 revoke all on function public.chatt_visningsnamn(uuid, text) from public;
 revoke all on function public.chatt_innan_insert()           from public;
 revoke all on function public.chatt_stada()                  from public;
+
+/*
+ * Två undantag, och de är nödvändiga.
+ *
+ * En CHECK-villkorsfunktion körs som den som gör insertet, och Postgres
+ * kontrollerar EXECUTE-rätten då. Utan de här två raderna avvisas VARJE
+ * meddelande med "permission denied for function chatt_ar_nykterhet" —
+ * chatten hade varit helt tyst, av rätt skäl fast fel orsak.
+ *
+ * Att lämna ut dem kostar ingenting: de svarar bara ja eller nej om en
+ * textsträng, och svaret är samma regel som klienten redan tillämpar.
+ */
+grant execute on function public.chatt_normalisera(text)  to authenticated;
+grant execute on function public.chatt_ar_nykterhet(text) to authenticated;
 
 commit;
 

@@ -295,7 +295,7 @@ export class Chatt extends EventTarget {
   }
 
   /** Släpp allt — lyssnare på window också. Kallas om chatten stängs av helt. */
-  koppplaLoss() {
+  kopplaLoss() {
     this.stoppa();
     if (typeof removeEventListener === 'function') {
       removeEventListener('online', this._online);
@@ -312,11 +312,24 @@ export class Chatt extends EventTarget {
     if (nytt) this.hamta();
   }
 
-  /** Nuvarande pollintervall i ms, eller 0 när pollningen är pausad. */
-  get pollMs() {
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return 0;
+  /** Är fliken dold? Då pollar vi inte alls. */
+  get dold() {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  }
+
+  /**
+   * Intervallet vyn förtjänar, oavsett om fliken råkar vara dold just nu.
+   *
+   * Åtta sekunder när man tittar på chatten, en minut när man inte gör det.
+   * En bilapp som ligger och pollar var åttonde sekund i timmar för en vy
+   * ingen har framme äter batteri som föraren behöver till att komma hem.
+   */
+  get intervallMs() {
     return this.vyAktiv ? this.granser.pollAktivMs : this.granser.pollBakgrundMs;
   }
+
+  /** Nuvarande pollintervall i ms, eller 0 när pollningen är pausad. */
+  get pollMs() { return this.dold ? 0 : this.intervallMs; }
 
   #stallTimer() {
     if (this.timer) clearInterval(this.timer);

@@ -402,7 +402,9 @@ await T('utan smeknamn blir det det neutrala namnet', async () => {
     || `fick ${c.meddelanden(NU)[0].visningsnamn}`;
 });
 await T('osynliga tecken städas bort ur smeknamn', () => {
-  const n = stadaNamn('El​liot‮');
+  // Nollbreddstecken och riktningsomkastare: med dem går det att bygga ett
+  // namn som ser exakt ut som någon annans i listan.
+  const n = stadaNamn('El\u200bli\u200cot\u202e');
   return n === 'Elliot' || `fick ${JSON.stringify(n)}`;
 });
 
@@ -411,11 +413,17 @@ G('Batteri — pollningen ska inte gå för fort i onödan');
 
 await T('pollningen är långsammare när chattvyn inte visas', () => {
   const c = nyChatt();
-  const bak = c.pollMs;
+  const bak = c.intervallMs;
   c.sattVyAktiv(true);
-  const fram = c.pollMs;
+  const fram = c.intervallMs;
   return (fram < bak && fram === GRANSER.pollAktivMs && bak === GRANSER.pollBakgrundMs)
     || `fick ${fram} aktiv / ${bak} bakgrund`;
+});
+await T('dold flik pausar pollningen helt', () => {
+  const c = nyChatt();
+  c.sattVyAktiv(true);
+  return (c.dold ? c.pollMs === 0 : c.pollMs === c.intervallMs)
+    || `dold=${c.dold}, pollMs=${c.pollMs}, intervall=${c.intervallMs}`;
 });
 await T('ingen timer startas utan att starta chatten', () => {
   const c = nyChatt();
@@ -424,9 +432,11 @@ await T('ingen timer startas utan att starta chatten', () => {
 await T('stoppa() släcker timern', () => {
   const c = nyChatt();
   c.starta();
+  // I en dold flik ska ingen timer ha startats alls — det är hela poängen.
   const igang = c.timer !== null;
   c.stoppa();
-  return (igang && c.timer === null) || `igång=${igang}, efter stopp=${c.timer}`;
+  return ((c.dold ? !igang : igang) && c.timer === null)
+    || `dold=${c.dold}, igång=${igang}, efter stopp=${c.timer}`;
 });
 
 /* =================================================================== */
