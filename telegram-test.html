@@ -1,0 +1,478 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — Telegram-bryggan</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+</style>
+
+<h1>Polisvakt — Telegram-bryggan</h1>
+<p class="sub">
+  Testar <code>js/telegram.js</code>, det rena lagret mellan Telegram-spegeln av
+  Facebook-gruppen och rapporterna på kartan.<br>
+  Inget här rör nätet: geokodningen skickas in som en funktion, klockan som ett
+  tal, dedupen som en mängd. Går ett test sönder är det koden som är trasig,
+  inte uppkopplingen.<br>
+  Överst ligger produktregeln: <b>nykterhets- och drogkontroller blir aldrig
+  rapporter.</b> Går den sönder spelar inget annat på sidan någon roll.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+
+/* =================================================================== */
+const tg = await import('./js/telegram.js');
+const kvalitet = await import('./js/kvalitet.js');
+
+const NU = Date.UTC(2026, 7, 20, 12, 0, 0);      // fast klocka i alla tester
+const CHAT = -1001234567890;
+let nastaId = 1000;
+
+/** Ett kanalinlägg som Telegram skickar det i getUpdates. */
+function inlagg(text, val = {}) {
+  const id = val.messageId ?? ++nastaId;
+  const msg = {
+    message_id: id,
+    chat: { id: val.chat ?? CHAT, title: 'Här står polisen (spegel)', type: 'channel' },
+    date: Math.floor((val.at ?? (NU - 4 * 60000)) / 1000),
+  };
+  if (text != null) msg.text = text;
+  if (val.caption) { delete msg.text; msg.caption = val.caption; }
+  if (val.location) msg.location = val.location;
+  if (val.forwardDate) msg.forward_date = Math.floor(val.forwardDate / 1000);
+  return { update_id: 500000 + id, [val.nyckel ?? 'channel_post']: msg };
+}
+
+/**
+ * Geokodning som aldrig rör nätet. Räknar sina anrop, så testerna kan bevisa
+ * att ett vägrat inlägg inte ens hann fram hit.
+ */
+function geoStub(tabell = {}) {
+  const f = async plats => {
+    f.anrop.push(plats);
+    const t = tabell[plats];
+    return t === undefined ? { lat: 59.6099, lon: 16.5448, label: 'Västerås', source: 'nominatim' }
+                           : t;
+  };
+  f.anrop = [];
+  return f;
+}
+
+const ERIKSLUND = { lat: 59.6163, lon: 16.4879, label: 'Erikslunds köpcentrum', source: 'cache' };
+
+/* ---- Produktregeln. Går den sönder är allt annat oviktigt. ---------- */
+G('Produktregler — får aldrig gå sönder');
+
+await T('nykterhetskontroll blir aldrig en rapport', () => {
+  const t = tg.tolkaMeddelande(inlagg('Nykterhetskontroll vid Bäckby just nu').channel_post, { nu: NU });
+  return (t.ok === false && t.skal === tg.SKAL.NYKTERHET) || `fick ${JSON.stringify(t)}`;
+});
+
+await T('drogkontroll blir aldrig en rapport', () => {
+  const t = tg.tolkaMeddelande(inlagg('Poliskontroll med drogtest på Vasagatan').channel_post, { nu: NU });
+  return (t.ok === false && t.skal === tg.SKAL.NYKTERHET) || `fick ${JSON.stringify(t)}`;
+});
+
+await T('isärskrivet "alkohol kontroll" stoppas också', () => {
+  const t = tg.tolkaMeddelande(inlagg('alkohol kontroll vid rondellen').channel_post, { nu: NU });
+  return (t.ok === false && t.skal === tg.SKAL.NYKTERHET) || `fick ${JSON.stringify(t)}`;
+});
+
+await T('"blåser alla vid E18" stoppas', () => {
+  const t = tg.tolkaMeddelande(inlagg('Polisen blåser alla vid E18 avfarten').channel_post, { nu: NU });
+  return (t.ok === false && t.skal === tg.SKAL.NYKTERHET) || `fick ${JSON.stringify(t)}`;
+});
+
+await T('nykterhetskontroll når inte ens fram till geokodningen', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg('Nykterhetskontroll vid Hälla')], { geokoda: geo, nu: NU });
+  return (s.skapade === 0 && s.rapporter.length === 0 && geo.anrop.length === 0
+          && s.bortsorterade[tg.SKAL.NYKTERHET] === 1)
+    || `skapade ${s.skapade}, geokodanrop ${geo.anrop.length}, ${JSON.stringify(s.bortsorterade)}`;
+});
+
+await T('en blandad omgång släpper igenom polisen men inte nykterheten', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([
+    inlagg('Polis står vid Erikslund'),
+    inlagg('Nykterhetskontroll vid Erikslund'),
+    inlagg('Drogkontroll på Björnövägen'),
+  ], { geokoda: geo, nu: NU });
+  return (s.skapade === 1 && s.bortsorterade[tg.SKAL.NYKTERHET] === 2
+          && s.rapporter.every(r => !/nykter|drog/i.test(r.note)))
+    || `${s.skapade} skapade, ${JSON.stringify(s.bortsorterade)}`;
+});
+
+await T('fartkamera blir ingen rapport (finns redan i appen med rätt position)', () => {
+  const t = tg.tolkaMeddelande(inlagg('Fartkamera på E18 mot Enköping').channel_post, { nu: NU });
+  return (t.ok === false && t.skal === tg.SKAL.KAMERA) || `fick ${JSON.stringify(t)}`;
+});
+
+/* ---- Det vanliga fallet -------------------------------------------- */
+G('Ett vanligt inlägg blir en rapport');
+
+await T('"Polis står vid Erikslund" blir en polisrapport på rätt plats', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([inlagg('Polis står vid Erikslund')], { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  if (s.skapade !== 1) return `skapade ${s.skapade}: ${JSON.stringify(s.bortsorterade)}`;
+  return (r.type === 'police' && r.lat === ERIKSLUND.lat && r.lon === ERIKSLUND.lon
+          && r.label === 'Erikslunds köpcentrum' && r.note === 'Polis står vid Erikslund')
+    || `fick ${JSON.stringify(r)}`;
+});
+
+await T('trafikkontroll blir typ control och lever 60 minuter', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg('Trafikkontroll på Björnövägen', { at: NU })],
+                              { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  return (r?.type === 'control' && r.expires_at - r.created_at === 60 * 60000)
+    || `fick ${r?.type}, ${((r?.expires_at - r?.created_at) / 60000)} min`;
+});
+
+await T('rapporten gäller från när inlägget skrevs, inte från när vi läste det', async () => {
+  const skrivet = NU - 10 * 60000;
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg('Polis vid Hälla', { at: skrivet })], { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  return (r.created_at === skrivet && r.expires_at === skrivet + 45 * 60000)
+    || `created_at ${new Date(r.created_at).toISOString()}`;
+});
+
+await T('ett för gammalt inlägg läggs aldrig ut', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg('Polis vid Hälla', { at: NU - 3 * 3600 * 1000 })],
+                              { geokoda: geo, nu: NU });
+  return (s.skapade === 0 && s.bortsorterade[tg.SKAL.FOR_GAMMALT] === 1)
+    || `skapade ${s.skapade}, ${JSON.stringify(s.bortsorterade)}`;
+});
+
+await T('"nu är dom borta" släcker inget och skapar inget', () => {
+  const t = tg.tolkaMeddelande(inlagg('Polisen är borta nu från Hälla').channel_post, { nu: NU });
+  return (t.ok === false && t.skal === tg.SKAL.AVBLAST) || `fick ${JSON.stringify(t)}`;
+});
+
+await T('bildtext (caption) läses som text', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg(null, { caption: 'Polis vid Hälla köpcentrum' })],
+                              { geokoda: geo, nu: NU });
+  return s.skapade === 1 || `skapade ${s.skapade}: ${JSON.stringify(s.bortsorterade)}`;
+});
+
+await T('en bild helt utan text ger ingenting, utan att krascha', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg(null)], { geokoda: geo, nu: NU });
+  return (s.skapade === 0 && s.bortsorterade[tg.SKAL.TOM] === 1 && geo.anrop.length === 0)
+    || `${JSON.stringify(s.bortsorterade)}`;
+});
+
+/* ---- Platser som inte går att slå upp ------------------------------- */
+G('Platser — okända, saknade och utpekade');
+
+await T('okänd plats hanteras utan krasch och listas för lärande', async () => {
+  const geo = geoStub({ 'gubbholmsleden': null });
+  const s = await tg.bearbeta([inlagg('Polis står på Gubbholmsleden')], { geokoda: geo, nu: NU });
+  return (s.skapade === 0 && s.bortsorterade[tg.SKAL.OKAND_PLATS] === 1
+          && s.okandaPlatser.includes('gubbholmsleden') && s.fel.length === 0)
+    || `${JSON.stringify(s.bortsorterade)} / ${JSON.stringify(s.okandaPlatser)}`;
+});
+
+await T('ett inlägg helt utan igenkännbar plats kastas tyst', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg('Polis')], { geokoda: geo, nu: NU });
+  const skal = Object.keys(s.bortsorterade)[0];
+  return (s.skapade === 0 && geo.anrop.length === 0
+          && [tg.SKAL.INGEN_PLATS, tg.SKAL.LAG_TILLIT, tg.SKAL.OBEGRIPLIG].includes(skal))
+    || `skapade ${s.skapade}, skäl ${skal}, geokodanrop ${geo.anrop.length}`;
+});
+
+await T('geokodningsfel får försöka igen senare istället för att räknas som klart', async () => {
+  const sedda = new Set();
+  const trasig = async () => { throw new Error('nätet nere'); };
+  const s = await tg.bearbeta([inlagg('Polis vid Erikslund')],
+                              { geokoda: trasig, sedda, nu: NU });
+  return (s.skapade === 0 && s.bortsorterade[tg.SKAL.GEOKOD_FEL] === 1
+          && s.fel.length === 1 && sedda.size === 0)
+    || `${JSON.stringify(s.bortsorterade)}, sedda ${sedda.size}`;
+});
+
+await T('en utsatt kartnål används rakt av, utan geokodning', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta(
+    [inlagg('Polis vid rondellen', { location: { latitude: 59.62, longitude: 16.51 } })],
+    { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  return (r && r.lat === 59.62 && r.geokod === 'karta' && r.geokod_typ === 'punkt'
+          && geo.anrop.length === 0)
+    || `fick ${JSON.stringify(r)}, geokodanrop ${geo.anrop.length}`;
+});
+
+await T('modulen gör inga egna nätverksanrop — utan geokodare säger den ifrån', async () => {
+  try {
+    await tg.bearbeta([inlagg('Polis vid Erikslund')], { nu: NU });
+    return 'inget fel kastades — då hämtade den något själv';
+  } catch (e) {
+    return /geokoda/.test(e.message) || `fel meddelande: ${e.message}`;
+  }
+});
+
+/* ---- Avdubblering --------------------------------------------------- */
+G('Avdubblering — samma inlägg blir aldrig två varningar');
+
+await T('samma meddelande två gånger i samma omgång ger en rapport', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const post = inlagg('Polis står vid Erikslund', { messageId: 7001 });
+  const s = await tg.bearbeta([post, post], { geokoda: geo, nu: NU });
+  return (s.skapade === 1 && s.dubbletter === 1 && s.rapporter.length === 1)
+    || `skapade ${s.skapade}, dubbletter ${s.dubbletter}`;
+});
+
+await T('överlappande pollning ger ingen andra rapport', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const sedda = new Set();
+  const post = inlagg('Polis står vid Erikslund', { messageId: 7002 });
+  const a = await tg.bearbeta([post], { geokoda: geo, sedda, nu: NU });
+  const b = await tg.bearbeta([post], { geokoda: geo, sedda, nu: NU });
+  return (a.skapade === 1 && b.skapade === 0 && b.dubbletter === 1)
+    || `första ${a.skapade}, andra ${b.skapade}/${b.dubbletter}`;
+});
+
+await T('samma text speglad igen med nytt meddelande-id räknas som samma inlägg', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const sedda = new Set();
+  const a = await tg.bearbeta([inlagg('Polis står vid Erikslund', { messageId: 7003 })],
+                              { geokoda: geo, sedda, nu: NU });
+  const b = await tg.bearbeta([inlagg('Polis står vid Erikslund', { messageId: 7004 })],
+                              { geokoda: geo, sedda, nu: NU });
+  return (a.skapade === 1 && b.skapade === 0 && b.dubbletter === 1)
+    || `första ${a.skapade}, andra ${b.skapade}/${b.dubbletter}`;
+});
+
+await T('två olika inlägg blir två rapporter', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([
+    inlagg('Polis står vid Erikslund'),
+    inlagg('Polis vid Hälla köpcentrum'),
+  ], { geokoda: geo, nu: NU });
+  return s.skapade === 2 || `skapade ${s.skapade}: ${JSON.stringify(s.bortsorterade)}`;
+});
+
+await T('external_id är stabilt över tid — samma inlägg, samma nyckel', () => {
+  const post = inlagg('Polis vid Erikslund', { messageId: 7005 }).channel_post;
+  const a = tg.nycklarFor(post, NU).externalId;
+  const b = tg.nycklarFor(post, NU + 5 * 3600 * 1000).externalId;
+  return (a === b && a === `tg:${CHAT}:7005`) || `${a} vs ${b}`;
+});
+
+await T('databasens sista spärr finns: external_id sätts på varje rad', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([inlagg('Polis vid Erikslund')], { geokoda: geo, nu: NU });
+  return s.rapporter.every(r => typeof r.external_id === 'string' && r.external_id.startsWith('tg:'))
+    || `fick ${s.rapporter[0]?.external_id}`;
+});
+
+/* ---- Källmärkning --------------------------------------------------- */
+G('Källa — går att skilja från förarnas egna rapporter');
+
+await T('rapporten märks som gruppinlägg, inte som en förares knapptryck', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([inlagg('Polis står vid Erikslund')], { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  return (r.source === 'facebook' && r.source !== 'app' && r.source !== 'voice')
+    || `source ${r.source}`;
+});
+
+await T('och som just Telegram-bryggan, inte userscriptet', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([inlagg('Polis står vid Erikslund', { messageId: 8001 })],
+                              { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  return (r.device_id === 'tg-bridge' && r.external_id === `tg:${CHAT}:8001`)
+    || `device_id ${r.device_id}, external_id ${r.external_id}`;
+});
+
+await T('källan är ett värde schema.sql faktiskt tillåter', () => {
+  return ['app', 'voice', 'facebook', 'import'].includes(tg.KALLA)
+    || `${tg.KALLA} finns inte i check-villkoret på reports.source`;
+});
+
+await T('raden bär de fält public.telegram_ta_emot() läser för avdubbling', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const post = inlagg('Polis vid Erikslund', { messageId: 8002 });
+  const s = await tg.bearbeta([post], { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  const n = tg.nycklarFor(post.channel_post, NU);
+  return (r.text_nyckel === n.text && r.text_nyckel.startsWith('tx:')
+          && r.chat_id === String(CHAT) && r.message_id === 8002)
+    || `fick ${r.text_nyckel} / ${r.chat_id} / ${r.message_id}`;
+});
+
+await T('räknarna börjar på noll — bryggan kan inte skapa en "bekräftad" varning', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([inlagg('Polis vid Erikslund')], { geokoda: geo, nu: NU });
+  const r = s.rapporter[0];
+  return (r.confirms === 1 && r.denials === 0) || `confirms ${r.confirms}, denials ${r.denials}`;
+});
+
+/* ---- Kvalitet -------------------------------------------------------- */
+G('Kvalitet — ett andrahandsinlägg väger mindre än den som står där');
+
+/** Databasradens snake_case -> formen js/kvalitet.js läser. */
+const tillKvalitet = r => ({
+  id: r.id, type: r.type, lat: r.lat, lon: r.lon, label: r.label, note: r.note,
+  source: r.source, createdAt: r.created_at, expiresAt: r.expires_at,
+  confirms: r.confirms, denials: r.denials,
+  gpsAccuracyM: r.gps_accuracy_m, fartKmh: r.fart_kmh, fordrojningS: r.fordrojning_s,
+  geokod: r.geokod, geokodTyp: r.geokod_typ, geokodRadiusM: r.geokod_radius_m,
+  parserConfidence: r.parser_confidence,
+});
+
+const geoK = geoStub({ 'björnövägen': { lat: 59.5921, lon: 16.5304, label: 'Björnövägen', source: 'nominatim' } });
+const kSum = await tg.bearbeta([inlagg('Polis står på Björnövägen', { at: NU - 6 * 60000 })],
+                               { geokoda: geoK, nu: NU });
+const tgRad = kSum.rapporter[0];
+
+await T('kvalitetsfälten fylls i — annars tystas varje grupprapport', () => {
+  return (tgRad && Number.isFinite(tgRad.parser_confidence)
+          && Number.isFinite(tgRad.fordrojning_s)
+          && tgRad.geokod === 'nominatim' && tgRad.geokod_typ === 'vag')
+    || `fick ${JSON.stringify(tgRad)}`;
+});
+
+await T('fördröjningen mäts, den gissas inte', () => {
+  return tgRad.fordrojning_s === 360 || `fick ${tgRad.fordrojning_s} s (väntade 360)`;
+});
+
+await T('okänd GPS och okänd fart lämnas som null, inte som noll', () => {
+  return (tgRad.gps_accuracy_m === null && tgRad.fart_kmh === null && tgRad.geokod_radius_m === null)
+    || `fick ${tgRad.gps_accuracy_m}/${tgRad.fart_kmh}/${tgRad.geokod_radius_m}`;
+});
+
+await T('graderas lägre än samma varning från en förare på platsen', () => {
+  const andrahand = kvalitet.bedomRapport(tillKvalitet(tgRad), { nu: NU });
+  const forstahand = kvalitet.bedomRapport({
+    ...tillKvalitet(tgRad), source: 'app', geokod: 'gps', geokodTyp: null,
+    gpsAccuracyM: 12, fartKmh: 40, fordrojningS: 5,
+  }, { nu: NU });
+  return andrahand.poang < forstahand.poang
+    || `andrahand ${andrahand.poang} vs förstahand ${forstahand.poang}`;
+});
+
+await T('men den tystas inte helt — en geokodad gata går att varna för', () => {
+  const b = kvalitet.bedomRapport(tillKvalitet(tgRad), { nu: NU });
+  return b.behandling !== kvalitet.BEHANDLING.UNDANHALL
+    || `behandling ${b.behandling}, poäng ${b.poang}, osäkerhet ${b.osakerhetM} m`;
+});
+
+await T('note ryms i databasens gräns och label i sin', async () => {
+  const lang = 'Polis står vid Erikslund ' + 'och det är verkligen mycket text '.repeat(20);
+  const geo = geoStub({});
+  const s = await tg.bearbeta([inlagg(lang)], { geokoda: geo, nu: NU, minTillit: 0 });
+  const r = s.rapporter[0];
+  return (!r || (r.note.length <= 240 && r.label.length <= 120))
+    || `note ${r.note.length}, label ${r.label.length}`;
+});
+
+/* ---- Telegrams former ----------------------------------------------- */
+G('Telegrams svarsstrukturer');
+
+await T('kanalinlägg, gruppmeddelanden och redigeringar plockas alla ut', () => {
+  const p = tg.plockaMeddelanden({ ok: true, result: [
+    inlagg('Polis vid Hälla', { nyckel: 'channel_post' }),
+    inlagg('Polis vid Vallby', { nyckel: 'message' }),
+    inlagg('Polis vid Råby', { nyckel: 'edited_channel_post' }),
+    { update_id: 1, my_chat_member: {} },
+  ] });
+  return p.length === 3 || `plockade ${p.length}`;
+});
+
+await T('offset flyttas fram även när inget blev en rapport', async () => {
+  const geo = geoStub();
+  const s = await tg.bearbeta([inlagg('Nykterhetskontroll vid Hälla', { messageId: 9001 })],
+                              { geokoda: geo, nu: NU });
+  return s.sistaUpdateId === 509001 || `fick ${s.sistaUpdateId}`;
+});
+
+await T('boten ignorerar chattar den inte ska läsa', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([
+    inlagg('Polis vid Erikslund', { chat: -100999 }),
+    inlagg('Polis vid Erikslund'),
+  ], { geokoda: geo, nu: NU, chatId: CHAT });
+  return (s.skapade === 1 && s.bortsorterade[tg.SKAL.FEL_CHATT] === 1)
+    || `skapade ${s.skapade}, ${JSON.stringify(s.bortsorterade)}`;
+});
+
+await T('vidarebefordrat inlägg räknas från originalets tid', () => {
+  const post = inlagg('Polis vid Erikslund', {
+    at: NU - 60000, forwardDate: NU - 20 * 60000,
+  }).channel_post;
+  const t = tg.tolkaMeddelande(post, { nu: NU });
+  return (t.ok && t.skrivenAt === NU - 20 * 60000) || `fick ${JSON.stringify(t)}`;
+});
+
+await T('adressen till bot-API:t byggs rätt (och bara byggs)', () => {
+  const u = tg.telegramUrl('TESTTOKEN', 'getUpdates', { offset: 42, timeout: 50 });
+  return (u === 'https://api.telegram.org/botTESTTOKEN/getUpdates?offset=42&timeout=50')
+    || `fick ${u}`;
+});
+
+await T('ingen token följer med ut i rapportraden', async () => {
+  const geo = geoStub({ 'erikslund': ERIKSLUND });
+  const s = await tg.bearbeta([inlagg('Polis vid Erikslund')], { geokoda: geo, nu: NU });
+  return !JSON.stringify(s).includes('api.telegram.org') || 'rapporten bär med sig bot-adressen';
+});
+
+/* =================================================================== */
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} av ${total} gick igenom` +
+  (fel ? ` — ${fel} MISSLYCKADES` : '') + (hopp ? ` — ${hopp} hoppade` : '');
+s.className = fel ? 'fel' : 'ok';
+window.__resultat = { ok, fel, hopp, total };
+</script>

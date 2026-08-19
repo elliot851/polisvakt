@@ -23,6 +23,42 @@ export const TTL_MINUTES = {
   camera: 60 * 24 * 365,     // användartillagd kamera lever tills den tas bort
 };
 
+/*
+ * Postgres svarar med snake_case, resten av appen talar camelCase.
+ *
+ * Det här var en tyst bugg med verkliga följder. `refresh()` spred serverraden
+ * rakt in med `...row`, och mappade bara created_at och expires_at. Alltså kom
+ * gps_accuracy_m, fart_kmh och fordrojning_s in med sina databasnamn, medan
+ * kvalitet.js läser gpsAccuracyM, fartKmh och fordrojningS.
+ *
+ * Följden: VARJE rapport från en annan förare graderades på antaganden i
+ * stället för på verklig data. Utan känd geokodningstyp antas radien 1 200 m,
+ * vilket ligger precis på gränsen där en rapport tystnar. Ingenting såg
+ * trasigt ut — rapporterna fanns, de var bara sämre än de behövde vara.
+ *
+ * Bara `geokod` heter likadant i båda världarna, vilket är varför problemet
+ * inte syntes i det befintliga testet.
+ *
+ * Samma familj som regressionen jag lagade tidigare: data måste följa hela
+ * vägen — skapa, spara, hämta, läsa. Den gången testade jag tre av fyra.
+ */
+const KVALITETSFALT = {
+  gps_accuracy_m:    'gpsAccuracyM',
+  fart_kmh:          'fartKmh',
+  fordrojning_s:     'fordrojningS',
+  geokod_typ:        'geokodTyp',
+  geokod_radius_m:   'geokodRadiusM',
+  parser_confidence: 'parserConfidence',
+};
+
+export function kvalitetFranRad(row) {
+  const ut = {};
+  for (const [kolumn, falt] of Object.entries(KVALITETSFALT)) {
+    if (row[kolumn] != null) ut[falt] = row[kolumn];
+  }
+  return ut;
+}
+
 const IDENTITY_KEY = 'pv.identity.v1';
 const MINE_KEY = 'pv.mine.v1';
 
@@ -277,6 +313,7 @@ export class ReportStore extends EventTarget {
           ...row,
           createdAt: typeof row.created_at === 'number' ? row.created_at : Date.parse(row.created_at),
           expiresAt: typeof row.expires_at === 'number' ? row.expires_at : Date.parse(row.expires_at),
+          ...kvalitetFranRad(row),
         };
         const mine = this.reports.get(r.id);
         // Lokala obekräftade ändringar vinner inte över servern, förutom removed

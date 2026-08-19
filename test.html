@@ -167,6 +167,54 @@ await T('store.add sätter kvalitetsfälten', () => {
     });
 });
 
+await T('REGRESSIONEN PÅ LÄSVÄGEN: serverns snake_case blir camelCase', () => {
+  // Postgres svarar gps_accuracy_m, appen läser gpsAccuracyM. Utan
+  // översättningen graderas varje rapport från en annan förare på
+  // antaganden, och ingenting ser trasigt ut.
+  const rad = {
+    id: 's1', type: 'police', lat: 59.6, lon: 16.5,
+    gps_accuracy_m: 8, fart_kmh: 42, fordrojning_s: 15,
+    geokod: 'gps', geokod_typ: 'gps', geokod_radius_m: 10,
+    parser_confidence: 0.9,
+  };
+  const ut = store.kvalitetFranRad(rad);
+  const saknas = ['gpsAccuracyM', 'fartKmh', 'fordrojningS', 'geokodTyp',
+                  'geokodRadiusM', 'parserConfidence'].filter(k => ut[k] == null);
+  return !saknas.length || `saknar ${saknas.join(', ')}`;
+});
+
+await T('och en hämtad rapport får en ärlig gradering', () => {
+  // Hela poängen: samma rapport ska inte bli tystare bara för att den kom
+  // från servern i stället för från den egna telefonen.
+  const bas = { id: 's2', type: 'police', lat: 59.616, lon: 16.553,
+                createdAt: nu - 3 * 60000, expiresAt: nu + 40 * 60000,
+                confirms: 1, denials: 0, source: 'app', geokod: 'gps' };
+  const rå = { ...bas, gps_accuracy_m: 10, fart_kmh: 30, fordrojning_s: 15 };
+  const oversatt = { ...rå, ...store.kvalitetFranRad(rå) };
+
+  const utan = kvalitet.bedomRapport(rå, { nu });
+  const med = kvalitet.bedomRapport(oversatt, { nu });
+
+  // Fälten ska faktiskt användas. Blir bedömningen identisk lästes de inte.
+  if (med.osakerhetM === utan.osakerhetM) {
+    return `fälten påverkade ingenting — båda gav ${med.osakerhetM} m`;
+  }
+
+  /*
+   * Osäkerheten GÅR UPP här, och det är rätt. Utan fälten vet graderingen
+   * bara "GPS-koordinat" och gissar 25 m. Med dem vet den att föraren höll
+   * 30 km/h och tryckte 15 sekunder efter passagen — alltså ligger den
+   * verkliga platsen omkring 125 m bort.
+   *
+   * Första versionen av det här testet krävde att osäkerheten skulle sjunka,
+   * på antagandet att mer data alltid betyder mindre osäkerhet. Det är
+   * baklänges: mer data kan avslöja osäkerhet som redan fanns men inte
+   * mättes. Testet hade fel, inte motorn.
+   */
+  return med.behandling === kvalitet.BEHANDLING.ANNONSERA
+    || `en färsk rapport 3 min gammal borde annonseras, fick ${med.behandling} (${med.osakerhetM} m)`;
+});
+
 /* ---- Vakthunden ----------------------------------------------------- */
 G('Vakthund — tystnad är ett besked');
 
