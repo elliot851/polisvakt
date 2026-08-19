@@ -13,5 +13,28 @@
   "icons": [
     { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Rapportera polis",
+      "short_name": "Polis",
+      "description": "Markera polis på din nuvarande position",
+      "url": "./index.html?rapport=police",
+      "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Rapportera kontroll",
+      "short_name": "Kontroll",
+      "description": "Markera en poliskontroll på din nuvarande position",
+      "url": "./index.html?rapport=control",
+      "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Rapportera civil bil",
+      "short_name": "Civil",
+      "description": "Markera en civil polisbil på din nuvarande position",
+      "url": "./index.html?rapport=unmarked",
+      "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
   ]
 }

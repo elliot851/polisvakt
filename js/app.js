@@ -75,7 +75,6 @@ const defaults = {
   driveReminder: true,
   winterOn: true,
   routeOn: true,
-  nightAuto: true,
   plRate: 700,
   plKrav: 2,
   plPip: true,
@@ -191,6 +190,7 @@ async function boot() {
   wireDashcam();
   wireChatt();
   wireLjud();
+  hanteraGenvag();
   wireSettingsUI();
   wireSpeedLimits();
   wireRemote();
@@ -1284,8 +1284,17 @@ function renderAccount() {
  * juni. En app som byter läge klockan 19 kör med bländande vit karta halva
  * vintern och onödigt mörk karta halva sommaren.
  */
+/*
+ * "Automatiskt" tema betyder mörkt efter solnedgången på din faktiska position
+ * och dagens datum — inte efter klockslag. Skillnaden är stor på vintern, när
+ * det är mörkt klockan tre på eftermiddagen.
+ *
+ * Det fanns tidigare ett separat reglage för det här vid sidan av temavalet.
+ * Två inställningar för samma sak, där den ena tyst kunde stänga av den andra.
+ * Reglaget är borta; "auto" gör det auto betyder.
+ */
 function autoTheme(fix) {
-  if (settings.theme !== 'auto' || !settings.nightAuto) return;
+  if (settings.theme !== 'auto') return;
   const dark = fix
     ? isDark(fix.lat, fix.lon)
     : isDark(59.6099, 16.5448);         // Västerås tills GPS svarar
@@ -1301,13 +1310,6 @@ function applyTheme() {
 
 /* ================= Faror ================= */
 
-/**
- * Allt appen känner till, filtrerat genom bevakningsområdet.
- *
- * Fartkameror slipper filtret: de är fasta, sällsynta och alltid relevanta när
- * du faktiskt närmar dig en. Det är rapporterna som blir brus om man släpper
- * igenom hela länet.
- */
 /**
  * Alla faror som är aktuella just nu, graderade efter hur mycket de går att
  * lita på.
@@ -1487,6 +1489,41 @@ function hideAlertBanner() {
 }
 
 /* ================= Rapportering ================= */
+
+/**
+ * Genvägar från hemskärmen.
+ *
+ * Håller man in appikonen får man "Rapportera polis", "Kontroll" och "Civil
+ * bil" direkt i menyn. Det löser det roadmapen kallar snabbrapport utan att
+ * låsa upp: färre steg mellan att se något och att andra blir varnade.
+ *
+ * Två saker som måste stämma, annars gör funktionen mer skada än nytta:
+ *
+ * Adressen städas direkt. Ligger ?rapport= kvar och användaren laddar om
+ * skickas en ny rapport från fel plats, och den som råkar uppdatera sidan
+ * några gånger fyller kartan med spöken.
+ *
+ * Rapporten skickas inte förrän GPS svarat. reportAt väntar själv in en
+ * position, så en genväg som trycks innan telefonen hunnit få fix hamnar rätt
+ * ändå istället för på förra kända platsen.
+ */
+async function hanteraGenvag() {
+  const typ = new URLSearchParams(location.search).get('rapport');
+  if (!typ) return;
+
+  // Bort ur adressen innan något annat händer.
+  const ren = location.pathname + location.hash;
+  history.replaceState(null, '', ren);
+
+  if (!['police', 'control', 'unmarked'].includes(typ)) return;
+
+  toast(`Hämtar din position för att rapportera ${TYPE_LABEL[typ]?.toLowerCase() || typ}…`, 4000);
+  try {
+    await reportAt(typ);
+  } catch {
+    toast('Kunde inte rapportera — ingen position. Försök igen när GPS svarat.', 6000);
+  }
+}
 
 async function reportAt(type, { lat, lon, label, source = 'app' } = {}) {
   if (!gateOrPaywall()) return;

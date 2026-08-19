@@ -346,6 +346,48 @@ await T('bilingenkännaren finns i appen, inte i en annan app', () => {
 await T('läsaren stoppas när man lämnar dashcam-vyn', () =>
   /showView[\s\S]{0,900}?plate\?\.running[\s\S]{0,80}?stoppaPlate\(\)/.test(appSrc)
   || 'kameran skulle fortsätta vara upptagen i bakgrunden');
+/* ---- Genvägar från hemskärmen --------------------------------------- */
+G('Snabbrapport från hemskärmen');
+
+const manifest = await (await fetch('./manifest.webmanifest')).json();
+
+await T('manifestet har genvägar', () =>
+  (manifest.shortcuts || []).length >= 3 || `hittade ${(manifest.shortcuts || []).length}`);
+
+await T('varje genväg pekar på en rapporttyp appen känner igen', () => {
+  const giltiga = ['police', 'control', 'unmarked'];
+  const dåliga = (manifest.shortcuts || [])
+    .map(s => new URL(s.url, location.href).searchParams.get('rapport'))
+    .filter(t => !giltiga.includes(t));
+  return !dåliga.length || `okända typer: ${dåliga.join(', ')}`;
+});
+
+await T('ingen genväg rapporterar nykterhetskontroll', () => {
+  // Produktregeln gäller varje väg in i appen, inte bara rösten och knapparna.
+  const text = JSON.stringify(manifest).toLowerCase();
+  return (!text.includes('nykter') && !text.includes('alkohol') && !text.includes('drog'))
+    || 'manifestet nämner en kontrolltyp appen vägrar rapportera';
+});
+
+await T('adressen städas innan rapporten skickas', () => {
+  // Ligger ?rapport= kvar skickas en ny rapport vid varje omladdning, från
+  // fel plats. Ordningen i koden är därför inte en detalj.
+  const i = appSrc.indexOf('async function hanteraGenvag');
+  const kropp = i >= 0 ? appSrc.slice(i, i + 900) : '';
+  const städIdx = kropp.indexOf('replaceState');
+  const rapportIdx = kropp.indexOf('await reportAt');
+  if (städIdx < 0) return 'hittar ingen städning av adressen';
+  if (rapportIdx < 0) return 'hittar inget anrop till reportAt';
+  return städIdx < rapportIdx || 'rapporten skickas innan adressen städats';
+});
+
+await T('okänd typ i adressen ignoreras', () => {
+  const i = appSrc.indexOf('async function hanteraGenvag');
+  const kropp = i >= 0 ? appSrc.slice(i, i + 900) : '';
+  return /\['police', 'control', 'unmarked'\]\.includes/.test(kropp)
+    || 'ingen vitlista — vad som helst i adressen skulle bli en rapport';
+});
+
 /* ---- Kameradata ------------------------------------------------------ */
 G('Fartkameror');
 
