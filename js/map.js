@@ -98,6 +98,14 @@ export class HazardMap extends EventTarget {
       this._ro.observe(el);
     }
 
+    // Nålarna ritas bara för det som är i bild, så kartan måste rita om när
+    // man panorerat eller zoomat. moveend, inte move — att rita om under
+    // fingret är precis det som gör en karta hackig.
+    this.map.on('moveend zoomend', () => {
+      clearTimeout(this._omritTimer);
+      this._omritTimer = setTimeout(() => this.omrita(), 120);
+    });
+
     this.markers = new Map();
     this.meMarker = null;
     this.accuracyCircle = null;
@@ -199,35 +207,96 @@ export class HazardMap extends EventTarget {
   }
 
   /** Synka markörer mot listan av faror. */
+  /**
+   * Så många nålar kartan får rita samtidigt.
+   *
+   * Ingen kan läsa av fler än så på en telefonskärm, och de kostar ordentligt:
+   * varje nål är ett DOM-element som Leaflet flyttar vid varje panorering.
+   * Måttet som fick den här gränsen att införas: hela kameradatan ritades ut
+   * på en gång — 2 466 nålar och 5 755 DOM-noder på en sida som annars har
+   * ett par hundra. Det var hela lagget.
+   */
+  static MAX_NALAR = 350;
+
   render(hazards, myPos) {
+    // Sparas för att kunna rita om vid panorering utan att räkna om allt
+    // uppströms.
+    this._sistaHazards = hazards;
+    this._sistaPos = myPos;
+
+    // Bara det som är i bild, med marginal så nålar hinner finnas när man
+    // drar. Kameror är fasta punkter över hela Sverige — resten av landet
+    // behöver inte finnas i DOM:en medan du kör i Västerås.
+    const vy = this.map.getBounds().pad(0.4);
+    let synliga = hazards.filter(h => vy.contains([h.lat, h.lon]));
+
+    // Zoomar man ut över hela landet ryms allt i bild igen. Då prioriteras
+    // det som ligger närmast mitten av kartan — det man faktiskt tittar på.
+    if (synliga.length > HazardMap.MAX_NALAR) {
+      const c = this.map.getCenter();
+      synliga = synliga
+        .map(h => [h, (h.lat - c.lat) ** 2 + (h.lon - c.lng) ** 2])
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, HazardMap.MAX_NALAR)
+        .map(p => p[0]);
+    }
+
     const seen = new Set();
-    for (const h of hazards) {
+    for (const h of synliga) {
       seen.add(h.id);
       const pos = [h.lat, h.lon];
       let m = this.markers.get(h.id);
       if (!m) {
         m = L.marker(pos, { icon: this.#hazardIcon(h) }).addTo(this.map);
-        m.on('click', () => this.dispatchEvent(new CustomEvent('hazardclick', { detail: h })));
+        m._pvSign = this.#ikonSignatur(h);
+        m.on('click', () => this.dispatchEvent(new CustomEvent('hazardclick', { detail: m._pv })));
+        // Innehållet byggs först när någon öppnar bubblan. Att bygga 2 466
+        // popup-strängar vid varje omritning var en stor del av kostnaden,
+        // och nästan ingen av dem öppnades någonsin.
+        m.bindPopup(() => this.#popupInnehall(m._pv, this._sistaPos), this.#popupOpts());
         this.markers.set(h.id, m);
       } else {
         m.setLatLng(pos);
-        m.setIcon(this.#hazardIcon(h));
+        // Ikonen byggs bara om när den faktiskt ändrat utseende. En fast
+        // fartkamera ser likadan ut för alltid.
+        const sign = this.#ikonSignatur(h);
+        if (sign !== m._pvSign) { m.setIcon(this.#hazardIcon(h)); m._pvSign = sign; }
       }
-      const dist = myPos
-        ? `<br><span class="pop-dist">${shortDistance(
-            Math.hypot((h.lat - myPos.lat) * 111320, (h.lon - myPos.lon) * 111320 * Math.cos(h.lat * Math.PI / 180))
-          )} bort</span>` : '';
-      const age = h.createdAt ? `<br><span class="pop-age">${relativeTime(h.createdAt)}</span>` : '';
-      m.bindPopup(
-        `<b>${TYPE_ICON[h.type] || '⚠️'} ${TYPE_LABEL[h.type] || 'Varning'}</b>` +
-        (h.label ? `<br>${escapeHtml(h.label)}` : '') + dist + age +
-        (h.source === 'facebook' ? '<br><span class="pop-src">Från Facebook-gruppen</span>' : ''),
-        this.#popupOpts()
-      );
+      m._pv = h;
     }
     for (const [id, m] of this.markers) {
       if (!seen.has(id)) { this.map.removeLayer(m); this.markers.delete(id); }
     }
+  }
+
+  /** Ritar om med senast kända lista. Används när kartan panorerats. */
+  omrita() {
+    if (this._sistaHazards) this.render(this._sistaHazards, this._sistaPos);
+  }
+
+  /**
+   * Allt som påverkar hur nålen ser ut, som en sträng. Skiljer sig den inte
+   * från förra gången behöver ikonen inte byggas om.
+   */
+  #ikonSignatur(h) {
+    if (h.fixed || !h.createdAt) return `${h.type}|fast`;
+    const ageMin = (Date.now() - h.createdAt) / 60000;
+    const lifeMin = h.expiresAt ? (h.expiresAt - h.createdAt) / 60000 : 45;
+    // Avrundas till tiondelar — annars byggs ikonen om vid varje sekundslag
+    // för en skillnad ingen kan se.
+    return `${h.type}|${Math.round(Math.min(1, ageMin / lifeMin) * 10)}`;
+  }
+
+  #popupInnehall(h, myPos) {
+    if (!h) return '';
+    const dist = myPos
+      ? `<br><span class="pop-dist">${shortDistance(
+          Math.hypot((h.lat - myPos.lat) * 111320, (h.lon - myPos.lon) * 111320 * Math.cos(h.lat * Math.PI / 180))
+        )} bort</span>` : '';
+    const age = h.createdAt ? `<br><span class="pop-age">${relativeTime(h.createdAt)}</span>` : '';
+    return `<b>${TYPE_ICON[h.type] || '⚠️'} ${TYPE_LABEL[h.type] || 'Varning'}</b>` +
+      (h.label ? `<br>${escapeHtml(h.label)}` : '') + dist + age +
+      (h.source === 'facebook' ? '<br><span class="pop-src">Från Facebook-gruppen</span>' : '');
   }
 
   /**

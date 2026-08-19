@@ -9,7 +9,7 @@
 // lugnt. Föraren behöver aldrig göra något — och blir aldrig avbruten mitt i
 // en körning, eftersom omladdningen väntar tills bilen står still.
 
-const VERSION = '2026-08-19-35';
+const VERSION = '2026-08-19-36';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //

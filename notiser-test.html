@@ -1,0 +1,378 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — notisinställningar</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+</style>
+
+<h1>Polisvakt — notisinställningar per typ</h1>
+<p class="sub">
+  Testar <code>js/notiser.js</code> ensamt, mot samma moduler appen kör.<br>
+  Poängen med lagret är att föraren ska kunna tysta det hen redan kan utantill
+  utan att tysta resten. Poängen med testerna är att den möjligheten aldrig
+  ska gå att använda för att slå <em>på</em> något — nykterhetskontroller och
+  handmarkerade fartkameror ska förbli omöjliga oavsett vad som står i
+  inställningarna.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+
+/* =================================================================== */
+const N = await import('./js/notiser.js');
+const kvalitet = await import('./js/kvalitet.js');
+
+const nu = Date.now();
+
+/** En vanlig polisrapport. Basen för de flesta testerna nedan. */
+const polis = (extra = {}) => ({
+  id: 'p1', type: 'police', lat: 59.616, lon: 16.553, label: 'Erikslund',
+  createdAt: nu - 3 * 60000, source: 'app', ...extra,
+});
+/** En fartkamera som den ser ut när den kommer ur cameras.json. */
+const kamera = (extra = {}) => ({
+  id: 'cam-12', type: 'camera', lat: 59.62, lon: 16.60, label: 'E18',
+  speedLimit: 100, fixed: true, ...extra,
+});
+
+/** Alla typer på högsta nivån — det värsta tänkbara läget för produktreglerna. */
+const ALLT_PA = { police: 'rost', control: 'rost', unmarked: 'rost', camera: 'rost' };
+
+/* ---- De två produktreglerna. Går de sönder är allt annat oviktigt. -- */
+G('Produktregler — ingen inställning får kringgå dem');
+
+await T('nykterhetskontroll annonseras inte ens med allt påslaget', () => {
+  const r = polis({ note: 'nykterhetskontroll vid Bäckby' });
+  return N.skaAnnonseras(r, ALLT_PA) === false || 'släpptes igenom till rösten';
+});
+
+await T('nykterhetskontroll syns inte heller på kartan', () => {
+  const r = polis({ note: 'nykterhetskontroll vid Bäckby' });
+  return N.skaVisasPaKartan(r, ALLT_PA) === false || 'ritades ut på kartan';
+});
+
+await T('isärskrivet "alkohol kontroll" stoppas lika hårt', () => {
+  // Röstigenkänning särskriver nästan alltid. Regeln får inte vara lättare
+  // att gå runt än den ser ut.
+  const r = polis({ label: 'alkohol kontroll vid rondellen' });
+  return N.nivaFor(r, ALLT_PA) === N.NIVA_AV || `fick ${N.nivaFor(r, ALLT_PA)}`;
+});
+
+await T('drogtest i anteckningen stoppas', () => {
+  const r = polis({ note: 'poliskontroll med drogtest' });
+  return N.skaAnnonseras(r, ALLT_PA) === false || 'släpptes igenom';
+});
+
+await T('en sparad nyckel för nykterhetskontroll ignoreras vid inläsning', () => {
+  // Någon som redigerar sin lagring för hand ska inte kunna skaffa sig en
+  // påslagen knapp som inte får finnas.
+  const laddad = N.laddaNotiser({ notiser: { ...ALLT_PA, nykterhetskontroll: 'rost' } });
+  return !('nykterhetskontroll' in laddad)
+    || `nyckeln överlevde: ${JSON.stringify(laddad)}`;
+});
+
+await T('sattNiva vägrar skapa en nykterhetsinställning', () => {
+  try {
+    N.sattNiva(ALLT_PA, 'drogkontroll', 'rost');
+    return 'gick att sätta';
+  } catch { return true; }
+});
+
+await T('användarrapporterad fartkamera annonseras aldrig', () => {
+  const r = kamera({ id: 'x', fixed: false, source: 'voice' });
+  return N.skaAnnonseras(r, ALLT_PA) === false || 'en handmarkerad kamera lästes upp';
+});
+
+await T('användarrapporterad fartkamera syns inte på kartan heller', () => {
+  const r = kamera({ id: 'x', fixed: false, source: 'app' });
+  return N.skaVisasPaKartan(r, ALLT_PA) === false || 'ritades ut';
+});
+
+await T('kamera inläst från Facebook stoppas också', () => {
+  const r = kamera({ id: 'x', fixed: false, source: 'facebook' });
+  return N.nivaFor(r, ALLT_PA) === N.NIVA_AV || `fick ${N.nivaFor(r, ALLT_PA)}`;
+});
+
+await T('den riktiga OSM-kameran släpps fortfarande igenom', () => {
+  // Regel 2 får inte bli så bred att den tystar datan appen bygger på.
+  return N.skaAnnonseras(kamera(), ALLT_PA) === true || 'OSM-kameran tystades av misstag';
+});
+
+/* ---- Förvalen ------------------------------------------------------ */
+G('Förvalen');
+
+await T('alla fyra typerna har ett förval', () => {
+  const saknas = ['police', 'control', 'unmarked', 'camera']
+    .filter(t => !N.NIVAER.includes(N.DEFAULT_NOTISER[t]));
+  return !saknas.length || `saknar förval: ${saknas.join(', ')}`;
+});
+
+await T('förvalet är röst för alla typer — appen som den beskrivs', () => {
+  // "Sådant föraren kan utantill" är en egenskap hos föraren, inte hos typen.
+  // En förstagångsanvändare har inga kameror i huvudet.
+  const fel = Object.entries(N.DEFAULT_NOTISER).filter(([, v]) => v !== N.NIVA_ROST);
+  return !fel.length || `dessa var inte röst: ${JSON.stringify(fel)}`;
+});
+
+await T('utan sparade inställningar gäller förvalen', () => {
+  const a = N.laddaNotiser(undefined);
+  const b = N.laddaNotiser(null);
+  const c = N.laddaNotiser({});
+  return [a, b, c].every(x => x.police === 'rost' && x.camera === 'rost')
+    || `fick ${JSON.stringify([a, b, c])}`;
+});
+
+await T('en ny rapport annonseras utan att någon rört inställningarna', () => {
+  return N.skaAnnonseras(polis(), undefined) === true || 'tyst utan inställningar';
+});
+
+await T('laddaNotiser lämnar tillbaka en kopia, inte förvalen själva', () => {
+  const a = N.laddaNotiser();
+  a.police = 'av';
+  return N.DEFAULT_NOTISER.police === 'rost' || 'förvalen gick att skriva över';
+});
+
+await T('skräpvärden faller tillbaka på förvalet istället för att tysta', () => {
+  const a = N.laddaNotiser({ notiser: { police: 'kanske', control: 42 } });
+  return a.police === 'rost' && a.control === 'rost'
+    || `fick ${JSON.stringify(a)}`;
+});
+
+await T('gammal av/på-boolean tolkas rätt', () => {
+  const a = N.laddaNotiser({ notiser: { police: false, camera: true } });
+  return a.police === 'av' && a.camera === 'rost' || `fick ${JSON.stringify(a)}`;
+});
+
+await T('appens hela inställningsobjekt förväxlas inte med kartan', () => {
+  // Utan skyddet blev `tts: true` en varningstyp som hette "tts".
+  const a = N.laddaNotiser({ tts: true, volume: 1, theme: 'auto', mode: 'local' });
+  return !('tts' in a) && a.police === 'rost' || `fick ${JSON.stringify(a)}`;
+});
+
+/* ---- De tre nivåerna ----------------------------------------------- */
+G('Tre nivåer — av, bara karta, röst');
+
+await T('avstängd typ tystas helt', () => {
+  const s = { ...ALLT_PA, police: 'av' };
+  return N.skaAnnonseras(polis(), s) === false || 'lästes ändå upp';
+});
+
+await T('avstängd typ försvinner också från kartan', () => {
+  const s = { ...ALLT_PA, police: 'av' };
+  return N.skaVisasPaKartan(polis(), s) === false || 'nålen fanns kvar';
+});
+
+await T('"bara karta" tystar rösten', () => {
+  const s = { ...ALLT_PA, camera: 'karta' };
+  return N.skaAnnonseras(kamera(), s) === false || 'kameran lästes upp ändå';
+});
+
+await T('"bara karta" behåller markören', () => {
+  // Hela skälet till mellansteget: se kameran utan att bli tilltalad om den.
+  const s = { ...ALLT_PA, camera: 'karta' };
+  return N.skaVisasPaKartan(kamera(), s) === true || 'nålen försvann med rösten';
+});
+
+await T('att tysta kameran tystar inte polisen', () => {
+  const s = { ...ALLT_PA, camera: 'karta' };
+  return N.skaAnnonseras(polis(), s) === true || 'polisen tystnade också';
+});
+
+await T('röst ger både ljud och nål', () => {
+  const s = { ...ALLT_PA };
+  return N.skaAnnonseras(polis(), s) && N.skaVisasPaKartan(polis(), s)
+    || 'röstläget gav inte båda';
+});
+
+await T('delaUppFaror sorterar en blandad lista rätt', () => {
+  const s = { police: 'rost', camera: 'karta', control: 'av', unmarked: 'rost' };
+  const lista = [polis(), kamera(),
+                 { id: 'k1', type: 'control', lat: 59.6, lon: 16.5, source: 'app' },
+                 { id: 'c1', type: 'unmarked', lat: 59.6, lon: 16.5, source: 'app' }];
+  const { forRost, forKarta } = N.delaUppFaror(lista, s);
+  return (forRost.length === 2 && forKarta.length === 3)
+    || `röst=${forRost.length} karta=${forKarta.length}`;
+});
+
+/* ---- Okända typer -------------------------------------------------- */
+G('Okänd eller ny typ');
+
+await T('okänd typ annonseras istället för att tystna av misstag', () => {
+  // Lägger någon till en ny typ i parser.js utan att röra notiser.js ska den
+  // höras. En bortglömd rad ska ge för mycket varning, aldrig för lite.
+  const r = { id: 'v1', type: 'vagarbete', lat: 59.6, lon: 16.5, source: 'app' };
+  return N.skaAnnonseras(r, ALLT_PA) === true || `fick ${N.nivaFor(r, ALLT_PA)}`;
+});
+
+await T('okänd typ annonseras även utan sparade inställningar', () => {
+  const r = { id: 'v2', type: 'viltstrak', lat: 59.6, lon: 16.5 };
+  return N.skaAnnonseras(r, undefined) === true || 'tystnade';
+});
+
+await T('förvalet för okänd typ är uttalat, inte en slump', () => {
+  return N.FORVAL_OKAND_TYP === N.NIVA_ROST || `är ${N.FORVAL_OKAND_TYP}`;
+});
+
+await T('en sparad nivå för en okänd typ respekteras', () => {
+  const r = { id: 'v3', type: 'vagarbete', lat: 59.6, lon: 16.5 };
+  const s = { notiser: { ...ALLT_PA, vagarbete: 'av' } };
+  return N.skaVisasPaKartan(r, s) === false || 'inställningen ignorerades';
+});
+
+await T('rapport utan typ blir inte en tyst krasch', () => {
+  return N.nivaFor({ id: 'x', lat: 59.6, lon: 16.5 }, ALLT_PA) === N.NIVA_ROST
+    && N.nivaFor(null, ALLT_PA) === N.NIVA_AV
+    || 'hanterade inte saknad typ';
+});
+
+/* ---- Lagringen ägs av appen ---------------------------------------- */
+G('Lagringen ägs av appen');
+
+await T('sparaNotiser skriver i objektet, inte i localStorage', () => {
+  const fore = localStorage.length;
+  const s = { tts: true };
+  N.sparaNotiser(s, 'camera', 'karta');
+  return s.notiser?.camera === 'karta' && localStorage.length === fore
+    || `notiser=${JSON.stringify(s.notiser)} lagringsrader ${fore}->${localStorage.length}`;
+});
+
+await T('sparat värde används av beslutet direkt', () => {
+  const s = { tts: true };
+  N.sparaNotiser(s, 'camera', 'karta');
+  return N.skaAnnonseras(kamera(), s) === false && N.skaVisasPaKartan(kamera(), s) === true
+    || 'inställningen slog inte igenom';
+});
+
+await T('sparaNotiser fyller i de typer som saknas', () => {
+  const s = {};
+  const karta = N.sparaNotiser(s, 'police', 'av');
+  return karta.camera === 'rost' && karta.police === 'av' || JSON.stringify(karta);
+});
+
+await T('ogiltig nivå avvisas istället för att sparas tyst', () => {
+  const s = {};
+  try { N.sparaNotiser(s, 'police', 'ibland'); return 'sparades ändå'; }
+  catch { return s.notiser === undefined || 'objektet ändrades trots felet'; }
+});
+
+await T('sattNiva muterar inte kartan den fick', () => {
+  const a = { ...ALLT_PA };
+  N.sattNiva(a, 'police', 'av');
+  return a.police === 'rost' || 'ursprungskartan ändrades';
+});
+
+/* ---- Kvalitetslagret väger tyngre än inställningen ------------------ */
+G('Inställningen kan bara sänka, aldrig höja');
+
+await T('en tyst-graderad rapport läses inte upp fast typen står på röst', () => {
+  const r = polis({ bedomning: { behandling: kvalitet.BEHANDLING.TYST } });
+  return N.skaAnnonseras(r, ALLT_PA) === false || 'graderingen kördes över';
+});
+
+await T('men den tyst-graderade rapporten finns kvar på kartan', () => {
+  const r = polis({ bedomning: { behandling: kvalitet.BEHANDLING.TYST } });
+  return N.skaVisasPaKartan(r, ALLT_PA) === true || 'nålen försvann';
+});
+
+await T('en undanhållen rapport syns inte alls', () => {
+  const r = polis({ bedomning: { behandling: kvalitet.BEHANDLING.UNDANHALL } });
+  return N.nivaFor(r, ALLT_PA) === N.NIVA_AV || `fick ${N.nivaFor(r, ALLT_PA)}`;
+});
+
+await T('flaggan nykterhetskontroll från kvalitet.js respekteras', () => {
+  const r = polis({ bedomning: { behandling: kvalitet.BEHANDLING.ANNONSERA,
+                                 flaggor: ['nykterhetskontroll'] } });
+  return N.nivaFor(r, ALLT_PA) === N.NIVA_AV || `fick ${N.nivaFor(r, ALLT_PA)}`;
+});
+
+await T('graderingen och inställningen tillsammans ger det tystaste', () => {
+  const r = polis({ bedomning: { behandling: kvalitet.BEHANDLING.ANNONSERA } });
+  return N.nivaFor(r, { ...ALLT_PA, police: 'karta' }) === N.NIVA_KARTA
+    || 'fel nivå vann';
+});
+
+await T('kvalitet.js håller med om nykterhetsfallet', () => {
+  // Samma rapport genom det riktiga kvalitetslagret, så de två inte kan
+  // glida isär utan att någon märker det.
+  const b = kvalitet.bedomRapport(polis({ note: 'nykterhetskontroll' }), {});
+  return b.behandling === kvalitet.BEHANDLING.UNDANHALL || `fick ${b.behandling}`;
+});
+
+/* ---- Gränssnittsdatan ---------------------------------------------- */
+G('Data till inställningssidan');
+
+await T('NOTIS_TYPER har en rad per typ med etikett och ikon', () => {
+  return N.NOTIS_TYPER.length === 4
+    && N.NOTIS_TYPER.every(t => t.etikett && t.ikon && t.forval)
+    || JSON.stringify(N.NOTIS_TYPER);
+});
+
+await T('etiketterna kommer från parser.js, inte en andra uppsättning', () => {
+  const p = N.NOTIS_TYPER.find(t => t.typ === 'unmarked');
+  return p.etikett === 'Civil polisbil' || `fick ${p.etikett}`;
+});
+
+await T('nivåerna har svenska etiketter till menyn', () => {
+  return N.NIVAER.every(n => N.NIVA_ETIKETT[n] && N.NIVA_BESKRIVNING[n])
+    || 'någon nivå saknar text';
+});
+
+await T('ingen nykterhetstyp finns att rita en knapp för', () => {
+  return !N.NOTIS_TYPER.some(t => /nykter|alko|drog/i.test(t.typ))
+    || 'en förbjuden typ dök upp i gränssnittsdatan';
+});
+
+/* =================================================================== */
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} av ${total} gick igenom` +
+  (fel ? ` — ${fel} MISSLYCKADES` : '') + (hopp ? ` — ${hopp} hoppade` : '');
+s.className = fel ? 'fel' : 'ok';
+window.__resultat = { ok, fel, hopp, total };
+</script>

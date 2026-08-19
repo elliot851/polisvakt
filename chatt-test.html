@@ -1,0 +1,439 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — chattens testsvep</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+</style>
+
+<h1>Polisvakt — chattens testsvep</h1>
+<p class="sub">
+  Chatten är den enda platsen i appen där någon kan skriva vad som helst. Allt
+  annat går genom knappar och parsern. Testerna nedan handlar därför mest om
+  vad som INTE får komma igenom: nykterhetskontroller, spam, och skrivande
+  medan bilen rullar.<br>
+  Ingen av dem rör nätverket — grinden är byggd för att gå att köra rakt.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+
+/* =================================================================== */
+const chatt = await import('./js/chatt.js');
+const { Chatt, farSkicka, skrivlage, GRANSER, neutraltNamn, stadaNamn } = chatt;
+
+const NU = 1_800_000_000_000;      // fast klocka, så inget test är tidsberoende
+
+/** Ren, isolerad chatt utan backend. Egen lagringsnyckel per test. */
+let raknare = 0;
+function nyChatt(cfg = {}) {
+  const prefix = `pv.chatt.test${++raknare}`;
+  for (const k of Object.keys(localStorage)) {
+    if (k.startsWith(prefix)) localStorage.removeItem(k);
+  }
+  return new Chatt({ identitet: 'anv-1', visningsnamn: 'Elliot',
+                     lagringsPrefix: prefix, ...cfg });
+}
+
+/** En rad som den ser ut i vyn chatt_flode. */
+const serverRad = (id, namn, nyckel, text, at) => ({
+  id, visningsnamn: namn, avsandarnyckel: nyckel, text,
+  skapad_at: new Date(at).toISOString(), mitt: false,
+});
+
+const bas = { inloggad: true, fartKmh: 0, fartAlderMs: 0, historik: [], nu: NU };
+
+/* ---- Produktregeln. Går den sönder är resten oviktigt. ------------- */
+G('Nykterhetskontroller — får aldrig komma igenom');
+
+await T('"nykterhetskontroll" stoppas', () => {
+  const r = farSkicka('Nykterhetskontroll vid Bäckby just nu', bas);
+  return (!r.ok && r.skal === 'nykterhet') || `fick ${JSON.stringify(r)}`;
+});
+await T('isärskrivet "alkohol kontroll" stoppas', () => {
+  const r = farSkicka('alkohol kontroll vid rondellen', bas);
+  return (!r.ok && r.skal === 'nykterhet') || `fick ${JSON.stringify(r)}`;
+});
+await T('"drogkontroll" stoppas', () => {
+  const r = farSkicka('Drogkontroll på Vasagatan', bas);
+  return (!r.ok && r.skal === 'nykterhet') || `fick ${JSON.stringify(r)}`;
+});
+await T('isärskrivet "drog test" stoppas', () => {
+  const r = farSkicka('de kör drog test där borta', bas);
+  return (!r.ok && r.skal === 'nykterhet') || `fick ${JSON.stringify(r)}`;
+});
+await T('"utandningsprov" stoppas', () => {
+  const r = farSkicka('utandningsprov vid infarten', bas);
+  return (!r.ok && r.skal === 'nykterhet') || `fick ${JSON.stringify(r)}`;
+});
+await T('versaler och utropstecken hjälper inte', () => {
+  const r = farSkicka('NYKTERHETSKONTROLL!!! VID E18!!!', bas);
+  return (!r.ok && r.skal === 'nykterhet') || `fick ${JSON.stringify(r)}`;
+});
+await T('förklaringen är på svenska och nämner varför', () => {
+  const r = farSkicka('nykterhetskontroll', bas);
+  return (r.meddelande.includes('Nykterhets') && r.meddelande.includes('chatten'))
+    || `fick: ${r.meddelande}`;
+});
+await T('samma spärr gäller genom hela klassen', async () => {
+  const c = nyChatt();
+  const r = await c.skicka('nykterhetskontroll vid Bäckby', NU);
+  return (!r.ok && r.skal === 'nykterhet' && c.meddelanden(NU).length === 0)
+    || `fick ${JSON.stringify(r)}, ${c.meddelanden(NU).length} i listan`;
+});
+await T('och en händelse går ut så gränssnittet kan säga till', async () => {
+  const c = nyChatt();
+  let sagt = null;
+  c.addEventListener('blockerat', e => { sagt = e.detail; });
+  await c.skicka('alkoholkontroll', NU);
+  return sagt?.skal === 'nykterhet' || `fick ${JSON.stringify(sagt)}`;
+});
+
+/* ---- Det som ska släppas igenom ------------------------------------ */
+G('Vanliga meddelanden');
+
+await T('ett vanligt meddelande går igenom', () => {
+  const r = farSkicka('Står de kvar vid Erikslund?', bas);
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+await T('en polisrapport i text går igenom', () => {
+  const r = farSkicka('Polis vid rondellen på Norrleden, två bilar', bas);
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+await T('tomt meddelande stoppas', () => {
+  const r = farSkicka('   ', bas);
+  return (!r.ok && r.skal === 'tomt') || `fick ${JSON.stringify(r)}`;
+});
+await T('för långt meddelande stoppas', () => {
+  const r = farSkicka('a'.repeat(GRANSER.maxTecken + 1), bas);
+  return (!r.ok && r.skal === 'for_langt') || `fick ${JSON.stringify(r)}`;
+});
+await T('utloggad kan inte skriva', () => {
+  const r = farSkicka('hej', { ...bas, inloggad: false });
+  return (!r.ok && r.skal === 'inte_inloggad') || `fick ${JSON.stringify(r)}`;
+});
+await T('ett skickat meddelande hamnar i listan', async () => {
+  const c = nyChatt();
+  await c.skicka('Fritt fram förbi Hälla', NU);
+  const l = c.meddelanden(NU);
+  return (l.length === 1 && l[0].mitt && l[0].text === 'Fritt fram förbi Hälla')
+    || `fick ${JSON.stringify(l)}`;
+});
+
+/* ---- Körsäkerhet --------------------------------------------------- */
+G('Körsäkerhet — låst tangentbord över farttröskeln');
+
+await T('stillastående får skriva', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: 0, fartAlderMs: 0 });
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+await T('krypfart under tröskeln får skriva', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: GRANSER.farttroskelKmh, fartAlderMs: 0 });
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+await T('över tröskeln är fältet låst', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: GRANSER.farttroskelKmh + 1, fartAlderMs: 0 });
+  return (!r.ok && r.skal === 'kor') || `fick ${JSON.stringify(r)}`;
+});
+await T('landsvägsfart är låst', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: 90, fartAlderMs: 0 });
+  return (!r.ok && r.skal === 'kor') || `fick ${JSON.stringify(r)}`;
+});
+await T('förklaringen säger att man får läsa', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: 90, fartAlderMs: 0 });
+  return r.meddelande.toLowerCase().includes('läsa') || `fick: ${r.meddelande}`;
+});
+await T('en gammal fartavläsning låser inte för alltid', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: 90,
+                        fartAlderMs: GRANSER.fartFarskMs + 1000 });
+  return r.ok || `fick ${JSON.stringify(r)} — en parkerad bil ska gå att skriva från`;
+});
+await T('okänd fart låser inte', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: null, fartAlderMs: 0 });
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+await T('skicka blockeras i farten, även med giltig text', () => {
+  const r = farSkicka('Står de kvar?', { ...bas, fartKmh: 70 });
+  return (!r.ok && r.skal === 'kor') || `fick ${JSON.stringify(r)}`;
+});
+await T('klassen låser när GPS matas in', async () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 72 }, NU);
+  const last = c.kanSkriva(NU);
+  const r = await c.skicka('hej', NU);
+  return (!last.ok && last.skal === 'kor' && !r.ok && r.skal === 'kor')
+    || `fick ${JSON.stringify(last)} / ${JSON.stringify(r)}`;
+});
+await T('och släpper när bilen stannar', async () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 72 }, NU);
+  c.notera({ speedKmh: 0 }, NU + 60000);
+  const r = await c.skicka('Nu står jag still', NU + 60000);
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+
+/* ---- Skrivtakt ----------------------------------------------------- */
+G('Rate limit — ingen ska kunna spamma rummet');
+
+await T('två meddelanden i rad stoppas av minsta mellanrum', () => {
+  const r = farSkicka('igen', { ...bas, historik: [NU - 1000] });
+  return (!r.ok && r.skal === 'for_tatt') || `fick ${JSON.stringify(r)}`;
+});
+await T('efter mellanrummet går det bra igen', () => {
+  const r = farSkicka('igen', { ...bas, historik: [NU - GRANSER.minMellanMs - 1] });
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+await T('taket per minut slår till', () => {
+  // Fem meddelanden utspridda över minuten, alla äldre än minsta mellanrum.
+  const h = [];
+  for (let i = 0; i < GRANSER.maxPerMinut; i++) h.push(NU - 6000 - i * 6000);
+  const r = farSkicka('sjätte', { ...bas, historik: h });
+  return (!r.ok && r.skal === 'for_manga') || `fick ${JSON.stringify(r)} med ${h.length} i historiken`;
+});
+await T('taket per timme slår till', () => {
+  const h = [];
+  for (let i = 0; i < GRANSER.maxPerTimme; i++) h.push(NU - 10000 - i * 50000);
+  const r = farSkicka('för många', { ...bas, historik: h });
+  return (!r.ok && r.skal === 'for_manga') || `fick ${JSON.stringify(r)}`;
+});
+await T('gammal historik räknas inte', () => {
+  const h = [];
+  for (let i = 0; i < 50; i++) h.push(NU - 3600000 - i * 1000);   // äldre än en timme
+  const r = farSkicka('nytt dygn, ny chans', { ...bas, historik: h });
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+await T('klassen bromsar två snabba meddelanden', async () => {
+  const c = nyChatt();
+  const a = await c.skicka('första', NU);
+  const b = await c.skicka('andra', NU + 500);
+  return (a.ok && !b.ok && b.skal === 'for_tatt' && c.meddelanden(NU + 500).length === 1)
+    || `fick ${JSON.stringify(a)} / ${JSON.stringify(b)}`;
+});
+await T('men släpper igenom när det gått tillräckligt länge', async () => {
+  const c = nyChatt();
+  await c.skicka('första', NU);
+  const b = await c.skicka('andra', NU + GRANSER.minMellanMs + 1);
+  return b.ok || `fick ${JSON.stringify(b)}`;
+});
+await T('klassen stoppar sex på en minut', async () => {
+  const c = nyChatt();
+  const svar = [];
+  for (let i = 0; i < GRANSER.maxPerMinut + 1; i++) {
+    svar.push(await c.skicka(`nr ${i}`, NU + i * (GRANSER.minMellanMs + 100)));
+  }
+  const sista = svar[svar.length - 1];
+  return (!sista.ok && sista.skal === 'for_manga')
+    || `fick ${JSON.stringify(svar.map(s => s.skal))}`;
+});
+
+/* ---- Radering ------------------------------------------------------ */
+G('Radering — bara sitt eget');
+
+await T('eget meddelande går att radera', async () => {
+  const c = nyChatt();
+  const r = await c.skicka('mitt eget', NU);
+  const d = await c.radera(r.id);
+  return (d.ok && c.meddelanden(NU).length === 0) || `fick ${JSON.stringify(d)}`;
+});
+await T('någon annans går INTE att radera', async () => {
+  const c = nyChatt();
+  c.mottaRader([serverRad('m1', 'Anna', 'nyckel-anna', 'hej alla', NU - 60000)]);
+  const d = await c.radera('m1');
+  return (!d.ok && d.skal === 'inte_mitt' && c.meddelanden(NU).length === 1)
+    || `fick ${JSON.stringify(d)}, ${c.meddelanden(NU).length} kvar`;
+});
+await T('och svaret pekar mot anmäl/tysta istället', async () => {
+  const c = nyChatt();
+  c.mottaRader([serverRad('m1', 'Anna', 'nyckel-anna', 'hej alla', NU - 60000)]);
+  const d = await c.radera('m1');
+  const t = d.meddelande.toLowerCase();
+  return (t.includes('anmäl') || t.includes('tysta')) || `fick: ${d.meddelande}`;
+});
+await T('ett meddelande som inte finns ger inget kaos', async () => {
+  const c = nyChatt();
+  const d = await c.radera('finns-inte');
+  return (!d.ok && d.skal === 'saknas') || `fick ${JSON.stringify(d)}`;
+});
+
+/* ---- Moderering ---------------------------------------------------- */
+G('Moderering — tysta och anmäla');
+
+await T('tystad avsändare filtreras bort', async () => {
+  const c = nyChatt();
+  c.mottaRader([
+    serverRad('m1', 'Anna', 'nyckel-anna', 'hej', NU - 60000),
+    serverRad('m2', 'Bosse', 'nyckel-bosse', 'tjena', NU - 50000),
+    serverRad('m3', 'Anna', 'nyckel-anna', 'igen', NU - 40000),
+  ]);
+  c.tysta('nyckel-anna');
+  const kvar = c.meddelanden(NU);
+  return (kvar.length === 1 && kvar[0].id === 'm2')
+    || `fick ${JSON.stringify(kvar.map(m => m.id))}`;
+});
+await T('tystningen går att ta tillbaka', async () => {
+  const c = nyChatt();
+  c.mottaRader([serverRad('m1', 'Anna', 'nyckel-anna', 'hej', NU - 60000)]);
+  c.tysta('nyckel-anna');
+  c.avtysta('nyckel-anna');
+  return c.meddelanden(NU).length === 1 || `fick ${c.meddelanden(NU).length}`;
+});
+await T('tystning via meddelande-id tystar hela avsändaren', async () => {
+  const c = nyChatt();
+  c.mottaRader([
+    serverRad('m1', 'Anna', 'nyckel-anna', 'hej', NU - 60000),
+    serverRad('m2', 'Anna', 'nyckel-anna', 'igen', NU - 40000),
+  ]);
+  c.tystaAvsandarenFor('m1');
+  return c.meddelanden(NU).length === 0 || `fick ${c.meddelanden(NU).length} kvar`;
+});
+await T('man kan inte tysta sig själv av misstag', async () => {
+  const c = nyChatt();
+  const r = await c.skicka('mitt eget', NU);
+  c.tystaAvsandarenFor(r.id);
+  return c.meddelanden(NU).length === 1 || 'egna meddelandet försvann';
+});
+await T('allaMeddelanden visar även det tystade', async () => {
+  const c = nyChatt();
+  c.mottaRader([serverRad('m1', 'Anna', 'nyckel-anna', 'hej', NU - 60000)]);
+  c.tysta('nyckel-anna');
+  return (c.allaMeddelanden().length === 1 && c.meddelanden(NU).length === 0)
+    || 'listorna stämmer inte';
+});
+await T('anmälan noteras lokalt så knappen kan ändra läge', async () => {
+  const c = nyChatt();
+  c.mottaRader([serverRad('m1', 'Anna', 'nyckel-anna', 'hej', NU - 60000)]);
+  await c.anmal('m1', 'hot');
+  return c.arAnmald('m1') || 'anmälan syns inte';
+});
+
+/* ---- Gallring och namn --------------------------------------------- */
+G('Gallring, sortering och namn');
+
+await T('äldre än sju dygn visas inte', async () => {
+  const c = nyChatt();
+  c.mottaRader([
+    serverRad('gammalt', 'Anna', 'k1', 'förra veckan', NU - 8 * 86400000),
+    serverRad('nytt', 'Anna', 'k1', 'idag', NU - 3600000),
+  ]);
+  const l = c.meddelanden(NU);
+  return (l.length === 1 && l[0].id === 'nytt') || `fick ${JSON.stringify(l.map(m => m.id))}`;
+});
+await T('listan är sorterad äldst först', async () => {
+  const c = nyChatt();
+  c.mottaRader([
+    serverRad('b', 'Anna', 'k1', 'senare', NU - 1000),
+    serverRad('a', 'Anna', 'k1', 'tidigare', NU - 60000),
+  ]);
+  return c.meddelanden(NU).map(m => m.id).join(',') === 'a,b'
+    || `fick ${c.meddelanden(NU).map(m => m.id).join(',')}`;
+});
+await T('en full hämtning tar bort raderade meddelanden', async () => {
+  const c = nyChatt();
+  c.mottaRader([
+    serverRad('m1', 'Anna', 'k1', 'hej', NU - 60000),
+    serverRad('m2', 'Bosse', 'k2', 'tjena', NU - 50000),
+  ]);
+  c.mottaRader([serverRad('m2', 'Bosse', 'k2', 'tjena', NU - 50000)], { full: true });
+  return c.meddelanden(NU).map(m => m.id).join(',') === 'm2'
+    || `fick ${c.meddelanden(NU).map(m => m.id).join(',')}`;
+});
+await T('neutralt namn är stabilt och innehåller aldrig e-post', () => {
+  const a = neutraltNamn('anv-1');
+  const b = neutraltNamn('anv-1');
+  const c = neutraltNamn('anv-2');
+  return (a === b && a !== c && !a.includes('@') && a.startsWith('Förare '))
+    || `fick ${a} / ${b} / ${c}`;
+});
+await T('smeknamnet används när det finns', async () => {
+  const c = nyChatt({ visningsnamn: 'Elliot' });
+  await c.skicka('hej', NU);
+  return c.meddelanden(NU)[0].visningsnamn === 'Elliot'
+    || `fick ${c.meddelanden(NU)[0].visningsnamn}`;
+});
+await T('utan smeknamn blir det det neutrala namnet', async () => {
+  const c = nyChatt({ visningsnamn: '' });
+  await c.skicka('hej', NU);
+  return c.meddelanden(NU)[0].visningsnamn === neutraltNamn('anv-1')
+    || `fick ${c.meddelanden(NU)[0].visningsnamn}`;
+});
+await T('osynliga tecken städas bort ur smeknamn', () => {
+  const n = stadaNamn('El​liot‮');
+  return n === 'Elliot' || `fick ${JSON.stringify(n)}`;
+});
+
+/* ---- Batteri ------------------------------------------------------- */
+G('Batteri — pollningen ska inte gå för fort i onödan');
+
+await T('pollningen är långsammare när chattvyn inte visas', () => {
+  const c = nyChatt();
+  const bak = c.pollMs;
+  c.sattVyAktiv(true);
+  const fram = c.pollMs;
+  return (fram < bak && fram === GRANSER.pollAktivMs && bak === GRANSER.pollBakgrundMs)
+    || `fick ${fram} aktiv / ${bak} bakgrund`;
+});
+await T('ingen timer startas utan att starta chatten', () => {
+  const c = nyChatt();
+  return c.timer === null || 'en timer var igång direkt';
+});
+await T('stoppa() släcker timern', () => {
+  const c = nyChatt();
+  c.starta();
+  const igang = c.timer !== null;
+  c.stoppa();
+  return (igang && c.timer === null) || `igång=${igang}, efter stopp=${c.timer}`;
+});
+
+/* =================================================================== */
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} av ${total} gick igenom` +
+  (fel ? ` — ${fel} MISSLYCKADES` : '') + (hopp ? ` — ${hopp} hoppade` : '');
+s.className = fel ? 'fel' : 'ok';
+window.__resultat = { ok, fel, hopp, total };
+</script>

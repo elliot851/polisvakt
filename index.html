@@ -447,12 +447,8 @@
   <section class="card">
     <h3>Varningar</h3>
     <label class="row"><span>Läs upp varningar</span><input type="checkbox" id="setTts" checked></label>
-    <label class="row"><span>Volym</span><input type="range" id="setVolume" min="0" max="1" step="0.05" value="1"></label>
-    <label class="row"><span>Talhastighet</span><input type="range" id="setRate" min="0.8" max="1.4" step="0.05" value="1.05"></label>
-    <label class="row"><span>Varningsradie polis <b id="setRadiusVal">1,5 km</b></span>
-      <input type="range" id="setRadius" min="500" max="5000" step="100" value="1500"></label>
-    <label class="row"><span>Framförhållning kamera <b id="setLeadVal">25 s</b></span>
-      <input type="range" id="setLead" min="10" max="45" step="1" value="25"></label>
+    <p class="hint">Volymen följer telefonens, och varningen kommer som ett
+      trafikmeddelande — musiken dämpas och kommer tillbaka efteråt.</p>
   </section>
 
   <section class="card">
@@ -483,7 +479,6 @@
     <h3>Påminnelse när du kör</h3>
     <p class="hint">Appen lär sig när du brukar köra och påminner dig att slå på den. Börjar bilen rulla med appen öppen men ljudet av säger den till direkt.</p>
     <label class="row"><span>Påminn mig</span><input type="checkbox" id="setDriveReminder" checked></label>
-    <label class="row"><span>Mörkt läge efter solnedgång</span><input type="checkbox" id="setNightAuto" checked></label>
     <p class="hint" id="driveStatus"></p>
     <button class="btn-ghost small" id="btnNotify" type="button">Tillåt notiser</button>
     <p class="hint" id="notifyStatus"></p>
@@ -537,11 +532,8 @@
 
   <section class="card">
     <h3>Hastighetsgräns</h3>
-    <label class="row"><span>Visa gränsen för vägen du kör på</span><input type="checkbox" id="setLimitOn" checked></label>
     <label class="row"><span>Varna när du kör för fort</span><input type="checkbox" id="setSpeedWarn" checked></label>
-    <label class="row"><span>Marginal innan varning <b id="setMarginVal">7 km/h</b></span>
-      <input type="range" id="setMargin" min="0" max="20" step="1" value="7"></label>
-    <p class="hint">Marginalen finns för att GPS-farten ligger några km/h fel och för att bilens mätare visar högre än verklig fart. Vid 0 varnar appen på varje liten överträdelse.</p>
+    <p class="hint">Appen varnar först vid 7 km/h över gränsen. Marginalen finns för att GPS-farten ligger några km/h fel och för att bilens mätare visar högre än verklig fart.</p>
     <p class="hint" id="limitStatus">Vägdata hämtas automatiskt för området du kör i.</p>
     <button class="btn-ghost small" id="btnClearRoads" type="button">Rensa nedladdad vägdata</button>
   </section>
@@ -562,13 +554,6 @@
     <h3>Krockdetektering</h3>
     <p class="hint">Telefonen känner en smäll långt innan du hinner trycka på en knapp. Vid kraftig inbromsning eller kollision låses dashcam-klippet automatiskt.</p>
     <label class="row"><span>Lås klipp vid smäll</span><input type="checkbox" id="setImpact" checked></label>
-    <label class="row"><span>Känslighet</span>
-      <select id="setImpactLevel">
-        <option value="low">Låg — bara riktiga krockar (3 g)</option>
-        <option value="normal" selected>Normal — även panikbroms (1,2 g)</option>
-        <option value="high">Hög — all kraftig inbromsning (0,8 g)</option>
-      </select>
-    </label>
     <p class="hint" id="impactStatus"></p>
   </section>
 
@@ -576,7 +561,6 @@
     <h3>Historik och mönster</h3>
     <p class="hint" id="statsSummary">Samlar in…</p>
     <label class="row"><span>Visa återkommande platser på kartan</span><input type="checkbox" id="setHotspots" checked></label>
-    <label class="row"><span>Säg till vid kända platser</span><input type="checkbox" id="setHotspotVoice" checked></label>
     <ul class="hotspot-list" id="hotspotList"></ul>
     <button class="btn-ghost small danger" id="btnClearStats" type="button">Rensa historiken</button>
   </section>
@@ -596,19 +580,11 @@
 
   <section class="card">
     <h3>Delning</h3>
-    <label class="row"><span>Läge</span>
-      <select id="setMode">
-        <option value="local">Bara min telefon</option>
-        <option value="supabase">Delat med alla (Supabase)</option>
-      </select>
-    </label>
-    <div id="supaFields" hidden>
-      <label class="stack"><span>Supabase URL</span><input type="url" id="setSupaUrl" placeholder="https://xxxx.supabase.co"></label>
-      <label class="stack"><span>Anon-nyckel</span><input type="text" id="setSupaKey" placeholder="eyJhbGciOi..."></label>
-      <label class="row"><span>Hämta ny data var <b id="setPollVal">30 s</b></span>
-        <input type="range" id="setPoll" min="10" max="120" step="5" value="30"></label>
-    </div>
-    <button class="btn-ghost small" id="setSave" type="button">Spara och anslut</button>
+    <!-- Här låg tidigare en serverkonfiguration: adress, API-nyckel och ett
+         reglage för hur ofta data hämtas. Det är utvecklarinställningar och
+         hörde aldrig hemma framför en förare. Appen är kopplad till sin
+         backend, och den enda intressanta frågan är om anslutningen fungerar
+         just nu — den frågan svarar raden nedan på. -->
     <p class="hint" id="syncHint"></p>
   </section>
 
@@ -621,7 +597,6 @@
         <option value="day">Ljust</option>
       </select>
     </label>
-    <label class="row"><span>Håll skärmen tänd</span><input type="checkbox" id="setAwake" checked></label>
   </section>
 
   <section class="card">
@@ -630,24 +605,7 @@
       <b>Dashcam</b> — kameran kan bara användas av en sak i taget, så inspelning
       och skyltläsning går inte samtidigt.</p>
 
-    <label class="row"><span>Läs så här ofta</span>
-      <select id="setPlRate">
-        <option value="400">Ofta — 2–3 gånger i sekunden</option>
-        <option value="700" selected>Normalt</option>
-        <option value="1200">Sällan — sparar batteri</option>
-      </select>
-    </label>
-
-    <label class="row"><span>Kräv innan den visar</span>
-      <select id="setPlKrav">
-        <option value="1">Första läsningen (snabbast, mest fel)</option>
-        <option value="2" selected>Två som är överens</option>
-        <option value="3">Tre som är överens (säkrast)</option>
-      </select>
-    </label>
-    <p class="hint">Motorn kan vara helt säker på ett felläst tecken. Att kräva
-      att flera bildrutor säger samma sak är det enda som skiljer en läsning
-      från en gissning.</p>
+    <p class="hint">Läsaren visar en skylt först när två bildrutor läst samma sak. Motorn kan vara helt säker på ett felläst tecken, och det är det enda som skiljer en läsning från en gissning.</p>
 
     <label class="row"><span>Pip vid träff</span><input type="checkbox" id="setPlPip" checked></label>
 

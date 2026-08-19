@@ -1300,7 +1300,16 @@ function allHazards({ forAlerts = false } = {}) {
     ? graderade.filter(h => h.bedomning?.behandling !== Kvalitet.BEHANDLING.TYST)
     : graderade;
 
-  return [...lista, ...cameras];
+  /*
+   * Kamerorna gick tidigare rakt förbi bevakningsområdet. Det var både fel
+   * och dyrt: inställningen "30 km runt dig" betydde ingenting för dem, och
+   * alla 2 466 fasta kameror i landet skickades vidare vid varje omritning.
+   *
+   * Utan GPS-läsning släpper filtret igenom allt — det är rätt, för då vet vi
+   * inte vad som är nära. Kartan tar hand om det fallet genom att bara rita
+   * det som syns i bild.
+   */
+  return [...lista, ...coverage.filter(cameras, me)];
 }
 
 const renderHazardsThrottled = debounce(() => renderHazards(), 1500);
@@ -1748,7 +1757,7 @@ window.polisvakt = {
   // Felsökningsyta. Samma skäl som store/geo/speaker redan ligger här: utan
   // dem går appens verkliga tillstånd inte att granska utifrån, och då blir
   // varje test ett test av en kopia istället för av det som faktiskt kör.
-  store, geo, speaker, dashcam, vakthund, varmevakt, routeGuide,
+  store, geo, speaker, dashcam, vakthund, varmevakt, routeGuide, map, coverage,
   // Läsaren skapas först när läget väljs, så den måste hämtas vid anrop.
   get plate() { return plate; },
 };
@@ -2553,34 +2562,26 @@ function wireSettingsUI() {
   };
 
   bind('setTts', 'tts', v => !!v, () => { speaker.enabled = settings.tts; });
-  bind('setVolume', 'volume', Number, () => { speaker.volume = settings.volume; });
-  bind('setRate', 'rate', Number, () => { speaker.rate = settings.rate; });
-  bind('setRadius', 'hazardRadiusM', Number, () => {
-    $('setRadiusVal').textContent = (settings.hazardRadiusM / 1000).toFixed(1).replace('.', ',') + ' km';
-    engine.setOptions({ hazardRadiusM: settings.hazardRadiusM });
-    renderHazards();
-  });
-  bind('setLead', 'cameraLeadSeconds', Number, () => {
-    $('setLeadVal').textContent = settings.cameraLeadSeconds + ' s';
-    engine.setOptions({ cameraLeadSeconds: settings.cameraLeadSeconds });
-  });
   bind('setTheme', 'theme', v => v, () => applyTheme());
-  bind('setPoll', 'pollSeconds', Number, () => {
-    $('setPollVal').textContent = settings.pollSeconds + ' s';
-  });
-  bind('setAwake', 'keepAwake', v => !!v, () => {
-    settings.keepAwake ? requestWakeLock() : releaseWakeLock();
-  });
+
+  /*
+   * Volym, talhastighet, varningsradie, framförhållning, pollningsintervall
+   * och "håll skärmen tänd" hade var sitt reglage här. De är borttagna med
+   * flit.
+   *
+   * Ett reglage är inte gratis. Det är en fråga appen ställer till föraren,
+   * och varje fråga kostar uppmärksamhet som borde ligga på vägen. Frågan är
+   * värd att ställa bara när svaret skiljer sig mellan människor OCH appen
+   * inte kan avgöra det själv. Ingen av de här klarade provet: volymen sitter
+   * på telefonens sida, och resten är avvägningar som ska vara rätt från
+   * början — inte något föraren ska behöva finjustera i sekunder och meter.
+   *
+   * Värdena finns kvar i defaults och används precis som förut.
+   */
+  settings.keepAwake ? requestWakeLock() : releaseWakeLock();
 
   /* ---- Bilingenkännaren ---- */
-  // Ändringarna slår igenom direkt även när läsaren redan är igång, så man
-  // slipper stoppa och starta om för att prova en inställning.
   const platePaVerkan = () => { if (plate) Object.assign(plate.settings, plateSettings()); };
-  bind('setPlRate', 'plRate', Number, () => {
-    platePaVerkan();
-    if (plate?.running) { plate.stop(); plate.start().catch(() => {}); }
-  });
-  bind('setPlKrav', 'plKrav', Number, platePaVerkan);
   bind('setPlPip', 'plPip', v => !!v, platePaVerkan);
 
   $('setPlEgna').value = (settings.plEgna || []).map(visaPlat).join('\n');
@@ -2604,9 +2605,6 @@ function wireSettingsUI() {
     ? 'Textigenkänningen laddas ner första gången du startar läsaren, ungefär 4 MB. Sen fungerar den utan internet.'
     : 'Den här webbläsaren ger inte appen tillgång till kameran, så skyltläsaren kan inte användas här.';
 
-  $('setRadiusVal').textContent = (settings.hazardRadiusM / 1000).toFixed(1).replace('.', ',') + ' km';
-  $('setLeadVal').textContent = settings.cameraLeadSeconds + ' s';
-  $('setPollVal').textContent = settings.pollSeconds + ' s';
 
   // Väckningsord
   const wake = $('setWake');
@@ -2622,25 +2620,13 @@ function wireSettingsUI() {
     renderStatus();
   };
 
-  // Delningsläge
-  const mode = $('setMode');
-  mode.value = settings.mode;
-  $('supaFields').hidden = settings.mode !== 'supabase';
-  mode.onchange = () => { $('supaFields').hidden = mode.value !== 'supabase'; };
-  $('setSupaUrl').value = settings.supaUrl;
-  $('setSupaKey').value = settings.supaKey;
-
   /* ---- Hastighetsgräns ---- */
-  bind('setLimitOn', 'limitOn', v => !!v, () => {
-    limits.enabled = settings.limitOn;
-    if (!settings.limitOn) { $('limitSign').hidden = true; limits.current = null; }
-  });
+  // Gränsen visas alltid — den är information, inte en påminnelse, och kostar
+  // ingenting att ha framme. Marginalen ligger fast på 7 km/h. Det enda valet
+  // som är kvar är det enda som faktiskt stör: om appen ska säga till.
+  limits.enabled = true;
+  limits.marginKmh = settings.speedMargin;
   bind('setSpeedWarn', 'speedWarn', v => !!v);
-  bind('setMargin', 'speedMargin', Number, () => {
-    $('setMarginVal').textContent = settings.speedMargin + ' km/h';
-    limits.marginKmh = settings.speedMargin;
-  });
-  $('setMarginVal').textContent = settings.speedMargin + ' km/h';
   $('btnClearRoads').onclick = async () => {
     await limits.clearCache();
     $('limitStatus').textContent = 'Vägdatan är rensad. Den hämtas på nytt när du börjar köra.';
@@ -2701,15 +2687,24 @@ function wireSettingsUI() {
     } else impact.stop();
     renderImpactStatus();
   };
-  bind('setImpactLevel', 'impactLevel', v => v, () => {
-    impact.setOptions(IMPACT_LEVELS[settings.impactLevel]);
-    renderImpactStatus();
-  });
+  /*
+   * Känslighetsvalet är borta. Tre nivåer i g-krafter är ingen fråga en förare
+   * kan svara på utan att krocka först — normalläget täcker både panikbroms
+   * och kollision, och det är det man vill ha låst.
+   *
+   * Valet var dessutom trasigt: koden anropade impact.setOptions(), en metod
+   * som aldrig funnits på ImpactDetector. Eftersom anropet låg i en callback
+   * som bara kördes när någon ändrade menyn hade felet aldrig visat sig. Det
+   * kom fram först när inställningen togs bort och värdena skulle sättas vid
+   * start. Trösklarna är vanliga egenskaper — de sätts direkt.
+   */
+  const niva = IMPACT_LEVELS[settings.impactLevel] || IMPACT_LEVELS.normal;
+  impact.hardBrakeG = niva.hardBrakeG;
+  impact.crashG = niva.crashG;
   renderImpactStatus();
 
   /* ---- Historik ---- */
   bind('setHotspots', 'showHotspots', v => !!v, renderHotspotLayer);
-  bind('setHotspotVoice', 'hotspotVoice', v => !!v);
   $('btnClearStats').onclick = () => {
     if (!confirm('Rensa hela historiken? Mönstren byggs om från noll.')) return;
     stats.clear();
@@ -2765,7 +2760,6 @@ function wireSettingsUI() {
   /* ---- Påminnelse och nattläge ---- */
   bind('setDriveReminder', 'driveReminder', v => !!v);
   bind('setWinter', 'winterOn', v => !!v, renderWinterStatus);
-  bind('setNightAuto', 'nightAuto', v => !!v, applyTheme);
   renderWinterStatus();
   wireGroups();
   renderDriveStatus();
@@ -2796,24 +2790,14 @@ function wireSettingsUI() {
     refreshLeaderboard();
   };
 
-  $('setSave').onclick = async () => {
-    settings.mode = mode.value;
-    settings.supaUrl = $('setSupaUrl').value.trim().replace(/\/$/, '');
-    settings.supaKey = $('setSupaKey').value.trim();
-    saveSettings();
-    store.configure({
-      mode: settings.mode, url: settings.supaUrl,
-      key: settings.supaKey, pollMs: settings.pollSeconds * 1000,
-    });
-    billing.configure({ url: settings.supaUrl, key: settings.supaKey });
-    stats.configure({ url: settings.supaUrl, key: settings.supaKey });
-    reputation.configure({ url: settings.supaUrl, key: settings.supaKey });
-    await billing.sync();
-    if (settings.mode === 'supabase') { await stats.syncFromServer(); renderStats(); }
-    refreshLeaderboard();
-    renderStatus();
-    toast(settings.mode === 'supabase' ? 'Ansluter…' : 'Kör i lokalt läge.');
-  };
+  /*
+   * Här låg en "Spara och anslut"-knapp som läste en serveradress och en
+   * API-nyckel ur två textfält. Den var kvar från tiden innan appen hade en
+   * egen backend, och gjorde ingen nytta: anslutningen byggs redan av CONFIG
+   * vid start (se där store skapas). Det enda den kunde åstadkomma var att en
+   * användare skrev fel i ett fält och tappade kontakten med de andra
+   * förarna.
+   */
 }
 
 /* ================= Dela appen ================= */

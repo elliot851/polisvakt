@@ -1,0 +1,535 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — gränssnittsljud</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; z-index: 2; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+
+  /* Provbänken */
+  .bank { margin: 18px 0 6px; padding: 14px 14px 16px; border: 1px solid #26323f;
+          border-radius: 12px; background: #101720; }
+  .bank h2 { margin: 0 0 2px; font-size: 15px; }
+  .bank p { margin: 0 0 12px; color: #93a4b6; font-size: 13px; }
+  .knappar { display: flex; flex-wrap: wrap; gap: 8px; }
+  .knappar button { flex: 1 1 92px; padding: 12px 10px; border-radius: 10px; cursor: pointer;
+                    border: 1px solid #2d3b4b; background: #17212c; color: #eef4fa;
+                    font: 600 14px/1.2 inherit; }
+  .knappar button:active { background: #22303f; }
+  .reglage { display: flex; flex-wrap: wrap; gap: 14px 20px; margin-top: 14px;
+             padding-top: 12px; border-top: 1px solid #1a232d; font-size: 13.5px; }
+  .reglage label { display: flex; align-items: center; gap: 7px; }
+  .reglage input[type=range] { width: 130px; }
+  #status { margin-top: 12px; font-size: 12.5px; color: #6d7d8e; white-space: pre-wrap;
+            min-height: 2.6em; }
+</style>
+
+<h1>Polisvakt — gränssnittsljud</h1>
+<p class="sub">
+  Två saker på samma sida. Överst en provbänk där en människa får lyssna —
+  ljuden går inte att bedöma med kod, bara med öron i en bil. Under den ett
+  testsvep i samma form som <code>test.html</code>, som mäter det som faktiskt
+  går att mäta: att ingen ljudmotor startas i onödan, att avstängt betyder
+  avstängt, och att ett klickljud aldrig ligger ovanpå en uppläst varning.
+</p>
+
+<div class="bank">
+  <h2>Provbänk</h2>
+  <p>Tryck och lyssna. Volymen är förvalt låg med flit — det här ska höras
+     under en varning, inte istället för den.</p>
+  <div class="knappar" id="knappar"></div>
+  <div class="reglage">
+    <label><input type="checkbox" id="bPa" checked> Ljud på</label>
+    <label><input type="checkbox" id="bHaptik" checked> Haptik</label>
+    <label><input type="checkbox" id="bTal"> Låtsas att appen läser upp en varning</label>
+    <label>Volym <input type="range" id="bVolym" min="0" max="1" step="0.05" value="0.35">
+           <span id="bVolymTal">0.35</span></label>
+  </div>
+  <div id="status">Ingen knapp tryckt än.</div>
+</div>
+
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+/* ------------------------------------------------------------------ */
+/* Räkna AudioContext innan modulen ens laddas.                        */
+/*                                                                     */
+/* Hela poängen med ljud.js är att den delar EN context istället för   */
+/* att skapa en per pip som plate.js gör. Det påståendet måste mätas   */
+/* utifrån, inte tas på modulens ord — därför byter vi ut              */
+/* konstruktorn innan importen och räknar själva.                      */
+/* ------------------------------------------------------------------ */
+let ctxRaknare = 0;
+const AC0 = window.AudioContext || window.webkitAudioContext;
+if (AC0) {
+  class RaknadAudioContext extends AC0 {
+    constructor(...a) { super(...a); ctxRaknare++; }
+  }
+  window.AudioContext = RaknadAudioContext;
+  window.webkitAudioContext = RaknadAudioContext;
+}
+
+/* Vibrationer räknas på samma sätt, utifrån. */
+let vibRaknare = 0;
+let sistaVib = null;
+const vibFanns = typeof navigator.vibrate === 'function';
+if (vibFanns) {
+  const orig = navigator.vibrate.bind(navigator);
+  navigator.vibrate = m => { vibRaknare++; sistaVib = m; return orig(m); };
+}
+
+/* ------------------------------------------------------------------ */
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+const nara = (a, b, tol) => Math.abs(a - b) <= tol;
+
+/* =================================================================== */
+const L = await import('./js/ljud.js');
+const { Ljud, LJUD_RECEPT, LJUD_NAMN, LJUD_FORVAL } = L;
+
+/** Talare-attrapp med samma fält som Speaker i voice.js. */
+const talare = (opt = {}) => ({
+  speaking: !!opt.speaking,
+  current: opt.prio == null ? null : { text: 'x', priority: opt.prio },
+  queue: opt.ko || [],
+  muted: !!opt.muted,
+});
+
+/** Räknar noder som en instans skapar under ett anrop. */
+function noderUnder(l, fn) {
+  const fore = l.statistik.noder;
+  fn();
+  return l.statistik.noder - fore;
+}
+
+/* ---- Det som måste hålla innan användaren rört sidan --------------- */
+//
+// Måste ligga först i filen. Så fort något klickar är faktumet borta för
+// gott, och testet skulle passera av fel skäl resten av sidans liv.
+
+G('Före första interaktionen — inget ska startas');
+
+await T('användaren räknas inte som interagerad vid laddning', () => {
+  return L.anvandarenHarInteragerat() === false
+    || 'sidan tror redan att någon tryckt';
+});
+
+const foreL = new Ljud();
+
+await T('ett tryck skapar ingen AudioContext', () => {
+  const r = foreL.tryck();
+  return (ctxRaknare === 0 && foreL.ctx === null && L.antalSkapadeContexter() === 0)
+    || `ctxRaknare=${ctxRaknare}, modulen säger ${L.antalSkapadeContexter()}, orsak ${r.orsak}`;
+});
+
+await T('orsaken rapporteras istället för att kasta', () => {
+  return foreL.senaste?.orsak === 'ingen-interaktion'
+    || `fick ${foreL.senaste?.orsak}`;
+});
+
+await T('inga ljudnoder skapas heller', () => {
+  foreL.bekrafta(); foreL.fel(); foreL.flik();
+  return foreL.statistik.noder === 0 || `skapade ${foreL.statistik.noder} noder`;
+});
+
+await T('alla fyra försöken bokfördes som hoppade', () => {
+  return foreL.statistik.hoppade === 4 && foreL.statistik.spelade === 0
+    || `spelade ${foreL.statistik.spelade}, hoppade ${foreL.statistik.hoppade}`;
+});
+
+/* ---- Nu släpper vi in en interaktion ------------------------------- */
+//
+// Syntetisk. Webbläsaren räknar den inte som en riktig gest, men modulens
+// egen lyssnare gör det — och det är precis det beteendet vi vill testa:
+// grinden öppnas av en händelse, inte av att någon råkar anropa rätt metod.
+
+window.dispatchEvent(new Event('pointerdown'));
+
+G('Grinden öppnas av händelsen, inte av tur');
+
+await T('interaktionen registrerades', () => {
+  return L.anvandarenHarInteragerat() === true || 'grinden öppnade inte';
+});
+
+await T('men fortfarande ingen context förrän något faktiskt spelas', () => {
+  return ctxRaknare === 0 || `${ctxRaknare} contexter finns redan`;
+});
+
+/* ---- Avstängt är avstängt ------------------------------------------ */
+
+G('Avstängt läge — noll noder, noll ljudmotor');
+
+await T('ljudPa=false skapar inga noder', () => {
+  const l = new Ljud({ ljudPa: false });
+  const n = noderUnder(l, () => { l.tryck(); l.flik(); l.bekrafta(); });
+  return (n === 0 && l.senaste.orsak === 'av' && l.ctx === null)
+    || `${n} noder, orsak ${l.senaste.orsak}`;
+});
+
+await T('volym 0 skapar inga noder', () => {
+  const l = new Ljud({ ljudVolym: 0 });
+  const n = noderUnder(l, () => l.tryck());
+  return (n === 0 && l.senaste.orsak === 'volym-noll') || `${n} noder, orsak ${l.senaste.orsak}`;
+});
+
+await T('prefers-reduced-motion tystar allt', () => {
+  const l = new Ljud();
+  l.systemTyst = true;
+  const n = noderUnder(l, () => l.bekrafta());
+  return (n === 0 && l.senaste.orsak === 'reducerad-rorelse') || `${n} noder, orsak ${l.senaste.orsak}`;
+});
+
+await T('appen tystad (Speaker.muted) tystar klickljuden också', () => {
+  const l = new Ljud({}, { speaker: talare({ muted: true }) });
+  const n = noderUnder(l, () => l.tryck());
+  return (n === 0 && l.senaste.orsak === 'appen-tystad') || `${n} noder, orsak ${l.senaste.orsak}`;
+});
+
+await T('inget av det ovanstående startade en AudioContext', () => {
+  return ctxRaknare === 0 || `${ctxRaknare} contexter skapades i onödan`;
+});
+
+/* ---- Uppläsningen går alltid först --------------------------------- */
+//
+// Kravet i klartext: ett klickljud får aldrig ligga ovanpå "fartkamera om
+// 300 meter". Prioriteterna är Speakers egna — 2 akut, 1 varning, 0
+// bekräftelse.
+
+G('Uppläsning pågår — klickljudet kliver åt sidan');
+
+await T('akut varning (prio 2) hoppas över helt', () => {
+  const l = new Ljud({}, { speaker: talare({ speaking: true, prio: 2 }) });
+  const n = noderUnder(l, () => l.tryck());
+  return (n === 0 && l.senaste.orsak === 'uppläsning-pågår')
+    || `${n} noder, orsak ${l.senaste.orsak}`;
+});
+
+await T('vanlig varning (prio 1) hoppas också över', () => {
+  const l = new Ljud({}, { speaker: talare({ speaking: true, prio: 1 }) });
+  const n = noderUnder(l, () => l.bekrafta());
+  return n === 0 || `${n} noder skapades mitt i en varning`;
+});
+
+await T('en varning som bara står i kön räknas också', () => {
+  // Speaker sätter current först när meningen börjar. Läste vi bara current
+  // skulle ett klick hinna emellan medan kön fylldes på.
+  const l = new Ljud({}, { speaker: talare({ speaking: false, ko: [{ priority: 2 }] }) });
+  const n = noderUnder(l, () => l.fel());
+  return (n === 0 && l.senaste.orsak === 'uppläsning-pågår')
+    || `${n} noder, orsak ${l.senaste.orsak}`;
+});
+
+await T('bekräftelse-uppläsning (prio 0) dämpar istället för att tysta', () => {
+  const l = new Ljud({}, { speaker: talare({ speaking: true, prio: 0 }) });
+  const n = noderUnder(l, () => l.tryck());
+  return (n > 0 && l.senaste.spelade === true && l.senaste.dampning < 0.3)
+    || `${n} noder, dämpning ${l.senaste.dampning}, orsak ${l.senaste.orsak}`;
+});
+
+await T('dämpningen sänker den faktiska nivån minst tre gånger', () => {
+  const tyst = new Ljud({}, { speaker: talare({ speaking: true, prio: 0 }) });
+  const full = new Ljud();
+  tyst.tryck(); full.tryck();
+  return (tyst.senaste.niva * 3 <= full.senaste.niva)
+    || `dämpad ${tyst.senaste.niva} mot full ${full.senaste.niva}`;
+});
+
+await T('när talet är slut hörs ljudet igen', () => {
+  const sp = talare({ speaking: true, prio: 2 });
+  const l = new Ljud({}, { speaker: sp });
+  l.tryck();
+  const stoppad = l.senaste.spelade;
+  sp.speaking = false; sp.current = null;
+  const n = noderUnder(l, () => l.tryck());
+  return (stoppad === false && n > 0 && l.senaste.dampning === 1)
+    || `först ${stoppad}, sedan ${n} noder / dämpning ${l.senaste.dampning}`;
+});
+
+/* ---- Volymen ------------------------------------------------------- */
+
+G('Volyminställningen slår igenom i ljudkedjan');
+
+const volymL = new Ljud({ ljudVolym: 0.8 });
+volymL.tryck();
+
+await T('en volymnod finns och sitter på den delade contexten', () => {
+  return (volymL.master && volymL.master.context === volymL.ctx)
+    || 'ingen volymnod kopplad';
+});
+
+await T('nodens gain är exakt det modulen räknat fram', () => {
+  return nara(volymL.master.gain.value, volymL.masterNiva, 1e-6)
+    || `gain ${volymL.master.gain.value} mot ${volymL.masterNiva}`;
+});
+
+await T('halverad inställning halverar gainen', () => {
+  const hog = volymL.masterNiva;
+  volymL.setInstallningar({ ljudVolym: 0.4 });
+  volymL.tryck();
+  return nara(volymL.master.gain.value, hog / 2, 1e-6)
+    || `${volymL.master.gain.value} är inte hälften av ${hog}`;
+});
+
+await T('förvalet är lågt — under halva skalan', () => {
+  return LJUD_FORVAL.ljudVolym <= 0.5 || `förvalet är ${LJUD_FORVAL.ljudVolym}`;
+});
+
+await T('orimliga värden klams istället för att gå igenom', () => {
+  const l = new Ljud();
+  l.setInstallningar({ ljudVolym: 7 });
+  const hog = l.installningar.ljudVolym;
+  l.setInstallningar({ ljudVolym: -3 });
+  const lag = l.installningar.ljudVolym;
+  l.setInstallningar({ ljudVolym: 'sju' });
+  const skrap = l.installningar.ljudVolym;
+  return (hog === 1 && lag === 0 && skrap === LJUD_FORVAL.ljudVolym)
+    || `fick ${hog}, ${lag}, ${skrap}`;
+});
+
+await T('setInstallningar rör bara det som skickas in', () => {
+  const l = new Ljud({ ljudVolym: 0.6, haptikPa: false });
+  l.setInstallningar({ ljudVolym: 0.2 });
+  return (l.installningar.haptikPa === false && l.installningar.ljudPa === true)
+    || JSON.stringify(l.installningar);
+});
+
+/* ---- Den delade contexten ------------------------------------------ */
+
+G('En AudioContext för hela sidan');
+
+await T('mängder av tryck återanvänder samma context', () => {
+  const l = new Ljud();
+  for (let i = 0; i < 40; i++) l.tryck();
+  return ctxRaknare === 1 || `${ctxRaknare} contexter skapades`;
+});
+
+await T('två instanser delar samma context', () => {
+  const a = new Ljud(), b = new Ljud();
+  a.flik(); b.fel();
+  return (a.ctx === b.ctx && a.ctx === volymL.ctx && ctxRaknare === 1)
+    || `ctxRaknare=${ctxRaknare}, samma objekt: ${a.ctx === b.ctx}`;
+});
+
+await T('men varje instans har sin egen volymnod', () => {
+  const a = new Ljud({ ljudVolym: 0.9 }), b = new Ljud({ ljudVolym: 0.1 });
+  a.tryck(); b.tryck();
+  return (a.master !== b.master && a.master.gain.value > b.master.gain.value)
+    || 'volymnoderna delas, en slider skulle styra båda';
+});
+
+await T('contexten stängs inte efter ljudet (plate.js-felet)', () => {
+  return volymL.ctx.state !== 'closed' || 'contexten stängdes och nästa tryck blir tyst';
+});
+
+await T('knappspam bygger inte upp oändligt med oscillatorer', () => {
+  const l = new Ljud();
+  for (let i = 0; i < 60; i++) l.tryck();
+  return l.aktivaToner <= 10 || `${l.aktivaToner} toner igång samtidigt`;
+});
+
+/* ---- Ljudpaketet självt -------------------------------------------- */
+
+G('Ljudpaketet — kort, mjukt, urskiljbart');
+
+await T('alla sex ljuden har en metod', () => {
+  const l = new Ljud();
+  const saknas = ['tryck', 'flik', 'pa', 'av', 'bekrafta', 'fel']
+    .filter(n => typeof l[n] !== 'function' || !LJUD_RECEPT[n]);
+  return saknas.length === 0 || `saknar ${saknas.join(', ')}`;
+});
+
+await T('inget ljud är längre än 300 ms', () => {
+  const langa = LJUD_NAMN.filter(n => {
+    const t = LJUD_RECEPT[n].toner;
+    const slut = Math.max(...t.map(x => (x.vid || 0) + x.langd));
+    return slut > 0.3;
+  });
+  return langa.length === 0 || `för långa: ${langa.join(', ')}`;
+});
+
+await T('bekräftelsen går upp, felet går ner', () => {
+  const f = r => r.toner.map(t => t.f2 || t.f);
+  const bek = f(LJUD_RECEPT.bekrafta), felr = f(LJUD_RECEPT.fel);
+  return (bek[bek.length - 1] > bek[0] && felr[felr.length - 1] < felr[0])
+    || `bekrafta ${bek}, fel ${felr}`;
+});
+
+await T('på och av är varandras spegelbild', () => {
+  const f = r => r.toner.map(t => t.f2 || t.f);
+  const pa = f(LJUD_RECEPT.pa), av = f(LJUD_RECEPT.av);
+  return (pa[1] > pa[0] && av[1] < av[0]) || `pa ${pa}, av ${av}`;
+});
+
+await T('felljudet ligger lågt, bekräftelsen ljust — hörs isär i en kupé', () => {
+  const topp = r => Math.max(...LJUD_RECEPT[r].toner.map(t => t.f2 || t.f));
+  return (topp('fel') * 2 < topp('bekrafta')) || `fel ${topp('fel')} Hz mot bekräfta ${topp('bekrafta')} Hz`;
+});
+
+await T('ett okänt ljudnamn kastar inte', () => {
+  const l = new Ljud();
+  const r = l.spela('trumvirvel');
+  return (r.spelade === false && r.orsak === 'okant-ljud') || JSON.stringify(r);
+});
+
+await T('modulen är tystare än varningens pling i voice.js', () => {
+  // voice.js chime() toppar på 0,22. Klickljuden får inte konkurrera.
+  const l = new Ljud();               // förvalsvolym
+  l.bekrafta();
+  const topp = l.masterNiva * Math.max(...LJUD_RECEPT.bekrafta.toner.map(t => t.niva));
+  return topp < 0.22 || `klickljudet toppar på ${topp.toFixed(3)}`;
+});
+
+/* ---- Haptiken ------------------------------------------------------- */
+
+G('Haptik — bara där den finns, och avstängbar för sig');
+
+await T('vibration följer med trycket', () => {
+  if (!vibFanns) return 'hopp';
+  const l = new Ljud();
+  const fore = vibRaknare;
+  l.tryck();
+  return (vibRaknare === fore + 1 && l.statistik.vibrationer === 1)
+    || `räknaren gick från ${fore} till ${vibRaknare}`;
+});
+
+await T('haptikPa=false stänger av vibrationen men inte ljudet', () => {
+  if (!vibFanns) return 'hopp';
+  const l = new Ljud({ haptikPa: false });
+  const fore = vibRaknare;
+  const n = noderUnder(l, () => l.tryck());
+  return (vibRaknare === fore && n > 0) || `vib ${fore}->${vibRaknare}, ${n} noder`;
+});
+
+await T('felet vibrerar i ett mönster, trycket i ett kort ryck', () => {
+  if (!vibFanns) return 'hopp';
+  const l = new Ljud();
+  l.tryck();
+  const kort = sistaVib;
+  l.fel();
+  return (typeof kort === 'number' && kort <= 15 && Array.isArray(sistaVib))
+    || `tryck ${JSON.stringify(kort)}, fel ${JSON.stringify(sistaVib)}`;
+});
+
+await T('haptiken överlever att ljudet tystas av en varning', () => {
+  // Ett tryck ska kännas även när ljudet kliver åt sidan — en vibration
+  // maskerar ingen uppläsning.
+  if (!vibFanns) return 'hopp';
+  const l = new Ljud({}, { speaker: talare({ speaking: true, prio: 2 }) });
+  const fore = vibRaknare;
+  const n = noderUnder(l, () => l.tryck());
+  return (n === 0 && vibRaknare === fore + 1)
+    || `${n} noder, vib ${fore}->${vibRaknare}`;
+});
+
+await T('reducerad rörelse stänger av vibrationen också', () => {
+  if (!vibFanns) return 'hopp';
+  const l = new Ljud();
+  l.systemTyst = true;
+  const fore = vibRaknare;
+  l.tryck();
+  return vibRaknare === fore || 'vibrerade trots reducerad rörelse';
+});
+
+/* =================================================================== */
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} av ${total} gick igenom` +
+  (fel ? ` — ${fel} MISSLYCKADES` : '') + (hopp ? ` — ${hopp} hoppade` : '');
+s.className = fel ? 'fel' : 'ok';
+window.__resultat = { ok, fel, hopp, total, contexter: ctxRaknare };
+
+/* =================================================================== */
+/* Provbänken — det testerna inte kan avgöra                           */
+/* =================================================================== */
+
+const bank = new Ljud({ ljudVolym: 0.35 });
+const falskTalare = talare();
+bank.kopplaTalare(falskTalare);
+
+const ETIKETT = {
+  tryck: 'Tryck', flik: 'Flikbyte', pa: 'Slå på', av: 'Slå av',
+  bekrafta: 'Bekräfta', fel: 'Fel',
+};
+const kn = document.getElementById('knappar');
+for (const namn of LJUD_NAMN) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = ETIKETT[namn] || namn;
+  b.addEventListener('click', () => {
+    const r = bank.spela(namn);
+    visaStatus(namn, r);
+  });
+  kn.appendChild(b);
+}
+
+const statusRuta = document.getElementById('status');
+function visaStatus(namn, r) {
+  const t = LJUD_RECEPT[namn].toner
+    .map(x => `${x.f}${x.f2 ? '→' + x.f2 : ''} Hz / ${Math.round(x.langd * 1000)} ms`)
+    .join(' + ');
+  statusRuta.textContent =
+    `${ETIKETT[namn] || namn}: ${t}\n` +
+    `${r.spelade ? 'spelades' : 'hoppades över'} — ${r.orsak}` +
+    (r.dampning && r.dampning < 1 ? ` (dämpad till ${Math.round(r.dampning * 100)} %)` : '') +
+    `\nnivå ${bank.senaste.niva.toFixed(3)} · ${bank.statistik.spelade} spelade, ` +
+    `${bank.statistik.hoppade} hoppade, ${bank.statistik.noder} noder, ` +
+    `${L.antalSkapadeContexter()} AudioContext totalt`;
+}
+
+document.getElementById('bPa').addEventListener('change', e =>
+  bank.setInstallningar({ ljudPa: e.target.checked }));
+document.getElementById('bHaptik').addEventListener('change', e =>
+  bank.setInstallningar({ haptikPa: e.target.checked }));
+document.getElementById('bVolym').addEventListener('input', e => {
+  bank.setInstallningar({ ljudVolym: Number(e.target.value) });
+  document.getElementById('bVolymTal').textContent = e.target.value;
+});
+document.getElementById('bTal').addEventListener('change', e => {
+  // Härmar en pågående varning på prioritet 2 — samma sak Speaker gör när
+  // den läser "fartkamera om 300 meter".
+  falskTalare.speaking = e.target.checked;
+  falskTalare.current = e.target.checked ? { text: 'varning', priority: 2 } : null;
+});
+</script>
