@@ -73,6 +73,7 @@ const kvalitet = await import('./js/kvalitet.js');
 const vakthund = await import('./js/vakthund.js');
 const store = await import('./js/store.js');
 const util = await import('./js/util.js');
+const plate = await import('./js/plate.js');
 
 /* ---- De två produktreglerna. Går de sönder är allt annat oviktigt. -- */
 G('Produktregler — får aldrig gå sönder');
@@ -334,19 +335,17 @@ await T('bilingenkännaren stoppar inspelningen', () =>
   /modeRead[\s\S]{0,600}?dashcam\.stop\(\)/.test(appSrc)
   || 'hittar ingen dashcam.stop() i lägesbytet — kameran skulle vara upptagen');
 
-await T('rätt URL-schema mot PlateVision', () =>
-  /platevision:\/\//.test(appSrc) || 'schemat saknas');
-
-await T('installationssvaret är formulerat som en gissning', () => {
-  // Det GÅR inte att fråga iOS om en app finns. Svaret måste därför hedgas —
-  // ett tvärsäkert "appen är inte installerad" blir fel så fort systemet är
-  // långsamt, och då tror användaren att filen är trasig.
-  const i = appSrc.indexOf('Ingenting öppnades');
-  const mening = i >= 0 ? appSrc.slice(i, i + 160) : '';
-  return /verkar inte|sannolikt|troligen/.test(mening)
-    || 'texten påstår för säkert att appen saknas';
+await T('bilingenkännaren finns i appen, inte i en annan app', () => {
+  // Tidigare öppnade läget en separat iOS-app via ett URL-schema. Det betydde
+  // att en funktion i en sida man redan har på hemskärmen krävde en extra
+  // installation. Skulle det smyga tillbaka ska testet säga ifrån.
+  if (/platevision:\/\//.test(appSrc)) return 'appen försöker fortfarande öppna en extern app';
+  return /from '\.\/plate\.js'/.test(appSrc) || 'skyltläsaren importeras inte';
 });
 
+await T('läsaren stoppas när man lämnar dashcam-vyn', () =>
+  /showView[\s\S]{0,900}?plate\?\.running[\s\S]{0,80}?stoppaPlate\(\)/.test(appSrc)
+  || 'kameran skulle fortsätta vara upptagen i bakgrunden');
 /* ---- Kameradata ------------------------------------------------------ */
 G('Fartkameror');
 
@@ -396,6 +395,125 @@ await T('avstånd Västerås centrum → Erikslund ≈ 4 km', () => {
 await T('bäring norrut ≈ 0°', () => {
   const b = util.bearing(59.60, 16.54, 59.65, 16.54);
   return (b < 5 || b > 355) || `fick ${Math.round(b)}°`;
+});
+
+/* ---- Bilingenkännaren ------------------------------------------------
+ * Testerna här rör formatlagret, inte kameran. Det är med flit: det är
+ * formatlagret som avgör vad som får visas för användaren, och det är där ett
+ * fel blir farligt — en felläsning som släpps igenom ser ut som ett svar.
+ * Bildbehandlingen mäts separat i ocr-test.html, mot renderade skyltar.
+ */
+G('Bilingenkännaren — formatlagret');
+
+await T('vanlig skylt läses rent', () =>
+  plate.normaliseraPlat('ABC123') === 'ABC123' || `fick ${plate.normaliseraPlat('ABC123')}`);
+
+await T('nya serien med bokstav sist', () =>
+  plate.normaliseraPlat('XKF42B') === 'XKF42B' || `fick ${plate.normaliseraPlat('XKF42B')}`);
+
+await T('mellanslag och skräptecken städas bort', () =>
+  plate.normaliseraPlat(' abc-123\n') === 'ABC123' || `fick ${plate.normaliseraPlat(' abc-123\n')}`);
+
+await T('landskoden S framför skylten tas bort', () =>
+  plate.normaliseraPlat('SABC123') === 'ABC123' || `fick ${plate.normaliseraPlat('SABC123')}`);
+
+await T('siffra i bokstavsläge rättas (0BC123 → OBC123)', () =>
+  plate.normaliseraPlat('0BC123') === 'OBC123' || `fick ${plate.normaliseraPlat('0BC123')}`);
+
+await T('bokstav i siffrerläge rättas (ABCO23 → ABC023)', () =>
+  plate.normaliseraPlat('ABCO23') === 'ABC023' || `fick ${plate.normaliseraPlat('ABCO23')}`);
+
+await T('I, Q och V finns inte på svenska skyltar och förkastas', () => {
+  const dåliga = ['IBC123', 'QBC123', 'VBC123'];
+  const släppta = dåliga.filter(p => plate.normaliseraPlat(p));
+  return !släppta.length || `släppte igenom ${släppta.join(', ')}`;
+});
+
+await T('O används inte på sista positionen', () =>
+  plate.normaliseraPlat('ABC12O') === 'ABC120' || `fick ${plate.normaliseraPlat('ABC12O')}`);
+
+await T('för kort och för långt förkastas', () => {
+  const dåliga = ['ABC12', 'ABC1234', '', 'A', 'ABCDEF'];
+  const släppta = dåliga.filter(p => plate.normaliseraPlat(p));
+  return !släppta.length || `släppte igenom ${släppta.join(', ')}`;
+});
+
+await T('rent skräp ger inget svar alls', () => {
+  // Det viktigaste testet i gruppen. Motorn läser något ur varje bild den
+  // får, också ur en tegelvägg. Kommer det tillbaka en skylt då är hela
+  // funktionen en lögn.
+  const skräp = ['XXXXXX', '||||||', '888888', 'ZZZ999ZZZ', '   '];
+  const släppta = skräp.filter(p => plate.normaliseraPlat(p) && !/^[A-Z]{3}\d\d[0-9A-Z]$/.test(p));
+  return !släppta.length || `släppte igenom ${släppta.join(', ')}`;
+});
+
+await T('visningsformatet sätter mellanslag på rätt ställe', () =>
+  plate.visaPlat('ABC123') === 'ABC 123' || `fick ${plate.visaPlat('ABC123')}`);
+
+G('Bilingenkännaren — bildbehandlingen');
+
+/** Ritar en skylt i en scen, som i ocr-test.html fast mindre. */
+function ritaScen(text, platBredd = 300) {
+  const c = document.createElement('canvas');
+  c.width = 800; c.height = 450;
+  const x = c.getContext('2d');
+  x.fillStyle = '#3a4048'; x.fillRect(0, 0, 800, 450);
+  x.fillStyle = '#1d2733'; x.fillRect(140, 120, 520, 220);
+  const ph = Math.round(platBredd / 4.7);
+  const px = (800 - platBredd) / 2, py = (450 - ph) / 2;
+  x.fillStyle = '#f2f2ef'; x.fillRect(px, py, platBredd, ph);
+  x.fillStyle = '#003399'; x.fillRect(px, py, ph * 0.42, ph);
+  x.fillStyle = '#111';
+  x.font = `700 ${Math.round(ph * 0.66)}px "Arial Narrow", Arial, sans-serif`;
+  x.textBaseline = 'middle';
+  x.fillText(text, px + ph * 0.58, py + ph * 0.55);
+  return { canvas: c, sant: { x: px, y: py, w: platBredd, h: ph } };
+}
+const provRoi = c => {
+  const w = Math.min(c.width * 0.82, c.height * 2.6), h = w / 4.7;
+  return { x: (c.width - w) / 2, y: (c.height - h) / 2, w, h };
+};
+
+await T('skylten hittas inne i siktrutan', () => {
+  const { canvas, sant } = ritaScen('ABC123');
+  const box = plate.hittaPlat(canvas, provRoi(canvas));
+  if (!box) return 'hittade ingen skylt alls';
+  // Rutan ska ligga över den riktiga skylten, inte någon annanstans i bilden.
+  const träffX = Math.abs((box.x + box.w / 2) - (sant.x + sant.w / 2)) < sant.w * 0.25;
+  const träffY = Math.abs((box.y + box.h / 2) - (sant.y + sant.h / 2)) < sant.h * 0.5;
+  return (träffX && träffY) ||
+    `hittade ${Math.round(box.x)},${Math.round(box.y)} men skylten sitter på ${Math.round(sant.x)},${Math.round(sant.y)}`;
+});
+
+await T('ingen skylt i bilden ger ingen falsk träff', () => {
+  const c = document.createElement('canvas');
+  c.width = 800; c.height = 450;
+  const x = c.getContext('2d');
+  x.fillStyle = '#3a4048'; x.fillRect(0, 0, 800, 450);
+  x.fillStyle = '#1d2733'; x.fillRect(140, 120, 520, 220);
+  const box = plate.hittaPlat(c, provRoi(c));
+  // Hittar den något får det inte se ut som en skylt i fel läge — men helst
+  // ingenting alls.
+  return !box || 'hittade en skylt i en bild utan skylt';
+});
+
+await T('lutningen mäts åt rätt håll', () => {
+  const { canvas } = ritaScen('ABC123');
+  const rak = plate.forbehandla(canvas, provRoi(canvas), { kapaEuFalt: false });
+  const v = plate.uppskattaLutning(rak);
+  // En rak skylt ska mätas som ungefär rak.
+  return Math.abs(v) <= 4 || `mätte ${v}° på en rak skylt`;
+});
+
+G('Bilingenkännaren — hela vägen');
+
+await T('läser en renderad skylt genom hela kedjan', async () => {
+  // Textigenkänningen hämtas från nätet första gången. Går det inte hoppas
+  // testet över istället för att rapportera ett fel som inte finns i koden.
+  try { await plate.haMotor(); } catch { return 'hopp'; }
+  const { canvas } = ritaScen('ABC123');
+  const r = await plate.lasRuta(canvas, provRoi(canvas));
+  return r.plat === 'ABC123' || `läste ${r.plat} (${r.sakerhet}%)`;
 });
 
 /* =================================================================== */

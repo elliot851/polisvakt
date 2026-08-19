@@ -9,7 +9,7 @@
 // lugnt. Föraren behöver aldrig göra något — och blir aldrig avbruten mitt i
 // en körning, eftersom omladdningen väntar tills bilen står still.
 
-const VERSION = '2026-08-19-34';
+const VERSION = '2026-08-19-35';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -36,6 +36,7 @@ const SHELL = [
   './js/alerts.js',
   './js/map.js',
   './js/dashcam.js',
+  './js/plate.js',
   './js/billing.js',
   './js/install.js',
   './js/speedlimit.js',

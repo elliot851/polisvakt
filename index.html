@@ -292,11 +292,35 @@
         <button class="mode-card" id="modeRead" type="button" aria-pressed="false">
           <span class="mode-ico">🔎</span>
           <b>Bilingenkännare</b>
-          <small>Läser registreringsskyltar i realtid. Öppnas i PlateVision.</small>
+          <small>Läser registreringsskyltar direkt i appen. Ingen bild lämnar telefonen.</small>
         </button>
       </div>
       <p class="hint" id="modeNote">Ett läge i taget — kameran kan bara användas av en sak åt gången.</p>
 
+      <!-- Skyltläsarens egen panel. Ligger i samma scen som dashcamen
+           eftersom de delar kamera och bara ett av dem kan vara igång. -->
+      <div id="plPanel" hidden>
+        <p><b>Rikta den blå rutan mot skylten.</b> Läsaren tittar bara i rutan —
+          gå närmare eller zooma tills skylten fyller den. Håll still en sekund.</p>
+
+        <div class="dc-why">
+          <h3>Så fungerar den</h3>
+          <div class="why-item"><span>📵</span><div><b>Allt sker i telefonen.</b>
+            Bilden skickas ingenstans och sparas inte. Skyltarna du läst ligger i
+            minnet och försvinner när du lämnar läget.</div></div>
+          <div class="why-item"><span>✌️</span><div><b>Den gissar inte.</b>
+            En skylt visas först när två bildrutor läst samma sak, och bara om den
+            följer svenskt format. Hellre inget svar än fel svar.</div></div>
+          <div class="why-item"><span>🚗</span><div><b>Egna fordon.</b>
+            Lägg in dina egna registreringsnummer under Inställningar, så markeras
+            de med grönt och en ljusare ton när de dyker upp.</div></div>
+        </div>
+
+        <p class="dc-warn" id="plSupport" hidden></p>
+        <button class="btn-primary big" id="plStart" type="button">Starta skyltläsning</button>
+      </div>
+
+      <div id="recPanel">
       <p><b>Bakkameran filmar framåt</b> genom vindrutan, med ljud. Lägg telefonen i hållaren med baksidan mot vägen.</p>
 
       <div class="dc-why">
@@ -322,6 +346,7 @@
         <b>Allt stannar i din telefon.</b> Ingenting laddas upp någonstans, och du raderar själv när du vill.</p>
       <button class="btn-primary big" id="dcStart" type="button">Starta inspelning</button>
       <p class="dc-warn" id="dcSupport" hidden></p>
+      </div>
     </div>
     <div class="dc-rec" id="dcRec" hidden><span class="rec-dot"></span><span id="dcTime">0:00</span></div>
   </div>
@@ -364,6 +389,30 @@
       <button class="btn-danger big" id="dcEvent" type="button">Spara händelse</button>
       <button class="btn-ghost" id="dcStop" type="button">Stoppa</button>
     </div>
+  </div>
+
+  <!-- Skyltläsaren när den är igång. -->
+  <div class="pl-controls" id="plControls" hidden>
+    <p class="pl-status" id="plStatus">Rikta rutan mot skylten</p>
+    <div class="dc-zooms">
+      <label class="zoom">
+        <span>Zoom <b id="plZoomVal">1,0×</b></span>
+        <input type="range" id="plZoom" min="1" max="6" step="0.1" value="1">
+      </label>
+    </div>
+    <div class="dc-row">
+      <button class="btn-ghost" id="plClear" type="button">Rensa listan</button>
+      <button class="btn-ghost" id="plStop" type="button">Stoppa</button>
+    </div>
+
+    <div class="lib-head">
+      <h3>Lästa skyltar</h3>
+      <span class="lib-storage" id="plCount"></span>
+    </div>
+    <ul class="pl-list" id="plList"></ul>
+    <p class="sheet-empty" id="plEmpty">Inga skyltar lästa än.</p>
+    <p class="hint">Listan ligger bara i minnet och töms när du lämnar läget.
+      Inget sparas och inget skickas någonstans.</p>
   </div>
 
   <div class="dc-library">
@@ -576,6 +625,43 @@
   </section>
 
   <section class="card">
+    <h3>Bilingenkännare</h3>
+    <p class="hint">Läser registreringsskyltar genom kameran. Väljs under
+      <b>Dashcam</b> — kameran kan bara användas av en sak i taget, så inspelning
+      och skyltläsning går inte samtidigt.</p>
+
+    <label class="row"><span>Läs så här ofta</span>
+      <select id="setPlRate">
+        <option value="400">Ofta — 2–3 gånger i sekunden</option>
+        <option value="700" selected>Normalt</option>
+        <option value="1200">Sällan — sparar batteri</option>
+      </select>
+    </label>
+
+    <label class="row"><span>Kräv innan den visar</span>
+      <select id="setPlKrav">
+        <option value="1">Första läsningen (snabbast, mest fel)</option>
+        <option value="2" selected>Två som är överens</option>
+        <option value="3">Tre som är överens (säkrast)</option>
+      </select>
+    </label>
+    <p class="hint">Motorn kan vara helt säker på ett felläst tecken. Att kräva
+      att flera bildrutor säger samma sak är det enda som skiljer en läsning
+      från en gissning.</p>
+
+    <label class="row"><span>Pip vid träff</span><input type="checkbox" id="setPlPip" checked></label>
+
+    <h4 class="sub-head">Mina fordon</h4>
+    <p class="hint">Egna registreringsnummer. Känner läsaren igen ett av dem
+      markeras det grönt. Ett per rad — de sparas bara i den här telefonen.</p>
+    <textarea id="setPlEgna" rows="3" placeholder="ABC 123&#10;XKF 42B"></textarea>
+    <button class="btn-ghost small" id="btnPlEgnaSave" type="button">Spara fordon</button>
+    <p class="hint" id="plEgnaStatus"></p>
+
+    <p class="hint" id="plSupportNote"></p>
+  </section>
+
+  <section class="card">
     <h3>Fartkameror</h3>
     <p class="hint" id="camCount">Laddar…</p>
     <p class="hint">Kameradata kommer från OpenStreetMap och täcker hela Sverige — 2 466 fasta kameror. Kör <code>tools/hamta-kameror.ps1</code> för att hämta färsk data. Mobila kameror och sträckmätning finns inte i underlaget.</p>
@@ -762,24 +848,6 @@
      och en ny fråga går fram, ibland sitter blockeringen kvar och då måste
      man in i inställningarna. Användaren kan inte veta vilket — så vi
      erbjuder båda istället för att bara konstatera att det inte gick. -->
-<!-- Bilingenkännaren finns i en egen app.
-     Skyltavläsning i realtid går inte att göra i en webbläsare: den kan inte
-     köra textigenkänning på skyltar i rörelse med rimlig träffsäkerhet, och
-     absolut inte samtidigt som telefonen komprimerar video. PlateVision
-     använder Apples Vision och Neural Engine, som är byggda för det. -->
-<div class="modal" id="modalPlate" hidden>
-  <div class="modal-card">
-    <h2>Bilingenkännaren</h2>
-    <p id="plateBody">Skyltavläsningen kör i <b>PlateVision</b> — en egen app som använder
-      iPhonens Neural Engine. All analys sker på telefonen; ingen bild lämnar den.</p>
-    <p class="hint" id="plateHint"></p>
-    <div class="modal-actions">
-      <button class="btn-primary" id="plateOpen" type="button">Öppna PlateVision</button>
-      <button class="btn-ghost" id="plateHelp" type="button">Jag har den inte</button>
-      <button class="btn-ghost" id="plateCancel" type="button">Avbryt</button>
-    </div>
-  </div>
-</div>
 
 <div class="modal" id="modalMic" hidden>
   <div class="modal-card">

@@ -1100,3 +1100,56 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .rm-node.never .rm-head b { text-decoration: line-through; opacity: .6; }
 .rm-node.never .rm-tag { background: rgba(255,77,79,.1); color: #b06a6b; }
 .rm-node.never p { opacity: .7; }
+
+/* ============ Bilingenkännaren ============
+   Sökaren delar scen med dashcamen — samma yta, ett läge i taget. */
+.pl-canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.pl-controls { padding: 12px 14px 4px; }
+
+.pl-status {
+  margin: 0 0 10px;
+  font-size: 15px; font-weight: 600;
+  color: var(--ink, #eef4fa);
+  min-height: 1.4em;
+}
+
+.pl-list { list-style: none; margin: 6px 0 0; padding: 0; }
+
+.pl-item {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--line, #1a232d);
+}
+
+/* Regnumret är det enda man faktiskt läser här, så det får vara stort och
+   mekaniskt. Siffror med fast bredd gör att raderna ligger i linje. */
+.pl-nr {
+  font: 700 19px/1.1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .06em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-meta { font-size: 12.5px; color: var(--dim, #93a4b6); }
+
+.pl-item.egen .pl-nr { color: #2fd07a; }
+.pl-item.egen { background: rgba(47, 208, 122, .07); }
+
+#setPlEgna {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 6px 0 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line, #26323f);
+  border-radius: 8px;
+  background: var(--field, #0f1620);
+  color: inherit;
+  font: 600 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .05em;
+  resize: vertical;
+}

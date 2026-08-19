@@ -34,6 +34,7 @@ import { Vakthund } from './vakthund.js';
 import { Varmevakt } from './varme.js';
 import * as Kvalitet from './kvalitet.js';
 import * as Betalning from './betalning.js';
+import { PlateReader, plateSupported, visaPlat, normaliseraPlat } from './plate.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -71,6 +72,10 @@ const defaults = {
   winterOn: true,
   routeOn: true,
   nightAuto: true,
+  plRate: 700,
+  plKrav: 2,
+  plPip: true,
+  plEgna: [],
 };
 
 const IMPACT_LEVELS = {
@@ -1744,6 +1749,8 @@ window.polisvakt = {
   // dem går appens verkliga tillstånd inte att granska utifrån, och då blir
   // varje test ett test av en kopia istället för av det som faktiskt kör.
   store, geo, speaker, dashcam, vakthund, varmevakt, routeGuide,
+  // Läsaren skapas först när läget väljs, så den måste hämtas vid anrop.
+  get plate() { return plate; },
 };
 
 /* ================= Gränssnitt ================= */
@@ -1911,6 +1918,13 @@ function showView(name) {
     $('view-' + v).hidden = v !== name;
   }
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+
+  // Skyltläsaren stoppas när man lämnar vyn. Till skillnad från dashcamen,
+  // som ska fortsätta filma medan man tittar på kartan, gör läsaren ingen
+  // nytta i bakgrunden — den skulle bara hålla kameran upptagen och dra
+  // batteri för resultat ingen ser.
+  if (name !== 'dashcam' && plate?.running) stoppaPlate();
+
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
   if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); }
@@ -2146,76 +2160,145 @@ function renderGuide(platform) {
  * påslagna ut slutar det ena tyst att fungera, och användaren får aldrig veta
  * vilket.
  *
- * Skyltavläsningen kör i PlateVision. Den kan inte ligga här: en webbläsare
- * klarar inte textigenkänning på skyltar i rörelse med användbar träffsäkerhet,
- * och absolut inte samtidigt som telefonen komprimerar video. PlateVision
- * använder Apples Vision och Neural Engine.
+ * Skyltavläsningen kör numera i appen. Tidigare låg den i en separat iOS-app,
+ * vilket betydde att man behövde installera något extra för en funktion som
+ * ska finnas i sidan man redan har på hemskärmen. Mätningen finns i
+ * ocr-test.html och körs mot samma modul som appen.
  */
-const PLATEVISION_URL = 'platevision://start';
+let plate = null;                       // laddas först när läget väljs
+let plateLage = 'record';
+
+function plateInst() {
+  if (!plate) {
+    plate = new PlateReader({ settings: plateSettings() });
+    plate.addEventListener('status', e => { $('plStatus').textContent = e.detail.text; });
+    plate.addEventListener('lista', renderPlateList);
+    plate.addEventListener('traff', e => {
+      const { plat, egen } = e.detail;
+      if (egen) toast(`${visaPlat(plat)} — ditt eget fordon`, 3000);
+    });
+    plate.addEventListener('fel', e => {
+      $('plStatus').textContent = e.detail.fel?.message || 'Något gick fel i läsningen.';
+    });
+  }
+  return plate;
+}
+
+function plateSettings() {
+  return {
+    intervalMs: Number(settings.plRate ?? 700),
+    krav: Number(settings.plKrav ?? 2),
+    pip: settings.plPip !== false,
+    egnaFordon: (settings.plEgna || []),
+  };
+}
+
+function renderPlateList() {
+  const p = plate;
+  const ul = $('plList');
+  if (!p || !ul) return;
+  ul.innerHTML = '';
+  for (const t of p.traffar) {
+    const li = document.createElement('li');
+    li.className = 'pl-item' + (t.egen ? ' egen' : '');
+    const tid = new Date(t.t).toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    li.innerHTML = `<b class="pl-nr">${visaPlat(t.plat)}</b>` +
+      `<span class="pl-meta">${tid}${t.sakerhet ? ` · ${t.sakerhet}%` : ''}` +
+      `${t.egen ? ' · ditt fordon' : ''}</span>`;
+    ul.appendChild(li);
+  }
+  $('plEmpty').hidden = p.traffar.length > 0;
+  $('plCount').textContent = p.traffar.length ? `${p.traffar.length} st` : '';
+}
+
+/** Visar rätt panel för valt läge. Ett läge i taget, hela vägen. */
+function visaLage(lage) {
+  plateLage = lage;
+  const inspelning = lage === 'record';
+  const rec = $('modeRecord'), read = $('modeRead');
+  rec.classList.toggle('on', inspelning);
+  read.classList.toggle('on', !inspelning);
+  rec.setAttribute('aria-pressed', String(inspelning));
+  read.setAttribute('aria-pressed', String(!inspelning));
+
+  $('recPanel').hidden = !inspelning;
+  $('plPanel').hidden = inspelning;
+  document.querySelector('.dc-library').hidden = !inspelning;
+  if (inspelning) { $('plControls').hidden = true; }
+}
 
 function wireModePicker() {
   const rec = $('modeRecord');
   const read = $('modeRead');
   if (!rec || !read) return;
 
-  const valj = lage => {
-    const inspelning = lage === 'record';
-    rec.classList.toggle('on', inspelning);
-    read.classList.toggle('on', !inspelning);
-    rec.setAttribute('aria-pressed', String(inspelning));
-    read.setAttribute('aria-pressed', String(!inspelning));
+  rec.onclick = () => {
+    if (plate?.running) stoppaPlate();
+    visaLage('record');
   };
-
-  rec.onclick = () => valj('record');
 
   read.onclick = () => {
-    // Dashcamen måste släppa kameran innan den andra appen kan ta den.
+    // Dashcamen måste släppa kameran innan läsaren kan ta den.
     if (dashcam.recording) {
       dashcam.stop();
-      toast('Inspelningen stoppad — kameran kan bara användas av en app i taget.', 5000);
+      toast('Inspelningen stoppad — kameran kan bara användas av en sak i taget.', 5000);
     }
-    valj('read');
-    $('plateHint').textContent = '';
-    $('modalPlate').hidden = false;
+    visaLage('read');
   };
 
-  $('plateCancel').onclick = () => { $('modalPlate').hidden = true; valj('record'); };
+  if (!plateSupported) {
+    $('plSupport').hidden = false;
+    $('plSupport').textContent =
+      'Den här webbläsaren ger inte appen tillgång till kameran. Prova Chrome på Android eller Safari på iPhone.';
+    $('plStart').disabled = true;
+  }
 
-  $('plateHelp').onclick = () => {
-    $('plateHint').textContent =
-      'PlateVision installeras separat. Du hittar app-filen och instruktionerna ' +
-      'i BYGGA-UTAN-MAC.md. Den läser skyltar helt på telefonen — ingen bild ' +
-      'skickas någonstans.';
+  $('plStart').onclick = async () => {
+    if (!gateOrPaywall()) return;
+    const p = plateInst();
+    Object.assign(p.settings, plateSettings());
+    try {
+      $('plStart').disabled = true;
+      $('plStart').textContent = 'Startar kameran…';
+
+      const stage = $('dcStage');
+      if (!p.canvas.isConnected) stage.insertBefore(p.canvas, stage.firstChild);
+      p.canvas.hidden = false;
+
+      await p.start();
+
+      $('dcIdle').hidden = true;
+      $('plControls').hidden = false;
+      $('dcRec').hidden = true;      // inspelningsmärket hör inte hemma här
+      renderPlateList();
+    } catch (e) {
+      $('plStatus').textContent = '';
+      toast(e.message || 'Kunde inte starta kameran.', 6000);
+      p.canvas.hidden = true;
+    } finally {
+      $('plStart').disabled = false;
+      $('plStart').textContent = 'Starta skyltläsning';
+    }
   };
 
-  $('plateOpen').onclick = () => {
-    /*
-     * Det går inte att fråga iOS om en app är installerad — av goda skäl, det
-     * hade varit ett sätt att kartlägga vad folk har på telefonen. Vi försöker
-     * öppna och tittar på om sidan blev dold: gjorde den det bytte systemet
-     * app, och då finns den. Är vi kvar efter en och en halv sekund fanns den
-     * sannolikt inte.
-     *
-     * Sannolikt, inte säkert. Därför formuleras svaret som en gissning och
-     * inte som ett konstaterande.
-     */
-    let bytteApp = false;
-    const doldes = () => { if (document.visibilityState === 'hidden') bytteApp = true; };
-    document.addEventListener('visibilitychange', doldes);
+  $('plStop').onclick = () => stoppaPlate();
+  $('plClear').onclick = () => plate?.rensa();
 
-    $('plateHint').textContent = 'Öppnar…';
-    window.location.href = PLATEVISION_URL;
-
-    setTimeout(() => {
-      document.removeEventListener('visibilitychange', doldes);
-      if (bytteApp) { $('modalPlate').hidden = true; return; }
-      $('plateHint').textContent =
-        'Ingenting öppnades. PlateVision verkar inte vara installerad på den ' +
-        'här telefonen — tryck "Jag har den inte" så visar jag hur du får den.';
-    }, 1500);
+  $('plZoom').oninput = e => {
+    const v = Number(e.target.value);
+    $('plZoomVal').textContent = v.toFixed(1).replace('.', ',') + '×';
+    plate?.zooma(v);
   };
 
-  valj('record');
+  visaLage('record');
+}
+
+function stoppaPlate() {
+  if (!plate) return;
+  plate.stop();
+  plate.canvas.hidden = true;
+  $('plControls').hidden = true;
+  $('dcIdle').hidden = false;
 }
 
 function wireDashcam() {
@@ -2488,6 +2571,38 @@ function wireSettingsUI() {
   bind('setAwake', 'keepAwake', v => !!v, () => {
     settings.keepAwake ? requestWakeLock() : releaseWakeLock();
   });
+
+  /* ---- Bilingenkännaren ---- */
+  // Ändringarna slår igenom direkt även när läsaren redan är igång, så man
+  // slipper stoppa och starta om för att prova en inställning.
+  const platePaVerkan = () => { if (plate) Object.assign(plate.settings, plateSettings()); };
+  bind('setPlRate', 'plRate', Number, () => {
+    platePaVerkan();
+    if (plate?.running) { plate.stop(); plate.start().catch(() => {}); }
+  });
+  bind('setPlKrav', 'plKrav', Number, platePaVerkan);
+  bind('setPlPip', 'plPip', v => !!v, platePaVerkan);
+
+  $('setPlEgna').value = (settings.plEgna || []).map(visaPlat).join('\n');
+  $('btnPlEgnaSave').onclick = () => {
+    const rader = $('setPlEgna').value.split('\n').map(r => r.trim()).filter(Boolean);
+    const giltiga = [], ogiltiga = [];
+    for (const r of rader) {
+      const p = normaliseraPlat(r);
+      p ? giltiga.push(p) : ogiltiga.push(r);
+    }
+    settings.plEgna = [...new Set(giltiga)];
+    saveSettings();
+    platePaVerkan();
+    $('setPlEgna').value = settings.plEgna.map(visaPlat).join('\n');
+    // Säg vad som inte gick igenom istället för att tyst tappa raden.
+    $('plEgnaStatus').textContent = ogiltiga.length
+      ? `Sparade ${giltiga.length}. Känns inte igen som svenskt regnummer: ${ogiltiga.join(', ')}`
+      : (giltiga.length ? `Sparade ${giltiga.length} fordon.` : 'Listan är tom.');
+  };
+  $('plSupportNote').textContent = plateSupported
+    ? 'Textigenkänningen laddas ner första gången du startar läsaren, ungefär 4 MB. Sen fungerar den utan internet.'
+    : 'Den här webbläsaren ger inte appen tillgång till kameran, så skyltläsaren kan inte användas här.';
 
   $('setRadiusVal').textContent = (settings.hazardRadiusM / 1000).toFixed(1).replace('.', ',') + ' km';
   $('setLeadVal').textContent = settings.cameraLeadSeconds + ' s';
