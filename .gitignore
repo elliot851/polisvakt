@@ -1,3 +1,13 @@
 # Paketet byggs av package.ps1 vid behov och hör inte hemma i repot.
 *.zip
 *.bak
+
+# Interna arbetsanteckningar.
+#
+# Repot är publikt eftersom värden bygger från det. De här filerna innehåller
+# inga lösenord, men de är anteckningar om vad som är trasigt, vad som återstår
+# och hur projektet ligger till — sådant som inte tjänar något på att ligga
+# öppet. De finns kvar lokalt.
+NIGHT_LOG.md
+MANUELLT.md
+BLOCKERADE.md
