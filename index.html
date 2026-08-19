@@ -67,6 +67,10 @@
       <circle cx="12" cy="12" r="1.1" fill="currentColor"/>
       <path d="M8 6l1.4-2.2h5.2L16 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
     </symbol>
+    <symbol id="i-chatt" viewBox="0 0 24 24">
+      <path d="M4 5.5h16a1.5 1.5 0 011.5 1.5v8a1.5 1.5 0 01-1.5 1.5H9.5L5 20.5V16.5H4A1.5 1.5 0 012.5 15V7A1.5 1.5 0 014 5.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M7 9.5h10M7 12.5h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
     <symbol id="i-settings" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7"/>
       <path d="M12 2.6l1.5 2.6 3-.5.4 3 2.7 1.4-1.3 2.7 1.3 2.7-2.7 1.4-.4 3-3-.5L12 21.4l-1.5-2.6-3 .5-.4-3-2.7-1.4 1.3-2.7-1.3-2.7 2.7-1.4.4-3 3 .5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
@@ -430,6 +434,31 @@
 </div>
 
 <!-- ============ INSTÄLLNINGAR ============ -->
+<!-- ============ CHATT ============
+     Ett enda gemensamt rum. Inga grupper, inga privata meddelanden.
+     Skrivfältet låses medan bilen rullar — läsning är fritt, skrivande inte.
+     Hela appen bygger på att man tittar på vägen, och en chatt som bjuder in
+     till att skriva i nittio hade motsagt allt annat appen säger. -->
+<div id="view-chatt" class="view" hidden>
+  <div class="chatt-topp">
+    <h1 class="page-title">Chatt</h1>
+    <p class="hint" id="chattRum">Alla som kör med Polisvakt i Västmanland.</p>
+  </div>
+
+  <ul class="chatt-lista" id="chattLista"></ul>
+  <p class="sheet-empty" id="chattTomt">Inga meddelanden än. Säg något.</p>
+
+  <div class="chatt-botten">
+    <p class="chatt-sparr" id="chattSparr" hidden></p>
+    <div class="chatt-skriv">
+      <textarea id="chattText" rows="1" maxlength="400" enterkeyhint="send"
+                placeholder="Skriv något…" autocomplete="off"></textarea>
+      <button class="btn-primary" id="chattSkicka" type="button">Skicka</button>
+    </div>
+    <p class="hint" id="chattStatus"></p>
+  </div>
+</div>
+
 <div id="view-settings" class="view scroll" hidden>
   <h1 class="page-title">Inställningar</h1>
 
@@ -449,6 +478,17 @@
     <label class="row"><span>Läs upp varningar</span><input type="checkbox" id="setTts" checked></label>
     <p class="hint">Volymen följer telefonens, och varningen kommer som ett
       trafikmeddelande — musiken dämpas och kommer tillbaka efteråt.</p>
+
+    <h4 class="sub-head">Vad du vill höra</h4>
+    <p class="hint">Alla behöver inte allt. Den som kör E18 varje dag kan
+      kamerorna utantill och vill se dem på kartan utan att bli tilltalad.</p>
+    <div id="notisTyper"></div>
+
+    <h4 class="sub-head">Ljud i appen</h4>
+    <label class="row"><span>Ljud när du trycker</span><input type="checkbox" id="setLjudPa" checked></label>
+    <label class="row"><span>Vibration</span><input type="checkbox" id="setHaptikPa" checked></label>
+    <p class="hint">Klickljuden är avsiktligt tysta och tystnar helt medan en
+      varning läses upp.</p>
   </section>
 
   <section class="card">
@@ -708,6 +748,10 @@
   </button>
   <button data-view="dashcam" class="tab" type="button">
     <svg viewBox="0 0 24 24"><use href="#i-dashcam"/></svg><span>Dashcam</span>
+  </button>
+  <button data-view="chatt" class="tab" type="button">
+    <svg viewBox="0 0 24 24"><use href="#i-chatt"/></svg><span>Chatt</span>
+    <span class="tab-prick" id="chattPrick" hidden></span>
   </button>
   <button data-view="settings" class="tab" type="button">
     <svg viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Inställningar</span>

@@ -35,6 +35,9 @@ import { Varmevakt } from './varme.js';
 import * as Kvalitet from './kvalitet.js';
 import * as Betalning from './betalning.js';
 import { PlateReader, plateSupported, visaPlat, normaliseraPlat } from './plate.js';
+import { Chatt } from './chatt.js';
+import { Ljud } from './ljud.js';
+import * as Notiser from './notiser.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -76,6 +79,10 @@ const defaults = {
   plKrav: 2,
   plPip: true,
   plEgna: [],
+  ljudPa: true,
+  ljudVolym: 0.35,
+  haptikPa: true,
+  notiser: null,          // fylls av notiser.js vid behov
 };
 
 const IMPACT_LEVELS = {
@@ -98,6 +105,17 @@ function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringif
 /* ================= Instanser ================= */
 
 const speaker = new Speaker();
+
+// Gränssnittsljuden får speaker med sig så de kan kliva undan. Ett klickljud
+// som maskerar "fartkamera om 300 meter" är värre än inget ljud alls.
+const ljud = new Ljud(
+  { ljudPa: settings.ljudPa, ljudVolym: settings.ljudVolym, haptikPa: settings.haptikPa },
+  { speaker });
+
+const chatt = new Chatt({
+  url: CONFIG.supabaseUrl,
+  key: CONFIG.supabaseAnonKey,
+});
 const listener = new Listener();
 const geo = new GeoTracker();
 const engine = new AlertEngine(speaker, {
@@ -169,6 +187,8 @@ async function boot() {
   wireUI();
   wireVoice();
   wireDashcam();
+  wireChatt();
+  wireLjud();
   wireSettingsUI();
   wireSpeedLimits();
   wireRemote();
@@ -246,6 +266,7 @@ function wireGeo() {
     const fix = e.detail;
     dashcam.overlay.speedKmh = fix.speedKmh;
     vakthund.notera(fix);
+    chatt.notera(fix);
     updateSpeedo(fix);
     map.updateMe(fix);
     autoTheme(fix);
@@ -1295,21 +1316,19 @@ function allHazards({ forAlerts = false } = {}) {
     graderade = aktiva;
   }
 
-  // Tysta rapporter finns kvar på kartan men skickas inte till rösten.
-  const lista = forAlerts
-    ? graderade.filter(h => h.bedomning?.behandling !== Kvalitet.BEHANDLING.TYST)
-    : graderade;
-
   /*
-   * Kamerorna gick tidigare rakt förbi bevakningsområdet. Det var både fel
-   * och dyrt: inställningen "30 km runt dig" betydde ingenting för dem, och
-   * alla 2 466 fasta kameror i landet skickades vidare vid varje omritning.
+   * Notisinställningarna delar upp flödet i två: vad som får läsas upp och
+   * vad som får synas på kartan. De kan bara sänka, aldrig höja — tre tak
+   * staplas och det tystaste vinner: produktreglerna först, sedan
+   * kvalitetsgraderingen, sedan användarens val. Därför behövs inget separat
+   * TYST-filter här längre; regeln finns kvar men bor på ett ställe.
    *
-   * Utan GPS-läsning släpper filtret igenom allt — det är rätt, för då vet vi
-   * inte vad som är nära. Kartan tar hand om det fallet genom att bara rita
-   * det som syns i bild.
+   * Kamerorna måste gå genom samma anrop, annars går camera-inställningen
+   * inte att använda.
    */
-  return [...lista, ...coverage.filter(cameras, me)];
+  const { forRost, forKarta } =
+    Notiser.delaUppFaror([...graderade, ...coverage.filter(cameras, me)], settings);
+  return forAlerts ? forRost : forKarta;
 }
 
 const renderHazardsThrottled = debounce(() => renderHazards(), 1500);
@@ -1923,7 +1942,7 @@ function showUndo(report) {
 
 function showView(name) {
   document.body.dataset.view = name;
-  for (const v of ['map', 'dashcam', 'settings']) {
+  for (const v of ['map', 'dashcam', 'chatt', 'settings']) {
     $('view-' + v).hidden = v !== name;
   }
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
@@ -1934,9 +1953,15 @@ function showView(name) {
   // batteri för resultat ingen ser.
   if (name !== 'dashcam' && plate?.running) stoppaPlate();
 
+  // Chatten pollar snabbt när man tittar på den och långsamt annars. En
+  // bilapp som hämtar meddelanden var åttonde sekund i bakgrunden hela resan
+  // äter batteri för ingenting.
+  chatt.sattVyAktiv(name === 'chatt');
+  if (name === 'chatt') { $('chattPrick').hidden = true; renderChatt(); }
+
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
-  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); }
+  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); }
 }
 
 function renderStatus() {
@@ -2580,6 +2605,13 @@ function wireSettingsUI() {
    */
   settings.keepAwake ? requestWakeLock() : releaseWakeLock();
 
+  const ljudPaVerkan = () => ljud.setInstallningar({
+    ljudPa: settings.ljudPa, ljudVolym: settings.ljudVolym, haptikPa: settings.haptikPa,
+  });
+  bind('setLjudPa', 'ljudPa', v => !!v, ljudPaVerkan);
+  bind('setHaptikPa', 'haptikPa', v => !!v, ljudPaVerkan);
+  ljudPaVerkan();
+
   /* ---- Bilingenkännaren ---- */
   const platePaVerkan = () => { if (plate) Object.assign(plate.settings, plateSettings()); };
   bind('setPlPip', 'plPip', v => !!v, platePaVerkan);
@@ -2800,6 +2832,231 @@ function wireSettingsUI() {
    */
 }
 
+
+/* ================= Chatt ================= */
+/*
+ * Ett gemensamt rum för alla som kör med appen. Inga grupper — det var
+ * ägarens beslut, och det är också det som gör rummet värt något: ett enda
+ * ställe där folk faktiskt är, istället för tolv tomma.
+ *
+ * Två saker skiljer den från en vanlig chatt, och båda är avsiktliga.
+ * Skrivfältet låses medan bilen rullar, och nykterhetskontroller kan inte
+ * spridas här — samma vägran som resten av appen har, eftersom en fritextruta
+ * annars är den självklara vägen runt regeln.
+ */
+
+function renderChatt() {
+  const ul = $('chattLista');
+  if (!ul) return;
+  const lista = chatt.meddelanden();
+
+  ul.innerHTML = '';
+  for (const m of lista) {
+    const li = document.createElement('li');
+    li.className = 'chatt-rad' + (m.mitt ? ' mitt' : '');
+
+    const tid = new Date(m.skapadAt).toLocaleTimeString('sv-SE',
+      { hour: '2-digit', minute: '2-digit' });
+
+    const huvud = document.createElement('div');
+    huvud.className = 'chatt-huvud';
+    huvud.innerHTML = `<b>${escapeHtml(m.namn || 'Förare')}</b><span>${tid}</span>`;
+
+    const text = document.createElement('p');
+    text.className = 'chatt-text';
+    text.textContent = m.text;
+
+    li.append(huvud, text);
+
+    const knappar = document.createElement('div');
+    knappar.className = 'chatt-knappar';
+    if (m.mitt) {
+      const rad = document.createElement('button');
+      rad.className = 'lank-knapp';
+      rad.textContent = 'Radera';
+      rad.onclick = async () => {
+        const r = await chatt.radera(m.id);
+        r.ok ? ljud.bekrafta() : ljud.fel();
+        if (!r.ok) toast(r.meddelande || 'Kunde inte radera.', 4000);
+        renderChatt();
+      };
+      knappar.appendChild(rad);
+    } else {
+      const anm = document.createElement('button');
+      anm.className = 'lank-knapp';
+      anm.textContent = chatt.arAnmald(m.id) ? 'Anmäld' : 'Anmäl';
+      anm.disabled = chatt.arAnmald(m.id);
+      anm.onclick = async () => {
+        await chatt.anmal(m.id);
+        ljud.bekrafta();
+        toast('Tack. Meddelandet är anmält.', 3500);
+        renderChatt();
+      };
+      const tys = document.createElement('button');
+      tys.className = 'lank-knapp';
+      tys.textContent = 'Dölj den här personen';
+      tys.onclick = () => {
+        chatt.tystaAvsandarenFor(m.id);
+        ljud.av();
+        toast('Personens meddelanden döljs på den här telefonen.', 4000);
+        renderChatt();
+      };
+      knappar.append(anm, tys);
+    }
+    li.appendChild(knappar);
+    ul.appendChild(li);
+  }
+
+  $('chattTomt').hidden = lista.length > 0;
+  // Rulla till senaste. Man läser en chatt nerifrån.
+  ul.scrollTop = ul.scrollHeight;
+  uppdateraSkrivlage();
+}
+
+/**
+ * Låser eller öppnar skrivfältet och säger varför.
+ *
+ * Att bara gråa ut ett fält utan förklaring är den sortens gränssnitt som får
+ * folk att tro att appen är trasig. Skälet skrivs ut.
+ */
+function uppdateraSkrivlage() {
+  const kan = chatt.kanSkriva();
+  const falt = $('chattText');
+  const knapp = $('chattSkicka');
+  const sparr = $('chattSparr');
+  if (!falt) return;
+
+  falt.disabled = !kan.ok;
+  knapp.disabled = !kan.ok;
+  sparr.hidden = kan.ok;
+  sparr.textContent = kan.ok ? '' : (kan.meddelande || '');
+}
+
+async function skickaChatt() {
+  const falt = $('chattText');
+  const text = falt.value.trim();
+  if (!text) return;
+
+  const r = await chatt.skicka(text);
+  if (r.ok) {
+    falt.value = '';
+    falt.style.height = 'auto';
+    ljud.bekrafta();
+  } else {
+    ljud.fel();
+    toast(r.meddelande || 'Meddelandet gick inte att skicka.', 5000);
+  }
+  renderChatt();
+}
+
+function wireChatt() {
+  const falt = $('chattText');
+  if (!falt) return;
+
+  chatt.addEventListener('meddelanden', () => {
+    if (document.body.dataset.view === 'chatt') renderChatt();
+    else $('chattPrick').hidden = false;
+  });
+
+  chatt.addEventListener('blockerat', e => {
+    const s = $('chattSparr');
+    s.hidden = false;
+    s.textContent = e.detail?.meddelande || '';
+  });
+
+  chatt.addEventListener('status', () => {
+    const el = $('chattStatus');
+    if (el) el.textContent = chatt.synkFel ? `Ingen kontakt med servern: ${chatt.synkFel}` : '';
+  });
+
+  // Fältet växer med texten istället för att rulla i en enrads-ruta.
+  falt.addEventListener('input', () => {
+    falt.style.height = 'auto';
+    falt.style.height = Math.min(120, falt.scrollHeight) + 'px';
+  });
+
+  // Enter skickar, skift+enter ger ny rad. Det är vad folk förväntar sig.
+  falt.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); skickaChatt(); }
+  });
+
+  $('chattSkicka').onclick = () => skickaChatt();
+
+  chatt.konfigurera({
+    identitet: auth.identity,
+    visningsnamn: reputation.nickname,
+  });
+  chatt.starta();
+
+  auth.addEventListener('change', () => {
+    chatt.konfigurera({ identitet: auth.identity, visningsnamn: reputation.nickname });
+    uppdateraSkrivlage();
+  });
+
+  uppdateraSkrivlage();
+}
+
+/* ================= Notisinställningar per typ ================= */
+/*
+ * Tre nivåer per varningstyp: av, bara på kartan, eller röst. En ren av/på
+ * hade varit för trubbig — många vill se fartkamerorna på kartan utan att bli
+ * tilltalade om dem varje gång.
+ *
+ * Raderna genereras ur modulens typlista, så en ny varningstyp i parser.js
+ * dyker upp här av sig själv istället för att tyst sakna en inställning.
+ */
+function renderNotisTyper() {
+  const box = $('notisTyper');
+  if (!box) return;
+  const valda = Notiser.laddaNotiser(settings);
+  box.innerHTML = '';
+
+  for (const t of Notiser.NOTIS_TYPER) {
+    const rad = document.createElement('label');
+    rad.className = 'row';
+    rad.innerHTML = `<span>${t.ikon} ${escapeHtml(t.etikett)}</span>`;
+
+    const sel = document.createElement('select');
+    for (const n of [...Notiser.NIVAER].reverse()) {     // röst överst
+      sel.add(new Option(Notiser.NIVA_ETIKETT[n], n));
+    }
+    sel.value = valda[t.typ];
+    sel.title = Notiser.NIVA_BESKRIVNING[sel.value] || '';
+    sel.onchange = () => {
+      Notiser.sparaNotiser(settings, t.typ, sel.value);
+      saveSettings();
+      sel.title = Notiser.NIVA_BESKRIVNING[sel.value] || '';
+      // Varningsmotorn minns vad den redan varnat för. Utan en nollställning
+      // kan en typ man precis slagit på förbli tyst hela resten av resan.
+      engine.reset?.();
+      renderHazards();
+    };
+    rad.appendChild(sel);
+    box.appendChild(rad);
+  }
+}
+
+/* ================= Gränssnittsljud ================= */
+/*
+ * En enda delegerad lyssnare istället för ljud inklistrat på varje knapp.
+ * Nya knappar får ljud automatiskt, och det finns bara ett ställe att stänga
+ * av om ljuden visar sig störa.
+ */
+function wireLjud() {
+  document.addEventListener('click', e => {
+    const el = e.target.closest('button, .tab, .act');
+    if (!el || el.disabled) return;
+    if (el.dataset.view) { ljud.flik(); return; }
+    if (el.classList.contains('act')) { ljud.tryck(); return; }
+    ljud.tryck();
+  }, true);
+
+  // Reglagen låter olika beroende på riktning — man hör om något slogs på
+  // eller av utan att titta.
+  document.getElementById('view-settings')?.addEventListener('change', e => {
+    if (e.target.type === 'checkbox') e.target.checked ? ljud.pa() : ljud.av();
+  });
+}
 /* ================= Dela appen ================= */
 
 function renderShareQR() {

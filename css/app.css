@@ -1153,3 +1153,103 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   letter-spacing: .05em;
   resize: vertical;
 }
+
+/* ============ Chatt ============
+   Ett rum, ingen trädstruktur. Layouten är en kolumn: rubrik, rullande
+   lista, och ett skrivfält som ligger still längst ner ovanför flikraden. */
+#view-chatt {
+  display: flex;
+  flex-direction: column;
+  position: absolute;
+  inset: 0 0 var(--bar-total) 0;
+}
+
+.chatt-topp { padding: 14px 16px 6px; flex: 0 0 auto; }
+.chatt-topp .page-title { margin: 0 0 2px; }
+
+.chatt-lista {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  list-style: none;
+  margin: 0;
+  padding: 6px 14px 10px;
+}
+
+.chatt-rad {
+  padding: 9px 12px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: var(--kort, #131c26);
+  border: 1px solid var(--line, #1a232d);
+  max-width: 88%;
+}
+
+/* Egna meddelanden hamnar till höger. Det är den enda visuella skillnad som
+   behövs för att man ska hitta sig själv i flödet. */
+.chatt-rad.mitt {
+  margin-left: auto;
+  background: rgba(143, 202, 255, .10);
+  border-color: rgba(143, 202, 255, .28);
+}
+
+.chatt-huvud {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 12.5px; color: var(--dim, #93a4b6); margin-bottom: 3px;
+}
+.chatt-huvud b { color: var(--ink, #eef4fa); font-weight: 650; }
+
+.chatt-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.chatt-knappar { display: flex; gap: 12px; margin-top: 6px; }
+.lank-knapp {
+  background: none; border: 0; padding: 0;
+  color: var(--dim, #93a4b6); font-size: 12.5px; text-decoration: underline;
+  cursor: pointer;
+}
+.lank-knapp:disabled { text-decoration: none; opacity: .55; cursor: default; }
+
+.chatt-botten {
+  flex: 0 0 auto;
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--line, #1a232d);
+  background: var(--bg, #0b0f14);
+}
+
+.chatt-skriv { display: flex; gap: 8px; align-items: flex-end; }
+
+#chattText {
+  flex: 1 1 auto;
+  resize: none;
+  min-height: 42px; max-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #26323f);
+  border-radius: 12px;
+  background: var(--field, #0f1620);
+  color: inherit;
+  font: inherit;
+}
+#chattText:disabled { opacity: .5; }
+
+/* Spärrtexten är gul, inte röd. Att fältet är låst under körning är inget
+   fel — det är appen som gör sitt jobb. */
+.chatt-sparr {
+  margin: 0 0 8px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: rgba(255, 176, 32, .12);
+  border: 1px solid rgba(255, 176, 32, .3);
+  color: #ffb020;
+  font-size: 13px;
+}
+
+/* Prick på chattfliken när det kommit något medan man var någon annanstans. */
+.tabbar .tab { position: relative; }
+.tab-prick {
+  position: absolute;
+  top: 6px; left: 50%;
+  transform: translateX(9px);
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #8fcaff;
+}
