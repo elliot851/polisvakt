@@ -1,0 +1,392 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — körningspåminnelse</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+</style>
+
+<h1>Polisvakt — körningspåminnelse</h1>
+<p class="sub">
+  Testar js/korvanor.js, lagret som avgör NÄR appen ska påminna om att slås på.<br>
+  Bakgrund: körningsdetektering i bakgrunden går inte i en webbapp —
+  <code>navigator.geolocation</code> är <code>undefined</code> i en service worker och
+  Geofencing-API:t finns inte. Påminnelsen bygger därför på inlärda tider plus web push.
+  Reglerna nedan är det enda som står mellan en hjälpsam notis och en som får
+  användaren att stänga av notiser för gott.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+
+/* =================================================================== */
+const K = await import('./js/korvanor.js');
+
+const TZ = 'Europe/Stockholm';
+
+/**
+ * Bygg en tidsstämpel ur svensk väggklocka. Offseten anges med flit i varje
+ * anrop: testerna ska bevisa att modulen räknar rätt över sommartidsbytet,
+ * och då får testet inte självt använda samma tidszonsbibliotek som det
+ * testar. +2 = CEST (sommar), +1 = CET (vinter).
+ *
+ * Notera 'Z' i strängen. Utan den tolkar Date.parse väggklockan i TESTDATORNS
+ * zon, och offseten nedan läggs på en gång till — testet mäter då datorns
+ * tidszon i stället för modulens, och gav 18 falska rödmarkeringar första
+ * gången det kördes. Med Z tolkas strängen som UTC och offseten dras av en
+ * enda gång, vilket är precis definitionen av lokal tid.
+ */
+const vid = (datum, timme, minut, offsetH) =>
+  Date.parse(`${datum}T${String(timme).padStart(2, '0')}:${String(minut).padStart(2, '0')}:00Z`) -
+  offsetH * 3600000;
+
+/** Måndagar 07:30 lokal tid, med rätt offset för svensk sommartid 2026. */
+const MANDAGAR_SOMMAR = ['2026-08-03', '2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31', '2026-09-07'];
+const sommarkorningar = MANDAGAR_SOMMAR.map(d => vid(d, 7, 30, 2));
+
+/* ---- Underlaget: appen får inte påstå något den inte vet ---------- */
+G('Underlag — tystnad är rätt svar tills mönstret är bevisat');
+
+await T('en enda körning ger inga fönster', () => {
+  const r = K.larFonster([vid('2026-08-03', 7, 30, 2)], { tidszon: TZ });
+  return (!r.tillrackligt && r.fonster.length === 0)
+    || `fick ${r.fonster.length} fönster, tillrackligt=${r.tillrackligt}`;
+});
+
+await T('två körningar samma vecka räcker inte heller', () => {
+  const r = K.larFonster([vid('2026-08-03', 7, 30, 2), vid('2026-08-04', 7, 30, 2)], { tidszon: TZ });
+  return (!r.tillrackligt && r.fonster.length === 0) || `fick ${r.fonster.length} fönster`;
+});
+
+await T('sex körningar på EN dag är inte sex dagars underlag', () => {
+  // Samma morgon, flera positioner. Räknas som en körning, inte sex.
+  const samma = [0, 5, 10, 15, 20, 25].map(m => vid('2026-08-03', 7, m, 2));
+  const r = K.larFonster(samma, { tidszon: TZ });
+  return (r.underlag.korningar === 1 && !r.tillrackligt && r.fonster.length === 0)
+    || `räknade ${r.underlag.korningar} körningar, ${r.fonster.length} fönster`;
+});
+
+await T('för lite underlag ger ingen påminnelse ens mitt i fönstret', () => {
+  const r = K.larFonster([vid('2026-08-03', 7, 30, 2)], { tidszon: TZ });
+  const b = K.borPaminna({ fonster: r.fonster, nu: vid('2026-08-10', 7, 15, 2), tidszon: TZ });
+  return (!b.paminn && b.kod === K.SKAL.FOR_LITE) || `fick ${b.kod}`;
+});
+
+await T('ett svagt mönster sållas bort trots nog många träffar', () => {
+  // Tre måndagar spridda över tolv veckor: 3 av 12 tillfällen = 25 %.
+  // Fyllnadskörningar på andra dagar ger tillräckligt totalunderlag, så det
+  // är enbart andelen som fäller det här fönstret.
+  const glesa = ['2026-06-01', '2026-07-13', '2026-08-24'].map(d => vid(d, 7, 30, 2));
+  const fyllnad = ['2026-06-03', '2026-06-17', '2026-07-01', '2026-07-15', '2026-08-05', '2026-08-19']
+    .map(d => vid(d, 12, 0, 2));
+  const r = K.larFonster([...glesa, ...fyllnad], { tidszon: TZ });
+  const morgon = r.fonster.find(f => f.timme === 7);
+  const avfardat = r.avfardade.find(f => f.timme === 7);
+  return (r.tillrackligt && !morgon && avfardat?.orsak === 'svagt-monster')
+    || `tillrackligt=${r.tillrackligt} morgonfönster=${JSON.stringify(morgon)} avfärdat=${avfardat?.orsak}`;
+});
+
+/* ---- Det tydliga mönstret ----------------------------------------- */
+G('Ett tydligt mönster ger en påminnelse');
+
+await T('sex måndagsmorgnar ger exakt ett fönster', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  const f = r.fonster[0];
+  return (r.tillrackligt && r.fonster.length === 1 && f.veckodag === 1 && f.timme === 7 && f.antal === 6)
+    || `fick ${JSON.stringify(r.fonster)} (${r.varfor})`;
+});
+
+await T('fönstret kodas som slot 31 (måndag × 24 + 7)', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  const s = K.slotsFromFonster(r.fonster);
+  return (s.length === 1 && s[0] === 1 * 24 + 7) || `fick ${JSON.stringify(s)}`;
+});
+
+await T('påminnelse kommer 15 minuter före fönstret', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  // 06:50 lokal tid en måndag: målet 07:05 ligger i fönstret.
+  const b = K.borPaminna({ fonster: r.fonster, nu: vid('2026-09-14', 6, 50, 2), tidszon: TZ });
+  return (b.paminn && b.slot === 31 && b.forTid.timme === 7) || `fick ${b.kod}: ${b.skal}`;
+});
+
+await T('påminnelsen har en läsbar text', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  const b = K.borPaminna({ fonster: r.fonster, nu: vid('2026-09-14', 6, 50, 2), tidszon: TZ });
+  return (typeof b.text === 'string' && b.text.includes('Polisvakt')) || `fick ${b.text}`;
+});
+
+await T('fel veckodag ger ingen påminnelse', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  // 2026-09-15 är en tisdag. Samma klockslag, men ingen vana.
+  const b = K.borPaminna({ fonster: r.fonster, nu: vid('2026-09-15', 6, 50, 2), tidszon: TZ });
+  return (!b.paminn && b.kod === K.SKAL.INGET_FONSTER) || `fick ${b.kod}`;
+});
+
+await T('fel timme samma dag ger ingen påminnelse', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  const b = K.borPaminna({ fonster: r.fonster, nu: vid('2026-09-14', 14, 50, 2), tidszon: TZ });
+  return (!b.paminn && b.kod === K.SKAL.INGET_FONSTER) || `fick ${b.kod}`;
+});
+
+/* ---- En per fönster ------------------------------------------------ */
+G('Högst en påminnelse per fönster');
+
+await T('andra försöket inom samma fönster tystas', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  const v = new K.Korvanor({ tidszon: TZ });
+  v.larIn(sommarkorningar);
+
+  const t1 = vid('2026-09-14', 6, 50, 2);
+  const b1 = v.prova({ nu: t1 });
+  if (!b1.paminn) return `första gav ${b1.kod}`;
+  v.noteraSkickat(b1, t1);
+
+  // Cron kör igen fem minuter senare — samma fönster.
+  const b2 = v.prova({ nu: t1 + 5 * 60000 });
+  return (!b2.paminn && b2.kod === K.SKAL.REDAN_PAMINND) || `andra gav ${b2.kod}`;
+});
+
+await T('samma fönster nästa vecka påminner igen', () => {
+  const v = new K.Korvanor({ tidszon: TZ });
+  v.larIn(sommarkorningar);
+  const t1 = vid('2026-09-14', 6, 50, 2);
+  v.noteraSkickat(v.prova({ nu: t1 }), t1);
+  const b = v.prova({ nu: vid('2026-09-21', 6, 50, 2) });
+  return b.paminn || `fick ${b.kod}: ${b.skal}`;
+});
+
+await T('taket per dygn hindrar den tredje notisen', () => {
+  // Tre fönster samma dag, långt isär. Taket är två.
+  const dagar = ['2026-08-03', '2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31', '2026-09-07'];
+  const flera = dagar.flatMap(d => [vid(d, 7, 30, 2), vid(d, 12, 30, 2), vid(d, 17, 30, 2)]);
+  const v = new K.Korvanor({ tidszon: TZ });
+  const r = v.larIn(flera);
+  if (r.fonster.length !== 3) return `väntade 3 fönster, fick ${r.fonster.length}`;
+
+  const t1 = vid('2026-09-14', 7, 15, 2);
+  const t2 = vid('2026-09-14', 12, 15, 2);
+  const t3 = vid('2026-09-14', 17, 15, 2);
+  v.noteraSkickat(v.prova({ nu: t1 }), t1);
+  v.noteraSkickat(v.prova({ nu: t2 }), t2);
+  const b3 = v.prova({ nu: t3 });
+  return (!b3.paminn && b3.kod === K.SKAL.TAK) || `tredje gav ${b3.kod}`;
+});
+
+/* ---- Natten -------------------------------------------------------- */
+G('Natten är tyst');
+
+await T('ett nattmönster lärs aldrig in som fönster', () => {
+  const nattdagar = ['2026-08-03', '2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31', '2026-09-07'];
+  const r = K.larFonster(nattdagar.map(d => vid(d, 3, 15, 2)), { tidszon: TZ });
+  const avf = r.avfardade.find(f => f.timme === 3);
+  return (r.fonster.length === 0 && avf?.orsak === K.SKAL.NATT)
+    || `fick ${r.fonster.length} fönster, avfärdat som ${avf?.orsak}`;
+});
+
+await T('ett nattfönster som kommer utifrån väcker ändå ingen 03:00', () => {
+  // Servern eller en gammal pv.habits.v1 kan mata in vad som helst. Spärren
+  // måste finnas i beslutet också, inte bara i inlärningen.
+  const smuggel = [{ slot: 1 * 24 + 3, veckodag: 1, timme: 3, antal: 9, tillfallen: 9, andel: 1 }];
+  const b = K.borPaminna({ fonster: smuggel, nu: vid('2026-09-14', 2, 45, 2), tidszon: TZ });
+  return (!b.paminn && b.kod === K.SKAL.NATT) || `fick ${b.kod}`;
+});
+
+await T('23:50 är natt, 05:10 är det inte', () => {
+  return (K.arNatt(23) && K.arNatt(0) && K.arNatt(4) && !K.arNatt(5) && !K.arNatt(22))
+    || `arNatt gav ${[23, 0, 4, 5, 22].map(K.arNatt).join(',')}`;
+});
+
+/* ---- Sommartid ----------------------------------------------------- */
+G('Lokal tid över sommartidsövergången');
+
+await T('samma väggklocka före och efter bytet ger samma timme', () => {
+  const sommar = K.lokalTid(vid('2026-10-19', 7, 30, 2), TZ);   // CEST
+  const vinter = K.lokalTid(vid('2026-11-09', 7, 30, 1), TZ);   // CET
+  return (sommar.timme === 7 && vinter.timme === 7 && sommar.slot === vinter.slot)
+    || `sommar ${sommar.timme}:${sommar.minut} slot ${sommar.slot}, vinter ${vinter.timme}:${vinter.minut} slot ${vinter.slot}`;
+});
+
+await T('UTC hade gett två olika timmar — det är felet som undviks', () => {
+  const uS = new Date(vid('2026-10-19', 7, 30, 2)).getUTCHours();
+  const uV = new Date(vid('2026-11-09', 7, 30, 1)).getUTCHours();
+  return (uS === 5 && uV === 6) || `UTC gav ${uS} och ${uV}`;
+});
+
+await T('sex måndagar tvärs över 25 oktober blir ETT fönster, inte två', () => {
+  // Sommartiden upphör natten till söndag 25 oktober 2026.
+  const fore  = ['2026-10-05', '2026-10-12', '2026-10-19'].map(d => vid(d, 7, 30, 2));
+  const efter = ['2026-10-26', '2026-11-02', '2026-11-09'].map(d => vid(d, 7, 30, 1));
+  const r = K.larFonster([...fore, ...efter], { tidszon: TZ });
+  return (r.fonster.length === 1 && r.fonster[0].timme === 7 && r.fonster[0].antal === 6)
+    || `fick ${JSON.stringify(r.fonster.map(f => ({ t: f.timme, n: f.antal })))}`;
+});
+
+await T('påminnelsen kommer rätt även i november', () => {
+  const fore  = ['2026-10-05', '2026-10-12', '2026-10-19'].map(d => vid(d, 7, 30, 2));
+  const efter = ['2026-10-26', '2026-11-02', '2026-11-09'].map(d => vid(d, 7, 30, 1));
+  const r = K.larFonster([...fore, ...efter], { tidszon: TZ });
+  const b = K.borPaminna({ fonster: r.fonster, nu: vid('2026-11-16', 6, 50, 1), tidszon: TZ });
+  return (b.paminn && b.forTid.timme === 7) || `fick ${b.kod}: ${b.skal}`;
+});
+
+await T('lokalt dygn byts vid lokal midnatt, inte vid UTC-midnatt', () => {
+  // 00:30 lördag lokalt är 22:30 fredag i UTC. Räknas dygnet i UTC blir
+  // fredagen avklarad i stället för lördagen, och lördagens påminnelse
+  // skickas till någon som redan kört.
+  const L = K.lokalTid(vid('2026-08-15', 0, 30, 2), TZ);
+  return (L.datum === '2026-08-15' && L.veckodag === 6) || `fick ${L.datum} veckodag ${L.veckodag}`;
+});
+
+/* ---- Redan igång --------------------------------------------------- */
+G('Den som redan kör blir inte påmind');
+
+const tydligt = K.larFonster(sommarkorningar, { tidszon: TZ }).fonster;
+const nuMandag = vid('2026-09-14', 6, 50, 2);
+
+await T('bilen rullar just nu', () => {
+  const b = K.borPaminna({ fonster: tydligt, nu: nuMandag, tidszon: TZ, korNu: true });
+  return (!b.paminn && b.kod === K.SKAL.KOR_REDAN) || `fick ${b.kod}`;
+});
+
+await T('appen ligger framme', () => {
+  const b = K.borPaminna({ fonster: tydligt, nu: nuMandag, tidszon: TZ, appFramme: true });
+  return (!b.paminn && b.kod === K.SKAL.NYSS_ANVAND) || `fick ${b.kod}`;
+});
+
+await T('appen användes för fem minuter sedan', () => {
+  const b = K.borPaminna({ fonster: tydligt, nu: nuMandag, tidszon: TZ,
+                           senastAnvand: nuMandag - 5 * 60000 });
+  return (!b.paminn && b.kod === K.SKAL.NYSS_ANVAND) || `fick ${b.kod}`;
+});
+
+await T('appen användes i går — det hindrar inget', () => {
+  const b = K.borPaminna({ fonster: tydligt, nu: nuMandag, tidszon: TZ,
+                           senastAnvand: nuMandag - 20 * 3600000 });
+  return b.paminn || `fick ${b.kod}: ${b.skal}`;
+});
+
+await T('bilen har redan rullat idag', () => {
+  const b = K.borPaminna({ fonster: tydligt, nu: nuMandag, tidszon: TZ,
+                           senastKord: vid('2026-09-14', 5, 40, 2) });
+  return (!b.paminn && b.kod === K.SKAL.KORD_IDAG) || `fick ${b.kod}`;
+});
+
+await T('bilen rullade i går kväll — påminn ändå', () => {
+  const b = K.borPaminna({ fonster: tydligt, nu: nuMandag, tidszon: TZ,
+                           senastKord: vid('2026-09-13', 21, 0, 2) });
+  return b.paminn || `fick ${b.kod}: ${b.skal}`;
+});
+
+/* ---- Robusthet ----------------------------------------------------- */
+G('Robusthet — skräp in får inte bli notiser ut');
+
+await T('tom historik kraschar inte', () => {
+  const r = K.larFonster([], { tidszon: TZ });
+  return (!r.tillrackligt && r.fonster.length === 0 && typeof r.varfor === 'string') || 'fel form';
+});
+
+await T('null, NaN och skräpsträngar hoppas över', () => {
+  const r = K.larFonster([null, NaN, 'inte ett datum', undefined, {}, ...sommarkorningar], { tidszon: TZ });
+  return (r.fonster.length === 1 && r.underlag.korningar === 6) || `fick ${r.underlag.korningar} körningar`;
+});
+
+await T('okänd tidszon faller tillbaka i stället för att kasta', () => {
+  const L = K.lokalTid(Date.now(), 'Mars/Olympus_Mons');
+  return (Number.isInteger(L.timme) && L.timme >= 0 && L.timme < 24) || `fick ${JSON.stringify(L)}`;
+});
+
+await T('gamla pv.habits.v1 går att läsa in, natten bortsållad', () => {
+  const f = K.fonsterFranVanor({ '1-7': 5, '1-3': 9, '2-8': 1, 'skräp': 7 });
+  return (f.length === 1 && f[0].slot === 31) || `fick ${JSON.stringify(f)}`;
+});
+
+await T('slot håller sig inom 0–167', () => {
+  const r = K.larFonster(sommarkorningar, { tidszon: TZ });
+  return r.fonster.every(f => f.slot >= 0 && f.slot < 168) || 'slot utanför spannet';
+});
+
+await T('beslutet har ingen sidoeffekt — samma anrop två gånger ger samma svar', () => {
+  const v = new K.Korvanor({ tidszon: TZ });
+  v.larIn(sommarkorningar);
+  const a = v.prova({ nu: nuMandag });
+  const b = v.prova({ nu: nuMandag });
+  return (a.paminn && b.paminn && a.slot === b.slot && v.logg.length === 0)
+    || `a=${a.kod} b=${b.kod} logg=${v.logg.length}`;
+});
+
+await T('loggen överlever en omstart via toJSON/fran', () => {
+  const v = new K.Korvanor({ tidszon: TZ });
+  v.larIn(sommarkorningar);
+  v.noteraSkickat(v.prova({ nu: nuMandag }), nuMandag);
+  const sparat = JSON.parse(JSON.stringify(v.toJSON()));
+
+  const v2 = new K.Korvanor({ tidszon: TZ }).fran(sparat);
+  v2.larIn(sommarkorningar);
+  const b = v2.prova({ nu: nuMandag + 5 * 60000 });
+  return (!b.paminn && b.kod === K.SKAL.REDAN_PAMINND) || `fick ${b.kod}`;
+});
+
+await T('beskrivningen är svensk och nämner ingen tid utan täckning', () => {
+  const tom = new K.Korvanor({ tidszon: TZ });
+  tom.larIn([vid('2026-08-03', 7, 30, 2)]);
+  const v = new K.Korvanor({ tidszon: TZ });
+  v.larIn(sommarkorningar);
+  // Utan underlag ska texten säga att appen lär sig — aldrig gissa en tid.
+  return (tom.beskrivning.includes('lär sig') && !/\d\d:\d\d|runt \d/.test(tom.beskrivning) &&
+          v.beskrivning.includes('måndagar') && v.beskrivning.includes('07'))
+    || `tom: "${tom.beskrivning}" / lärd: "${v.beskrivning}"`;
+});
+
+/* =================================================================== */
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} av ${total} gick igenom` +
+  (fel ? ` — ${fel} MISSLYCKADES` : '') + (hopp ? ` — ${hopp} hoppade` : '');
+s.className = fel ? 'fel' : 'ok';
+window.__resultat = { ok, fel, hopp, total };
+</script>

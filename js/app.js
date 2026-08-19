@@ -20,7 +20,7 @@ import { qrToSVG } from './qr.js';
 import { CONFIG, hasBackend, applyOverrides, setAccessToken, buildDate } from './config.js';
 import { Auth, validateUsername } from './auth.js';
 import { Tour, seen as tourSeen, reset as resetTour } from './tour.js';
-import { DrivingDetector, describeHabits, notificationsSupported } from './driving.js';
+import { DrivingDetector, notificationsSupported } from './driving.js';
 import { Coverage, MODES as COVERAGE_MODES } from './coverage.js';
 import { PLANS, PRODUCTS, PREPAY, STATUS_LABEL, yearlyComparison } from './plans.js';
 import { renderChain } from './roadmap.js';
@@ -38,6 +38,7 @@ import { PlateReader, plateSupported, visaPlat, normaliseraPlat } from './plate.
 import { Chatt } from './chatt.js';
 import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
+import * as Korvanor from './korvanor.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -100,6 +101,7 @@ if (hasBackend() && settings.mode === 'local' && !settings.modeChosen) {
   settings.mode = 'supabase';           // finns backend är delat läge det rimliga
 }
 function readJSON(k, f) { try { return JSON.parse(localStorage.getItem(k)) || f; } catch { return f; } }
+function writeJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {} }
 
 /* ================= Instanser ================= */
@@ -538,11 +540,57 @@ function afterDisclaimer() {
 /* ================= Körning och bevakningsområde ================= */
 
 function wireDriving() {
+  /*
+   * Körvanorna lär sig när du brukar köra och påminner dig att slå på appen.
+   *
+   * Det Elliot bad om var att appen skulle känna av körning via GPS även när
+   * den är helt stängd. Det går inte i en webbapp, och det är mätt, inte
+   * antaget: `geolocation` är undefined inne i en worker och Geofencing-API:t
+   * finns inte. En service worker kan alltså aldrig läsa position.
+   *
+   * Det som finns här är den ena halvan som fungerar utan server: appen är
+   * öppen och påminner vid ett inlärt fönster. Andra halvan är en notis som
+   * servern skickar vid samma tider och som når fram med appen stängd — den
+   * kräver att nycklarna sätts i Supabase, se docs/korpaminnelse.md.
+   */
+  korvanor.fran(readJSON('pv.korvanor.v1', {}));
+  const korningar = readJSON('pv.korningar.v1', []);
+  korningar.length
+    ? korvanor.larIn(korningar)
+    : (korvanor.fonster = Korvanor.fonsterFranVanor(driving.habits));
+
   driving.addEventListener('start', () => {
     toast('Körning upptäckt. Varningarna är igång.', 4000);
+
+    // Tidsstämpel per körning. Den gamla vanestatistiken sparar bara
+    // "dag-timme → antal", utan tidpunkt, och då går varken spann eller
+    // andel att räkna — och utan dem kan appen inte skilja ett mönster från
+    // ett sammanträffande.
+    const k = readJSON('pv.korningar.v1', []);
+    k.push(Date.now());
+    writeJSON('pv.korningar.v1', k.slice(-400));
+    korvanor.larIn(k);
+    senasteKorning = Date.now();
+    writeJSON('pv.korvanor.v1', korvanor.toJSON());
     renderDriveStatus();
   });
   driving.addEventListener('stop', renderDriveStatus);
+
+  // Kollar en gång i minuten om vi är inne i ett inlärt fönster. Modulen
+  // håller själv reda på tak per dygn, avstånd mellan påminnelser, natt och
+  // att den inte säger till medan du redan kör.
+  setInterval(() => {
+    if (!settings.driveReminder) return;
+    const b = korvanor.prova({
+      korNu: driving.driving,
+      appFramme: document.visibilityState === 'visible',
+      senastKord: senasteKorning,
+    });
+    if (!b.paminn) return;
+    driving.notify('Polisvakt', b.text);
+    korvanor.noteraSkickat(b);
+    writeJSON('pv.korvanor.v1', korvanor.toJSON());
+  }, 60000);
 
   // Appen öppen men ljudet av, och bilen börjar rulla: säg till en gång.
   driving.addEventListener('prompt', () => {
@@ -557,9 +605,12 @@ function renderDriveStatus() {
   const el = $('driveStatus');
   if (!el) return;
   const h = driving.habitStrength;
+  // Antalet läggs bara till när det finns något att räkna. Annars står det
+  // "Inga körningar noterade än. (0 körningar noterade)", vilket säger samma
+  // sak två gånger och låter som ett fel.
   el.textContent = driving.driving
     ? 'Kör just nu.'
-    : `${describeHabits(driving.likelyTimes())} (${h.drives} körningar noterade)`;
+    : korvanor.beskrivning + (h.drives ? ` (${h.drives} körningar noterade)` : '');
 }
 
 /* ================= Rutt ================= */
@@ -883,6 +934,8 @@ function renderRouteLine() {
 
 const tour = new Tour({ onShowView: showView });
 const driving = new DrivingDetector();
+const korvanor = new Korvanor.Korvanor();
+let senasteKorning = 0;
 const coverage = new Coverage({ mode: settings.coverageMode, radiusM: settings.coverageRadiusM });
 
 function startTour() {
