@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Kan webbläsaren läsa skyltar?</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { margin:0; padding:20px 18px 60px; background:#0b0f14; color:#eef4fa;
+         font:15px/1.5 -apple-system,system-ui,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#93a4b6; font-size:13px; margin-bottom:16px; max-width:46em; }
+  #summa { position:sticky; top:0; background:#0b0f14; padding:10px 0;
+           border-bottom:1px solid #26323f; font-weight:700; }
+  table { border-collapse:collapse; width:100%; margin-top:14px; font-size:13.5px; }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid #1a232d; }
+  th { color:#93a4b6; font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  .ok { color:#2fd07a; } .fel { color:#ff4d4f; } .halv { color:#ffb020; }
+  canvas { border:1px solid #26323f; border-radius:6px; margin:4px 6px 0 0; }
+  .prov { display:flex; flex-wrap:wrap; margin-bottom:10px; }
+</style>
+
+<h1>Kan webbläsaren läsa registreringsskyltar?</h1>
+<p class="sub">
+  Mätning, inte åsikt. Tesseract är den enda textigenkänning som går att köra i en
+  webbläsare på iPhone. Här får den svenska skyltar under förhållanden som är
+  <b>snällare än verkligheten</b>: syntetiska bilder, rätt teckensnitt, ingen
+  smuts, inget motljus. Klarar den inte det här klarar den inte en landsväg.
+</p>
+<div id="summa">Laddar OCR-motorn…</div>
+<div class="prov" id="prov"></div>
+<div id="ut"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script type="module">
+const ut = document.getElementById('ut');
+const summa = document.getElementById('summa');
+
+/** Rita en svensk skylt: vit botten, blått EU-fält, svart text. */
+function skylt(text, { vinkel = 0, blur = 0, bredd = 220 } = {}) {
+  const h = Math.round(bredd / 4.6);
+  const c = document.createElement('canvas');
+  c.width = bredd; c.height = h;
+  const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, bredd, h);
+  x.fillStyle = '#003399'; x.fillRect(0, 0, h * 0.42, h);
+  x.fillStyle = '#000';
+  x.font = `700 ${Math.round(h * 0.62)}px "Arial Narrow", Arial, sans-serif`;
+  x.textBaseline = 'middle';
+  x.fillText(text, h * 0.55, h * 0.55);
+
+  if (!vinkel && !blur) return c;
+  const d = document.createElement('canvas');
+  d.width = bredd; d.height = h;
+  const y = d.getContext('2d');
+  if (blur) y.filter = `blur(${blur}px)`;
+  y.translate(bredd / 2, h / 2);
+  y.transform(1, 0, Math.tan(vinkel * Math.PI / 180), 1, 0, 0);
+  y.drawImage(c, -bredd / 2, -h / 2);
+  return d;
+}
+
+const fall = [
+  { namn: 'perfekt, stillastående',        text: 'ABC123', o: {} },
+  { namn: 'nya serien',                     text: 'XKF42B', o: {} },
+  { namn: 'liten i bild (60 px bred)',      text: 'ABC123', o: { bredd: 60 } },
+  { namn: 'svag vinkel, 12°',               text: 'ABC123', o: { vinkel: 12 } },
+  { namn: 'lite rörelseoskärpa',            text: 'ABC123', o: { blur: 1.2 } },
+  { namn: 'vinkel + oskärpa (verklighet)',  text: 'ABC123', o: { vinkel: 15, blur: 1.5, bredd: 140 } },
+];
+
+const rutor = document.getElementById('prov');
+const bilder = fall.map(f => { const c = skylt(f.text, f.o); rutor.appendChild(c); return c; });
+
+const t0 = performance.now();
+const worker = await Tesseract.createWorker('eng');
+await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' });
+const laddTid = Math.round(performance.now() - t0);
+
+const rader = [];
+let ratt = 0;
+for (let i = 0; i < fall.length; i++) {
+  const start = performance.now();
+  const { data } = await worker.recognize(bilder[i]);
+  const ms = Math.round(performance.now() - start);
+  const las = (data.text || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  const traff = las === fall[i].text;
+  if (traff) ratt++;
+  rader.push({ namn: fall[i].namn, vantat: fall[i].text, las: las || '(inget)', ms,
+               conf: Math.round(data.confidence), traff });
+}
+await worker.terminate();
+
+const medel = Math.round(rader.reduce((a, r) => a + r.ms, 0) / rader.length);
+summa.innerHTML = `<span class="${ratt === fall.length ? 'ok' : ratt ? 'halv' : 'fel'}">` +
+  `${ratt} av ${fall.length} rätt</span> · ${medel} ms per bild i snitt · ` +
+  `motorn tog ${(laddTid/1000).toFixed(1)} s att ladda`;
+
+ut.innerHTML = '<table><tr><th>Fall</th><th>Skylt</th><th>OCR läste</th>' +
+  '<th>Tid</th><th>Säkerhet</th></tr>' +
+  rader.map(r => `<tr><td>${r.namn}</td><td>${r.vantat}</td>` +
+    `<td class="${r.traff ? 'ok' : 'fel'}">${r.las}</td>` +
+    `<td>${r.ms} ms</td><td>${r.conf}%</td></tr>`).join('') + '</table>';
+
+window.__ocr = { ratt, av: fall.length, medelMs: medel, laddTidMs: laddTid, rader };
+</script>

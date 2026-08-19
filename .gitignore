@@ -1,0 +1,3 @@
+# Paketet byggs av package.ps1 vid behov och hör inte hemma i repot.
+*.zip
+*.bak

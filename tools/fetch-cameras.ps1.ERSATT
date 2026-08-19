@@ -1,0 +1,141 @@
+# ====================================================================
+#  ERSATT — KÖR INTE DEN HÄR.
+#
+#  Använd tools/hamta-kameror.ps1 istället.
+#
+#  Det här skriptet hämtade med en rektangel runt Västmanland
+#  (59.30,15.10 – 60.30,17.30). Två fel följde av det:
+#
+#    1. Av de 136 kameror det gav låg bara 40 i Västmanland. Resten låg
+#       i Södermanland, Örebro, Uppsala, Stockholm och Dalarna — men
+#       filen kallades "Västmanland", så ingen märkte det.
+#
+#    2. Rutan slutade vid longitud 17.30. Stockholm ligger på 18.07.
+#       Förare på E18 österut fick alltså inga kameravarningar de sista
+#       fem milen, utan att appen sa något om det.
+#
+#  Kör man det här skriptet igen skrivs den nuvarande rikstäckande
+#  filen över med de felmärkta 136. Därav namnbytet.
+# ====================================================================
+
+# Hämtar fartkameror från OpenStreetMap och skriver data/cameras.json.
+#
+# Varför OSM och inte Trafikverket? Trafikverkets API är den officiella källan
+# men kräver att man registrerar sig och skaffar en nyckel. Fartkameror är
+# synliga föremål vid vägen, så de finns kartlagda i OpenStreetMap också — med
+# både riktning och platsnamn, och utan nyckel. Det gör att appen kan varna
+# för kameror direkt istället för att vänta på ett konto någonstans.
+#
+# Vill man ha Trafikverkets data istället finns tools/import-cameras.html.
+#
+#   .\tools\fetch-cameras.ps1
+
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$root = Split-Path $PSScriptRoot -Parent
+$outFile = Join-Path $root 'data\cameras.json'
+
+# Västmanlands län med marginal (syd, väst, nord, öst)
+$bbox = '59.30,15.10,60.30,17.30'
+
+$query = @"
+[out:json][timeout:90];
+(
+  node["highway"="speed_camera"]($bbox);
+  node["enforcement"="maxspeed"]($bbox);
+);
+out body;
+"@
+
+$endpoints = @(
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass-api.de/api/interpreter'
+)
+
+$data = $null
+foreach ($url in $endpoints) {
+  try {
+    Write-Host "  Hamtar fran $($url.Split('/')[2]) ..." -ForegroundColor DarkGray
+    $body = 'data=' + [uri]::EscapeDataString($query)
+    # Invoke-RestMethod gissar teckenkodning fel i PowerShell 5.1 och gör
+    # "väster" till "vÃ¤ster". Hämta råa bytes och avkoda som UTF-8 själv.
+    $resp = Invoke-WebRequest -Uri $url -Method Post -Body $body `
+              -ContentType 'application/x-www-form-urlencoded' `
+              -TimeoutSec 120 -UseBasicParsing
+    $text = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+    $parsed = $text | ConvertFrom-Json
+    if ($parsed.elements) { $data = $parsed; break }
+  } catch {
+    Write-Host "    misslyckades: $($_.Exception.Message)" -ForegroundColor DarkYellow
+  }
+}
+
+if (-not $data) { Write-Host "Ingen endpoint svarade." -ForegroundColor Red; exit 1 }
+
+$cams = @()
+foreach ($n in $data.elements) {
+  if ($n.type -ne 'node') { continue }
+  $t = $n.tags
+
+  $bearing = $null
+  if ($t.direction) {
+    $d = 0.0
+    if ([double]::TryParse(($t.direction -replace ',', '.'), [ref]$d)) {
+      if ($d -ge 0 -and $d -le 360) { $bearing = [math]::Round($d) }
+    }
+  }
+
+  $limit = $null
+  if ($t.maxspeed) {
+    $m = ($t.maxspeed -replace '\D', '')
+    if ($m -and [int]$m -ge 20 -and [int]$m -le 130) { $limit = [int]$m }
+  }
+
+  $name = $null
+  foreach ($cand in @($t.description, $t.name)) {
+    if ($cand -and $cand.Trim()) { $name = $cand.Trim(); break }
+  }
+
+  # Datan använder Trafikverkets förkortningar: "Stockholmsv väster om
+  # Åbylundsv". Det är obegripligt i en popup och omöjligt att läsa upp.
+  # Bara sammansättningar som slutar på -sv eller -sg skrivs ut, så att ord
+  # som "Berg" eller "Grav" inte blir "Berggatan" och "Gravägen".
+  if ($name) {
+    $name = [regex]::Replace($name, '(?<=\w)sv\b', 'svägen')
+    $name = [regex]::Replace($name, '(?<=\w)sg\b', 'sgatan')
+    $name = [regex]::Replace($name, '(?<=\w)sl\b', 'sleden')
+    $name = $name -replace '\bmot\b', 'mot'
+  }
+
+  $cams += [ordered]@{
+    id         = [string]$n.id
+    lat        = [math]::Round([double]$n.lat, 6)
+    lon        = [math]::Round([double]$n.lon, 6)
+    name       = $name
+    bearing    = $bearing
+    speedLimit = $limit
+  }
+}
+
+$cams = $cams | Sort-Object { $_.lat }
+
+$payload = [ordered]@{
+  _om        = 'Fartkameror for Polisvakt. Hamtade fran OpenStreetMap (highway=speed_camera) via Overpass.'
+  kalla      = 'OpenStreetMap-bidragsgivare, ODbL'
+  uppdaterad = (Get-Date).ToString('yyyy-MM-dd')
+  antal      = $cams.Count
+  cameras    = $cams
+}
+
+$json = $payload | ConvertTo-Json -Depth 6 -Compress:$false
+[System.IO.File]::WriteAllText($outFile, $json, (New-Object System.Text.UTF8Encoding $false))
+
+$withDir  = ($cams | Where-Object { $null -ne $_.bearing }).Count
+$withName = ($cams | Where-Object { $null -ne $_.name }).Count
+
+Write-Host ""
+Write-Host "  $($cams.Count) fartkameror skrivna till data/cameras.json" -ForegroundColor Green
+Write-Host "  $withDir med riktning, $withName med platsnamn" -ForegroundColor DarkGray
+Write-Host "  $([math]::Round((Get-Item $outFile).Length/1kb)) kB" -ForegroundColor DarkGray
+Write-Host ""

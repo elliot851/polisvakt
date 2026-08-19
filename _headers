@@ -1,0 +1,39 @@
+# Netlify-headers.
+#
+# Manifestet måste serveras som application/manifest+json, annars vägrar vissa
+# webbläsare erbjuda "Lägg till på hemskärmen" — och då är appen bara en sida
+# i webbläsaren istället för en ikon på skärmen.
+/manifest.webmanifest
+  Content-Type: application/manifest+json; charset=utf-8
+
+# Service workern får aldrig cachas av mellanliggande servrar. Gör den det
+# fastnar användaren på en gammal version av appen och nya varningsregler
+# eller kameradata slår aldrig igenom.
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Kameradata och platsnamn ändras sällan men ska ändå kunna uppdateras samma
+# dag som vi lägger upp ny data.
+/data/*
+  Cache-Control: public, max-age=3600
+
+# Koden får ALDRIG ligga kvar i webbläsarens egen cache.
+#
+# Här låg tidigare max-age=3600 med motiveringen att service workern ändå
+# hämtar nät-först. Det var fel, och det kostade en hel kväll: service workerns
+# fetch går genom precis samma HTTP-cache. Rullade vi ut en trasig fil hämtade
+# alltså "nät-först" den trasiga filen ur cachen igen och skrev tillbaka den i
+# sitt eget lager. Appen kunde inte uppdatera sig ur felet, och användaren satt
+# fast i en timme utan att kunna göra något.
+#
+# En app som varnar i trafiken får aldrig hamna där. Filerna är små, de ligger
+# i service workerns cache för offline-läget ändå, och must-revalidate ger en
+# billig 304 när inget ändrats. Den kostnaden är värd att alltid kunna rätta
+# ett fel inom en minut.
+/js/*
+  Cache-Control: public, max-age=0, must-revalidate
+/css/*
+  Cache-Control: public, max-age=0, must-revalidate

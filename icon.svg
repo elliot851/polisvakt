@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Polisvakt">
+  <!-- Loggan säger två saker: navigation och detektion.
+       Navigationspilen är samma form som positionsmarkören i appen, så ikonen
+       och kartan känns som samma sak. Bågarna bakom är en radarsvep som blir
+       starkare ju närmare mitten de kommer.
+       Tre former totalt — den läses fortfarande på 48 pixlar. -->
+
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16202b"/>
+      <stop offset="1" stop-color="#0b0f14"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6ab8ff"/>
+      <stop offset="1" stop-color="#2b87e8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="114" fill="url(#tile)"/>
+
+  <!-- Radarsvep: tre bågar, svagast ytterst -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M112 330a160 160 0 0 1 288 0" stroke="#ffb020" stroke-width="17" opacity=".30"/>
+    <path d="M158 328a112 112 0 0 1 196 0"  stroke="#ffb020" stroke-width="17" opacity=".55"/>
+    <path d="M204 326a64 64 0 0 1 104 0"    stroke="#ffb020" stroke-width="17" opacity=".85"/>
+  </g>
+
+  <!-- Navigationspil -->
+  <path d="M256 118 L336 322 L256 282 L176 322 Z"
+        fill="url(#arrow)" stroke="#0b0f14" stroke-width="14" stroke-linejoin="round"/>
+
+  <!-- Vägbas -->
+  <rect x="150" y="388" width="212" height="26" rx="13" fill="#2b87e8" opacity=".55"/>
+</svg>

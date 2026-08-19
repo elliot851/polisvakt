@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Importera fartkameror — Polisvakt</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px 18px 60px; background: #0b0f14; color: #eef4fa;
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    max-width: 760px; margin-inline: auto;
+  }
+  h1 { font-size: 24px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: #93a4b6; margin-top: 30px; }
+  p, li { color: #b9c7d6; font-size: 14.5px; }
+  code { background: #1d2733; padding: 1px 6px; border-radius: 6px; font-size: 13px; }
+  a { color: #3d9dff; }
+  .card { background: #141b23; border: 1px solid #26323f; border-radius: 16px; padding: 16px; margin: 14px 0; }
+  label { display: block; font-size: 13px; color: #93a4b6; margin-bottom: 5px; }
+  input, textarea, select {
+    width: 100%; background: #1d2733; border: 1px solid #26323f; color: #eef4fa;
+    border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 14px;
+  }
+  textarea { min-height: 130px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  button {
+    background: #3d9dff; color: #04101d; border: none; border-radius: 12px;
+    padding: 12px 20px; font-weight: 650; font-size: 15px; cursor: pointer; margin-top: 12px;
+  }
+  button.ghost { background: #1d2733; color: #eef4fa; border: 1px solid #26323f; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 180px; }
+  .log { background: #0d1218; border: 1px solid #26323f; border-radius: 12px; padding: 12px; font-size: 13px; white-space: pre-wrap; margin-top: 14px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .ok { color: #2fd07a; } .err { color: #ff4d4f; } .warn { color: #ffb020; }
+</style>
+</head>
+<body>
+
+<h1>Importera fartkameror</h1>
+<p>Hämtar alla trafiksäkerhetskameror (ATK) från <b>Trafikverkets öppna API</b> och gör en <code>cameras.json</code> som Polisvakt läser. Data är gratis, men kräver en egen nyckel.</p>
+
+<div class="card">
+  <h2 style="margin-top:0">1. Skaffa nyckel</h2>
+  <ol>
+    <li>Gå till <a href="https://data.trafikverket.se/" target="_blank" rel="noopener">data.trafikverket.se</a> och registrera ett konto.</li>
+    <li>Skapa en API-nyckel under <i>Mina sidor</i>.</li>
+    <li>Klistra in nyckeln nedan. Den sparas bara i din egen webbläsare.</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">2. Hämta</h2>
+  <label for="key">API-nyckel</label>
+  <input id="key" type="text" placeholder="din nyckel från Trafikverket" autocomplete="off">
+
+  <div class="row" style="margin-top:12px">
+    <div>
+      <label for="area">Område</label>
+      <select id="area">
+        <option value="vastmanland">Västmanland (rekommenderas)</option>
+        <option value="malardalen">Mälardalen (Västmanland + grannlän)</option>
+        <option value="sverige">Hela Sverige</option>
+      </select>
+    </div>
+    <div>
+      <label for="schema">Schemaversion</label>
+      <select id="schema">
+        <option value="1">1</option>
+        <option value="1.0">1.0</option>
+        <option value="1.1">1.1</option>
+      </select>
+    </div>
+  </div>
+
+  <button id="fetchBtn">Hämta från Trafikverket</button>
+  <button id="downloadBtn" class="ghost" disabled>Ladda ner cameras.json</button>
+  <div class="log" id="log">Väntar…</div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">3. Om hämtningen blockeras</h2>
+  <p>Vissa webbläsare blockerar anropet (CORS). Gör då så här istället:</p>
+  <ol>
+    <li>Öppna <a href="https://api.trafikinfo.trafikverket.se/" target="_blank" rel="noopener">Trafikverkets API-konsol</a>.</li>
+    <li>Klistra in frågan nedan, kör den, kopiera hela JSON-svaret.</li>
+    <li>Klistra in svaret i rutan här och tryck <b>Konvertera</b>.</li>
+  </ol>
+  <label for="query">Fråga att köra i konsolen</label>
+  <textarea id="query" readonly></textarea>
+  <label for="paste" style="margin-top:12px">Klistra in JSON-svaret</label>
+  <textarea id="paste" placeholder='{"RESPONSE":{"RESULT":[{"TrafficSafetyCamera":[ ... ]}]}}'></textarea>
+  <button id="convertBtn" class="ghost">Konvertera</button>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">4. Lägg filen på plats</h2>
+  <p>Ersätt <code>data/cameras.json</code> i Polisvakt-mappen med filen du laddade ner. Ladda om appen — antalet kameror syns under Inställningar.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = (msg, cls = '') => {
+  $('log').innerHTML += `\n<span class="${cls}">${msg}</span>`;
+  $('log').scrollTop = 1e9;
+};
+
+// Ungefärliga rutor: [minLon, minLat, maxLon, maxLat]
+const BOXES = {
+  vastmanland: [15.10, 59.30, 17.30, 60.30],
+  malardalen:  [14.60, 58.80, 18.40, 60.70],
+  sverige:     [10.50, 55.00, 24.30, 69.20],
+};
+
+const REQUEST = schema => `<REQUEST>
+  <LOGIN authenticationkey="DIN_NYCKEL" />
+  <QUERY objecttype="TrafficSafetyCamera" schemaversion="${schema}">
+    <FILTER />
+  </QUERY>
+</REQUEST>`;
+
+$('query').value = REQUEST('1');
+$('schema').onchange = () => { $('query').value = REQUEST($('schema').value); };
+$('key').value = localStorage.getItem('pv.tvkey') || '';
+
+let result = null;
+
+/** "POINT (16.54 59.61)" -> {lon, lat} */
+function parsePoint(wkt) {
+  const m = /POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)/i.exec(wkt || '');
+  return m ? { lon: parseFloat(m[1]), lat: parseFloat(m[2]) } : null;
+}
+
+function inBox(lat, lon, box) {
+  return lon >= box[0] && lon <= box[2] && lat >= box[1] && lat <= box[3];
+}
+
+function convert(json, box) {
+  const results = json?.RESPONSE?.RESULT || [];
+  const raw = results.flatMap(r => r.TrafficSafetyCamera || []);
+  if (!raw.length) throw new Error('Svaret innehöll inga kameror.');
+
+  const cameras = [];
+  let skippedDeleted = 0, skippedGeom = 0, skippedBox = 0;
+
+  for (const c of raw) {
+    if (c.Deleted === true || c.Deleted === 'true') { skippedDeleted++; continue; }
+    const p = parsePoint(c.Geometry?.WGS84 || c.Geometry?.SWEREF99TM);
+    if (!p) { skippedGeom++; continue; }
+    if (!inBox(p.lat, p.lon, box)) { skippedBox++; continue; }
+
+    cameras.push({
+      id: c.Id ?? `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`,
+      lat: +p.lat.toFixed(6),
+      lon: +p.lon.toFixed(6),
+      name: (c.Name || '').trim() || null,
+      road: c.RoadNumber || c.RoadNumberNumeric || null,
+      bearing: Number.isFinite(+c.Bearing) ? +c.Bearing : null,
+      speedLimit: Number.isFinite(+c.SpeedLimit) ? +c.SpeedLimit : null,
+    });
+  }
+
+  log(`Hittade ${raw.length} kameror i svaret.`);
+  if (skippedDeleted) log(`  ${skippedDeleted} borttagna hoppades över.`);
+  if (skippedGeom) log(`  ${skippedGeom} saknade koordinater.`, 'warn');
+  if (skippedBox) log(`  ${skippedBox} utanför valt område.`);
+  log(`Klart: ${cameras.length} kameror i filen.`, 'ok');
+
+  return {
+    _om: 'Fartkameror för Polisvakt. Genererad av tools/import-cameras.html.',
+    kalla: 'Trafikverket Öppet API, objekttyp TrafficSafetyCamera',
+    uppdaterad: new Date().toISOString(),
+    antal: cameras.length,
+    cameras,
+  };
+}
+
+function enableDownload(data) {
+  result = data;
+  $('downloadBtn').disabled = false;
+}
+
+$('fetchBtn').onclick = async () => {
+  const key = $('key').value.trim();
+  if (!key) { log('Ange din API-nyckel först.', 'err'); return; }
+  localStorage.setItem('pv.tvkey', key);
+
+  const box = BOXES[$('area').value];
+  const body = REQUEST($('schema').value).replace('DIN_NYCKEL', key);
+
+  $('log').textContent = 'Hämtar från Trafikverket…';
+  try {
+    const res = await fetch('https://api.trafikinfo.trafikverket.se/v2/data.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/xml' },
+      body,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    const json = await res.json();
+    if (json?.RESPONSE?.RESULT?.[0]?.ERROR) {
+      throw new Error(json.RESPONSE.RESULT[0].ERROR.MESSAGE || 'Okänt API-fel');
+    }
+    enableDownload(convert(json, box));
+  } catch (e) {
+    log('Misslyckades: ' + e.message, 'err');
+    log('Prova en annan schemaversion, eller använd steg 3 nedan.', 'warn');
+  }
+};
+
+$('convertBtn').onclick = () => {
+  $('log').textContent = 'Konverterar inklistrat svar…';
+  try {
+    const json = JSON.parse($('paste').value);
+    enableDownload(convert(json, BOXES[$('area').value]));
+  } catch (e) {
+    log('Kunde inte tolka: ' + e.message, 'err');
+  }
+};
+
+$('downloadBtn').onclick = () => {
+  if (!result) return;
+  const blob = new Blob([JSON.stringify(result, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'cameras.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+</script>
+</body>
+</html>

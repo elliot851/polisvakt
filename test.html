@@ -1,0 +1,324 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — testsvep</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+</style>
+
+<h1>Polisvakt — testsvep</h1>
+<p class="sub">
+  Körs mot samma moduler som appen. Kör det före varje utrullning.<br>
+  Bakgrund: en regression slank igenom när kvalitetsgraderingen kopplades in —
+  fälten fylldes i där rapporter skapas men följde inte med genom servern, och
+  andras rapporter tystnade utan att något såg trasigt ut. Testerna nedan går
+  hela vägen: skapa, spara, hämta, läsa.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+// Väntar in asynkrona tester. Första versionen gjorde inte det, och
+// rapporterade "[object Promise]" som ett fel — alltså en bugg i testet som
+// såg ut som en bugg i appen. Ett testverktyg som ljuger är värre än inget.
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+const nara = (a, b, tol) => Math.abs(a - b) <= tol;
+
+/* =================================================================== */
+const parser = await import('./js/parser.js');
+const kvalitet = await import('./js/kvalitet.js');
+const vakthund = await import('./js/vakthund.js');
+const store = await import('./js/store.js');
+const util = await import('./js/util.js');
+
+/* ---- De två produktreglerna. Går de sönder är allt annat oviktigt. -- */
+G('Produktregler — får aldrig gå sönder');
+
+await T('nykterhetskontroll vägras', () => {
+  const p = parser.parseReportText('Nykterhetskontroll vid Bäckby');
+  return p?.intent === 'refused' && p.reason === 'sobriety'
+    || `fick ${JSON.stringify(p)}`;
+});
+await T('drogkontroll vägras', () => {
+  const p = parser.parseReportText('Poliskontroll med drogtest på Vasagatan');
+  return p?.intent === 'refused' || `fick ${JSON.stringify(p)}`;
+});
+await T('fartkamera vägras som användarrapport', () => {
+  const p = parser.parseReportText('Fartkamera på E18');
+  return p?.intent === 'refused' && p.reason === 'camera' || `fick ${JSON.stringify(p)}`;
+});
+await T('isärskrivet "alkohol kontroll" vägras också', () => {
+  const p = parser.parseReportText('alkohol kontroll vid rondellen');
+  return p?.intent === 'refused' || `fick ${JSON.stringify(p)}`;
+});
+await T('vanlig polisrapport släpps igenom', () => {
+  const p = parser.parseReportText('Polis står vid Erikslund');
+  return p && p.intent !== 'refused' && p.type === 'police' || `fick ${JSON.stringify(p)}`;
+});
+await T('kvalitetslagret vägrar gradera en nykterhetskontroll', () => {
+  const b = kvalitet.bedomRapport(
+    { id: 'x', type: 'police', lat: 59.6, lon: 16.5, note: 'nykterhetskontroll',
+      createdAt: Date.now(), source: 'app' }, {});
+  return b.behandling === kvalitet.BEHANDLING.UNDANHALL
+    || `fick ${b.behandling}`;
+});
+
+/* ---- Rundturen som brast ------------------------------------------- */
+G('Kvalitetsfält hela vägen — skapa, spara, hämta, läsa');
+
+const nu = Date.now();
+const egen = {
+  id: 'e1', type: 'police', lat: 59.616, lon: 16.553, label: 'Erikslund',
+  createdAt: nu - 3 * 60000, expiresAt: nu + 40 * 60000, confirms: 1, denials: 0,
+  source: 'app', geokod: 'gps', gpsAccuracyM: 10, fartKmh: 30, fordrojningS: 15,
+};
+
+await T('vardagsrapporten annonseras (den vanligaste av alla)', () => {
+  const b = kvalitet.bedomRapport(egen, { nu });
+  return b.behandling === kvalitet.BEHANDLING.ANNONSERA
+    || `fick ${b.behandling}, poäng ${b.poang}, osäkerhet ${b.osakerhetM} m`;
+});
+await T('och får en mening utan hedgning', () => {
+  const b = kvalitet.bedomRapport(egen, { nu });
+  const m = kvalitet.byggMening(b, egen, { avstandM: 1200, klockriktning: 12, nu });
+  return (m && m.startsWith('Varning.')) || `fick: ${m}`;
+});
+await T('hög fart hedgar istället för att tysta', () => {
+  const r = { ...egen, fartKmh: 110, gpsAccuracyM: 15 };
+  const b = kvalitet.bedomRapport(r, { nu });
+  return b.behandling === kvalitet.BEHANDLING.HEDGA || `fick ${b.behandling}`;
+});
+await T('hedgad plats tar bort klockriktningen (ingen falsk precision)', () => {
+  const r = { ...egen, fartKmh: 110, gpsAccuracyM: 15 };
+  const b = kvalitet.bedomRapport(r, { nu });
+  const m = kvalitet.byggMening(b, r, { avstandM: 1200, klockriktning: 12, nu });
+  return (m && !m.includes('klockan')) || `fick: ${m}`;
+});
+await T('REGRESSIONEN: rapport utan kvalitetsfält får inte tystas', () => {
+  // Så här ser en rapport ut som kommer från servern innan kolumnerna fanns.
+  // app.js härleder geokod ur source; utan den härledningen tystnar den.
+  const utifran = { id: 'a1', type: 'police', lat: 59.62, lon: 16.55,
+                    label: 'Hälla', createdAt: nu - 4 * 60000,
+                    expiresAt: nu + 40 * 60000, confirms: 1, denials: 0, source: 'app' };
+  const harlett = { ...utifran, geokod: 'gps' };
+  const b = kvalitet.bedomRapport(harlett, { nu });
+  return b.behandling !== kvalitet.BEHANDLING.TYST &&
+         b.behandling !== kvalitet.BEHANDLING.UNDANHALL
+    || `fick ${b.behandling}, osäkerhet ${b.osakerhetM} m`;
+});
+await T('nedröstad rapport tystnar', () => {
+  const b = kvalitet.bedomRapport({ ...egen, denials: 4, confirms: 1 }, { nu });
+  return b.behandling === kvalitet.BEHANDLING.TYST ||
+         b.behandling === kvalitet.BEHANDLING.UNDANHALL || `fick ${b.behandling}`;
+});
+await T('store.add sätter kvalitetsfälten', () => {
+  const s = new store.ReportStore({ mode: 'local' });
+  return s.add({ type: 'police', lat: 59.6, lon: 16.5, label: 'Test',
+                 gpsAccuracyM: 12, fartKmh: 40, geokod: 'gps', fordrojningS: 15 })
+    .then(r => {
+      const saknas = ['gpsAccuracyM', 'fartKmh', 'geokod', 'fordrojningS']
+        .filter(k => r[k] == null);
+      if (saknas.length) throw new Error('saknar ' + saknas.join(', '));
+      return true;
+    });
+});
+
+/* ---- Vakthunden ----------------------------------------------------- */
+G('Vakthund — tystnad är ett besked');
+
+await T('tiger när telefonen står still', () => {
+  const v = new vakthund.Vakthund();
+  const sagt = [];
+  v.addEventListener('warning', e => sagt.push(e.detail.id));
+  let t = 0;
+  v.notera({ speedKmh: 0 }, t);
+  for (let i = 0; i < 360; i++) { t += 10000; v.kontrollera({ delatLage: true, sistaSynk: t }, t); }
+  return sagt.length === 0 || `sa ${sagt.length} saker: ${sagt}`;
+});
+await T('varnar en gång när GPS tappas under körning', () => {
+  const v = new vakthund.Vakthund();
+  const sagt = [];
+  v.addEventListener('warning', e => sagt.push(e.detail.id));
+  let t = 0;
+  for (let i = 0; i < 10; i++) { t += 1000; v.notera({ speedKmh: 80 }, t); }
+  for (let i = 0; i < 30; i++) { t += 10000; v.kontrollera({ delatLage: true, sistaSynk: t }, t); }
+  return sagt.length === 1 && sagt[0] === 'gps' || `sa ${JSON.stringify(sagt)}`;
+});
+await T('tiger om synk i lokalt läge (ingen server att tappa)', () => {
+  const v = new vakthund.Vakthund();
+  const sagt = [];
+  v.addEventListener('warning', e => sagt.push(e.detail.id));
+  let t = 0;
+  for (let i = 0; i < 60; i++) {
+    t += 10000; v.notera({ speedKmh: 80 }, t);
+    v.kontrollera({ delatLage: false, synkFel: 'nere', sistaSynk: 0 }, t);
+  }
+  return !sagt.includes('synk') || `sa ${JSON.stringify(sagt)}`;
+});
+
+/* ---- Rösten --------------------------------------------------------- */
+G('Röstprioritet — en halv mening är värre än en fördröjd');
+
+await T('lika viktigt avbryter inte', async () => {
+  const { Speaker } = await import('./js/voice.js');
+  const origSpeak = speechSynthesis.speak.bind(speechSynthesis);
+  const origCancel = speechSynthesis.cancel.bind(speechSynthesis);
+  const avbrutna = [];
+  let pag = null;
+  speechSynthesis.speak = u => { pag = u; };
+  speechSynthesis.cancel = () => { if (pag) { avbrutna.push(pag.text); pag = null; } };
+  const sp = new Speaker(); sp.enabled = true;
+  sp.say('Polis rapporterad två kilometer fram', { priority: 2, interrupt: true });
+  sp.say('Jag har tappat GPS-signalen', { priority: 2, interrupt: true });
+  speechSynthesis.speak = origSpeak; speechSynthesis.cancel = origCancel;
+  return avbrutna.length === 0 || `avbröt: ${JSON.stringify(avbrutna)}`;
+});
+
+/* ---- Att få ut ett klipp --------------------------------------------- */
+G('Dashcam — klippet måste kunna lämna telefonen');
+
+await T('en inspelad fil går att dela som fil', () => {
+  // Det här är hela poängen med en dashcam: efter en krock ska filmen kunna
+  // lämnas till någon annan. `<a download>` gör ingenting på iOS, så Web Share
+  // med en File är den enda vägen där.
+  const blob = new Blob([new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112])], { type: 'video/mp4' });
+  const fil = new File([blob], 'dashcam-test.mp4', { type: 'video/mp4' });
+  if (!navigator.canShare) return 'hopp';   // dator utan delning — inte ett fel
+  return navigator.canShare({ files: [fil] })
+    || 'webbläsaren säger nej till att dela filer';
+});
+
+await T('knappen finns i markupen', async () => {
+  const html = await (await fetch('./index.html')).text();
+  return /id="clipShare"/.test(html) || 'clipShare saknas i index.html';
+});
+
+/* ---- Lägesväljaren --------------------------------------------------- */
+G('Kameraläge — ett i taget');
+
+const html = await (await fetch('./index.html')).text();
+const appSrc = await (await fetch('./js/app.js')).text();
+
+await T('båda lägena finns i markupen', () =>
+  (/id="modeRecord"/.test(html) && /id="modeRead"/.test(html))
+  || 'ett av korten saknas');
+
+await T('bilingenkännaren stoppar inspelningen', () =>
+  /modeRead[\s\S]{0,600}?dashcam\.stop\(\)/.test(appSrc)
+  || 'hittar ingen dashcam.stop() i lägesbytet — kameran skulle vara upptagen');
+
+await T('rätt URL-schema mot PlateVision', () =>
+  /platevision:\/\//.test(appSrc) || 'schemat saknas');
+
+await T('installationssvaret är formulerat som en gissning', () => {
+  // Det GÅR inte att fråga iOS om en app finns. Svaret måste därför hedgas —
+  // ett tvärsäkert "appen är inte installerad" blir fel så fort systemet är
+  // långsamt, och då tror användaren att filen är trasig.
+  const i = appSrc.indexOf('Ingenting öppnades');
+  const mening = i >= 0 ? appSrc.slice(i, i + 160) : '';
+  return /verkar inte|sannolikt|troligen/.test(mening)
+    || 'texten påstår för säkert att appen saknas';
+});
+
+/* ---- Kameradata ------------------------------------------------------ */
+G('Fartkameror');
+
+const kameror = await (await fetch('./data/cameras.json')).json();
+const lista = Array.isArray(kameror) ? kameror : (kameror.cameras || kameror.kameror || []);
+
+await T('filen går att läsa och innehåller kameror', () =>
+  lista.length > 100 || `fick ${lista.length}`);
+
+await T('alla har giltiga koordinater i Sverige', () => {
+  const fel = lista.filter(k =>
+    !(k.lat > 55 && k.lat < 69.2 && k.lon > 10.8 && k.lon < 24.2));
+  return fel.length === 0 || `${fel.length} utanför Sverige, t.ex. ${JSON.stringify(fel[0])}`;
+});
+
+await T('E18 mot Stockholm täcks (det gjorde den inte förut)', () => {
+  // Gamla rutan slutade vid longitud 17.30. Stockholm ligger på 18.07, så
+  // sista femtio kilometrarna av E18 var helt utan kameravarningar.
+  const ost = lista.filter(k => k.lon > 17.30);
+  return ost.length > 0 || 'inga kameror öster om longitud 17.30';
+});
+
+await T('inga dubbletter på samma koordinat', () => {
+  const sedda = new Set();
+  const dubbel = lista.filter(k => {
+    const n = `${k.lat.toFixed(5)},${k.lon.toFixed(5)}`;
+    if (sedda.has(n)) return true;
+    sedda.add(n); return false;
+  });
+  return dubbel.length === 0 || `${dubbel.length} dubbletter`;
+});
+
+await T('inga osynliga styrtecken i namnen', () => {
+  // Ett U+0085 låg gömt i ett namn efter en tidigare teckenkodningsmiss.
+  const trasiga = lista.filter(k => /[-�]/.test(k.name || ''));
+  return trasiga.length === 0
+    || `${trasiga.length} trasiga, t.ex. ${JSON.stringify(trasiga[0]?.name)}`;
+});
+
+/* ---- Grundläggande matte -------------------------------------------- */
+G('Geometri');
+
+await T('avstånd Västerås centrum → Erikslund ≈ 4 km', () => {
+  const d = util.distance(59.6099, 16.5448, 59.5860, 16.4700);
+  return nara(d, 4700, 1200) || `fick ${Math.round(d)} m`;
+});
+await T('bäring norrut ≈ 0°', () => {
+  const b = util.bearing(59.60, 16.54, 59.65, 16.54);
+  return (b < 5 || b > 355) || `fick ${Math.round(b)}°`;
+});
+
+/* =================================================================== */
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} av ${total} gick igenom` +
+  (fel ? ` — ${fel} MISSLYCKADES` : '') + (hopp ? ` — ${hopp} hoppade` : '');
+s.className = fel ? 'fel' : 'ok';
+window.__resultat = { ok, fel, hopp, total };
+</script>

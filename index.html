@@ -1,0 +1,962 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0b0f14">
+<meta name="description" content="Varnar för fartkameror och polis i Västmanland. Röstvarningar, karta och dashcam.">
+<title>Polisvakt Västmanland</title>
+
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Polisvakt">
+<meta name="mobile-web-app-capable" content="yes">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="./css/app.css">
+</head>
+<body data-view="map">
+
+<!-- Ikoner som SVG istället för emoji. Emoji renderas olika på varje telefon,
+     får full färg som krockar med resten, och går inte att färga om vid en
+     varning. De här följer temat och är skarpa i alla storlekar. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-police" viewBox="0 0 24 24">
+      <path d="M5 11l1.6-4.2A2 2 0 018.5 5.5h7a2 2 0 011.9 1.3L19 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="3" y="11" width="18" height="6.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <circle cx="7" cy="17.5" r="1.6" fill="currentColor"/>
+      <circle cx="17" cy="17.5" r="1.6" fill="currentColor"/>
+      <rect x="9.5" y="2.5" width="5" height="2.6" rx="1.3" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-control" viewBox="0 0 24 24">
+      <path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M12 7.5v5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="12" cy="16.4" r="1.15" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-unmarked" viewBox="0 0 24 24">
+      <path d="M5 11l1.6-4.2A2 2 0 018.5 5.5h7a2 2 0 011.9 1.3L19 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="3" y="11" width="18" height="6.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <circle cx="7" cy="17.5" r="1.6" fill="currentColor"/>
+      <circle cx="17" cy="17.5" r="1.6" fill="currentColor"/>
+      <path d="M9 8.2h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="2 2"/>
+    </symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24">
+      <rect x="2.5" y="6.5" width="14" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M16.5 11l5-2.6v7.2l-5-2.6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      <circle cx="9.5" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    </symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24">
+      <rect x="9" y="2.5" width="6" height="11" rx="3" fill="currentColor"/>
+      <path d="M5.5 11.5a6.5 6.5 0 0013 0" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <path d="M12 18v3.2M8.6 21.2h6.8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M15.4 15.4L20 20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-map" viewBox="0 0 24 24">
+      <path d="M9 4L3.5 6.2v13.3L9 17.3l6 2.4 5.5-2.2V4.2L15 6.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M9 4v13.3M15 6.4v13.3" stroke="currentColor" stroke-width="1.7"/>
+    </symbol>
+    <symbol id="i-dashcam" viewBox="0 0 24 24">
+      <rect x="2.5" y="6" width="19" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <circle cx="12" cy="12" r="3.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <circle cx="12" cy="12" r="1.1" fill="currentColor"/>
+      <path d="M8 6l1.4-2.2h5.2L16 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M12 2.6l1.5 2.6 3-.5.4 3 2.7 1.4-1.3 2.7 1.3 2.7-2.7 1.4-.4 3-3-.5L12 21.4l-1.5-2.6-3 .5-.4-3-2.7-1.4 1.3-2.7-1.3-2.7 2.7-1.4.4-3 3 .5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-mute-on" viewBox="0 0 24 24">
+      <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/>
+      <path d="M15.5 9a4.2 4.2 0 010 6M18 6.5a7.7 7.7 0 010 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-mute-off" viewBox="0 0 24 24">
+      <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/>
+      <path d="M16 9.5l5 5M21 9.5l-5 5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+
+<!-- ============ INLOGGNING ============ -->
+<div id="authScreen" class="auth-screen" hidden>
+  <div class="auth-card">
+    <div class="auth-brand">
+      <img src="./icon.svg" alt="" class="auth-logo" width="76" height="76">
+      <h1>Polisvakt</h1>
+      <p class="auth-region">Västmanland</p>
+    </div>
+
+    <p class="auth-lead" id="authLead">Logga in så följer prenumerationen och dina rapportpoäng med dig, oavsett vilken telefon du kör med.</p>
+
+    <div class="auth-tabs" id="authTabs">
+      <button data-mode="signin" class="active" type="button">Logga in</button>
+      <button data-mode="signup" type="button">Skapa konto</button>
+    </div>
+
+    <!-- action och method behövs inte tekniskt, men lösenordshanterare i iOS
+         och Chrome använder dem som signal för att det här är en riktig
+         inloggning värd att spara. Submit fångas ändå i JavaScript. -->
+    <form id="authForm" autocomplete="on" method="post" action="#" novalidate>
+      <label class="auth-field" id="fieldNick" hidden>
+        <span>Användarnamn <small>(valfritt — du kan logga in med det)</small></span>
+        <input type="text" id="authNick" name="new-username" maxlength="20"
+               autocomplete="username" autocapitalize="off" autocorrect="off"
+               spellcheck="false" placeholder="elliot">
+        <span class="field-note" id="nickNote"></span>
+      </label>
+      <label class="auth-field">
+        <!-- Ett fält för båda. Innehåller texten @ tolkas den som e-post,
+             annars som användarnamn — ingen ska behöva välja i en meny vad de
+             just skrev. -->
+        <span id="idLabel">Användarnamn eller e-post</span>
+        <input type="text" id="authEmail" name="username" autocomplete="username"
+               inputmode="email" enterkeyhint="next" autocapitalize="off"
+               autocorrect="off" spellcheck="false"
+               placeholder="elliot eller du@exempel.se" required>
+      </label>
+      <label class="auth-field">
+        <span>Lösenord</span>
+        <span class="pw-wrap">
+          <input type="password" id="authPass" name="password"
+                 autocomplete="current-password" enterkeyhint="go"
+                 placeholder="minst 8 tecken" required>
+          <button type="button" id="authPeek" class="pw-peek" aria-label="Visa lösenord">Visa</button>
+        </span>
+      </label>
+
+      <p class="auth-hint" id="pwHint">
+        Välj något du kommer ihåg. Vi sparar bara din e-post — inget namn,
+        ingen körhistorik, inga betaluppgifter. Lösenordet lagras krypterat och
+        kan inte läsas av oss.
+      </p>
+
+      <p class="auth-msg" id="authMsg" hidden></p>
+
+      <button type="submit" class="btn-primary big" id="authSubmit">Logga in</button>
+    </form>
+
+    <button class="auth-link" id="authForgot" type="button">Glömt lösenordet?</button>
+
+    <!-- Visas när man kommit hit från en återställningslänk i mejlet -->
+    <form id="resetForm" class="reset-form" hidden autocomplete="on">
+      <h2>Välj nytt lösenord</h2>
+      <p class="auth-lead" id="resetLead">Skriv ett nytt lösenord för ditt konto.</p>
+      <label class="auth-field">
+        <span>Nytt lösenord</span>
+        <span class="pw-wrap">
+          <input type="password" id="resetPass" name="new-password"
+                 autocomplete="new-password" enterkeyhint="go"
+                 placeholder="minst 8 tecken" required>
+          <button type="button" id="resetPeek" class="pw-peek">Visa</button>
+        </span>
+      </label>
+      <p class="auth-msg" id="resetMsg" hidden></p>
+      <button type="submit" class="btn-primary big" id="resetSubmit">Spara nytt lösenord</button>
+      <button class="auth-link" id="resetCancel" type="button">Avbryt</button>
+    </form>
+
+    <p class="auth-fine">Kontot behövs för att rapporter ska nå andra förare, och för att din
+      prenumeration ska följa med om du byter telefon.</p>
+
+    <button class="btn-ghost" id="authGuest" type="button" hidden>Fortsätt utan konto</button>
+    <p class="auth-fine" id="authNoBackend" hidden></p>
+  </div>
+</div>
+
+
+<!-- ============ KARTVY ============ -->
+<div id="view-map" class="view">
+  <div id="map"></div>
+
+  <!-- Toppanel -->
+  <header class="hud">
+    <div class="speedo" id="speedo">
+      <span class="speedo-num" id="speedNum">–</span>
+      <span class="speedo-unit">km/h</span>
+    </div>
+    <div class="limit-sign" id="limitSign" hidden>
+      <span id="limitNum">50</span>
+    </div>
+    <div class="chips" id="chips">
+      <button class="chip" id="chipGps" type="button"><span class="dot"></span>GPS</button>
+      <button class="chip" id="chipVoice" type="button"><span class="dot"></span>Röst</button>
+      <button class="chip" id="chipSync" type="button"><span class="dot"></span>Nät</button>
+      <button class="chip chip-trial" id="chipTrial" type="button" hidden></button>
+    </div>
+    <button class="icon-btn" id="btnMute" type="button" title="Tysta varningar" aria-label="Tysta varningar"><svg viewBox="0 0 24 24"><use href="#i-mute-on"/></svg></button>
+  </header>
+
+  <!-- Resmål.
+       Ligger under toppanelen och inte i en meny: ska man ange en adress
+       gör man det innan man kör, och då ska det vara det första man ser. -->
+  <div class="route-box" id="routeBox">
+    <div class="route-input">
+      <input id="routeDest" type="search" inputmode="search" autocomplete="off"
+             placeholder="Vart ska du? T.ex. Drottninggatan, Stockholm">
+      <button class="route-go" id="routeSearch" type="button" aria-label="Sök resmål">
+        <svg viewBox="0 0 24 24"><use href="#i-search"/></svg>
+      </button>
+    </div>
+    <ul class="route-results" id="routeResults"></ul>
+    <div class="route-bar" id="routeBar" hidden>
+      <span id="routeText"></span>
+      <button class="route-stop" id="routeClear" type="button">Avsluta</button>
+    </div>
+  </div>
+
+  <!-- Ny version finns. Ligger på kartan, inte begravd i inställningar. -->
+  <div class="update-banner" id="updateBanner" hidden>
+    <span class="ub-icon">↓</span>
+    <div class="ub-text">
+      <b>Ny version finns</b>
+      <span id="ubNote">Tryck för att uppdatera. Tar ett par sekunder.</span>
+    </div>
+    <button id="ubBtn" type="button">Uppdatera</button>
+    <button class="ub-close" id="ubLater" type="button" aria-label="Senare">✕</button>
+  </div>
+
+  <!-- Varningsbanner -->
+  <div id="alertBanner" class="alert-banner" hidden>
+    <div class="alert-icon" id="alertIcon">⚠️</div>
+    <div class="alert-body">
+      <div class="alert-title" id="alertTitle"></div>
+      <div class="alert-sub" id="alertSub"></div>
+    </div>
+    <button class="alert-close" id="alertClose" type="button" aria-label="Stäng">✕</button>
+  </div>
+
+  <!-- Följ-knapp -->
+  <button id="btnFollow" class="follow-btn" type="button" hidden>Centrera</button>
+
+  <!-- Ångra: ligger kvar sex sekunder efter en rapport -->
+  <div class="undo-bar" id="undoBar" hidden>
+    <span id="undoText"></span>
+    <button id="undoBtn" type="button">Ångra</button>
+  </div>
+
+  <!-- Lista över faror i närheten -->
+  <section class="sheet" id="sheet">
+    <button class="sheet-grip" id="sheetGrip" type="button" aria-label="Visa lista"></button>
+    <div class="sheet-head">
+      <h2 id="sheetTitle">I närheten</h2>
+      <span class="sheet-count" id="sheetCount"></span>
+    </div>
+    <ul class="hazard-list" id="hazardList"></ul>
+    <p class="sheet-empty" id="sheetEmpty">Inga rapporter i närheten just nu.</p>
+  </section>
+
+  <!-- Rapportera.
+       Talknappen är störst och sitter längst till höger, där tummen når utan
+       att man flyttar handen från ratten. Ingen kameraknapp — fartkamerorna
+       är fasta och hämtas från OpenStreetMap. -->
+  <nav class="actions" id="actions">
+    <button class="act" data-report="police" type="button">
+      <svg viewBox="0 0 24 24"><use href="#i-police"/></svg><span>Polis</span>
+    </button>
+    <button class="act" data-report="control" type="button">
+      <svg viewBox="0 0 24 24"><use href="#i-control"/></svg><span>Kontroll</span>
+    </button>
+    <button class="act" data-report="unmarked" type="button">
+      <svg viewBox="0 0 24 24"><use href="#i-unmarked"/></svg><span>Civil</span>
+    </button>
+    <button class="act act-mic" id="btnMic" type="button">
+      <svg viewBox="0 0 24 24"><use href="#i-mic"/></svg><span>Tala</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ============ DASHCAM ============ -->
+<div id="view-dashcam" class="view" hidden>
+  <div class="dc-stage" id="dcStage">
+    <canvas id="dcCanvas"></canvas>
+    <div class="dc-idle" id="dcIdle">
+      <div class="dc-idle-icon">🎥</div>
+      <h2>Kameraläge</h2>
+
+      <!-- Två lägen, ett i taget.
+           Inte ett designval utan en fysisk begränsning: bara en app åt gången
+           kan hålla kameran. Att låta båda se påslagna ut hade betytt att det
+           ena tyst slutar fungera. -->
+      <div class="mode-pick">
+        <button class="mode-card on" id="modeRecord" type="button" aria-pressed="true">
+          <span class="mode-ico">🎥</span>
+          <b>Spela in</b>
+          <small>Filmar framåt för din egen säkerhet. Sparar automatiskt vid en smäll.</small>
+        </button>
+        <button class="mode-card" id="modeRead" type="button" aria-pressed="false">
+          <span class="mode-ico">🔎</span>
+          <b>Bilingenkännare</b>
+          <small>Läser registreringsskyltar i realtid. Öppnas i PlateVision.</small>
+        </button>
+      </div>
+      <p class="hint" id="modeNote">Ett läge i taget — kameran kan bara användas av en sak åt gången.</p>
+
+      <p><b>Bakkameran filmar framåt</b> genom vindrutan, med ljud. Lägg telefonen i hållaren med baksidan mot vägen.</p>
+
+      <div class="dc-why">
+        <h3>Vad du har den till</h3>
+        <div class="why-item"><span>🤝</span><div><b>Vem körde in i vem.</b>
+          Vid en krock står ord mot ord, och den som saknar bevis förlorar oftast.
+          Filmen visar förloppet, och i bilden bränns <b>tid, datum och din
+          GPS-hastighet</b> in — så det går att styrka både när det hände och hur
+          fort du faktiskt körde.</div></div>
+        <div class="why-item"><span>📄</span><div><b>Försäkringsärenden.</b>
+          Bolagen accepterar dashcam-film som bevis. Det kan vara skillnaden mellan
+          full ersättning och delad skuld.</div></div>
+        <div class="why-item"><span>👮</span><div><b>Din egen dokumentation vid en kontroll.</b>
+          Blir du stoppad spelas hela samtalet in, med ljud. Det är fullt lagligt i
+          Sverige och skyddar båda parter. Blir du anklagad för något du inte gjort
+          har du din version inspelad.</div></div>
+        <div class="why-item"><span>🚗</span><div><b>Smitningar och parkeringsskador.</b>
+          Kör någon in i dig och försvinner finns bilen på film.</div></div>
+      </div>
+
+      <p class="dc-idle-note">Spelar in i loop och raderar det äldsta automatiskt, som en riktig dashcam.
+        Vid en smäll låses filmen av sig själv — du behöver inte trycka på något mitt i en krock.
+        <b>Allt stannar i din telefon.</b> Ingenting laddas upp någonstans, och du raderar själv när du vill.</p>
+      <button class="btn-primary big" id="dcStart" type="button">Starta inspelning</button>
+      <p class="dc-warn" id="dcSupport" hidden></p>
+    </div>
+    <div class="dc-rec" id="dcRec" hidden><span class="rec-dot"></span><span id="dcTime">0:00</span></div>
+  </div>
+
+  <div class="dc-controls" id="dcControls" hidden>
+    <div class="dc-zooms">
+      <label class="zoom">
+        <span>Bakkamera (framåt) <b id="zRearVal">1,0×</b></span>
+        <input type="range" id="zRear" min="1" max="5" step="0.1" value="1">
+      </label>
+      <label class="zoom" id="zFrontWrap">
+        <span>Kupékamera (av) <b id="zFrontVal">1,0×</b></span>
+        <input type="range" id="zFront" min="1" max="5" step="0.1" value="1">
+      </label>
+    </div>
+    <div class="dc-row">
+      <button class="btn-ghost" id="dcOrient" type="button">Liggande</button>
+      <button class="btn-ghost" id="dcSwitch" type="button">Byt kamera</button>
+      <button class="btn-ghost" id="dcAudio" type="button">Ljud: på</button>
+    </div>
+    <div class="dc-row dc-selects">
+      <label><span>Kvalitet</span>
+        <select id="dcQuality">
+          <option value="high">1080p</option>
+          <option value="medium">720p</option>
+          <option value="low">480p</option>
+        </select>
+      </label>
+      <label><span>Buffert</span>
+        <select id="dcBuffer">
+          <option value="10">10 min</option>
+          <option value="20">20 min</option>
+          <option value="30">30 min</option>
+          <option value="60">60 min</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint" id="dcEstimate"></p>
+    <div class="dc-row">
+      <button class="btn-danger big" id="dcEvent" type="button">Spara händelse</button>
+      <button class="btn-ghost" id="dcStop" type="button">Stoppa</button>
+    </div>
+  </div>
+
+  <div class="dc-library">
+    <div class="lib-head">
+      <h3>Sparade klipp</h3>
+      <span id="dcStorage" class="lib-storage"></span>
+    </div>
+    <ul class="clip-list" id="clipList"></ul>
+    <p class="sheet-empty" id="clipEmpty">Inga klipp ännu.</p>
+    <div class="lib-actions">
+      <button class="btn-ghost small" id="dcPurge" type="button">Radera olåsta</button>
+      <button class="btn-ghost small danger" id="dcPurgeAll" type="button">Radera allt</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ INSTÄLLNINGAR ============ -->
+<div id="view-settings" class="view scroll" hidden>
+  <h1 class="page-title">Inställningar</h1>
+
+  <section class="card card-update" id="updateCard">
+    <div class="update-row">
+      <span class="update-mark" id="updateMark">✓</span>
+      <div class="update-text">
+        <b id="versionInfo">Läser version…</b>
+        <span class="hint" id="updateState"></span>
+      </div>
+      <button class="btn-ghost small" id="btnUpdate" type="button">Sök</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Varningar</h3>
+    <label class="row"><span>Läs upp varningar</span><input type="checkbox" id="setTts" checked></label>
+    <label class="row"><span>Volym</span><input type="range" id="setVolume" min="0" max="1" step="0.05" value="1"></label>
+    <label class="row"><span>Talhastighet</span><input type="range" id="setRate" min="0.8" max="1.4" step="0.05" value="1.05"></label>
+    <label class="row"><span>Varningsradie polis <b id="setRadiusVal">1,5 km</b></span>
+      <input type="range" id="setRadius" min="500" max="5000" step="100" value="1500"></label>
+    <label class="row"><span>Framförhållning kamera <b id="setLeadVal">25 s</b></span>
+      <input type="range" id="setLead" min="10" max="45" step="1" value="25"></label>
+  </section>
+
+  <section class="card">
+    <h3>Var vill du bli varnad?</h3>
+    <label class="row"><span>Område</span>
+      <select id="setCoverage">
+        <option value="radius">Radie runt mig</option>
+        <option value="city">Hela Västerås</option>
+        <option value="county">Hela Västmanland</option>
+        <option value="route">Längs min rutt</option>
+      </select>
+    </label>
+    <label class="row" id="radiusRow"><span>Radie <b id="setCovRadiusVal">30 km</b></span>
+      <input type="range" id="setCovRadius" min="5000" max="80000" step="5000" value="30000"></label>
+    <div id="routeRow" hidden>
+      <label class="stack"><span>Vart ska du?</span>
+        <span class="inline">
+          <input type="text" id="routeDest" placeholder="t.ex. Stockholm" autocomplete="off">
+          <button class="btn-ghost small" id="btnRoute" type="button">Beräkna</button>
+        </span>
+      </label>
+      <button class="btn-ghost small" id="btnRouteClear" type="button">Rensa rutt</button>
+    </div>
+    <p class="hint" id="coverageDesc"></p>
+  </section>
+
+  <section class="card">
+    <h3>Påminnelse när du kör</h3>
+    <p class="hint">Appen lär sig när du brukar köra och påminner dig att slå på den. Börjar bilen rulla med appen öppen men ljudet av säger den till direkt.</p>
+    <label class="row"><span>Påminn mig</span><input type="checkbox" id="setDriveReminder" checked></label>
+    <label class="row"><span>Mörkt läge efter solnedgång</span><input type="checkbox" id="setNightAuto" checked></label>
+    <p class="hint" id="driveStatus"></p>
+    <button class="btn-ghost small" id="btnNotify" type="button">Tillåt notiser</button>
+    <p class="hint" id="notifyStatus"></p>
+  </section>
+
+  <section class="card">
+    <h3>Vinterläge</h3>
+    <p class="hint">Varnar för halka och för vilt kring skymningen. Vägbanan kan ligga under noll trots plusgrader i luften — det är den situationen som fäller flest. Väderdata från SMHI.</p>
+    <label class="row"><span>Varna för halka och vilt</span><input type="checkbox" id="setWinter" checked></label>
+    <p class="hint" id="winterStatus"></p>
+  </section>
+
+  <section class="card">
+    <h3>Grupper</h3>
+    <p class="hint">En privat grupp för åkeriet, körskolan eller kompisgänget. Ni ser varandras rapporter utöver det vanliga flödet — men ingen utanför gruppen ser era.</p>
+
+    <div class="group-list" id="groupList"></div>
+    <p class="hint" id="groupEmpty">Du är inte med i någon grupp än.</p>
+
+    <div class="row-inline">
+      <input id="groupCode" type="text" inputmode="latin" autocomplete="off" placeholder="Inbjudningskod">
+      <button class="btn-ghost small" id="btnGroupJoin" type="button">Gå med</button>
+    </div>
+    <div class="row-inline">
+      <input id="groupName" type="text" autocomplete="off" placeholder="Namn på ny grupp">
+      <button class="btn-ghost small" id="btnGroupCreate" type="button">Skapa</button>
+    </div>
+    <p class="hint" id="groupStatus"></p>
+  </section>
+
+  <section class="card">
+    <h3>Testa hur det låter</h3>
+    <p class="hint">Kör provet med musiken igång, så hör du att den dämpas och kommer tillbaka — precis som ett trafikmeddelande på radion.</p>
+    <div class="test-grid">
+      <button class="btn-ghost small" data-demo="police">🚓 Polis framför</button>
+      <button class="btn-ghost small" data-demo="camera">📷 Fartkamera</button>
+      <button class="btn-ghost small" data-demo="control">🛑 Kontroll</button>
+      <button class="btn-ghost small" data-demo="speed">⚡ Kör för fort</button>
+      <button class="btn-ghost small" data-demo="report">✅ Din rapport</button>
+      <button class="btn-ghost small" data-demo="hotspot">📍 Känd plats</button>
+    </div>
+    <p class="hint" id="demoText"></p>
+  </section>
+
+  <section class="card">
+    <h3>Röststyrning</h3>
+    <label class="row"><span>Väckningsord "Hej vakt"</span><input type="checkbox" id="setWake"></label>
+    <p class="hint" id="wakeHint"></p>
+    <p class="hint">Säg till exempel: <i>"Hej vakt … polis vid Dillos"</i>, <i>"polis här"</i>, <i>"polisen är borta"</i>, <i>"tyst"</i>.</p>
+  </section>
+
+  <section class="card">
+    <h3>Hastighetsgräns</h3>
+    <label class="row"><span>Visa gränsen för vägen du kör på</span><input type="checkbox" id="setLimitOn" checked></label>
+    <label class="row"><span>Varna när du kör för fort</span><input type="checkbox" id="setSpeedWarn" checked></label>
+    <label class="row"><span>Marginal innan varning <b id="setMarginVal">7 km/h</b></span>
+      <input type="range" id="setMargin" min="0" max="20" step="1" value="7"></label>
+    <p class="hint">Marginalen finns för att GPS-farten ligger några km/h fel och för att bilens mätare visar högre än verklig fart. Vid 0 varnar appen på varje liten överträdelse.</p>
+    <p class="hint" id="limitStatus">Vägdata hämtas automatiskt för området du kör i.</p>
+    <button class="btn-ghost small" id="btnClearRoads" type="button">Rensa nedladdad vägdata</button>
+  </section>
+
+  <section class="card">
+    <h3>Rattknappar</h3>
+    <p class="hint">Rapportera utan att släppa ratten. En Bluetooth-dosa på ratten fungerar direkt. Bilens egna mediaknappar kräver att appen tar över mediakontrollen — då tystnar Spotify.</p>
+    <label class="row"><span>Ta över bilens mediaknappar</span><input type="checkbox" id="setRemote"></label>
+    <div id="remoteBindings">
+      <label class="row"><span>Nästa spår</span><select id="bindNext"></select></label>
+      <label class="row"><span>Föregående spår</span><select id="bindPrev"></select></label>
+      <label class="row"><span>Play / paus</span><select id="bindPlay"></select></label>
+    </div>
+    <p class="hint" id="remoteStatus"></p>
+  </section>
+
+  <section class="card">
+    <h3>Krockdetektering</h3>
+    <p class="hint">Telefonen känner en smäll långt innan du hinner trycka på en knapp. Vid kraftig inbromsning eller kollision låses dashcam-klippet automatiskt.</p>
+    <label class="row"><span>Lås klipp vid smäll</span><input type="checkbox" id="setImpact" checked></label>
+    <label class="row"><span>Känslighet</span>
+      <select id="setImpactLevel">
+        <option value="low">Låg — bara riktiga krockar (3 g)</option>
+        <option value="normal" selected>Normal — även panikbroms (1,2 g)</option>
+        <option value="high">Hög — all kraftig inbromsning (0,8 g)</option>
+      </select>
+    </label>
+    <p class="hint" id="impactStatus"></p>
+  </section>
+
+  <section class="card">
+    <h3>Historik och mönster</h3>
+    <p class="hint" id="statsSummary">Samlar in…</p>
+    <label class="row"><span>Visa återkommande platser på kartan</span><input type="checkbox" id="setHotspots" checked></label>
+    <label class="row"><span>Säg till vid kända platser</span><input type="checkbox" id="setHotspotVoice" checked></label>
+    <ul class="hotspot-list" id="hotspotList"></ul>
+    <button class="btn-ghost small danger" id="btnClearStats" type="button">Rensa historiken</button>
+  </section>
+
+  <section class="card">
+    <h3>Din rapportpoäng</h3>
+    <p class="hint">De <b>10 som rapporterar mest</b> under en månad får nästa månad gratis. Poängen belönar rapporter som andra bekräftar, inte flest rapporter.</p>
+    <div class="score-big"><span id="repScore">0</span><small>poäng denna månad</small></div>
+    <ul class="rep-breakdown" id="repBreakdown"></ul>
+    <label class="stack"><span>Namn på topplistan (valfritt)</span>
+      <span class="inline"><input type="text" id="repNick" placeholder="t.ex. Elliot V" maxlength="20"><button class="btn-ghost small" id="btnRepSave" type="button">Spara</button></span>
+    </label>
+    <h4 class="sub-head">Månadens topplista</h4>
+    <ol class="leaderboard" id="leaderboard"></ol>
+    <p class="hint" id="repHint"></p>
+  </section>
+
+  <section class="card">
+    <h3>Delning</h3>
+    <label class="row"><span>Läge</span>
+      <select id="setMode">
+        <option value="local">Bara min telefon</option>
+        <option value="supabase">Delat med alla (Supabase)</option>
+      </select>
+    </label>
+    <div id="supaFields" hidden>
+      <label class="stack"><span>Supabase URL</span><input type="url" id="setSupaUrl" placeholder="https://xxxx.supabase.co"></label>
+      <label class="stack"><span>Anon-nyckel</span><input type="text" id="setSupaKey" placeholder="eyJhbGciOi..."></label>
+      <label class="row"><span>Hämta ny data var <b id="setPollVal">30 s</b></span>
+        <input type="range" id="setPoll" min="10" max="120" step="5" value="30"></label>
+    </div>
+    <button class="btn-ghost small" id="setSave" type="button">Spara och anslut</button>
+    <p class="hint" id="syncHint"></p>
+  </section>
+
+  <section class="card">
+    <h3>Karta</h3>
+    <label class="row"><span>Tema</span>
+      <select id="setTheme">
+        <option value="auto">Automatiskt</option>
+        <option value="night">Mörkt</option>
+        <option value="day">Ljust</option>
+      </select>
+    </label>
+    <label class="row"><span>Håll skärmen tänd</span><input type="checkbox" id="setAwake" checked></label>
+  </section>
+
+  <section class="card">
+    <h3>Fartkameror</h3>
+    <p class="hint" id="camCount">Laddar…</p>
+    <p class="hint">Kameradata kommer från OpenStreetMap och täcker hela Sverige — 2 466 fasta kameror. Kör <code>tools/hamta-kameror.ps1</code> för att hämta färsk data. Mobila kameror och sträckmätning finns inte i underlaget.</p>
+    <a class="btn-ghost small" href="./tools/import-cameras.html" target="_blank" rel="noopener">Öppna importverktyget</a>
+  </section>
+
+  <section class="card">
+    <h3>Inlärda platser</h3>
+    <p class="hint">Platser du pekat ut på kartan. Appen kommer ihåg dem för alltid.</p>
+    <ul class="learned-list" id="learnedList"></ul>
+  </section>
+
+  <section class="card">
+    <h3>Konto</h3>
+    <p class="billing-status" id="accountStatus"></p>
+    <div class="dc-row" id="accountActions"></div>
+  </section>
+
+  <section class="card">
+    <h3>Tillbehör</h3>
+    <p class="hint">Sakerna som gör appen bättre i bilen. Inget går att beställa än — anmäl intresse så hör vi av oss när lagret är på plats.</p>
+    <div class="shop" id="shopList"></div>
+  </section>
+
+  <section class="card">
+    <h3>Prenumeration</h3>
+    <p id="billingStatus" class="billing-status"></p>
+    <div class="plans" id="planList"></div>
+    <p class="hint" id="fineCompare"></p>
+    <button class="btn-primary" id="btnSubscribe" type="button">Fortsätt för 99 kr/mån</button>
+    <label class="stack"><span>Har du en kod?</span>
+      <span class="inline"><input type="text" id="redeemCode" placeholder="KOD"><button class="btn-ghost small" id="btnRedeem" type="button">Lös in</button></span>
+    </label>
+    <p class="hint" id="redeemHint"></p>
+  </section>
+
+  <section class="card">
+    <h3>Introduktionsguide</h3>
+    <p class="hint">Genomgången du fick när du skapade kontot. Visar varje knapp och när du använder den.</p>
+    <button class="btn-ghost small" id="btnTour" type="button">Visa guiden igen</button>
+  </section>
+
+  <section class="card">
+    <h3>Lägg till på hemskärmen</h3>
+    <button class="btn-ghost small" id="btnGuide" type="button">Visa guide</button>
+  </section>
+
+  <section class="card">
+    <h3>Dela appen</h3>
+    <p class="hint">Låt någon skanna koden med mobilkameran så öppnas appen direkt hos dem. Ju fler som rapporterar, desto bättre fungerar den för alla.</p>
+    <div class="qr-wrap" id="qrWrap"></div>
+    <p class="qr-url" id="qrUrl"></p>
+    <div class="dc-row">
+      <button class="btn-ghost small" id="btnQrShare" type="button">Dela länk</button>
+      <button class="btn-ghost small" id="btnQrSave" type="button">Spara koden</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Vart appen är på väg</h3>
+    <p class="hint">Rötterna nertill är det som redan står stadigt. Uppåt växer det mot det som inte finns än.</p>
+    <div class="roadmap" id="roadmapChain"></div>
+  </section>
+
+  <section class="card">
+    <h3>Vad vi inte rapporterar</h3>
+    <p class="hint"><b>Nykterhets- och drogkontroller.</b> Appen känner igen dem i text och tal och
+      vägrar lägga upp dem, oavsett om de kommer från en knapp, från rösten eller från
+      Facebook-gruppen. Att hjälpa någon köra vidare berusad är inte vad det här är till för.</p>
+    <p class="hint"><b>Register över civila polisbilar.</b> Vi sparar inga registreringsnummer,
+      bilmärken eller foton på polisfordon. "Civil"-rapporten visar att en civil bil setts på en
+      plats, och försvinner efter 30 minuter.</p>
+  </section>
+
+  <section class="card">
+    <h3>Om</h3>
+    <p class="hint">Polisvakt Västmanland. Rapporter är användargenererade och kan vara felaktiga eller inaktuella. Du kör — appen gissar. Titta på vägen, inte på skärmen.</p>
+    <p class="hint">Kartdata och kameradata © OpenStreetMap-bidragsgivare (ODbL). Rutter: OSRM. Adressökning: Nominatim. Väder: SMHI.</p>
+  </section>
+</div>
+
+<!-- ============ BOTTENNAVIGERING ============ -->
+<nav class="tabbar">
+  <button data-view="map" class="tab active" type="button">
+    <svg viewBox="0 0 24 24"><use href="#i-map"/></svg><span>Karta</span>
+  </button>
+  <button data-view="dashcam" class="tab" type="button">
+    <svg viewBox="0 0 24 24"><use href="#i-dashcam"/></svg><span>Dashcam</span>
+  </button>
+  <button data-view="settings" class="tab" type="button">
+    <svg viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Inställningar</span>
+  </button>
+</nav>
+
+<!-- ============ MODALER ============ -->
+
+<!-- Rapportbekräftelse / platsval -->
+<div class="modal" id="modalReport" hidden>
+  <div class="modal-card">
+    <h2 id="mrTitle">Rapportera</h2>
+    <p id="mrBody"></p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="mrCancel" type="button">Avbryt</button>
+      <button class="btn-primary" id="mrConfirm" type="button">Rapportera</button>
+    </div>
+  </div>
+</div>
+
+<!-- Lär appen en plats -->
+<div class="modal" id="modalTeach" hidden>
+  <div class="modal-card">
+    <h2>Var ligger det?</h2>
+    <p id="mtBody">Appen känner inte igen platsen. Peka på kartan så kommer den ihåg den för alltid.</p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="mtCancel" type="button">Hoppa över</button>
+      <button class="btn-primary" id="mtPick" type="button">Peka på kartan</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rösthjälp -->
+<div class="voice-overlay" id="voiceOverlay" hidden>
+  <div class="voice-ring"></div>
+  <div class="voice-text" id="voiceText">Lyssnar…</div>
+  <div class="voice-hint" id="voiceHint">Säg till exempel: <i>"Polis står vid rondellen på Norrleden"</i></div>
+  <button class="btn-ghost" id="voiceCancel" type="button">Avbryt</button>
+</div>
+
+<!-- Installationsguide -->
+<div class="modal" id="modalInstall" hidden>
+  <div class="modal-card wide">
+    <h2>Lägg appen på hemskärmen</h2>
+    <p class="hint">Då startar den i helskärm och du slipper leta upp sidan varje gång.</p>
+    <div class="platform-pick" id="platformPick">
+      <button data-platform="iphone" type="button">iPhone</button>
+      <button data-platform="samsung" type="button">Samsung</button>
+      <button data-platform="android" type="button">Annan Android</button>
+    </div>
+    <ol class="guide-steps" id="guideSteps"></ol>
+    <p class="guide-note" id="guideNote"></p>
+    <div class="modal-actions">
+      <button class="btn-primary" id="btnNativeInstall" type="button" hidden>Installera nu</button>
+      <button class="btn-ghost" id="miClose" type="button">Klart</button>
+    </div>
+  </div>
+</div>
+
+<!-- Betalvägg -->
+<div class="modal" id="modalPaywall" hidden>
+  <div class="modal-card">
+    <div class="paywall-icon">🚓</div>
+    <h2 id="pwTitle">Provperioden är slut</h2>
+    <p id="pwBody">Du har testat Polisvakt i 5 dagar. Fortsätt få röstvarningar för fartkameror och polis i Västmanland för 99 kr i månaden. Avsluta när du vill.</p>
+    <ul class="paywall-list">
+      <li>Röstvarningar för fartkameror och polis</li>
+      <li>Realtidsrapporter från alla i Västmanland</li>
+      <li>Dashcam med ljud och bild-i-bild</li>
+      <li>Röststyrning utan att röra telefonen</li>
+    </ul>
+    <div class="modal-actions column">
+      <button class="btn-primary big" id="pwSubscribe" type="button">Fortsätt för 99 kr/mån</button>
+      <button class="btn-ghost" id="pwLater" type="button">Senare</button>
+    </div>
+  </div>
+</div>
+
+<!-- Klippspelare -->
+<div class="modal" id="modalClip" hidden>
+  <div class="modal-card wide">
+    <h2 id="clipTitle">Klipp</h2>
+    <video id="clipVideo" controls playsinline></video>
+    <div class="modal-actions">
+      <button class="btn-primary" id="clipShare" type="button" hidden>Spara eller skicka</button>
+      <button class="btn-ghost" id="clipDownload" type="button">Ladda ner</button>
+      <button class="btn-ghost danger" id="clipDelete" type="button">Radera</button>
+      <button class="btn-primary" id="clipClose" type="button">Stäng</button>
+    </div>
+  </div>
+</div>
+
+<!-- Ansvarsfriskrivning, visas före allt annat vid första starten -->
+<!-- Mikrofonen är avstängd.
+     Ett nej från webbläsaren är inte slutet: ibland var det en feltryckning
+     och en ny fråga går fram, ibland sitter blockeringen kvar och då måste
+     man in i inställningarna. Användaren kan inte veta vilket — så vi
+     erbjuder båda istället för att bara konstatera att det inte gick. -->
+<!-- Bilingenkännaren finns i en egen app.
+     Skyltavläsning i realtid går inte att göra i en webbläsare: den kan inte
+     köra textigenkänning på skyltar i rörelse med rimlig träffsäkerhet, och
+     absolut inte samtidigt som telefonen komprimerar video. PlateVision
+     använder Apples Vision och Neural Engine, som är byggda för det. -->
+<div class="modal" id="modalPlate" hidden>
+  <div class="modal-card">
+    <h2>Bilingenkännaren</h2>
+    <p id="plateBody">Skyltavläsningen kör i <b>PlateVision</b> — en egen app som använder
+      iPhonens Neural Engine. All analys sker på telefonen; ingen bild lämnar den.</p>
+    <p class="hint" id="plateHint"></p>
+    <div class="modal-actions">
+      <button class="btn-primary" id="plateOpen" type="button">Öppna PlateVision</button>
+      <button class="btn-ghost" id="plateHelp" type="button">Jag har den inte</button>
+      <button class="btn-ghost" id="plateCancel" type="button">Avbryt</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modalMic" hidden>
+  <div class="modal-card">
+    <h2>Slå på mikrofonen?</h2>
+    <p id="micWhy">Mikrofonen är avstängd för Polisvakt, så talknappen kan inte användas.</p>
+    <p class="hint" id="micHow"></p>
+    <div class="modal-actions">
+      <button class="btn-primary" id="micEnable" type="button">Slå på</button>
+      <button class="btn-ghost" id="micHelp" type="button">Så här gör du</button>
+      <button class="btn-ghost" id="micCancel" type="button">Inte nu</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modalDisclaimer" hidden>
+  <div class="modal-card wide disclaimer">
+    <h2>Innan du börjar</h2>
+
+    <div class="disc-item">
+      <span class="disc-ico">👁️</span>
+      <div>
+        <b>Titta på vägen, inte på skärmen.</b>
+        Appen är gjord för att höras, inte läsas. Allt viktigt läses upp. Sätt telefonen i en hållare
+        och rör den inte under körning — att hålla telefonen i handen bakom ratten är olagligt.
+      </div>
+    </div>
+
+    <div class="disc-item">
+      <span class="disc-ico">⚠️</span>
+      <div>
+        <b>Rapporterna kommer från andra förare och kan vara fel.</b>
+        En rapport betyder inte att polisen står där. Att det saknas rapport betyder inte att vägen
+        är fri. Appen visar alltid hur gammal en uppgift är — värdera den själv.
+      </div>
+    </div>
+
+    <div class="disc-item">
+      <span class="disc-ico">🚗</span>
+      <div>
+        <b>Hastighetsgränsen kommer från OpenStreetMap och kan vara inaktuell.</b>
+        Skyltarna vid vägen gäller alltid före appen. Tillfälliga gränser vid vägarbeten finns
+        oftast inte i datan alls.
+      </div>
+    </div>
+
+    <div class="disc-item">
+      <span class="disc-ico">⚖️</span>
+      <div>
+        <b>Fortkörning är ditt eget ansvar.</b>
+        Appen är byggd för att du ska hålla hastigheten, inte för att slippa konsekvenserna av att
+        låta bli. Hastighetsgränser gäller oavsett vad appen säger.
+      </div>
+    </div>
+
+    <div class="disc-item">
+      <span class="disc-ico">🚫</span>
+      <div>
+        <b>Nykterhetskontroller rapporteras inte.</b>
+        Att varna för en fartkamera hjälper dig hålla hastigheten. Att varna för en
+        nykterhetskontroll hjälper någon att köra vidare full. Appen vägrar sådana rapporter —
+        från knapparna, från rösten och från Facebook-gruppen. Det gäller även droger.
+      </div>
+    </div>
+
+    <div class="disc-item">
+      <span class="disc-ico">🎥</span>
+      <div>
+        <b>Dashcam-filmerna stannar i din telefon.</b>
+        Ingenting laddas upp någonstans. Du raderar dem själv i appen. Filmar du andra människor
+        ansvarar du för hur materialet används.
+      </div>
+    </div>
+
+    <div class="disc-item">
+      <span class="disc-ico">📍</span>
+      <div>
+        <b>Din position lämnar aldrig telefonen om du inte rapporterar.</b>
+        Rapporterar du delas platsen för det du rapporterar — inte din egen färdväg. Ingen
+        körhistorik sparas eller skickas.
+      </div>
+    </div>
+
+    <label class="disc-accept">
+      <input type="checkbox" id="discCheck">
+      <span>Jag har läst och förstått. Jag kör efter skyltarna, inte efter appen.</span>
+    </label>
+
+    <div class="modal-actions">
+      <button class="btn-primary big" id="discAccept" type="button" disabled>Kom igång</button>
+    </div>
+  </div>
+</div>
+
+<!-- Introduktionsguide: mörkläggning med hål över det som förklaras -->
+<div class="tour" id="tour" hidden>
+  <svg class="tour-mask" id="tourMask" aria-hidden="true">
+    <defs>
+      <mask id="tourHole">
+        <rect width="100%" height="100%" fill="#fff"/>
+        <rect id="tourHoleRect" x="0" y="0" width="0" height="0" rx="16" fill="#000"/>
+      </mask>
+    </defs>
+    <rect width="100%" height="100%" fill="rgba(4,7,11,.86)" mask="url(#tourHole)"/>
+  </svg>
+  <div class="tour-ring" id="tourRing" hidden></div>
+  <div class="tour-arrow" id="tourArrow" hidden>▲</div>
+  <div class="tour-card" id="tourCard">
+    <div class="tour-step" id="tourStep">1 av 9</div>
+    <h2 id="tourTitle"></h2>
+    <p id="tourBody"></p>
+    <div class="tour-actions">
+      <button class="tour-skip" id="tourSkip" type="button">Hoppa över</button>
+      <button class="btn-ghost small" id="tourBack" type="button">Tillbaka</button>
+      <button class="btn-primary" id="tourNext" type="button">Nästa</button>
+    </div>
+    <div class="tour-dots" id="tourDots"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<!-- Räddningsnät.
+     Om app.js inte går att ladda — syntaxfel i en deploy, halv fil i cachen,
+     avbruten nedladdning — så är hela appen död OCH kan inte uppdatera sig
+     själv, eftersom uppdateringslogiken ligger i samma fil. Då blir telefonen
+     kvar på den trasiga versionen tills någon rensar webbläsardata manuellt.
+     Det får inte hända en användare som sitter i en bil.
+     Den här snutten är vanlig JavaScript utan moduler, så den överlever även
+     när allt annat brinner. -->
+<script>
+(function () {
+  var loaded = false, failed = false;
+  window.addEventListener('polisvakt:ready', function () { loaded = true; });
+  window.addEventListener('error', function (e) {
+    if (e && e.target && /\/js\/.*\.js/.test(e.target.src || '')) failed = true;
+  }, true);
+
+  function rescue(reason) {
+    if (document.getElementById('rescue')) return;
+    var d = document.createElement('div');
+    d.id = 'rescue';
+    d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0b0f14;color:#eef4fa;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;' +
+      'padding:32px;text-align:center;font:16px/1.5 -apple-system,system-ui,sans-serif';
+    d.innerHTML =
+      '<div style="font-size:40px">🔧</div>' +
+      '<h1 style="font-size:21px;margin:0">Appen behöver hämtas om</h1>' +
+      '<p style="color:#93a4b6;margin:0;max-width:22em">En del av appen kunde inte laddas. ' +
+      'Tryck nedan så hämtas den senaste versionen. Dina inställningar och konto påverkas inte.</p>' +
+      '<button id="rescueBtn" style="background:#3d9dff;color:#04101d;border:0;border-radius:12px;' +
+      'padding:15px 26px;font-size:16px;font-weight:650">Hämta senaste versionen</button>' +
+      '<small style="color:#5d6e80">' + reason + '</small>';
+    document.body.appendChild(d);
+    document.getElementById('rescueBtn').onclick = function () {
+      this.textContent = 'Hämtar…';
+      var done = function () { location.replace(location.pathname + '?v=' + Date.now()); };
+      var jobs = [];
+      if (window.caches) jobs.push(caches.keys().then(function (k) {
+        return Promise.all(k.map(function (n) { return caches.delete(n); }));
+      }));
+      if (navigator.serviceWorker) jobs.push(
+        navigator.serviceWorker.getRegistrations().then(function (rs) {
+          return Promise.all(rs.map(function (r) { return r.unregister(); }));
+        }));
+      Promise.all(jobs).then(done, done);
+      setTimeout(done, 4000);
+    };
+  }
+
+  // Har appen inte sagt ifrån inom åtta sekunder är något fel
+  setTimeout(function () {
+    if (!loaded) rescue(failed ? 'En skriptfil kunde inte läsas.' : 'Appen svarade inte i tid.');
+  }, 8000);
+})();
+</script>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
