@@ -455,7 +455,14 @@ revoke all on public.korpaminnelse_halsa from anon, authenticated;
  *   ut ett NOTICE som säger vad du ska göra i stället:
  *
  *      Supabase Dashboard -> Edge Functions -> send-reminder -> Schedules
- *      Cron: */5 * * * *
+ *      Cron: var femte minut. Uttrycket står ordagrant i cron.schedule-
+ *      anropet längre ner i den här filen — kopiera det därifrån.
+ *
+ *   Och skriv det INTE här: cron-uttrycket för var femte minut innehåller en
+ *   stjärna följd av snedstreck, vilket är exakt tecknen som avslutar en
+ *   blockkommentar. Står uttrycket i en sådan kommentar tar kommentaren slut
+ *   mitt i raden, resten tolkas som SQL, och filen dör på "syntax error at or
+ *   near 5". Det tog en körning mot en riktig databas att hitta.
  *
  *   Den vägen kräver inga tillägg alls och är den som rekommenderas på
  *   Supabase Free. pg_cron finns bara på betalda projekt och på vissa
