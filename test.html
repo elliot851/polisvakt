@@ -236,6 +236,90 @@ await T('knappen finns i markupen', async () => {
   return /id="clipShare"/.test(html) || 'clipShare saknas i index.html';
 });
 
+/* ---- Ruttmotorn ------------------------------------------------------ */
+G('Rutt — varna för det som ligger framför, inte bredvid');
+
+{
+  const { RouteGuide } = await import('./js/rutt.js');
+
+  // En rak väg österut från Västerås, 10 km. Vi matar in den som ett
+  // OSRM-svar så att hela den riktiga kodvägen körs — geometri, avstånd,
+  // projicering — utan att röra nätet.
+  const lat0 = 59.6100, lon0 = 16.5000;
+  const punkter = [];
+  for (let i = 0; i <= 100; i++) punkter.push([lon0 + i * 0.0018, lat0]);   // OSRM: [lon, lat]
+
+  const origFetch = window.fetch;
+  window.fetch = async (url, ...rest) => {
+    if (/osrm|route\/v1/i.test(String(url))) {
+      return new Response(JSON.stringify({
+        code: 'Ok',
+        routes: [{ distance: 10000, duration: 600, geometry: { coordinates: punkter } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return origFetch(url, ...rest);
+  };
+
+  const nu = Date.now();
+  const rapport = (id, lat, lon) => ({
+    id, type: 'police', lat, lon, label: id,
+    createdAt: nu - 2 * 60000, expiresAt: nu + 40 * 60000,
+    confirms: 1, denials: 0, source: 'app', geokod: 'gps',
+    gpsAccuracyM: 10, fartKmh: 60, fordrojningS: 15,
+  });
+
+  // Tre rapporter: en på vägen framför, en på en parallellgata 400 m norrut,
+  // en på vägen men bakom oss.
+  const rapporter = [
+    rapport('framfor',   lat0,          lon0 + 0.0540),   // ~3 km fram
+    rapport('parallell', lat0 + 0.0036, lon0 + 0.0540),   // 400 m norr om den
+    rapport('bakom',     lat0,          lon0 + 0.0018),   // 100 m bakom start
+  ];
+  const fejkStore = { active: () => rapporter };
+
+  const guide = new RouteGuide(fejkStore, { handoffM: 1500 });
+  let ruttOk = false;
+  try {
+    await guide.setDestination({ lat: lat0, lon: lon0 + 0.18, label: 'Målet' },
+                               { lat: lat0, lon: lon0, speedKmh: 80 });
+    ruttOk = !!guide.route;
+  } catch (e) { ruttOk = 'kastade: ' + e.message; }
+
+  await T('rutten byggs ur svaret', () => ruttOk === true || String(ruttOk));
+
+  // Kör en bit in på rutten
+  for (let i = 0; i < 8; i++) {
+    guide.update({ lat: lat0, lon: lon0 + i * 0.0018, speedKmh: 80, heading: 90,
+                   accuracy: 10, at: nu + i * 1000 });
+  }
+
+  await T('rapporten på vägen framför hittas', () => {
+    const fram = guide.aheadList(10).map(x => x.report?.id);
+    return fram.includes('framfor') || `hittade: ${JSON.stringify(fram)}`;
+  });
+
+  await T('parallellgatan 400 m bort räknas INTE som framför', () => {
+    const fram = guide.aheadList(10).map(x => x.report?.id);
+    return !fram.includes('parallell') || 'parallellgatan kom med — korridoren är för bred';
+  });
+
+  await T('det vi redan passerat varnas inte för', () => {
+    const fram = guide.aheadList(10).map(x => x.report?.id);
+    return !fram.includes('bakom') || 'en rapport bakom oss räknas som framför';
+  });
+
+  await T('filterHazards lämnar kvar det rutten inte tagit', () => {
+    // Utan aktiv rutt får ingenting filtreras bort — annars kan ruttmotorn
+    // tysta appen genom att gå sönder.
+    const tom = new RouteGuide(fejkStore, {});
+    const kvar = tom.filterHazards(rapporter);
+    return kvar.length === rapporter.length
+      || `utan rutt försvann ${rapporter.length - kvar.length} rapporter`;
+  });
+
+  window.fetch = origFetch;
+}
+
 /* ---- Lägesväljaren --------------------------------------------------- */
 G('Kameraläge — ett i taget');
 
