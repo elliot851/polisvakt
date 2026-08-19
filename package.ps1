@@ -21,8 +21,12 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $root = $PSScriptRoot
 
-# Filer som inte hör hemma på en publik sajt
-$skip = @('polisvakt.zip', 'serve.ps1', 'package.ps1')
+# Filer som inte hör hemma på en publik sajt.
+# Arbetsanteckningarna är undantagna av samma skäl som de ligger i .gitignore:
+# de innehåller inga lösenord, men de beskriver vad som är trasigt och vad som
+# återstår, och det tjänar ingenting på att ligga öppet.
+$skip = @('polisvakt.zip', 'serve.ps1', 'package.ps1',
+          'NIGHT_LOG.md', 'MANUELLT.md', 'BLOCKERADE.md')
 $skipDirs = @('.git', 'node_modules', '.claude')
 
 if (Test-Path $Out) { Remove-Item $Out -Force }
