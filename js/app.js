@@ -942,9 +942,52 @@ function wireGroups() {
   const list = $('groupList');
   if (!list) return;
 
+  /*
+   * Var hamnar mina rapporter?
+   *
+   * Datavägen fanns men ingen kunde välja — group_id blev null för alla, och
+   * en grupp utan rapporter är ingen grupp. Väljaren är det som gör
+   * funktionen verklig.
+   *
+   * Publikt är utgångsläget och kan inte ändras av misstag: valet visas bara
+   * när man faktiskt är med i en grupp, och texten under säger rakt ut vad
+   * som gäller. En förare som tror att hen varnar alla, men bara varnar fyra
+   * kollegor, har fått en sämre app utan att förstå varför.
+   */
+  const renderMal = () => {
+    const rows = groups.groups || [];
+    const rad = $('groupTargetRow');
+    const sel = $('groupTarget');
+    const not = $('groupTargetNote');
+    if (!rad || !sel) return;
+
+    rad.hidden = rows.length === 0;
+    not.hidden = rows.length === 0;
+    if (!rows.length) return;
+
+    const valt = groups.aktivId || '';
+    sel.innerHTML = '';
+    sel.add(new Option('Alla i Västmanland (publikt)', ''));
+    for (const g of rows) sel.add(new Option(g.namn || g.name || 'Grupp', g.id));
+    sel.value = valt;
+
+    not.textContent = valt
+      ? `Dina rapporter syns bara för ${sel.options[sel.selectedIndex].text}. Ingen annan varnas.`
+      : 'Dina rapporter syns för alla förare i närheten.';
+  };
+
+  $('groupTarget')?.addEventListener('change', e => {
+    groups.setAktiv(e.target.value || null);
+    renderMal();
+    toast(e.target.value
+      ? 'Nya rapporter går till gruppen.'
+      : 'Nya rapporter går till alla igen.', 3500);
+  });
+
   const render = () => {
     const rows = groups.groups || [];
     $('groupEmpty').hidden = rows.length > 0;
+    renderMal();
     list.innerHTML = '';
     for (const g of rows) {
       const div = document.createElement('div');
@@ -2067,7 +2110,7 @@ window.polisvakt = {
   get plate() { return plate; },
   chatt, ljud, korvanor,
   // Belöningsbeskedet går att provköra utan att vänta på ett månadsskifte.
-  visaBelaning, renderKorfalt, remote,
+  visaBelaning, renderKorfalt, remote, groups,
   get nav() { return nav; },
 };
 

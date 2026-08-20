@@ -610,6 +610,14 @@
     <div class="group-list" id="groupList"></div>
     <p class="hint" id="groupEmpty">Du är inte med i någon grupp än.</p>
 
+    <!-- Var rapporterna hamnar.
+         Publikt är utgångsläget med flit: inget ska bli privat av misstag,
+         och en rapport som bara syns för fem personer varnar fem personer. -->
+    <label class="row" id="groupTargetRow" hidden><span>Rapportera till</span>
+      <select id="groupTarget"></select>
+    </label>
+    <p class="hint" id="groupTargetNote" hidden></p>
+
     <div class="row-inline">
       <input id="groupCode" type="text" inputmode="latin" autocomplete="off" placeholder="Inbjudningskod">
       <button class="btn-ghost small" id="btnGroupJoin" type="button">Gå med</button>

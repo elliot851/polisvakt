@@ -485,6 +485,24 @@ await T('ingen rad som låtsas skilja på något den inte skiljer på', () => {
     || 'den döda ternären finns kvar';
 });
 
+
+await T('gruppväljaren finns och publikt är utgångsläget', () => {
+  // Datavägen för group_id fanns men ingen kunde välja - alla rapporter blev
+  // publika oavsett. En grupp utan rapporter är ingen grupp.
+  if (!/id="groupTarget"/.test(html)) return 'ingen väljare i markupen';
+  if (!/groups\.setAktiv\(/.test(appSrc)) return 'valet sparas aldrig';
+  // Tomt värde = publikt, och det ska vara första alternativet.
+  return /new Option\('Alla i Västmanland \(publikt\)', ''\)/.test(appSrc)
+    || 'publikt är inte förvalt som första alternativ';
+});
+
+await T('appen säger rakt ut vem som ser rapporten', () => {
+  // En förare som tror att hen varnar alla men bara varnar fyra kollegor har
+  // fått en sämre app utan att förstå varför.
+  return /syns bara för|syns för alla förare/.test(appSrc)
+    || 'ingen text som förklarar vem som ser rapporten';
+});
+
 /* ---- Genvägar från hemskärmen --------------------------------------- */
 G('Snabbrapport från hemskärmen');
 
