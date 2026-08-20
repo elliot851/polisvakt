@@ -32,6 +32,8 @@
  * aldrig som nummer. Se docs/skyltintegritet.md.
  */
 
+import { motionSupported, motionNeedsPermission } from './impact.js';
+
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 
 /* ---- Svenskt skyltformat ------------------------------------------------
@@ -453,6 +455,50 @@ function haArbetsyta(b, h) {
   return arbetsyta;
 }
 
+/* ---- Lutning ------------------------------------------------------------
+ *
+ * Telefonen sitter i en hållare och hållaren sitter sällan rakt. Bilden lutar
+ * då, och med den skylten. Det bröt sökningen fullständigt: den mätte kvoten
+ * på blobbens *axelparallella* omslutande låda, och en skylt som lutar 30°
+ * får en nästan kvadratisk sådan låda. Kvot 1,4 i stället för 4,7, fyllnad
+ * 0,32 i stället för 0,78 — båda filtren sa nej, och kandidaten fanns aldrig.
+ * Mätt före ändringen: noll kandidater vid 15°, 30°, 45° och 90°.
+ *
+ * Lösningen mäter blobbens *egentliga* utsträckning i stället för lådans.
+ * Andra ordningens moment (samma summor som en tröghetsberäkning) ger både
+ * riktningen på blobbens långa axel och längden längs den. För en fylld
+ * rektangel är variansen längs en axel exakt L²/12, så L = √(12λ). Summorna
+ * plockas upp i den flödesfyllning som ändå går igenom varje pixel — det
+ * kostar fem additioner per pixel och ingen extra genomgång av bilden.
+ *
+ * Varför inte rotera bilden efter enhetens sensor i stället: sensorn kräver
+ * tillstånd på iOS, och ett läge som bara fungerar efter ett knapptryck är
+ * inte ett läge som fungerar. Den här vägen kräver ingenting av användaren.
+ * Sensorn finns kvar som ett *tillägg* — se `Lutningsgivare` — men bara för
+ * att rangordna kandidater, aldrig för att hitta dem. Se docs/lutning.md.
+ */
+
+/*
+ * Dödband. Under det här räknas blobben som rak och behandlas exakt som förut,
+ * med den axelparallella lådan. Två skäl:
+ *
+ *   1. En skylt sedd snett från sidan är *skjuvad*, inte roterad. Skjuvning
+ *      vrider huvudaxeln försumbart — en 15°-skjuvning ger 0,7° vridning —
+ *      och den fångas redan av `uppskattaLutning` längre ner. Att börja
+ *      rotera på den vore att bygga en andra mekanism för samma sak.
+ *   2. Mätningen på de fall som redan fungerade blir bit för bit oförändrad.
+ */
+const VINKEL_DODBAND = 3;
+
+/** Viker en vinkel till (−90, 90]. En skylt och samma skylt vriden 180° är
+ *  samma linje; huvudaxeln kan inte skilja dem åt. */
+function vikVinkel(v) {
+  let x = v % 180;
+  if (x > 90) x -= 180;
+  if (x <= -90) x += 180;
+  return x;
+}
+
 /**
  * Grunden under både `hittaPlat` och `sokKandidater`: skala ner ett område,
  * tröskla med Otsu och plocka ut alla ljusa sammanhängande områden som har
@@ -461,6 +507,9 @@ function haArbetsyta(b, h) {
  * Metoden är enkel med flit: en skylt är det ljusa, avlånga och någorlunda
  * rektangulära i bilden. Det räcker för att skilja den från en bilkropp, och
  * det kostar ingenting jämfört med att lägga in en modell.
+ *
+ * Form och storlek mäts längs blobbens egna axlar, inte längs bildens. En
+ * lutad skylt är fortfarande en skylt.
  *
  * @returns {{b:number,h:number,skala:number,gra:Uint8ClampedArray,trosk:number,blobbar:Array}}
  */
@@ -493,11 +542,16 @@ function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8 } 
     if (besokt[start] || gra[start] <= trosk) continue;
     let sp = 0; stack[sp++] = start; besokt[start] = 1;
     let minX = b, maxX = -1, minY = h, maxY = -1, area = 0;
+    // Andra ordningens moment, plockade i samma svep. Fem additioner och tre
+    // multiplikationer per pixel — mätt kostar de under en tiondels millisekund
+    // i en bildruta på 400 × 225.
+    let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
 
     while (sp) {
       const i = stack[--sp];
       const x = i % b, y = (i / b) | 0;
       area++;
+      sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
       if (x < minX) minX = x; if (x > maxX) maxX = x;
       if (y < minY) minY = y; if (y > maxY) maxY = y;
       if (x > 0     && !besokt[i - 1] && gra[i - 1] > trosk) { besokt[i - 1] = 1; stack[sp++] = i - 1; }
@@ -507,13 +561,44 @@ function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8 } 
     }
 
     const bw = maxX - minX + 1, bh = maxY - minY + 1;
-    const forhallande = bw / bh;
-    const fyllnad = area / (bw * bh);
+
+    // Kovariansen kring blobbens tyngdpunkt. Huvudaxelns riktning är den
+    // vinkel som gör kovariansen noll, och den finns i sluten form.
+    const mx = sx / area, my = sy / area;
+    const cxx = sxx / area - mx * mx;
+    const cyy = syy / area - my * my;
+    const cxy = sxy / area - mx * my;
+    let vinkel = vikVinkel(0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180 / Math.PI);
+
+    let L, W, forhallande, fyllnad;
+    if (Math.abs(vinkel) < VINKEL_DODBAND) {
+      // Rak nog. Lådan är exakt, momenten bara en uppskattning — använd lådan.
+      vinkel = 0;
+      L = bw; W = bh;
+      forhallande = bw / bh;
+      fyllnad = area / (bw * bh);
+    } else {
+      // Egenvärdena till en 2×2-symmetrisk matris, för hand. λ₁ hör till den
+      // långa axeln. För en fylld rektangel gäller varians = sida²/12; termen
+      // +1 kompenserar för att pixlar är rutor och inte punkter.
+      const spar = cxx + cyy;
+      const det = cxx * cyy - cxy * cxy;
+      const rot = Math.sqrt(Math.max(0, spar * spar / 4 - det));
+      L = Math.sqrt(Math.max(1, 12 * (spar / 2 + rot) + 1));
+      W = Math.sqrt(Math.max(1, 12 * Math.max(0, spar / 2 - rot) + 1));
+      forhallande = L / W;
+      // Fyllnaden mäts mot den vridna lådan. Det är samma tal som förut för en
+      // rak skylt, och till skillnad från den axelparallella lådan faller det
+      // inte bara för att bilden lutar.
+      fyllnad = Math.min(1, area / (L * W));
+    }
+
     // En skylt är avlång, någorlunda rektangulär och inte försvinnande liten.
     if (forhallande < 2.2 || forhallande > 8) continue;
     if (fyllnad < 0.45) continue;
-    if (bw < minBredd || bh < 3) continue;
-    blobbar.push({ minX, minY, bw, bh, area, forhallande, fyllnad });
+    if (L < minBredd || W < 3) continue;
+    blobbar.push({ minX, minY, bw, bh, area, forhallande, fyllnad,
+                   vinkel, L, W, cx: mx, cy: my });
   }
   return { b, h, skala, gra, trosk, blobbar };
 }
@@ -531,8 +616,15 @@ function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8 } 
  * än en soldränkt vägbana, och en global tröskel hade gjort hela skylten svart.
  * Saknar området kontrast alls är det per definition slätt — då är svaret noll
  * utan att vi behöver räkna.
+ *
+ * Lutar blobben måste linjen luta med den. En vågrät linje genom en skylt som
+ * står på snedden skär bara ett par tecken och en massa botten, och svaret blir
+ * noll växlingar — alltså "slät yta", alltså kandidaten dödad. Det var samma
+ * fel som den axelparallella lådan, en nivå längre in.
  */
-function raknaTeckenbyten(gra, b, box) {
+function raknaTeckenbyten(gra, b, h, box) {
+  if (box.vinkel) return raknaTeckenbytenVriden(gra, b, h, box);
+
   const y0 = box.minY + Math.max(1, Math.round(box.bh * 0.2));
   const y1 = box.minY + Math.max(2, Math.round(box.bh * 0.8));
   const x0 = box.minX, x1 = box.minX + box.bw;
@@ -565,6 +657,54 @@ function raknaTeckenbyten(gra, b, box) {
 }
 
 /**
+ * Samma räkning, men längs blobbens egna axlar i stället för bildens.
+ * Punktprovning med närmaste granne — vi räknar växlingar, inte pixlar, och
+ * en halv pixels felplacering ändrar ingenting i det svaret.
+ */
+function raknaTeckenbytenVriden(gra, b, h, box) {
+  if (box.L < 6 || box.W < 3) return 0;
+  const rad = box.vinkel * Math.PI / 180;
+  const kos = Math.cos(rad), sin = Math.sin(rad);
+  const halvL = Math.round(box.L / 2);
+  const halvV = Math.max(1, Math.round(box.W * 0.3));   // mittpartiet, 0,2–0,8
+
+  const prov = (u, v) => {
+    const x = Math.round(box.cx + u * kos - v * sin);
+    const y = Math.round(box.cy + u * sin + v * kos);
+    if (x < 0 || x >= b || y < 0 || y >= h) return -1;
+    return gra[y * b + x];
+  };
+
+  let lag = 255, hog = 0;
+  for (let u = -halvL; u <= halvL; u++) {
+    for (let v = -halvV; v <= halvV; v++) {
+      const g = prov(u, v);
+      if (g < 0) continue;
+      if (g < lag) lag = g;
+      if (g > hog) hog = g;
+    }
+  }
+  if (hog - lag < 40) return 0;
+  const trosk = lag + (hog - lag) * 0.5;
+
+  let byten = 0, imork = false;
+  for (let u = -halvL; u <= halvL; u++) {
+    let mork = 0, rader = 0;
+    for (let v = -halvV; v <= halvV; v++) {
+      const g = prov(u, v);
+      if (g < 0) continue;
+      rader++;
+      if (g < trosk) mork++;
+    }
+    if (!rader) continue;
+    const andel = mork / rader;
+    if (!imork && andel > 0.45) { imork = true; byten++; }
+    else if (imork && andel < 0.2) { imork = false; byten++; }
+  }
+  return byten;
+}
+
+/**
  * Letar upp själva skylten inne i en given ruta.
  *
  * Utan det här steget skalas hela rutan, och sitter bilen tio meter bort är
@@ -589,11 +729,29 @@ export function hittaPlat(kalla, roi) {
   // kapas av en pixel hit eller dit.
   const inv = 1 / s.skala;
   const mx = bast.bw * 0.03 * inv, my = bast.bh * 0.08 * inv;
+  /*
+   * Två beskrivningar av samma fynd, och båda behövs:
+   *
+   *   x, y, w, h   den axelparallella lådan. Det är den siktet ritar, den
+   *                spårningen jämför och den zoomen mäter mot — oförändrad.
+   *   cx, cy, rw, rh, vinkel
+   *                den vridna rektangeln. Det är den `forbehandla` beskär, och
+   *                den enda som beskriver en lutad skylt utan att ta med halva
+   *                bakgrunden på köpet.
+   *
+   * Vid vinkel 0 är de två samma sak, och då används den gamla vägen rakt av.
+   */
   return {
     x: roi.x + bast.minX * inv - mx,
     y: roi.y + bast.minY * inv - my,
     w: bast.bw * inv + mx * 2,
     h: bast.bh * inv + my * 2,
+    vinkel: bast.vinkel,
+    cx: roi.x + bast.cx * inv,
+    cy: roi.y + bast.cy * inv,
+    // Samma marginaler, fast längs skyltens egna axlar.
+    rw: bast.L * 1.06 * inv,
+    rh: bast.W * 1.16 * inv,
   };
 }
 
@@ -608,7 +766,8 @@ export function hittaPlat(kalla, roi) {
  * är fortfarande en skylt, och den ska kunna låsas — bara inte före den som
  * ligger mitt i vägen.
  */
-function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, ytaB }) {
+function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, ytaB,
+                             vinkel = 0, forvantadVinkel = null }) {
   // Form: svenska skyltar är 520 × 110 mm, alltså 4,7. Avvikelsen mäts i
   // logaritm så att 2,35 och 9,4 straffas lika mycket — en skylt sedd snett
   // trycks ihop i sidled, aldrig i höjdled.
@@ -643,9 +802,30 @@ function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, y
   else if (fyllnad > 0.96 || teckenbyten < 3) tecken = 0.08;
   else tecken = Math.min(1, Math.max(0.2, teckenbyten / 8));
 
+  /*
+   * Rakhet: hur mycket kandidaten lutar.
+   *
+   * Detektionen hittar numera skyltar i vilken vinkel som helst, och det är
+   * rätt. Men en lutad ljus stapel är oftare en dörrkarm, en reflex i en ruta
+   * eller en linje i vägbanan än en skylt, så vid lika poäng ska den raka
+   * vinna. Straffet är milt med flit — det ska rangordna, inte döda. En skylt
+   * i 45° behåller 84 % och ligger med god marginal över låsgränsen.
+   *
+   * Finns lutningsgivaren igång vet vi ungefär hur telefonen sitter, och då
+   * mäts avvikelsen mot det i stället. Den vägen kan bara lyfta en kandidat,
+   * aldrig sänka den: utan tillstånd, med fel tecken på sensorn eller med en
+   * telefon som ligger stilla i handen blir svaret det samma som utan givare.
+   * Sensorn är ett tillägg och får aldrig bli ett krav.
+   */
+  const straff = a => 1 - 0.45 * Math.pow(Math.min(1, Math.abs(a) / 90), 1.5);
+  let rakhet = straff(vinkel);
+  if (forvantadVinkel !== null) {
+    rakhet = Math.max(rakhet, straff(vikVinkel(vinkel - forvantadVinkel)));
+  }
+
   return {
-    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken,
-    form, storlek, centrum, tecken,
+    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken * rakhet,
+    form, storlek, centrum, tecken, rakhet,
   };
 }
 
@@ -666,7 +846,8 @@ function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, y
  * @param {object} [opt]             { arbetsbredd = 400, max = 6 }
  * @returns {Array<object>} {x,y,w,h,poang,form,storlek,centrum,tecken,teckenbyten,forhallande,fyllnad}
  */
-export function sokKandidater(kalla, omrade = null, { arbetsbredd = 400, max = 6 } = {}) {
+export function sokKandidater(kalla, omrade = null,
+                              { arbetsbredd = 400, max = 6, forvantadVinkel = null } = {}) {
   const m = kallMatt(kalla);
   const yta = omrade || { x: 0, y: 0, w: m.b, h: m.h };
   if (!(yta.w > 16 && yta.h > 16)) return [];
@@ -680,15 +861,19 @@ export function sokKandidater(kalla, omrade = null, { arbetsbredd = 400, max = 6
   const ut = [];
 
   for (const bl of s.blobbar) {
-    const teckenbyten = raknaTeckenbyten(s.gra, s.b, bl);
+    const teckenbyten = raknaTeckenbyten(s.gra, s.b, s.h, bl);
     const p = poangsattKandidat({
       forhallande: bl.forhallande,
       fyllnad: bl.fyllnad,
       teckenbyten,
-      bredd: bl.bw,
+      // Storleken mäts längs skyltens långsida. Den axelparallella lådan är
+      // bredare än skylten så fort bilden lutar, och hade fått en liten lutad
+      // skylt att se större ut än den är.
+      bredd: bl.L,
       cx: (bl.minX + bl.bw / 2) / s.b,
       cy: (bl.minY + bl.bh / 2) / s.h,
       ytaB: s.b,
+      vinkel: bl.vinkel, forvantadVinkel,
     });
 
     // Samma marginal som `hittaPlat` ger, så att OCR-steget får en ruta med
@@ -699,6 +884,11 @@ export function sokKandidater(kalla, omrade = null, { arbetsbredd = 400, max = 6
       y: yta.y + bl.minY * inv - my,
       w: bl.bw * inv + mx * 2,
       h: bl.bh * inv + my * 2,
+      vinkel: bl.vinkel,
+      cx: yta.x + bl.cx * inv,
+      cy: yta.y + bl.cy * inv,
+      rw: bl.L * 1.06 * inv,
+      rh: bl.W * 1.16 * inv,
       teckenbyten, forhallande: bl.forhallande, fyllnad: bl.fyllnad, ...p,
     });
   }
@@ -714,9 +904,18 @@ export function sokKandidater(kalla, omrade = null, { arbetsbredd = 400, max = 6
  * @param {object} roi                {x,y,w,h} i källans pixlar
  * @returns {HTMLCanvasElement}
  */
-export function forbehandla(kalla, roi, { malHojd = 96, kapaEuFalt = true, lutning = 0 } = {}) {
-  const skala = malHojd / roi.h;
-  const bredd = Math.max(1, Math.round(roi.w * skala));
+export function forbehandla(kalla, roi,
+                            { malHojd = 96, kapaEuFalt = true, lutning = 0, vridning = 0 } = {}) {
+  /*
+   * `vridning` räknar med att `roi` beskriver en *vriden* rektangel: mitten i
+   * cx/cy och sidorna i rw/rh, mätta längs skyltens egna axlar. Utan vridning
+   * är roi den vanliga axelparallella rutan och allt nedan går den gamla vägen,
+   * bit för bit — de tio pipelinefallen ska mäta exakt samma sak som förut.
+   */
+  const rw = vridning ? (roi.rw ?? roi.w) : roi.w;
+  const rh = vridning ? (roi.rh ?? roi.h) : roi.h;
+  const skala = malHojd / rh;
+  const bredd = Math.max(1, Math.round(rw * skala));
   const hojd  = Math.max(1, Math.round(malHojd));
 
   const c = document.createElement('canvas');
@@ -724,7 +923,33 @@ export function forbehandla(kalla, roi, { malHojd = 96, kapaEuFalt = true, lutni
   const g = c.getContext('2d', { willReadFrequently: true });
   g.imageSmoothingEnabled = true;
   g.imageSmoothingQuality = 'high';
-  if (lutning) {
+  if (vridning) {
+    /*
+     * Räta upp en skylt som lutar i bild. Skjuvning räcker inte här: en
+     * skjuvning rätar upp tecknens *stammar* men låter textraden fortsätta gå
+     * på snedden, och motorn läser en enda rad. Det måste vara en riktig
+     * rotation.
+     *
+     * Den kostar ingenting extra — det är samma enda `drawImage`, bara under
+     * en annan matris, och den ligger i canvasens hårdvaruväg. Ingen extra
+     * OCR-körning, ingen extra genomgång av pixlarna.
+     *
+     * Ordningen läses nerifrån och upp: flytta skyltens mitt till origo, vrid
+     * tillbaka den, skala upp till målhöjden, skjuva bort resten av snedheten,
+     * lägg den mitt på duken.
+     */
+    const cx = roi.cx ?? (roi.x + roi.w / 2);
+    const cy = roi.cy ?? (roi.y + roi.h / 2);
+    g.fillStyle = '#fff'; g.fillRect(0, 0, bredd, hojd);
+    g.save();
+    g.translate(bredd / 2, hojd / 2);
+    if (lutning) g.transform(1, 0, Math.tan(-lutning * Math.PI / 180), 1, 0, 0);
+    g.scale(skala, skala);
+    g.rotate(-vridning * Math.PI / 180);
+    g.translate(-cx, -cy);
+    g.drawImage(kalla, 0, 0);
+    g.restore();
+  } else if (lutning) {
     // Räta upp en skylt som setts snett. Tecknen står kvar på plats i höjdled,
     // så det räcker att skjuva i sidled kring mitten.
     g.fillStyle = '#fff'; g.fillRect(0, 0, bredd, hojd);
@@ -910,19 +1135,41 @@ export async function lasRuta(kalla, roi) {
   // vi inte hittade skylten och skickar in hela rutan.
   const kapaEuFalt = !traff;
 
+  // Lutar skylten i bild rätas den upp redan i beskärningen. Vinkeln kommer
+  // från sökningen och kostar ingen extra OCR-körning.
+  let vridning = Math.abs(snav.vinkel || 0) >= VINKEL_DODBAND ? snav.vinkel : 0;
+
   // Rakt på först. Går det bra behöver vi inte röra vinkeln alls.
-  const rak = forbehandla(kalla, snav, { kapaEuFalt });
+  const rak = forbehandla(kalla, snav, { kapaEuFalt, vridning });
   let bast = { plat: null, sakerhet: 0, bild: rak };
 
   const r0 = await lasBild(rak);
   if (r0.plat) bast = { plat: r0.plat, sakerhet: r0.sakerhet, bild: rak };
   if (r0.plat && r0.sakerhet >= 80) return bast;
 
+  /*
+   * Huvudaxeln vet vilken linje skylten ligger längs, men inte åt vilket håll
+   * den läses — en skylt och samma skylt upp och ner ger identiska moment. Vid
+   * små lutningar spelar det ingen roll: en bil som lutar 20° lutar 20°, den
+   * står inte på taket. Vid liggande telefon gör det det, för då är ±90° två
+   * helt olika bilder. Prövas bara när första försöket inte gav någon skylt,
+   * så den kostar ingenting i normalfallet.
+   */
+  if (!bast.plat && Math.abs(vridning) > 60) {
+    const vand = forbehandla(kalla, snav, { kapaEuFalt, vridning: vridning + 180 });
+    const rv = await lasBild(vand);
+    if (rv.plat) {
+      bast = { plat: rv.plat, sakerhet: rv.sakerhet, bild: vand };
+      vridning += 180;
+      if (rv.sakerhet >= 80) return bast;
+    }
+  }
+
   // Annars: mät lutningen och räta upp. Mätningen kostar ingen OCR-körning,
   // så det är billigare än att pröva sig fram med flera gissningar.
-  const lutning = uppskattaLutning(rak);
+  const lutning = uppskattaLutning(bast.bild);
   if (lutning) {
-    const rat = forbehandla(kalla, snav, { kapaEuFalt, lutning });
+    const rat = forbehandla(kalla, snav, { kapaEuFalt, lutning, vridning });
     const r1 = await lasBild(rat);
     // En giltig skylt slår alltid ingen skylt. Att jämföra säkerheten först
     // vore fel: motorn rapporterar ibland 0 % även för en läsning som
@@ -1104,10 +1351,158 @@ export class Malsokare {
   }
 }
 
+/* ---- Lutningsgivaren ----------------------------------------------------
+ *
+ * Ett tillägg, inte en förutsättning. Detektionen hittar lutade skyltar helt
+ * på egen hand (se `skannaLjusa`) och gör det utan att fråga användaren om
+ * någonting. Det som givaren tillför är en gissning om hur telefonen sitter,
+ * och den gissningen används till exakt en sak: att rangordna en kandidat som
+ * lutar lika mycket som telefonen lika högt som en rak. Inget mer.
+ *
+ * Varför så snålt: iOS kräver tillstånd till rörelsedata, och tillståndet får
+ * bara begäras från ett riktigt knapptryck. Ett läsläge som kräver ett
+ * knapptryck innan det fungerar är inte ett läsläge som fungerar. Nekar
+ * användaren, eller sitter telefonen i en Android utan sensor, blir svaret
+ * exakt det samma som förut — bara utan den lilla extra precisionen i
+ * rangordningen.
+ *
+ * Tillståndsflaggorna lånas ur js/impact.js. Det är samma tillstånd, samma
+ * händelse och samma iOS-dialog; att fråga två gånger för samma sak vore både
+ * påträngande och en andra mekanism att hålla i synk.
+ */
+
+export const lutningStods = motionSupported;
+export const lutningKraverTillstand = motionNeedsPermission;
+
+export class Lutningsgivare extends EventTarget {
+  constructor() {
+    super();
+    this.tillstand = motionNeedsPermission ? 'okant' : (motionSupported ? 'beviljat' : 'saknas');
+    this.aktiv = false;
+    this.vinkel = 0;
+    this._prov = 0;
+    this._h = e => this.#matning(e);
+  }
+
+  /** Måste anropas från ett riktigt knapptryck på iOS. Samma krav som i impact.js. */
+  async begarTillstand() {
+    if (!motionSupported) { this.tillstand = 'saknas'; return false; }
+    if (!motionNeedsPermission) { this.tillstand = 'beviljat'; return true; }
+    try {
+      const svar = await DeviceMotionEvent.requestPermission();
+      this.tillstand = svar === 'beviljat' || svar === 'granted' ? 'beviljat' : 'nekat';
+    } catch {
+      this.tillstand = 'nekat';
+    }
+    return this.tillstand === 'beviljat';
+  }
+
+  async start() {
+    if (this.aktiv || !motionSupported) return false;
+    if (this.tillstand !== 'beviljat' && !(await this.begarTillstand())) return false;
+    addEventListener('devicemotion', this._h);
+    this.aktiv = true; this._prov = 0;
+    return true;
+  }
+
+  stop() {
+    if (!this.aktiv) return;
+    removeEventListener('devicemotion', this._h);
+    this.aktiv = false; this._prov = 0;
+  }
+
+  /**
+   * Skärmens egen vridning. Kostar ingenting och kräver inget tillstånd.
+   * Sensorns axlar följer telefonens hölje, medan videobilden levereras i
+   * skärmens läge — utan det här ligger de 90° fel så fort telefonen vänds.
+   */
+  get skarmvinkel() {
+    const v = Number(screen?.orientation?.angle);
+    return Number.isFinite(v) ? v : 0;
+  }
+
+  /** Sant först när det kommit några mätningar. En sensor som inte svarat
+   *  ännu ska inte låtsas att telefonen står rak. */
+  get harVarde() { return this.aktiv && this._prov > 5; }
+
+  #matning(e) {
+    // Tyngdkraften, inte rörelsen. En bil skakar; tyngdkraften gör det inte.
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x == null) return;
+    const rad = Math.atan2(a.x, a.y);
+    const ny = vikVinkel(rad * 180 / Math.PI - this.skarmvinkel);
+    this._prov++;
+    // Lågpassfilter. Rå accelerometerdata i en bil hoppar flera grader per
+    // avläsning, och en prior som darrar är sämre än ingen prior.
+    if (this._prov <= 5) this.vinkel = ny;
+    else this.vinkel = vikVinkel(this.vinkel + vikVinkel(ny - this.vinkel) * 0.08);
+  }
+}
+
 /* ---- Läsaren ------------------------------------------------------------- */
 
 export const plateSupported = !!(navigator.mediaDevices?.getUserMedia && window.OffscreenCanvas !== undefined
   || navigator.mediaDevices?.getUserMedia);
+
+/*
+ * Vad vi ber kameran om, och var gränsen går.
+ *
+ * `minBredd` är det som gör att en högre bildfrekvens inte får kosta upplösning.
+ * Frågan är verklig: getUserMedia väger alla `ideal`-önskemål mot varandra och
+ * väljer det läge som sammanlagt ligger närmast. En telefon som kan
+ * 1920 × 1080 vid 30 och 1280 × 720 vid 60 kan mycket väl svara med
+ * 1280 × 720 — den träffar då bildfrekvensen exakt och missar upplösningen
+ * "bara" en bit. Det är fel avvägning för just den här appen.
+ *
+ * Skylten behöver pixlar mer än den behöver bildrutor. En skylt på 20 meters
+ * håll är runt 40 pixlar bred i 1080p och under 30 i 720p, och under 24 slutar
+ * teckenräkningen svara ja eller nej över huvud taget. Bildrutorna gör en
+ * suddig skylt skarpare; upplösningen avgör om det finns en skylt att göra
+ * skarp. Därför: be om båda, kontrollera vad vi fick, och backa bildfrekvensen
+ * om upplösningen blev lidande.
+ */
+export const KAMERA = {
+  bredd: 1920,
+  hojd: 1080,
+  bildfrekvens: 60,
+  minBredd: 1280,        // under det byter vi tillbaka till 30 b/s
+  reservBildfrekvens: 30,
+};
+
+/**
+ * Videovillkoren, som ett eget uttryck så att de går att mäta utan kamera.
+ *
+ * Allt är `ideal`. Inte ett enda `exact` — ett hårt krav på bildfrekvens eller
+ * upplösning gör att getUserMedia kastar `OverconstrainedError` i stället för
+ * att ge det näst bästa, och då står läsaren helt still på en telefon som hade
+ * kunnat läsa skyltar alldeles utmärkt vid 30 bildrutor i 1080p.
+ *
+ * (Kameravalet — bakre kameran — är det enda som får vara hårt, och det
+ * hanteras för sig i `start()` med ett eget återfall.)
+ */
+export function kameravillkor(k = KAMERA) {
+  return {
+    width:  { ideal: k.bredd },
+    height: { ideal: k.hojd },
+    frameRate: { ideal: k.bildfrekvens },
+  };
+}
+
+/**
+ * Ska vi byta tillbaka till lägre bildfrekvens för att få upplösningen?
+ *
+ * Ja precis när telefonen gav oss hög bildfrekvens men låg upplösning. Det är
+ * den avvägning getUserMedia gör åt oss när flera `ideal` inte går att uppfylla
+ * samtidigt, och för den här appen är den fel: en skylt som är för få pixlar
+ * bred blir aldrig text, hur skarp den än är. Bildrutorna gör en suddig skylt
+ * skarpare — upplösningen avgör om det finns en skylt att göra skarp.
+ *
+ * @param {{bredd:number, bildfrekvens:number|null}} fick   det kameran gav
+ */
+export function behoverSankaBildfrekvens(fick, k = KAMERA) {
+  return !!(fick && fick.bredd && fick.bredd < k.minBredd &&
+            fick.bildfrekvens && fick.bildfrekvens > k.reservBildfrekvens);
+}
 
 /**
  * Håller kameran, målsöker skylten och matar OCR:en.
@@ -1148,6 +1543,35 @@ export class PlateReader extends EventTarget {
       ritaSikte: true,        // false = modulen ritar bara videon, appen ritar siktet
       centrumFallback: true,  // läs mitten när målsökningen inte hittar något alls
       fallbackMs: 3000,
+
+      /*
+       * PROVLÄGE — hör till provkörning, inte till produkten.
+       *
+       * Normalt skickas 'traff' bara för ett av dina egna fordon. Allt annat
+       * som läses slutar inuti #rosta och finns inte kvar efter att den
+       * funktionen returnerat. Det är med flit: en läsare som visar varje skylt
+       * den ser är en logg över främmande fordon, och det är skillnaden mellan
+       * en läsare och ett spaningsverktyg. Den skillnaden ska inte suddas ut.
+       *
+       * Men den som provkör kan inte se om läsaren fungerar. Låset sitter,
+       * statusen går "Låst på skylt — läser…" → "Bekräftar skylt…", och sedan
+       * händer ingenting synligt — vare sig läsningen blev rätt, fel eller
+       * uteblev. Det behöver gå att avgöra, både vid provkörning och när någon
+       * senare rapporterar att den inte funkar.
+       *
+       * Med `provlage: true` skickas 'traff' även för fordon som inte är dina,
+       * med `egen: false` och utan fordonId och etikett. Inget lagras, ingen
+       * lista förs, ingenting sparas: samma kastas-direkt-beteende som annars,
+       * skillnaden är enbart att appen får veta vad som lästes i just det
+       * ögonblicket.
+       *
+       * Det här är alltså INTE en vanlig inställning som en användare ska kunna
+       * slå på. Den är kopplad till appens TESTLAGE_UTAN_INLOGGNING, som redan
+       * är märkt "SKA SLÅS AV IGEN" — då försvinner provläget av sig självt den
+       * dagen appen släpps, utan att någon behöver komma ihåg det. Koppla den
+       * inte till någon annan flagga, och lägg den inte i inställningssidan.
+       */
+      provlage: false,
     }, settings || {});
 
     /*
@@ -1190,6 +1614,9 @@ export class PlateReader extends EventTarget {
       brandForsok: this.settings.brandForsok,
     });
     this.kandidater = [];
+    this.kamera = null;
+    // Frivillig, och avstängd tills någon trycker på en knapp. Se klassen.
+    this.lutningsgivare = new Lutningsgivare();
     this.sokMsSenast = 0;
     this.sokMsMedel = 0;      // rullande medel, för mätning i fält
     this._sistLast = 0;
@@ -1210,9 +1637,25 @@ export class PlateReader extends EventTarget {
       try { this.register = haFordonsregister(); } catch { this.register = null; }
     }
 
-    // Samma hårda krav som dashcamen: får vi selfiekameran är läget
-    // meningslöst, och ett tydligt fel är bättre än en sökare mot taket.
-    const vc = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    /*
+     * Sextio bildrutor i sekunden, och inte för att läsa fler av dem —
+     * textigenkänningen kör ett par gånger i sekunden och sökningen åtta, så
+     * bildrutor är det minsta vi saknar.
+     *
+     * Skälet är exponeringstiden. En kamera som ska hinna med 60 bildrutor i
+     * sekunden kan aldrig exponera längre än 1/60 s per ruta, oftast kortare.
+     * Vid 30 får den dubbelt så lång tid, och all den tiden rör sig bilen
+     * framför. Det är precis den rörelseoskärpan pipelinen fortfarande faller
+     * på: de två fall som missas är "smutsig skylt" och "värsta fallet", och
+     * båda handlar om att tecknen smetas ut.
+     *
+     * `ideal`, aldrig `exact` — och vad kameran faktiskt gav läses tillbaka i
+     * `#stallInKamera`. Se `kameravillkor` och `behoverSankaBildfrekvens`.
+     *
+     * Kameravalet är det enda som får vara hårt: får vi selfiekameran är läget
+     * meningslöst, och ett tydligt fel är bättre än en sökare mot taket.
+     */
+    const vc = kameravillkor();
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         video: { ...vc, facingMode: { exact: 'environment' } }, audio: false,
@@ -1226,6 +1669,8 @@ export class PlateReader extends EventTarget {
         throw new Error('Telefonen gav selfiekameran. Skyltläsaren behöver den bakre kameran.');
       }
     }
+
+    await this.#stallInKamera();
 
     this.video.srcObject = this.stream;
     await this.video.play().catch(() => {});
@@ -1256,6 +1701,7 @@ export class PlateReader extends EventTarget {
     this._ocrTimer = this._ritTimer = this._sokTimer = null;
     this.malsokare.nollstall();
     this.kandidater = [];
+    this.lutningsgivare.stop();
     this.#slappStream();
     this.video.srcObject = null;
     // Rösträkningens hashar har inget att göra i minnet när kameran är av.
@@ -1358,7 +1804,10 @@ export class PlateReader extends EventTarget {
       mal = Math.max(1, this.zoom - 0.5);
     } else {
       this._bomkast = 0;
-      const andel = traff.w / this._roi.w;
+      // Skyltens långsida, inte den omslutande lådans bredd. Lutar bilden är
+      // lådan bredare än skylten, och zoomen hade trott att den redan var
+      // stor nog.
+      const andel = (traff.rw || traff.w) / this._roi.w;
       // Under en tredjedel av rutan är skylten för liten för att läsas säkert.
       if (andel < 0.34) mal = this.zoom + 0.4;
       // Över nio tiondelar riskerar kanttecknen att hamna utanför.
@@ -1414,7 +1863,12 @@ export class PlateReader extends EventTarget {
     let kand = [];
     const t0 = performance.now();
     try {
-      kand = sokKandidater(this.video, yta, { arbetsbredd: this.settings.sokBredd });
+      kand = sokKandidater(this.video, yta, {
+        arbetsbredd: this.settings.sokBredd,
+        // null när givaren är av eller inte hunnit svara. Sökningen fungerar
+        // lika fullt — vinkeln mäts ur bilden, aldrig ur sensorn.
+        forvantadVinkel: this.lutningsgivare.harVarde ? this.lutningsgivare.vinkel : null,
+      });
     } catch (e) {
       this.#fel(e); return;
     }
@@ -1519,6 +1973,79 @@ export class PlateReader extends EventTarget {
     g.restore();
   }
 
+  /**
+   * Läser tillbaka vad kameran faktiskt gav, och rättar till bytet om den
+   * betalade bildfrekvensen med upplösning.
+   *
+   * Att läsa tillbaka är hela poängen. `ideal` är ett önskemål, inte ett löfte,
+   * och en app som visar vad den bad om i stället för vad den fick ljuger för
+   * den som felsöker. `getSettings()` är det enda stället där sanningen står.
+   */
+  async #stallInKamera() {
+    const t = this.stream?.getVideoTracks?.()[0];
+    if (!t) return;
+
+    const las = () => {
+      const s = t.getSettings?.() || {};
+      return {
+        bredd: s.width || 0,
+        hojd: s.height || 0,
+        bildfrekvens: s.frameRate ? Math.round(s.frameRate) : null,
+      };
+    };
+
+    let f = las();
+    let sankt = false;
+
+    // Fick vi hög bildfrekvens men låg upplösning har telefonen gjort precis
+    // den avvägning vi inte vill ha. Be om samma upplösning igen, nu utan att
+    // pressa bildfrekvensen, och behåll resultatet bara om det blev bättre.
+    if (behoverSankaBildfrekvens(f)) {
+      try {
+        await t.applyConstraints({
+          width:  { ideal: KAMERA.bredd },
+          height: { ideal: KAMERA.hojd },
+          frameRate: { ideal: KAMERA.reservBildfrekvens },
+        });
+        const efter = las();
+        if (efter.bredd > f.bredd) { f = efter; sankt = true; }
+      } catch { /* kameran vägrade byta läge — behåll det vi har */ }
+    }
+
+    this.kamera = {
+      ...f,
+      begard: { ...KAMERA },
+      sanktForPixlar: sankt,
+      // Kort exponering är det bildfrekvensen köper. Taket är 1/frekvens; i
+      // dagsljus ligger den verkliga tiden under det.
+      maxExponeringMs: f.bildfrekvens ? Math.round(1000 / f.bildfrekvens) : null,
+    };
+    this.dispatchEvent(new CustomEvent('kamera', { detail: this.kamera }));
+  }
+
+  /** Vad kameran gav, inte vad vi bad om. null innan kameran startat. */
+  get kamerainfo() { return this.kamera; }
+
+  /**
+   * Slår på lutningsgivaren. Måste anropas från ett riktigt knapptryck på iOS.
+   * Läsaren fungerar utan — se `Lutningsgivare`. Returnerar om den kom igång.
+   */
+  async aktiveraLutning() {
+    const ok = await this.lutningsgivare.start();
+    this.dispatchEvent(new CustomEvent('lutning', { detail: this.lutningsinfo }));
+    return ok;
+  }
+
+  get lutningsinfo() {
+    const l = this.lutningsgivare;
+    return {
+      stods: lutningStods, kraverTillstand: lutningKraverTillstand,
+      tillstand: l.tillstand, aktiv: l.aktiv,
+      vinkel: l.harVarde ? Math.round(l.vinkel * 10) / 10 : null,
+      skarmvinkel: l.skarmvinkel,
+    };
+  }
+
   #slappStream() {
     this.stream?.getTracks().forEach(t => t.stop());
     this.stream = null;
@@ -1612,7 +2139,7 @@ export class PlateReader extends EventTarget {
     let roi = null, lasId = null, matt = null;
     if (last) {
       lasId = last.id;
-      matt = { w: last.w, h: last.h };
+      matt = { w: last.w, h: last.h, rw: last.matt?.rw, rh: last.matt?.rh };
       // Kopia, inte spåret självt: sökningen skriver om spåret medan
       // läsningen pågår, och rutan skulle glida ifrån bilden vi beskar.
       roi = { x: last.x, y: last.y, w: last.w, h: last.h };
@@ -1729,7 +2256,24 @@ export class PlateReader extends EventTarget {
     this.antalLasta++;
 
     const traff = this.register ? this.register.slaUppHash(h) : null;
-    if (!traff) return;      // någon annans fordon — slutar här, inget sparas
+    if (!traff) {
+      /*
+       * Någon annans fordon. Här slutar det normalt — numret finns bara som
+       * argument till den här funktionen och är borta när den returnerat.
+       *
+       * Provläget ändrar inte på det. Det som skickas är samma nummer som
+       * ändå fanns i den här anropsramen, i samma ögonblick som det lästes,
+       * och ingenting sparas: inget läggs i `sedd` utöver den gallrade
+       * närvaromarkeringen som redan fanns, ingen lista förs, ingen historik
+       * byggs. Skillnaden är enbart att den som provkör får se att läsaren
+       * faktiskt läser. Se kommentaren vid `provlage` i konstruktorn.
+       */
+      if (!this.settings.provlage) return;
+      this.dispatchEvent(new CustomEvent('traff', {
+        detail: { plat, sakerhet, egen: false, provlage: true },
+      }));
+      return;
+    }
 
     if (this.settings.pip) this.#pip(true);
     this.dispatchEvent(new CustomEvent('traff', {

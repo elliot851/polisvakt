@@ -2564,11 +2564,38 @@ function plateInst() {
   if (!plate) {
     plate = new PlateReader({ settings: plateSettings() });
     plate.addEventListener('status', e => { $('plStatus').textContent = e.detail.text; });
-    // Skickas numera BARA for egna fordon. Frammande skyltar kastas i samma
-    // bildrutecykel och nar aldrig hit.
+    /*
+     * Två sorters träff, och skillnaden är hela poängen.
+     *
+     * Skarpt läge: bara egna fordon når hit. Främmande skyltar kastas i samma
+     * bildrutecykel och skickas aldrig.
+     *
+     * Provläge: även främmande skyltar skickas, med egen:false och utan
+     * etikett. Det finns för att man annars inte kan avgöra om läsaren
+     * fungerar — den som riktar mot en okänd bil ser "Bekräftar skylt…" och
+     * sedan ingenting, vilket ser likadant ut som en trasig läsare. Inget
+     * lagras, inget pip, ingen lista: raden är flyktig och försvinner av sig
+     * själv. Provläget följer TESTLAGE_UTAN_INLOGGNING och slocknar därför
+     * samma dag appen släpps till andra.
+     */
     plate.addEventListener('traff', e => {
-      toast(`${visaPlat(e.detail.plat)} — ${e.detail.etikett}`, 3000);
+      const d = e.detail;
+      if (d.egen === false) {
+        $('plProvStatus').textContent =
+          `Provläge — läste ${visaPlat(d.plat)} (${Math.round((d.sakerhet || 0) * 100)} %). Inte ditt fordon, inget sparat.`;
+        return;
+      }
+      toast(`${visaPlat(d.plat)} — ${d.etikett}`, 3000);
     });
+    // Visa vad kameran gav, aldrig vad vi bad om. "60 b/s" i gränssnittet på
+    // en telefon som gav 30 är en lögn som är omöjlig att felsöka.
+    plate.addEventListener('kamera', e => {
+      const k = e.detail;
+      const bit = [`${k.bredd}×${k.hojd}`, `${k.bildfrekvens ?? 'okänd'} b/s`];
+      if (k.sanktForPixlar) bit.push('bildfrekvensen sänktes för att behålla upplösningen');
+      $('plKamera').textContent = bit.join(' · ');
+    });
+    plate.addEventListener('lutning', e => { renderLutning(e.detail); });
     plate.addEventListener('fel', e => {
       $('plStatus').textContent = e.detail.fel?.message || 'Något gick fel i läsningen.';
     });
@@ -2590,7 +2617,43 @@ function plateSettings() {
     krav: Number(settings.plKrav ?? 2),
     pip: settings.plPip !== false,
     zoomLage: settings.plZoomLage || 'auto',
+    // Hör ihop med testläget, inte med produkten. Se traff-hanteraren.
+    provlage: TESTLAGE_UTAN_INLOGGNING,
   };
+}
+
+/**
+ * Lutningsgivaren är ett tillägg, inte ett krav.
+ *
+ * Läsaren hittar lutade skyltar helt utan sensor — detektionen mäter blobbens
+ * egen huvudaxel och bryr sig inte om hur telefonen hålls. Givaren gör bara
+ * att en kandidat som lutar åt det håll telefonen lutar får lite högre poäng.
+ * Därför får knappen aldrig blockera starten, och texten ska inte antyda att
+ * något är trasigt utan den.
+ */
+function renderLutning(info) {
+  const p = $('plLutStatus'), btn = $('btnPlLutning');
+  if (!p) return;
+  const i = info || plate?.lutningsinfo;
+  if (!i || !i.stods) {
+    p.textContent = 'Telefonen har ingen lutningsgivare. Läsaren klarar lutade skyltar ändå.';
+    if (btn) btn.hidden = true;
+    return;
+  }
+  if (i.aktiv) {
+    p.textContent = i.vinkel === null
+      ? 'Lutningsgivaren är på.'
+      : `Lutningsgivaren är på. Telefonen lutar ${String(i.vinkel).replace('.', ',')}°.`;
+    if (btn) btn.hidden = true;
+    return;
+  }
+  if (i.tillstand === 'denied') {
+    p.textContent = 'Rörelsesensorn är nekad. Läsaren klarar lutade skyltar ändå, bara något sämre.';
+    if (btn) btn.hidden = true;
+    return;
+  }
+  p.textContent = 'Frivilligt. Hjälper läsaren när telefonen sitter lutad i en hållare.';
+  if (btn) btn.hidden = false;
 }
 
 function visaLage(lage) {
@@ -2666,6 +2729,7 @@ function wireModePicker() {
 
 
 
+      renderLutning();     // knappen visas bara om telefonen har en givare
       renderOlasta();      // chattknappen hor till kameravyn
     } catch (e) {
       $('plStatus').textContent = '';
@@ -2678,6 +2742,19 @@ function wireModePicker() {
   };
 
   $('plStop').onclick = () => stoppaPlate();
+
+  /*
+   * iOS ger bara rörelsesensorn till en riktig gest — anropet måste ligga i
+   * klickhanteraren, inte bakom ett await som hunnit släppa gestens
+   * giltighet. Därför ligger aktiveraLutning() först.
+   */
+  $('btnPlLutning').onclick = async () => {
+    const btn = $('btnPlLutning');
+    btn.disabled = true;
+    try { await plateInst().aktiveraLutning(); }
+    catch { /* nekat eller saknas — renderLutning säger vad som gäller */ }
+    finally { btn.disabled = false; renderLutning(); }
+  };
 
   const visaZoom = v => { $('plZoomVal').textContent = v.toFixed(1).replace('.', ',') + '×'; };
 
@@ -2721,6 +2798,10 @@ function stoppaPlate() {
   $('dcIdle').hidden = false;
   // Chattrutan hör till kameran och ska inte ligga kvar över startskärmen.
   $('dcChatt').hidden = true;
+  // Provlägesraden nämner en skylt. Den ska inte överleva att kameran
+  // stängts av — det är hela skillnaden mot en logg.
+  $('plProvStatus').textContent = '';
+  $('plKamera').textContent = '';
   renderOlasta();
 }
 

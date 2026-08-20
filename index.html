@@ -476,6 +476,20 @@
     </div>
     <p class="hint" id="plZoomTak"></p>
     <p class="hint" id="plZoomNot">Appen zoomar själv tills skylten fyller rutan. Ställ telefonen i hållaren och låt den sköta sig.</p>
+
+    <!-- Vad kameran faktiskt gav. Appen ber om 60 bilder per sekund för att
+         korta exponeringen och därmed rörelseoskärpan, men aldrig på
+         bekostnad av upplösning: en skylt på 20 meter är knappt 40 pixlar
+         bred i 1080p och under 30 i 720p, och då finns det ingen skylt kvar
+         att göra skarp. Raden visar utfallet, aldrig önskemålet. -->
+    <p class="hint" id="plKamera"></p>
+
+    <!-- Läsaren hittar lutade skyltar utan sensor — den mäter skyltens egen
+         riktning i bilden. Givaren är bara en extra ledtråd. -->
+    <button class="btn-ghost small" id="btnPlLutning" type="button" hidden>Låt telefonen få luta</button>
+    <p class="hint" id="plLutStatus"></p>
+    <p class="hint" id="plProvStatus"></p>
+
     <div class="dc-row">
       <button class="btn-ghost" id="plStop" type="button">Stoppa</button>
     </div>

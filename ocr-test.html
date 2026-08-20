@@ -34,7 +34,9 @@
 import { lasRuta, lasKandidat, haMotor, OCR_ALFABET,
          sokKandidater, Malsokare, MALSOK,
          hashaPlat, nyttSalt, ocrVarianter, haFordonsregister,
-         minneslagring, migreraKlartext, FORDON_NYCKEL, MAX_BYTEN } from './js/plate.js';
+         minneslagring, migreraKlartext, FORDON_NYCKEL, MAX_BYTEN,
+         KAMERA, kameravillkor, behoverSankaBildfrekvens,
+         PlateReader } from './js/plate.js';
 
 const ut = document.getElementById('ut');
 const summa = document.getElementById('summa');
@@ -210,7 +212,14 @@ function skyltbild(text, bredd, { smuts = 0 } = {}) {
  * Returnerar även var varje sak faktiskt hamnade, så mätningen kan kontrollera
  * att siktet låste på rätt sak och inte bara på något.
  */
-function friScen(saker, { sceneW = 900, sceneH = 500 } = {}) {
+/*
+ * `vrid` vrider hela innehållet kring bildens mitt — bilar, skyltar, allt.
+ * Det är vad som händer när telefonen sitter lutad i en hållare: vägen är kvar
+ * där den är, men bilden är roterad. Bakgrunden vrids med flit inte, den är en
+ * jämn gradient och skulle bara lägga till falska kanter som inte finns i
+ * verkligheten.
+ */
+function friScen(saker, { sceneW = 900, sceneH = 500, vrid = 0 } = {}) {
   const c = document.createElement('canvas');
   c.width = sceneW; c.height = sceneH;
   const x = c.getContext('2d');
@@ -218,7 +227,26 @@ function friScen(saker, { sceneW = 900, sceneH = 500 } = {}) {
   grad.addColorStop(0, '#5a6068'); grad.addColorStop(1, '#2e3237');
   x.fillStyle = grad; x.fillRect(0, 0, sceneW, sceneH);
 
+  const rad = vrid * Math.PI / 180;
+  const ccx = sceneW / 2, ccy = sceneH / 2;
+  const kos = Math.cos(rad), sin = Math.sin(rad);
   const ytor = [];
+  // Var en punkt hamnar efter vridningen, så mätningen vet var skylten
+  // faktiskt ligger och inte bara var den ritades.
+  const vridPunkt = (px, py) => ({
+    x: ccx + (px - ccx) * kos - (py - ccy) * sin,
+    y: ccy + (px - ccx) * sin + (py - ccy) * kos,
+  });
+  // Omslutande låda kring en vriden rektangel. Vid vrid = 0 ger den exakt
+  // samma låda som förut, så de gamla fallen är oförändrade.
+  const vridYta = (typ, px, py, w, h, text) => {
+    const m = vridPunkt(px + w / 2, py + h / 2);
+    const aw = w * Math.abs(kos) + h * Math.abs(sin);
+    const ah = w * Math.abs(sin) + h * Math.abs(kos);
+    ytor.push({ typ, x: m.x - aw / 2, y: m.y - ah / 2, w: aw, h: ah, text });
+  };
+
+  if (vrid) { x.save(); x.translate(ccx, ccy); x.rotate(rad); x.translate(-ccx, -ccy); }
   for (const s of saker) {
     if (s.typ === 'bil') {
       x.fillStyle = '#1d2733';
@@ -234,7 +262,7 @@ function friScen(saker, { sceneW = 900, sceneH = 500 } = {}) {
       const g2 = x.createLinearGradient(0, py, 0, py + h);
       g2.addColorStop(0, '#ffffff'); g2.addColorStop(1, '#eceff1');
       x.fillStyle = g2; x.fillRect(px, py, s.bredd, h);
-      ytor.push({ typ: 'vit', x: px, y: py, w: s.bredd, h, text: null });
+      vridYta('vit', px, py, s.bredd, h, null);
       continue;
     }
     const bild = skyltbild(s.text, s.bredd, s);
@@ -246,8 +274,9 @@ function friScen(saker, { sceneW = 900, sceneH = 500 } = {}) {
     if (s.blur) x.filter = `blur(${s.blur}px)`;
     x.drawImage(bild, -s.bredd / 2, -bild.height / 2);
     x.restore();
-    ytor.push({ typ: 'skylt', x: px, y: py, w: s.bredd, h: bild.height, text: s.text });
+    vridYta('skylt', px, py, s.bredd, bild.height, s.text);
   }
+  if (vrid) x.restore();
   return { canvas: c, ytor };
 }
 
@@ -298,12 +327,13 @@ const malfall = [
             { typ: 'vit', bredd: 300, kvot: 4.4, fx: 0.5, fy: 0.52 }] },
 ];
 
-const malrader = [];
-let malRatt = 0;
-for (let i = 0; i < malfall.length; i++) {
-  summa.textContent = `Målsökning ${i + 1} av ${malfall.length}…`;
-  const f = malfall[i];
-  const { canvas, ytor } = friScen(f.saker);
+/**
+ * Kör ett målsökningsfall hela vägen: sök, spåra tills låset sitter, läs det
+ * låset pekar på. Samma funktion för de oroterade fallen och för lutningsfallen
+ * — annars mäter de två tabellerna inte samma sak.
+ */
+async function korMalfall(f) {
+  const { canvas, ytor } = friScen(f.saker, f.vrid ? { vrid: f.vrid } : {});
   const kand = sokKandidater(canvas, null, { arbetsbredd: 400 });
   const sim = simulera(canvas);
   const last = sim.m.last;
@@ -320,18 +350,63 @@ for (let i = 0; i < malfall.length; i++) {
   // Utan skylt är rätt svar att ingenting låses. Med skylt är rätt svar att
   // rätt yta låses och att texten kommer ut.
   const ok = f.vantat ? (trafferRatt && plat === f.vantat) : !last;
-  if (ok) malRatt++;
 
-  malrader.push({
+  return {
     namn: f.namn, vantat: f.vantat || '(ingen skylt)',
     kandidater: kand.length,
     toppPoang: kand.length ? Math.round(kand[0].poang * 100) / 100 : 0,
     toppByten: kand.length ? kand[0].teckenbyten : 0,
+    toppVinkel: kand.length ? Math.round((kand[0].vinkel || 0) * 10) / 10 : 0,
     lastVid: sim.lastVid, trafferRatt,
     plat: plat || (last ? '(ingen giltig)' : '—'),
     sokMs: Math.round(sim.median * 100) / 100,
     ok, forb, canvas,
-  });
+  };
+}
+
+const malrader = [];
+let malRatt = 0;
+for (let i = 0; i < malfall.length; i++) {
+  summa.textContent = `Målsökning ${i + 1} av ${malfall.length}…`;
+  const r = await korMalfall(malfall[i]);
+  if (r.ok) malRatt++;
+  malrader.push(r);
+}
+
+/* ================= Lutning: telefonen sitter snett =================
+ *
+ * Hela scenen vrids kring bildmitten. Det är vad en telefon i en hållare
+ * faktiskt gör mot bilden — vägen står stilla, bilden lutar. Femton grader är
+ * en normal hållare, trettio en slarvigt monterad, fyrtiofem en telefon som
+ * glidit. Nittio är liggande läge.
+ *
+ * Före rotationsokänslig detektion föll alla fyra på samma sak: den omslutande
+ * lådan kring en lutad skylt är nästan kvadratisk, kvoten hamnar utanför
+ * 2,2–8 och kandidaten fanns aldrig.
+ */
+const lutBas = [
+  { typ: 'bil', fx: 0.5, fy: 0.5, bredd: 620, hojd: 300 },
+  { typ: 'skylt', text: 'MLK907', bredd: 300, fx: 0.5, fy: 0.58 },
+];
+const lutfall = [
+  { namn: 'hela scenen lutar 15°', vantat: 'MLK907', saker: lutBas, vrid: 15 },
+  { namn: 'hela scenen lutar 30°', vantat: 'MLK907', saker: lutBas, vrid: 30 },
+  { namn: 'hela scenen lutar 45°', vantat: 'MLK907', saker: lutBas, vrid: 45 },
+  { namn: 'liggande läge, vriden +90°', vantat: 'MLK907', saker: lutBas, vrid: 90 },
+  { namn: 'liggande läge, vriden −90°', vantat: 'MLK907', saker: lutBas, vrid: -90 },
+  // Kontroll: samma scen utan lutning. Faller den här är det inte lutningen
+  // som är problemet, och då säger de andra raderna ingenting.
+  { namn: 'samma scen, oroterad (kontroll)', vantat: 'MLK907', saker: lutBas, vrid: 0 },
+];
+
+const lutrader = [];
+let lutRatt = 0;
+for (let i = 0; i < lutfall.length; i++) {
+  summa.textContent = `Lutning ${i + 1} av ${lutfall.length}…`;
+  const r = await korMalfall(lutfall[i]);
+  r.vrid = lutfall[i].vrid;
+  if (r.ok) lutRatt++;
+  lutrader.push(r);
 }
 
 /* Låset ska släppa. Två vägar in i det, och båda mäts:
@@ -445,6 +520,68 @@ const migOk = mig1.nya === 2 && mig1.ok && mig2.nya === 0 && mig2.fanns === 2 &&
 kolla('migreringen tappar inga fordon', migOk,
       `körning 1: ${mig1.nya} nya · körning 2: ${mig2.nya} nya, ${mig2.fanns} fanns redan · registret: ${reg2.antal} fordon`);
 
+/* ================= Kameran: 60 bildrutor, men aldrig på bekostnad av pixlar ==
+ *
+ * Går inte att mäta med en riktig kamera här — det finns ingen. Men de två
+ * beslut som faktiskt kan gå fel är rena uttryck och går att mäta:
+ *
+ *   1. Villkoren måste vara `ideal` hela vägen. Ett enda `exact` och en telefon
+ *      som inte klarar 60 b/s vägrar starta kameran över huvud taget.
+ *   2. När telefonen betalar bildfrekvensen med upplösning ska vi backa. En
+ *      skylt behöver pixlar mer än den behöver bildrutor.
+ */
+const kamrader = [];
+const kollaK = (namn, ok, detalj) => kamrader.push({ namn, ok: !!ok, detalj: String(detalj) });
+
+const vc = kameravillkor();
+kollaK('bildfrekvens begärs som ideal, inte exact',
+       vc.frameRate?.ideal === KAMERA.bildfrekvens && vc.frameRate.exact === undefined,
+       JSON.stringify(vc.frameRate));
+kollaK('inget exact någonstans i videovillkoren',
+       !JSON.stringify(vc).includes('exact'), JSON.stringify(vc));
+kollaK('upplösningen begärs fortfarande i 1080p',
+       vc.width?.ideal === 1920 && vc.height?.ideal === 1080,
+       `${vc.width?.ideal} × ${vc.height?.ideal}`);
+
+/*
+ * Fyra svar en telefon kan ge. Bara ett av dem är ett dåligt byte.
+ * Namnen är verkliga lägen: 1080p60 finns på nyare toppmodeller, 720p60 är
+ * det klassiska läget en telefon faller till när 60 b/s prioriteras, och
+ * 1080p30 är vad de flesta ger.
+ */
+const kamerafall = [
+  { namn: '1080p vid 60 b/s (bäst)',        fick: { bredd: 1920, bildfrekvens: 60 }, vantat: false },
+  { namn: '1080p vid 30 b/s (vanligast)',   fick: { bredd: 1920, bildfrekvens: 30 }, vantat: false },
+  { namn: '720p vid 60 b/s (dåligt byte)',  fick: { bredd: 1280, bildfrekvens: 60 }, vantat: false },
+  { namn: '640p vid 60 b/s (dåligt byte)',  fick: { bredd: 640,  bildfrekvens: 60 }, vantat: true },
+  { namn: '640p vid 30 b/s (gammal telefon)', fick: { bredd: 640, bildfrekvens: 30 }, vantat: false },
+  { namn: 'kameran svarar inte om frekvensen', fick: { bredd: 640, bildfrekvens: null }, vantat: false },
+];
+for (const f of kamerafall) {
+  const svar = behoverSankaBildfrekvens(f.fick);
+  kollaK(`byter tillbaka till 30 b/s: ${f.namn}`, svar === f.vantat,
+         `${f.fick.bredd} px · ${f.fick.bildfrekvens ?? 'okänd'} b/s → ${svar ? 'sänk' : 'behåll'}`);
+}
+// Gränsen ska gå vid minBredd och ingen annanstans.
+kollaK('gränsen ligger exakt på minBredd',
+       !behoverSankaBildfrekvens({ bredd: KAMERA.minBredd, bildfrekvens: 60 }) &&
+       behoverSankaBildfrekvens({ bredd: KAMERA.minBredd - 1, bildfrekvens: 60 }),
+       `${KAMERA.minBredd} px behålls, ${KAMERA.minBredd - 1} px sänks`);
+
+const kamRatt = kamrader.filter(r => r.ok).length;
+
+// 7. Provläget är avstängt som förval. Med det påslaget skickas 'traff' även
+//    för främmande fordon (utan fordonId och utan etikett, och fortfarande
+//    utan att något lagras) så att den som provkör kan se att läsaren läser.
+//    Det hör till provkörning, inte till produkten — appen kopplar det till
+//    TESTLAGE_UTAN_INLOGGNING, som redan ska slås av innan release. Att det är
+//    av när ingen bett om det är hela skillnaden mot ett spaningsverktyg.
+const lasareForval = new PlateReader({ settings: {} });
+const lasareProv = new PlateReader({ settings: { provlage: true } });
+kolla('provläget är avstängt som förval',
+      lasareForval.settings.provlage === false && lasareProv.settings.provlage === true,
+      'förval: av · går bara att slå på uttryckligen');
+
 const intRatt = intrader.filter(r => r.ok).length;
 
 await raWorker.terminate();
@@ -456,7 +593,9 @@ summa.innerHTML =
   `Rå bild: <span class="${klass(rattRa, fall.length)}">${rattRa} av ${fall.length}</span> · ` +
   `Pipeline: <span class="${klass(rattPipe, fall.length)}">${rattPipe} av ${fall.length}</span> · ` +
   `Målsökning: <span class="${klass(malRatt, malfall.length)}">${malRatt} av ${malfall.length}</span> · ` +
+  `Lutning: <span class="${klass(lutRatt, lutfall.length)}">${lutRatt} av ${lutfall.length}</span> · ` +
   `Integritet: <span class="${klass(intRatt, intrader.length)}">${intRatt} av ${intrader.length}</span> · ` +
+  `Kamera: <span class="${klass(kamRatt, kamrader.length)}">${kamRatt} av ${kamrader.length}</span> · ` +
   `${medel} ms per bild · sökning ${tider.b400} ms i 1920×1080 · ` +
   `motorn laddade på ${(laddTid / 1000).toFixed(1)} s`;
 
@@ -522,6 +661,45 @@ p3.innerHTML =
   'Sökningen kör 8 gånger i sekunden, så 400 kostar under en procent av en kärna.';
 ut.appendChild(p3);
 
+/* ---- Lutningens tabell ---- */
+const h4 = document.createElement('h1');
+h4.style.cssText = 'font-size:18px;margin:30px 0 4px';
+h4.textContent = 'Lutning — telefonen sitter snett i hållaren';
+ut.appendChild(h4);
+
+const p5 = document.createElement('p');
+p5.className = 'sub';
+p5.innerHTML =
+  'Hela scenen vrids kring bildmitten, precis som bilden gör när telefonen ' +
+  'lutar i en hållare. <b>Vinkel</b> är den lutning sökningen själv mätte upp ' +
+  'ur blobbens tröghetsmoment — den kommer inte från någon sensor, och det är ' +
+  'poängen: detektionen är rotationsokänslig utan tillstånd. Kontrollraden ' +
+  'längst ner är samma scen oroterad; faller den är det inte lutningen som är felet.';
+ut.appendChild(p5);
+
+const tab4 = document.createElement('table');
+tab4.innerHTML = '<tr><th>Fall</th><th>Skylt</th><th>Kand.</th><th>Poäng</th>' +
+  '<th>Vinkel</th><th>Byten</th><th>Lås</th><th>Rätt yta</th><th>Läst</th>' +
+  '<th>Scen</th><th>Uppr&auml;tad</th><th>Sök</th></tr>';
+for (const r of lutrader) {
+  const tr = document.createElement('tr');
+  const mini = document.createElement('canvas');
+  mini.width = 180; mini.height = 100;
+  mini.getContext('2d').drawImage(r.canvas, 0, 0, 180, 100);
+  tr.innerHTML = `<td>${r.namn}</td><td>${r.vantat}</td><td>${r.kandidater}</td>` +
+    `<td>${r.toppPoang}</td><td>${r.toppVinkel}°</td><td>${r.toppByten}</td>` +
+    `<td>${r.lastVid ? r.lastVid : '<span class="fel">aldrig</span>'}</td>` +
+    `<td class="${r.trafferRatt ? 'ok' : 'fel'}">${r.trafferRatt ? 'ja' : 'nej'}</td>` +
+    `<td class="${r.ok ? 'ok' : 'fel'}">${r.plat}</td><td class="bild"></td>` +
+    `<td class="bild bild2"></td><td>${r.sokMs} ms</td>`;
+  tr.querySelector('td.bild').appendChild(mini);
+  // Det som motorn faktiskt fick se. Står skylten rak här har rotationen i
+  // beskärningen gjort sitt jobb — det är den bilden som avgör läsningen.
+  if (r.forb) tr.querySelector('td.bild2').appendChild(r.forb);
+  tab4.appendChild(tr);
+}
+ut.appendChild(tab4);
+
 /* ---- Integritetens tabell ---- */
 const h3 = document.createElement('h1');
 h3.style.cssText = 'font-size:18px;margin:30px 0 4px';
@@ -549,6 +727,36 @@ for (const r of intrader) {
 }
 ut.appendChild(tab3);
 
+/* ---- Kamerans tabell ---- */
+const h5 = document.createElement('h1');
+h5.style.cssText = 'font-size:18px;margin:30px 0 4px';
+h5.textContent = 'Kameran — 60 bildrutor, men aldrig på bekostnad av pixlar';
+ut.appendChild(h5);
+
+const p6 = document.createElement('p');
+p6.className = 'sub';
+p6.innerHTML =
+  'Vi ber om 60 bildrutor i sekunden, inte för att läsa fler av dem utan för ' +
+  'att en kamera som ska hinna med 60 rutor exponerar högst 1/60 s per ruta. ' +
+  'Kortare exponering betyder mindre rörelseoskärpa, och oskärpa är det ' +
+  'pipelinen fortfarande faller på. Allt begärs som <code>ideal</code> — en ' +
+  'telefon som inte klarar 60 ska ge 30, inte vägra starta kameran. Vad den ' +
+  'faktiskt gav läses tillbaka ur <code>track.getSettings().frameRate</code> ' +
+  'och finns i <code>reader.kamerainfo</code>. Klarar telefonen 60 bara genom ' +
+  'att gå ner i upplösning backar vi: skylten behöver pixlar mer än bildrutor.';
+ut.appendChild(p6);
+
+const tab5 = document.createElement('table');
+tab5.innerHTML = '<tr><th>Kontroll</th><th>Utfall</th><th>Vad som mättes</th></tr>';
+for (const r of kamrader) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${r.namn}</td>` +
+    `<td class="${r.ok ? 'ok' : 'fel'}">${r.ok ? 'ja' : 'NEJ'}</td>` +
+    `<td class="noll">${r.detalj}</td>`;
+  tab5.appendChild(tr);
+}
+ut.appendChild(tab5);
+
 window.__ocr = { ra: rattRa, pipeline: rattPipe, av: fall.length,
                  medelMs: medel, laddTidMs: laddTid,
                  rader: rader.map(({ forb, ...x }) => x),
@@ -557,6 +765,14 @@ window.__ocr = { ra: rattRa, pipeline: rattPipe, av: fall.length,
                    rader: malrader.map(({ forb, canvas, ...x }) => x),
                    tappEfter, brannEfter, brannRelas, tider,
                    krav: { ...MALSOK },
+                 },
+                 lutning: {
+                   ratt: lutRatt, av: lutfall.length,
+                   rader: lutrader.map(({ forb, canvas, ...x }) => x),
+                 },
+                 kamera: {
+                   ratt: kamRatt, av: kamrader.length, rader: kamrader,
+                   villkor: kameravillkor(), krav: { ...KAMERA },
                  },
                  integritet: {
                    ratt: intRatt, av: intrader.length, rader: intrader,
