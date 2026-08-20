@@ -1610,10 +1610,26 @@ async function hanteraGenvag() {
   }
 }
 
-async function reportAt(type, { lat, lon, label, source = 'app' } = {}) {
+async function reportAt(type, { lat, lon, label, source = 'app', geokod } = {}) {
   if (!gateOrPaywall()) return;
   try {
-    let pos = (lat != null && lon != null) ? { lat, lon } : null;
+    /*
+     * Kom punkten från telefonen eller från ett namn?
+     *
+     * Skillnaden avgör hur mycket appen får låta som att den vet. Står
+     * telefonen på platsen är osäkerheten några meter. Kom punkten ur en
+     * namnuppslagning kan den ligga en kilometer fel — "rondellen" finns det
+     * fyra av i Västerås.
+     *
+     * Tidigare skickades ALLTID geokod: 'gps', även för röstrapporter som
+     * Nominatim slagit upp. Appen läste då "polis vid Erikslund, klockan 2"
+     * med full säkerhet om en punkt den gissat fram. Det är precis den falska
+     * precision kvalitet.js finns för att förhindra — dess egen ingress
+     * kallar det samma svek som ett falskt påstående, bara svårare att
+     * upptäcka.
+     */
+    const egenPosition = (lat == null || lon == null);
+    let pos = egenPosition ? null : { lat, lon };
     if (!pos) {
       pos = geo.position || await currentPosition();
     }
@@ -1629,10 +1645,22 @@ async function reportAt(type, { lat, lon, label, source = 'app' } = {}) {
     // att samla in i det ögonblick rapporten skapas och omöjliga att
     // rekonstruera efteråt.
     const nufix = geo.position;
+
+    /*
+     * GPS-noggrannheten och farten beskriver FÖRAREN, inte punkten.
+     *
+     * Ligger rapporten på en uppslagen adress säger förarens tio meters
+     * noggrannhet ingenting om hur rätt den adressen är — och att skicka med
+     * den ändå fick kvalitetslagret att räkna på fel osäkerhet. Samma sak med
+     * farten: den används för att uppskatta hur långt bilen hunnit sedan
+     * föraren såg något, vilket bara betyder något när punkten är den egna.
+     */
     const r = await store.add({
       type, lat: pos.lat, lon: pos.lon, label: name, source,
-      gpsAccuracyM: Number.isFinite(nufix?.accuracy) ? Math.round(nufix.accuracy) : null,
-      fartKmh: Number.isFinite(nufix?.speedKmh) ? Math.round(nufix.speedKmh) : null,
+      gpsAccuracyM: egenPosition && Number.isFinite(nufix?.accuracy)
+        ? Math.round(nufix.accuracy) : null,
+      fartKmh: egenPosition && Number.isFinite(nufix?.speedKmh)
+        ? Math.round(nufix.speedKmh) : null,
 
       // Femton sekunder är ett ANTAGANDE, inte en mätning.
       //
@@ -1647,10 +1675,24 @@ async function reportAt(type, { lat, lon, label, source = 'app' } = {}) {
       // in knappen. Det skalar med farten av sig själv: 125 m i 30 km/h,
       // 460 m i 110. Ändras knappen till att kräva längre håll ska siffran
       // följa med.
-      fordrojningS: 15,
+      // Bara meningsfullt för den egna positionen. Ligger punkten på en
+      // uppslagen adress finns ingen "fördröjning sedan passagen" att tala
+      // om — då låter vi kvalitet.js använda sina källmedvetna antaganden
+      // (voice: 8 s) i stället för att skicka en siffra som inte betyder något.
+      fordrojningS: egenPosition ? 15 : null,
 
-      // Telefonen stod på platsen. Ingen geokodning inblandad.
-      geokod: 'gps',
+      /*
+       * Var punkten kom ifrån, på riktigt.
+       *
+       * 'gps' betyder "telefonen stod här". Skickas det för en punkt som
+       * slagits upp ur ett namn ger kvalitet.js 15 meters osäkerhet och
+       * +0,10 i poäng åt en gissning som kan ligga en kilometer fel — och
+       * appen läser upp klockriktning för den, som om den vore mätt.
+       *
+       * Anroparen får säga till när den vet bättre: onMapPick skickar
+       * 'karta', eftersom föraren pekade själv och stod stilla.
+       */
+      geokod: geokod || (egenPosition ? 'gps' : 'nominatim'),
     });
     speaker.chime('ack');
     const what = TYPE_LABEL[type] || 'Varning';
@@ -1696,7 +1738,9 @@ function onMapPick({ lat, lon }) {
   learnPlace(place, lat, lon, place);
   refreshLearnedList();
   toast(`"${place}" sparad. Nästa gång hittar appen dit direkt.`);
-  reportAt(type, { lat, lon, label: place, source: 'voice' });
+  // Föraren pekade själv på kartan, stillastående. Det är en bättre position
+  // än en namnuppslagning och kvalitet.js har ett eget värde för den.
+  reportAt(type, { lat, lon, label: place, source: 'voice', geokod: 'karta' });
 }
 
 /** Markera närmaste rapport av en typ som borta. */

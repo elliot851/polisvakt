@@ -394,6 +394,43 @@ await T('bilingenkännaren finns i appen, inte i en annan app', () => {
 await T('läsaren stoppas när man lämnar dashcam-vyn', () =>
   /showView[\s\S]{0,900}?plate\?\.running[\s\S]{0,80}?stoppaPlate\(\)/.test(appSrc)
   || 'kameran skulle fortsätta vara upptagen i bakgrunden');
+
+await T('en uppslagen plats påstår inte att den är GPS-mätt', () => {
+  // reportAt satte alltid geokod:'gps'. En röstrapport som Nominatim löst till
+  // fel del av stan behandlades då som om telefonen stått på punkten, och
+  // appen läste upp klockriktning för en gissning.
+  const i = appSrc.indexOf('async function reportAt');
+  const kropp = i >= 0 ? appSrc.slice(i, i + 6000) : '';
+  if (!kropp) return 'hittar inte reportAt';
+  // Bara rader som BÖRJAR med geokod: räknas. Kommentarrader inleds med * eller
+  // //, och första versionen av testet matchade min egen kommentartext i
+  // stället för koden. Ett test som läser prosa larmar lika gärna som det tiger.
+  if (/^\s*geokod:\s*'gps'\s*,/m.test(kropp)) {
+    return "reportAt hårdkodar fortfarande geokod:'gps'";
+  }
+  return /geokod:\s*geokod\s*\|\|\s*\(egenPosition/.test(kropp)
+    || 'geokod härleds inte ur om positionen är den egna';
+});
+
+await T('förarens GPS-noggrannhet följer inte med på någon annans punkt', () => {
+  const i = appSrc.indexOf('async function reportAt');
+  const kropp = i >= 0 ? appSrc.slice(i, i + 6000) : '';
+  return /gpsAccuracyM:\s*egenPosition/.test(kropp)
+    || 'gpsAccuracyM sätts även för uppslagna positioner';
+});
+
+await T('en nominatim-punkt graderas försiktigare än en GPS-punkt', () => {
+  // Det är hela poängen: samma rapport ska låta mindre säker när platsen
+  // gissats fram.
+  const bas = { id: 'g1', type: 'police', lat: 59.616, lon: 16.553,
+                createdAt: nu - 3 * 60000, expiresAt: nu + 40 * 60000,
+                confirms: 1, denials: 0, source: 'voice' };
+  const mattPunkt  = kvalitet.bedomRapport({ ...bas, geokod: 'gps', gpsAccuracyM: 10 }, { nu });
+  const gissadPunkt = kvalitet.bedomRapport({ ...bas, geokod: 'nominatim' }, { nu });
+  return gissadPunkt.osakerhetM > mattPunkt.osakerhetM
+    || `gissad ${gissadPunkt.osakerhetM} m är inte osäkrare än mätt ${mattPunkt.osakerhetM} m`;
+});
+
 /* ---- Genvägar från hemskärmen --------------------------------------- */
 G('Snabbrapport från hemskärmen');
 
