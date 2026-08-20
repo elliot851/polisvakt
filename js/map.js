@@ -9,6 +9,8 @@ import { TYPE_ICON, TYPE_LABEL } from './parser.js';
 import { shortDistance, relativeTime } from './util.js';
 import { VASTERAS } from './geocode.js';
 import { MapRotation } from './kartrotation.js';
+import { sammanfattaLang } from './sammanfattning.js';
+import { isMine } from './store.js';
 
 const TILES = {
   day: {
@@ -359,14 +361,43 @@ export class HazardMap extends EventTarget {
     return `${h.type}|${Math.round(Math.min(1, ageMin / lifeMin) * 10)}`;
   }
 
+  /**
+   * Innehållet i bubblan när någon tryckt på en nål.
+   *
+   * Här får den långa sammanfattningen plats, och här hör den hemma: ett
+   * tryck på en nål är någon som vill veta vad rapporten BETYDER, inte se
+   * samma fyra fakta en gång till i en ruta.
+   *
+   * Etiketten, tiden och källraden är borta ur bubblan — inte bortglömda,
+   * utan uppslukade av meningen, som säger allihop i ett svep och dessutom
+   * säger hur säkra de är. Ikonen och etiketten på själva nålen är orörda;
+   * de är det man ser utan att trycka.
+   *
+   * Sammanfattningen vägrar beskriva en nykterhets- eller drogkontroll och
+   * lämnar då tom sträng. Då faller bubblan tillbaka på den gamla
+   * uppställningen i stället för att bli tom — en nål utan innehåll ser ut
+   * som en trasig app, och rapporten borde ändå aldrig ha nått kartan.
+   */
   #popupInnehall(h, myPos) {
     if (!h) return '';
-    const dist = myPos
-      ? `<br><span class="pop-dist">${shortDistance(
+    const avstand = myPos
+      ? `<span class="pop-dist">${shortDistance(
           Math.hypot((h.lat - myPos.lat) * 111320, (h.lon - myPos.lon) * 111320 * Math.cos(h.lat * Math.PI / 180))
         )} bort</span>` : '';
+    const dist = avstand ? `<br>${avstand}` : '';
+    const rubrik = `<b>${TYPE_ICON[h.type] || '⚠️'} ${TYPE_LABEL[h.type] || 'Varning'}</b>`;
+
+    let egen = false;
+    try { egen = isMine(h.id); } catch {}
+    const mening = sammanfattaLang(h, { egen });
+    if (mening) {
+      // Ingen <br> före avståndet här: div:en runt meningen bryter redan
+      // raden, och två radbrytningar i rad ger ett tomrum mitt i bubblan.
+      return rubrik + `<div class="pop-sum">${escapeHtml(mening)}</div>` + avstand;
+    }
+
     const age = h.createdAt ? `<br><span class="pop-age">${relativeTime(h.createdAt)}</span>` : '';
-    return `<b>${TYPE_ICON[h.type] || '⚠️'} ${TYPE_LABEL[h.type] || 'Varning'}</b>` +
+    return rubrik +
       (h.label ? `<br>${escapeHtml(h.label)}` : '') + dist + age +
       (h.source === 'facebook' ? '<br><span class="pop-src">Från Facebook-gruppen</span>' : '');
   }

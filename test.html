@@ -74,6 +74,7 @@ const vakthund = await import('./js/vakthund.js');
 const store = await import('./js/store.js');
 const util = await import('./js/util.js');
 const plate = await import('./js/plate.js');
+const sam = await import('./js/sammanfattning.js');
 
 /* ---- De två produktreglerna. Går de sönder är allt annat oviktigt. -- */
 G('Produktregler — får aldrig gå sönder');
@@ -159,6 +160,49 @@ await T('kvalitetslagret vägrar gradera en nykterhetskontroll', () => {
       createdAt: Date.now(), source: 'app' }, {});
   return b.behandling === kvalitet.BEHANDLING.UNDANHALL
     || `fick ${b.behandling}`;
+});
+
+/* Sammanfattningen är en ny väg från rådata till något en människa läser.
+   Vägrar parsern men beskriver sammanfattningen ändå, så har spärren fått en
+   ny dörr — och den här gången utan att någon behöver rapportera något:
+   raderna kan komma från servern, från bryggan eller ligga kvar i
+   webbläsarens lagring sedan innan spärren lagades. Samma nio meningar som i
+   parsertestet, en gång i inläggstexten och en gång i etiketten. */
+await T('sammanfattningen beskriver aldrig en nykterhets- eller drogkontroll', () => {
+  const texter = [
+    'Polisen har narkotikakontroll på Vasagatan',
+    'Narkotika kontroll vid Erikslund',
+    'Polis gör drog-kontroll vid Erikslund',
+    'Polis vid Erikslund med drogsökhund',
+    'Polis kollar droger vid Erikslund',
+    'Polisen blåsning vid Erikslund',
+    'Polis nykterhets-kontroll Hälla',
+    'polisen står med sållnings-prov vid rondellen',
+    'rattfylleri-kontroll city',
+    'nykterhetskontroll',
+    'alkohol kontroll vid rondellen',
+  ];
+  const nu = Date.now();
+  const lackor = [];
+  for (const t of texter) {
+    // En gång som inläggstext med en oskyldig etikett, en gång som etikett.
+    const fall = [
+      { id: 'a', type: 'police', label: 'Hälla', note: t, createdAt: nu - 120000,
+        source: 'facebook', confirms: 3, denials: 0 },
+      { id: 'b', type: 'control', label: t, note: '', createdAt: nu - 120000,
+        source: 'app', confirms: 1, denials: 0 },
+    ];
+    for (const r of fall) {
+      if (sam.farBeskrivas(r)) lackor.push(`farBeskrivas: ${t}`);
+      for (const [namn, fn] of [['kort', sam.sammanfattaKort],
+                                ['lång', sam.sammanfattaLang],
+                                ['tal', sam.sammanfattaTal]]) {
+        const s = fn(r, { nu });
+        if (s !== '') lackor.push(`${namn}: ${s}`);
+      }
+    }
+  }
+  return lackor.length === 0 || `beskrevs ändå: ${lackor.slice(0, 3).join(' · ')}`;
 });
 
 /* ---- Rundturen som brast ------------------------------------------- */
@@ -1080,6 +1124,211 @@ await T('läser en renderad skylt genom hela kedjan', async () => {
   const { canvas } = ritaScen('ABC123');
   const r = await plate.lasRuta(canvas, provRoi(canvas));
   return r.plat === 'ABC123' || `läste ${r.plat} (${r.sakerhet}%)`;
+});
+
+/* =================================================================== */
+G('Sammanfattningen — vad inlägget betyder');
+
+/* En rapportrad som appen faktiskt skickar runt. Fälten är precis de som
+   store.js skapar och map.js läser. */
+const NU = Date.parse('2026-08-20T12:00:00Z');
+const rapportrad = (extra = {}) => ({
+  id: 'r1', type: 'control', lat: 59.62, lon: 16.58, label: 'Hälla',
+  createdAt: NU - 2 * 60000, source: 'facebook', note: 'laserhälla',
+  confirms: 1, denials: 0, fixed: false, ...extra,
+});
+
+await T('"laserhälla" blir en mening en människa förstår', () => {
+  const s = sam.sammanfattaKort(rapportrad(), { nu: NU });
+  return s === 'Fartkontroll med laser vid Hälla — någon i Facebook-gruppen varnade för 2 minuter sedan.'
+    || `fick: ${s}`;
+});
+
+await T('typen står i klartext och de fyra hålls isär', () => {
+  const nyckel = t => sam.sammanfattaKort(rapportrad({ type: t, note: '' }), { nu: NU }).split(' —')[0];
+  const fick = {
+    police:   nyckel('police'),
+    control:  nyckel('control'),
+    unmarked: nyckel('unmarked'),
+    kamera:   sam.sammanfattaKort(rapportrad({ type: 'camera', fixed: true }), { nu: NU }).split('.')[0],
+  };
+  const vill = {
+    police: 'Polis vid Hälla', control: 'Trafikkontroll vid Hälla',
+    unmarked: 'Civil polisbil vid Hälla', kamera: 'Fast fartkamera vid Hälla',
+  };
+  const fel = Object.keys(vill).filter(k => fick[k] !== vill[k]);
+  return !fel.length || fel.map(k => `${k}: "${fick[k]}"`).join(' · ');
+});
+
+/* "Fartkontroll vid vid Hälla" är den sortens fel som gör att folk slutar
+   lita på appen. Etiketten kan mycket väl komma med sin egen preposition —
+   geokodaren lämnar ifrån sig både "Hälla" och "på E18". */
+await T('ingen dubbel preposition, oavsett hur etiketten ser ut', () => {
+  const prov = ['Hälla', 'vid Hälla', 'på E18', 'i Skultuna', 'utanför Dingtuna',
+                '  Hälla  ', 'E18 västerut'];
+  const trasiga = [];
+  for (const label of prov) {
+    const s = sam.sammanfattaKort(rapportrad({ label }), { nu: NU });
+    if (/\b(vid|på|i|utanför) (vid|på|i|utanför)\b/.test(s)) trasiga.push(s);
+    if (/ {2}/.test(s)) trasiga.push(`dubbelt mellanslag: "${s}"`);
+  }
+  return !trasiga.length || trasiga.join(' · ');
+});
+
+await T('saknad plats sägs rakt ut, inte bortglömd', () => {
+  const utfall = ['', '   ', null, undefined, '-', 'okänd']
+    .map(label => sam.sammanfattaKort(rapportrad({ label }), { nu: NU }));
+  const fel = utfall.filter(s => !s.includes('plats okänd'));
+  return !fel.length || `saknade "plats okänd": ${fel.join(' · ')}`;
+});
+
+/* "för 0 minuter sedan" och "om 5 minuter" är båda meningar appen aldrig får
+   skriva. Svepet går från tio minuter in i FRAMTIDEN till tre dygn bakåt. */
+await T('åldern är alltid en läsbar tid — aldrig noll, aldrig framåt', () => {
+  const trasiga = [];
+  for (let m = -10; m <= 4400; m++) {
+    const s = sam.sammanfattaLang(rapportrad({ createdAt: NU - m * 60000 }), { nu: NU });
+    if (/för 0 minuter|för 0 timmar|för 0 dagar/.test(s)) trasiga.push(`${m} min: ${s}`);
+    if (/\bom \d/.test(s)) trasiga.push(`${m} min: ${s}`);
+    if (/NaN|undefined|null|Infinity/.test(s)) trasiga.push(`${m} min: ${s}`);
+    if (/\s{2}|\s\./.test(s)) trasiga.push(`${m} min: "${s}"`);
+    if (trasiga.length > 2) break;
+  }
+  return !trasiga.length || trasiga.join(' | ');
+});
+
+await T('nyss rapporterat säger "just nu"', () => {
+  const s = sam.sammanfattaKort(rapportrad({ createdAt: NU - 20000 }), { nu: NU });
+  return s.includes('varnade just nu') || `fick: ${s}`;
+});
+
+await T('en tidsstämpel i framtiden erkänns som obrukbar', () => {
+  const s = sam.sammanfattaLang(rapportrad({ createdAt: NU + 20 * 60000 }), { nu: NU });
+  return (s.includes('inte går att lita på') && !/\bom \d/.test(s)) || `fick: ${s}`;
+});
+
+await T('saknad tidsstämpel blir "okänd tidpunkt", inte 1970', () => {
+  const fall = [undefined, null, 0, NaN, 'igår'];
+  const fel = fall.map(v => sam.sammanfattaLang(rapportrad({ createdAt: v }), { nu: NU }))
+    .filter(s => !s.includes('okänd tidpunkt') || /1970|NaN|sedan/.test(s));
+  return !fel.length || fel.join(' · ');
+});
+
+/* Något från för fem minuter sedan är inte samma sak som något från för
+   fyrtio. Skillnaden måste höras i meningen, inte bara i siffran. */
+await T('en gammal rapport låter gammal', () => {
+  const vid = m => sam.sammanfattaLang(rapportrad({ type: 'police', createdAt: NU - m * 60000 }), { nu: NU });
+  const fem = vid(5), fyrtio = vid(40), timme = vid(70);
+  if (!fem.includes('färsk')) return `5 min: ${fem}`;
+  if (!/inte står kvar/.test(fyrtio)) return `40 min: ${fyrtio}`;
+  if (!/knappast stämmer/.test(timme)) return `70 min: ${timme}`;
+  // Och den korta formen måste bära samma sak, den är den enda man hinner läsa.
+  const kortFyrtio = sam.sammanfattaKort(rapportrad({ type: 'police', createdAt: NU - 40 * 60000 }), { nu: NU });
+  return /Kan ha flyttat/.test(kortFyrtio) || `kort 40 min: ${kortFyrtio}`;
+});
+
+/* En civil polisbil flyttar sig, en trafikkontroll står kvar. Samma ålder ska
+   därför inte betyda samma sak — annars är förbehållet bara dekoration. */
+await T('åldern vägs mot vad typen brukar leva', () => {
+  const civil = sam.sammanfattaLang(rapportrad({ type: 'unmarked', createdAt: NU - 25 * 60000 }), { nu: NU });
+  const kontroll = sam.sammanfattaLang(rapportrad({ type: 'control', createdAt: NU - 25 * 60000 }), { nu: NU });
+  return (/inte står kvar/.test(civil) && /flytta på sig/.test(kontroll))
+    || `civil: ${civil}\nkontroll: ${kontroll}`;
+});
+
+await T('källan sägs alltid, och de fem fallen skiljs åt', () => {
+  const f = (extra, opts) => sam.sammanfattaKort(rapportrad({ note: '', ...extra }), { nu: NU, ...opts });
+  const par = [
+    [f({ source: 'facebook' }), 'någon i Facebook-gruppen varnade'],
+    [f({ source: 'telegram' }), 'någon i Telegram-gruppen varnade'],
+    [f({ source: 'app' }), 'en annan förare rapporterade'],
+    [f({ source: 'app' }, { egen: true }), 'du rapporterade den'],
+    [f({ source: '' }), 'källan är okänd'],
+  ];
+  const fel = par.filter(([s, vill]) => !s.includes(vill)).map(([s]) => s);
+  return !fel.length || fel.join(' · ');
+});
+
+/* store.js sätter confirms till 1 vid skapandet — det är rapportören själv.
+   Räknas den med blir varje ensam rapport "en förare har bekräftat". */
+await T('bekräftelser och dementier räknas i ord, rapportören oräknad', () => {
+  const l = (c, d) => sam.sammanfattaLang(rapportrad({ confirms: c, denials: d, note: '' }), { nu: NU });
+  if (!l(1, 0).includes('Ingen annan har bekräftat den än.')) return l(1, 0);
+  if (!l(2, 0).includes('En annan förare har bekräftat den.')) return l(2, 0);
+  if (!l(4, 0).includes('Tre förare har bekräftat den.')) return l(4, 0);
+  if (!l(4, 2).includes('Två säger att den är borta.')) return l(4, 2);
+  if (!l(1, 1).includes('En förare säger att den är borta.')) return l(1, 1);
+  return true;
+});
+
+/* En fast fartkamera är inte en varning om något som händer nu. Den meningen
+   får inte innehålla ett enda ord som antyder att någon nyss sett något. */
+await T('den fasta kameran låter annorlunda än en rapport', () => {
+  const kam = { id: 'cam-1', type: 'camera', lat: 59.6, lon: 16.5, label: 'E18 Hälla',
+                speedLimit: 80, fixed: true };
+  const kort = sam.sammanfattaKort(kam, { nu: NU });
+  const lang = sam.sammanfattaLang(kam, { nu: NU });
+  if (/rapporterade|varnade|sedan|just nu|bekräftat/.test(kort + lang)) return `${kort} / ${lang}`;
+  if (!kort.includes('står alltid här')) return kort;
+  if (!lang.includes('permanent')) return lang;
+  if (!lang.includes('80')) return `hastigheten föll bort: ${lang}`;
+  return true;
+});
+
+await T('de tre längderna säger samma sak men är inte samma text', () => {
+  const b = sam.beskrivning(rapportrad({ confirms: 3, denials: 1 }), { nu: NU });
+  if (!(b.kort.length < b.lang.length)) return `kort ${b.kort.length} / lång ${b.lang.length}`;
+  if (b.kort === b.tal) return 'talformen är identisk med den korta';
+  // Lång form bär både stödet och originalinlägget; kort form gör det inte.
+  if (!b.lang.includes('bekräftat') || b.kort.includes('bekräftat')) return b.kort + ' || ' + b.lang;
+  if (!b.lang.includes('laserhälla')) return `originalinlägget saknas: ${b.lang}`;
+  return true;
+});
+
+/* Uppläsningsformen läses av en talsyntes. Tankstreck blir en paus mitt i en
+   sats eller ingenting alls, citattecken uttalas på vissa röster, och siffror
+   är den vanligaste källan till fel betoning. */
+await T('talformen är uppläsningsvänlig', () => {
+  const t = sam.sammanfattaTal(rapportrad({ createdAt: NU - 42 * 60000, confirms: 4, denials: 2 }), { nu: NU });
+  if (/[—–·"()\[\]]/.test(t)) return `otillåtna tecken: ${t}`;
+  if (/\d/.test(t)) return `siffror kvar: ${t}`;
+  if (!t.includes('fyrtiotvå minuter')) return `räkneordet blev fel: ${t}`;
+  if (t.includes('laserhälla')) return `originalinlägget läses upp: ${t}`;
+  return true;
+});
+
+await T('räkneorden stavas rätt', () => {
+  const par = [[1, 'en'], [2, 'två'], [11, 'elva'], [20, 'tjugo'], [21, 'tjugoen'],
+               [40, 'fyrtio'], [42, 'fyrtiotvå'], [59, 'femtionio'], [100, '100']];
+  const fel = par.filter(([n, v]) => sam.talOrd(n) !== v).map(([n, v]) => `${n}→${sam.talOrd(n)} (ville ${v})`);
+  return !fel.length || fel.join(' · ');
+});
+
+/* Tomma fält, fel typer och rena skräpobjekt. En sammanfattning som kastar
+   ett undantag tar med sig hela kartbubblan i fallet. */
+await T('tomma och trasiga rader spricker inte', () => {
+  const skrap = [null, undefined, {}, [], 'text', 42,
+    { type: 'police' },
+    { type: 'okänd', label: 'Hälla', createdAt: NU, source: 'app' },
+    { type: 'police', label: 'Hälla', createdAt: NU - 60000, confirms: -5, denials: null },
+    { type: 'control', label: {}, note: 12, createdAt: 'imorgon' },
+    { type: 'police', label: 'Hälla', createdAt: NU - 60000, speedLimit: 'åtti' },
+  ];
+  for (const r of skrap) {
+    let ut;
+    try { ut = [sam.sammanfattaKort(r, { nu: NU }), sam.sammanfattaLang(r, { nu: NU }), sam.sammanfattaTal(r, { nu: NU })]; }
+    catch (e) { return `kastade på ${JSON.stringify(r)}: ${e.message}`; }
+    for (const s of ut) {
+      if (typeof s !== 'string') return `gav ${typeof s} för ${JSON.stringify(r)}`;
+      if (/undefined|NaN|null|\[object/.test(s)) return `${JSON.stringify(r)} → ${s}`;
+    }
+  }
+  return true;
+});
+
+await T('etiketten som bara upprepar typen räknas inte som plats', () => {
+  const s = sam.sammanfattaKort(rapportrad({ type: 'police', label: 'Polis', note: '' }), { nu: NU });
+  return (s.startsWith('Polis, plats okänd') && !s.includes('vid Polis')) || `fick: ${s}`;
 });
 
 /* =================================================================== */

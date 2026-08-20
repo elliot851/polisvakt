@@ -40,6 +40,7 @@ import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
 import * as Korvanor from './korvanor.js';
 import { Navigering, tolkaOsrmRutt } from './navigering.js';
+import { beskrivning, sammanfattaKort, sammanfattaTal } from './sammanfattning.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -438,7 +439,24 @@ async function confirmNearest() {
   await store.confirm(near[0].id);
   reputation.addVerify();
   speaker.chime('ack');
-  speaker.say(`Tack. ${TYPE_LABEL[near[0].type]} bekräftad.`, { priority: 0 });
+
+  /*
+   * Säg vad det var som bekräftades.
+   *
+   * Rattknappen trycks blint. "Tack. Polis bekräftad." bekräftar något
+   * föraren inte kan se vilket av — står det två rapporter inom fyra
+   * kilometer är det en gissning vilken av dem som förlängdes. Den
+   * uppläsningsvänliga formen säger vilken, med källa och ålder, och gör
+   * knappen möjlig att lita på utan att titta.
+   *
+   * Formen är den tredje i sammanfattning.js och inte den korta: tankstreck
+   * och siffror hör hemma på en skärm, inte i en talsyntes. voice.js själv
+   * behövde ingen ändring — Speaker tar emot färdiga strängar och bygger
+   * inga fraser om rapporter.
+   */
+  const talat = sammanfattaTal(near[0], { egen: arMin(near[0]) });
+  speaker.say(talat ? `Tack. ${talat} Den ligger kvar längre nu.`
+                    : `Tack. ${TYPE_LABEL[near[0].type]} bekräftad.`, { priority: 0 });
   renderReputation();
 }
 
@@ -1615,7 +1633,7 @@ function renderHazards() {
       <span class="hz-ico">${TYPE_ICON[h.type] || '⚠️'}</span>
       <span class="hz-main">
         <span class="hz-title">${escapeHtml(TYPE_LABEL[h.type] || 'Varning')}${h.label ? ' · ' + escapeHtml(h.label) : ''}</span>
-        <span class="hz-meta">${h.fixed ? 'Fast kamera' : relativeTime(h.createdAt) + (h.source === 'facebook' ? ' · Facebook' : '')}</span>
+        <span class="hz-meta">${escapeHtml(hazardMeta(h, own))}</span>
       </span>
       <span class="hz-dist">${shortDistance(h.distance)}</span>`;
 
@@ -1649,6 +1667,33 @@ function renderHazards() {
   }
 }
 
+/**
+ * Underraden i farolistan.
+ *
+ * Rubriken ovanför säger redan typ och plats, så här behövs resten av
+ * meningen: vem som sagt det, när, och hur mycket det går att lita på.
+ * "3 min sedan · Facebook" stod det förut — två fakta utan samband, där
+ * föraren själv fick lista ut att det betydde att någon annan sett något,
+ * inte att appen visste något.
+ *
+ * Hela meningen (typ och plats med) hade upprepat rubriken ordagrant, och en
+ * rad som säger samma sak två gånger ser ut som ett fel. Därför delarna och
+ * inte sammanfattaKort — samma modul, samma ord, bara utan dubbleringen.
+ */
+function hazardMeta(h, own) {
+  const d = beskrivning(h, { egen: own })?.delar;
+  if (!d) {
+    // Sammanfattningen vägrade beskriva rapporten. Fall tillbaka på det
+    // gamla, hellre än att lämna raden tom.
+    return h.fixed ? 'Fast kamera'
+      : relativeTime(h.createdAt) + (h.source === 'facebook' ? ' · Facebook' : '');
+  }
+  if (d.fast) return `${cap(d.kallaOchAlder)}.`;
+  return `${cap(d.kallaOchAlder)}.${d.aktualitetKort}`;
+}
+
+const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
 function haversineFix(fix, h) {
   const R = 6371000, rad = d => d * Math.PI / 180;
   const dLat = rad(h.lat - fix.lat), dLon = rad(h.lon - fix.lon);
@@ -1672,8 +1717,23 @@ function showAlertBanner(alert) {
   b.classList.toggle('camera', h.type === 'camera');
   $('alertIcon').textContent = TYPE_ICON[h.type] || '⚠️';
   $('alertTitle').textContent = `${TYPE_LABEL[h.type] || 'Varning'}${h.label ? ' · ' + h.label : ''}`;
-  $('alertSub').textContent = `${shortDistance(alert.distance)} bort` +
-    (h.createdAt && !h.fixed ? ` · ${relativeTime(h.createdAt)}` : '');
+  /*
+   * Underraden är hela meningen, inte bara siffrorna.
+   *
+   * Bannern är det enda föraren hinner läsa i 90 km/h, och den sa förut
+   * "1,2 km bort · 12 min sedan". Avståndet går att agera på; resten var en
+   * gåta. Nu står det vad rapporten betyder och varifrån den kommer, med
+   * avståndet först eftersom det är det som avgör om man behöver bry sig alls.
+   *
+   * Rubriken ovanför upprepar typ och plats. Här är upprepningen med flit:
+   * rubriken är en etikett man känner igen på formen, underraden är en
+   * mening man läser. Tar man bort den ena blir den andra sämre.
+   */
+  const kort = sammanfattaKort(h, { egen: arMin(h) });
+  $('alertSub').textContent = kort
+    ? `${shortDistance(alert.distance)} bort. ${kort}`
+    : `${shortDistance(alert.distance)} bort` +
+      (h.createdAt && !h.fixed ? ` · ${relativeTime(h.createdAt)}` : '');
   clearTimeout(showAlertBanner._t);
   showAlertBanner._t = setTimeout(hideAlertBanner, 14000);
 

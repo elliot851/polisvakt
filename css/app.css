@@ -1560,3 +1560,9 @@ body.is-morkt .topp { visibility: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .fordonslarm { animation: none; }
 }
+
+/* Sammanfattningen i kartbubblan.
+   En hel mening i stället för etikett + tid + källa på var sin rad. Den är
+   längre än det den ersatte, så den behöver luft och radavstånd — annars
+   läser man den inte i en bil. */
+.pop-sum { font-size: 13px; line-height: 1.45; margin: 5px 0 0; }
