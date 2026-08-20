@@ -2,10 +2,19 @@
 #
 # VARFÖR DEN HÄR FILEN FINNS
 #
-# Chrome strypar timers i flikar som ligger i bakgrunden — ungefär ett anrop
-# per minut i stället för bryggans tjugo sekunder — och pausar helt fönster
-# som är helt övertäckta av andra fönster. En brygga som ska märka ett nytt
-# inlägg inom en minut kan alltså inte dela fönster med det du jobbar i.
+# Den är en förbättring, inte ett krav. Bryggan fungerar i en vanlig
+# bakgrundsflik sedan den slutade läsa Facebooks tidsstämpel och började
+# tidsbestämma inlägg själv.
+#
+# Men Chrome strypar timers i bakgrundsflikar. Uppmätt i en riktig dold flik
+# över tolv minuter: svepet håller tjugo sekunder i ungefär två minuter och
+# går sedan till en gång i minuten, oavsett vad som står i scanIntervalMs.
+# Det kostar upp till en minuts fördröjning på en varning som lever i trettio
+# till sextio. Övertäckta fönster kan dessutom pausas helt.
+#
+# Flaggorna nedan tar bort båda sakerna, så svepet håller sina tjugo sekunder
+# även när du gör något annat. Vill du slippa ett extra fönster fungerar en
+# vanlig flik också — du får bara varningen en knapp minut senare.
 #
 # De tre flaggorna nedan stänger av precis det, och ingenting annat:
 #
@@ -80,3 +89,8 @@ Write-Host 'Skriptet star i torrkorning och skriver ingenting till databasen.'
 Write-Host 'Vad det hade skickat ser du med:  __polisvakt.stats()'
 Write-Host ''
 Write-Host 'Fonstret far minimeras eller tackas over. Det far INTE stangas.'
+Write-Host ''
+Write-Host 'Forsta svepet efter varje sidladdning ar ett kalibreringssvep:'
+Write-Host 'allt som redan ligger i flodet registreras men skickas aldrig.'
+Write-Host 'Bara inlagg som dyker upp DAREFTER far en alder. Sa slipper du en'
+Write-Host 'skur farska varningar ur ett veckogammalt flode vid varje omstart.'
