@@ -69,9 +69,16 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 
 /* ---------- HUD ---------- */
 
-.hud {
-  position: absolute; z-index: 500;
+/* Toppkolumnen: statuspanel och sökruta staplade, utan magiska avstånd. */
+.topp {
+  position: absolute; z-index: 550;
   top: calc(var(--safe-top) + 10px); left: 10px; right: 10px;
+  display: flex; flex-direction: column; gap: 10px;
+  pointer-events: none;
+}
+.topp > * { pointer-events: auto; }
+
+.hud {
   display: flex; align-items: flex-start; gap: 10px;
   pointer-events: none;
 }
@@ -110,10 +117,7 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 
 /* ---------- Resmål ---------- */
 
-.route-box {
-  position: absolute; z-index: 550;
-  top: calc(var(--safe-top) + 62px); left: 10px; right: 10px;
-}
+.route-box { position: relative; }
 .route-input { display: flex; gap: 8px; align-items: center; }
 .route-input input {
   flex: 1; min-width: 0;

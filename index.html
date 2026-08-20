@@ -179,6 +179,13 @@
   <div id="map"></div>
 
   <!-- Toppanel -->
+  <!-- Toppen som en enda kolumn.
+       Tidigare låg sökrutan på ett fast avstånd från skärmkanten. Så fort
+       statuschipsen radbröts — vilket de gör så snart "4 dagar kvar" dyker
+       upp — växte panelen förbi det avståndet och sökrutan lade sig ovanpå.
+       Nu staplas de, så avståndet kan inte bli fel oavsett hur många chips
+       som visas. -->
+  <div class="topp">
   <header class="hud">
     <div class="speedo" id="speedo">
       <span class="speedo-num" id="speedNum">–</span>
@@ -212,6 +219,7 @@
       <span id="routeText"></span>
       <button class="route-stop" id="routeClear" type="button">Avsluta</button>
     </div>
+  </div>
   </div>
 
   <!-- Ny version finns. Ligger på kartan, inte begravd i inställningar. -->
