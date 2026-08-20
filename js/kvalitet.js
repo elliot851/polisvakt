@@ -122,11 +122,6 @@ export const DEFAULTS = {
   klusterMaxDiameterM: 900,      // hela klustret får inte bli en korridor
   typLikhetsGrans: 0.5,
 
-  /* --- Historik ----------------------------------------------------- */
-  historikVikt: 6,               // pseudoräknare: så många rapporter innan historiken väger
-  historikNolla: 0.55,           // vad en okänd rapportör antas ligga på
-  daligHistorikNedrostningar: 5, // så många nedröstningar = taknivå medel
-
   /* --- Tak ---------------------------------------------------------- */
   //
   // En ensam rapport får aldrig nå toppen av skalan hur bra allt annat än
@@ -217,14 +212,6 @@ function livslangdMs(typ) {
   return (TTL_MINUTES[typ] ?? 45) * 60000;
 }
 
-/** Slår upp rapportörens historik oavsett om den kom som Map, objekt eller funktion. */
-function slaUppHistorik(historik, deviceId) {
-  if (!historik || !deviceId) return null;
-  if (typeof historik === 'function') return historik(deviceId) || null;
-  if (typeof historik.get === 'function') return historik.get(deviceId) || null;
-  return historik[deviceId] || null;
-}
-
 /* ==================== Positionsosäkerhet ============================= */
 
 /**
@@ -309,7 +296,11 @@ export function positionsOsakerhet(rapport, opts = DEFAULTS) {
  * @property {number} [nu]
  * @property {Array<Rapport>} [grannar]  andra rapporter att jämföra mot
  * @property {Object} [kluster]          färdigt kluster från grupperaRapporter
- * @property {Map|Object|Function} [historik]  device_id -> {reports,confirmed,denied}
+ * @property {number} [osakerhetM]       färdigräknad osäkerhet, från ett kluster
+ *
+ * Listan är uttömmande med flit. Varje nyckel här läses någonstans i filen —
+ * skriv inte upp en som "planerad", för då står det snart en dokumenterad
+ * ingång som ingen kod tar emot och nästa läsare tror att den fungerar.
  */
 
 /**
@@ -375,36 +366,32 @@ export function bedomRapport(rapport, kontext = {}, opts = {}) {
     varfor: `Skapad via ${kalla}. Utgångsläge innan övriga faktorer.`,
   });
 
-  /* ---- Rapportörens historia --------------------------------------- */
+  /* ---- Rapportörens tidigare träffsäkerhet: FINNS INTE ------------- */
   //
-  // Poängsättningen i reputation.js belönar bekräftade rapporter och
-  // bestraffar nedröstade. Samma siffror går att läsa baklänges: någon vars
-  // rapporter regelbundet röstas ner har antingen dålig position eller dålig
-  // bedömning, och båda är skäl att hedga.
+  // Här låg ett block som hedgade rapporter från någon vars tidigare
+  // rapporter regelbundet röstats ner. Idén var god och koden såg ut att
+  // fungera. Den kördes aldrig.
   //
-  // Siffrorna dras mot mitten vid få data. Utan det skulle en enda
-  // nedröstning på en enda rapport ge kvoten noll, och en förstagångare som
-  // hade otur bli permanent misstrodd.
-  const h = slaUppHistorik(kontext.historik, rapport.device_id);
-  if (h) {
-    const bra = Math.max(0, nz(h.confirmed, 0));
-    const dalig = Math.max(0, nz(h.denied, 0));
-    const kvot = (bra + o.historikVikt * o.historikNolla) / (bra + dalig + o.historikVikt);
-    const delta = clamp((kvot - o.historikNolla) * 0.55, -0.25, 0.20);
-    poang += lagg('historik', delta,
-      `${bra} bekräftelser och ${dalig} nedröstningar tidigare (utjämnat mot ${o.historikVikt} pseudorapporter).`);
-    if (dalig >= o.daligHistorikNedrostningar && dalig > bra) flaggor.push('dalig-historik');
-  } else if (rapport.device_id) {
-    flaggor.push('okand-rapportor');
-    skal.push({
-      namn: 'historik',
-      delta: 0,
-      varfor: 'Ingen historik. Ger varken plus eller minus — nya rapportörer ska inte straffas.',
-    });
-  } else {
-    // Det publika flödet lämnar med flit inte ut device_id, se store.js.
-    flaggor.push('rapportor-anonym');
-  }
+  // Två oberoende skäl, och båda står kvar:
+  //
+  //   1. Det enda anropsstället i hela appen (js/app.js, allHazards) skickade
+  //      aldrig med någon uppslagning av rapportör. Grenen var alltså död
+  //      från första dagen.
+  //   2. Den behövde rapport.device_id för att slå upp någon. Det publika
+  //      flödet lämnar med flit inte ut det fältet — se supabase/
+  //      dolj-enhets-id.sql och js/store.js — så varje rapport som kommit
+  //      över servern saknar det oavsett.
+  //
+  // Det finns i dag ingen datakälla att mata den med. public.report_history
+  // innehåller med flit inte device_id (supabase/schema.sql), och att bygga
+  // en ny som gjorde det vore att lägga tillbaka precis den koppling mellan
+  // rapport och person som togs bort av integritetsskäl.
+  //
+  // Kod som ser ut att göra något den aldrig gör är sämre än båda
+  // alternativen: nästa läsare tror att rapportörens historia vägs in, och
+  // slutar leta efter varför en illa fungerande rapportör inte dämpas. Därför
+  // är blocket borta i stället för utkommenterat. Ska det tillbaka behövs
+  // först en källa, sedan koden — i den ordningen.
 
   /* ---- Fart vid inlämning ------------------------------------------ */
   //
@@ -522,10 +509,6 @@ export function bedomRapport(rapport, kontext = {}, opts = {}) {
   if (stod.oberoende === 0 && poang > o.soloTak) {
     poang = o.soloTak;
     skal.push({ namn: 'tak', delta: 0, varfor: 'Ensam rapport kan inte nå toppen av skalan.' });
-  }
-  if (flaggor.includes('dalig-historik') && poang > 0.65) {
-    poang = 0.65;
-    skal.push({ namn: 'tak', delta: 0, varfor: 'Historiken tillåter inte konstaterande formulering.' });
   }
   if (nedrostningar >= 2 && poang > 0.45) {
     // Två personer som säger "det står ingen där" väger tyngre än en som

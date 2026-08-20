@@ -468,6 +468,23 @@ await T('kallstart tappar inte den uppmätta noggrannheten', () => {
     || 'nufix läser bara geo.position, som är null vid kallstart';
 });
 
+
+await T('min rapport förblir min även när någon annan blir klusterledare', () => {
+  // Faran bär ledarens id. Blir någon annans rapport ledare tappade appen
+  // spåret av att jag var en av rapportörerna — och började varna MIG för
+  // något jag själv nyss skickat in.
+  if (!/function arMin\(/.test(appSrc)) return 'arMin saknas';
+  if (!/klusterIds/.test(appSrc)) return 'klustrets id:n följer inte med faran';
+  return /const own = arMin\(h\)/.test(appSrc)
+    || 'listan frågar fortfarande bara isMine(h.id)';
+});
+
+await T('ingen rad som låtsas skilja på något den inte skiljer på', () => {
+  // via === 'ratt' ? 'app' : 'app' — båda grenarna gav samma värde.
+  return !/\?\s*'app'\s*:\s*'app'/.test(appSrc)
+    || 'den döda ternären finns kvar';
+});
+
 /* ---- Genvägar från hemskärmen --------------------------------------- */
 G('Snabbrapport från hemskärmen');
 
@@ -566,6 +583,240 @@ await T('serverns kvalitetsfält översätts vid hämtning', async () => {
   const src = await (await fetch('./js/store.js')).text();
   return /kvalitetFranRad/.test(src)
     || 'store.js översätter inte serverns kolumnnamn';
+});
+
+/* ---- Granskningen 2026-08-20: A3, A5 och A10 ------------------------ */
+G('Granskningen: A3 grupprapporter, A5 Facebook-kvalitet, A10 död historik');
+
+/*
+ * Kontraktstesterna här läser KOD, inte kommentarer.
+ *
+ * En kommentar som beskriver ett fel ska aldrig kunna få ett test att larma
+ * om ett fel som redan är lagat. Det har hänt: ett test matchade den
+ * kommentar som förklarade fixen och rapporterade fixen som buggen.
+ */
+function utanKommentarer(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+}
+
+const groups = await import('./js/groups.js');
+const facebook = await import('./js/facebook.js');
+const storeKod = utanKommentarer(await (await fetch('./js/store.js')).text());
+const kvalitetKod = utanKommentarer(await (await fetch('./js/kvalitet.js')).text());
+
+/* --- A3: en grupps rapporter får inte gå ut publikt --- */
+
+const GRUPP_NYCKEL = 'pv.groups.v1';
+const AKTIV_NYCKEL = 'pv.groups.aktiv.v1';
+
+async function medGrupp(id, fn) {
+  const foreLista = localStorage.getItem(GRUPP_NYCKEL);
+  const foreAktiv = localStorage.getItem(AKTIV_NYCKEL);
+  try {
+    localStorage.setItem(GRUPP_NYCKEL,
+      JSON.stringify([{ id: 'grp-test', namn: 'Åkeriet', slag: 'akeri', roll: 'owner' }]));
+    if (id) localStorage.setItem(AKTIV_NYCKEL, id);
+    else localStorage.removeItem(AKTIV_NYCKEL);
+    return await fn();
+  } finally {
+    if (foreLista == null) localStorage.removeItem(GRUPP_NYCKEL);
+    else localStorage.setItem(GRUPP_NYCKEL, foreLista);
+    if (foreAktiv == null) localStorage.removeItem(AKTIV_NYCKEL);
+    else localStorage.setItem(AKTIV_NYCKEL, foreAktiv);
+  }
+}
+
+await T('A3: rapporten bär gruppen föraren valt', () => medGrupp('grp-test', async () => {
+  // Utan group_id på raden släpper läsregeln i supabase/grupper.sql igenom
+  // rapporten till alla — "group_id is null" betyder publik. Åkeriet tror att
+  // förarnas rapporter stannar internt och får varenda en utlagd över länet.
+  const s = new store.ReportStore({ mode: 'local' });
+  const r = await s.add({ type: 'police', lat: 59.90, lon: 16.90, label: 'A3 grupp' });
+  return r.group_id === 'grp-test'
+    || `rapporten fick group_id ${JSON.stringify(r.group_id)} — den går ut publikt`;
+}));
+
+await T('A3: group_id följer med i insertet till servern', () => {
+  // Fältet kan sättas hur rätt som helst lokalt; hoppas det över i kroppen
+  // som skickas är rapporten publik i databasen ändå.
+  return /group_id:\s*report\.group_id/.test(storeKod)
+    || 'store.js skickar inte group_id i insert-kroppen';
+});
+
+await T('A3: utan vald grupp är rapporten publik (inget blir privat av misstag)', () =>
+  medGrupp(null, async () => {
+    const s = new store.ReportStore({ mode: 'local' });
+    const r = await s.add({ type: 'police', lat: 59.95, lon: 16.95, label: 'A3 publik' });
+    return r.group_id == null
+      || `en rapport utan vald grupp fick group_id ${JSON.stringify(r.group_id)}`;
+  }));
+
+await T('A3: ett borttaget gruppval faller tillbaka på publikt', () => {
+  // Har man lämnat gruppen finns id:t kvar i localStorage. Skickas det ändå
+  // nekar servern raden och varningen försvinner tyst — värre än publik.
+  const fore = localStorage.getItem(AKTIV_NYCKEL);
+  const foreLista = localStorage.getItem(GRUPP_NYCKEL);
+  try {
+    localStorage.setItem(GRUPP_NYCKEL, JSON.stringify([]));
+    localStorage.setItem(AKTIV_NYCKEL, 'grp-som-inte-finns');
+    return groups.aktivGruppId() === null
+      || `aktivGruppId gav ${groups.aktivGruppId()} för en grupp man inte är med i`;
+  } finally {
+    if (foreLista == null) localStorage.removeItem(GRUPP_NYCKEL);
+    else localStorage.setItem(GRUPP_NYCKEL, foreLista);
+    if (fore == null) localStorage.removeItem(AKTIV_NYCKEL);
+    else localStorage.setItem(AKTIV_NYCKEL, fore);
+  }
+});
+
+await T('A3: en grupprapport slås inte ihop med en publik på samma plats', async () => {
+  // Hopslagningen på 250 m fanns före grupperna. Utan spärren blir en
+  // rapport till åkeriet i stället en bekräftelse på någon annans publika
+  // rapport — och åkeriet får ingen rapport alls.
+  const s = new store.ReportStore({ mode: 'local' });
+  const publik = await medGrupp(null, () =>
+    s.add({ type: 'police', lat: 59.80, lon: 16.80, label: 'A3 sida vid sida' }));
+  const privat = await medGrupp('grp-test', () =>
+    s.add({ type: 'police', lat: 59.80, lon: 16.80, label: 'A3 sida vid sida' }));
+  // Medvetet inte ett test på flaggan merged: en tidigare körning kan ha
+  // lämnat kvar en rapport på samma punkt, och då är hopslagning rätt svar.
+  // Det som aldrig får hända är att de två hamnar på samma rad.
+  if (privat.id === publik.id) return 'grupprapporten och den publika blev samma rad';
+  if (publik.group_id != null) return `den publika rapporten fick group_id ${publik.group_id}`;
+  return privat.group_id === 'grp-test'
+    || `grupprapporten fick group_id ${JSON.stringify(privat.group_id)}`;
+});
+
+/* --- A5: Facebook-bryggan graderas på data, inte på tomma fält --- */
+
+const fbTolkat = { type: 'police', place: 'Stora gatan 14', confidence: 0.82 };
+const fbTraff = { lat: 59.6099, lon: 16.5448, label: 'Stora gatan 14, Västerås', source: 'nominatim' };
+
+await T('A5: Facebook-raden bär geokodningens ursprung och parserns tillit', () => {
+  const rad = facebook.byggRapport(fbTolkat, fbTraff, {
+    text: 'Står polis vid Stora gatan 14',
+    createdAt: nu - 6 * 60000, expiresAt: nu + 39 * 60000, nu,
+  });
+  const saknas = ['parser_confidence', 'fordrojning_s', 'geokod', 'geokod_typ']
+    .filter(k => rad[k] == null);
+  if (saknas.length) return `raden saknar ${saknas.join(', ')}`;
+  if (rad.geokod !== 'nominatim') return `geokod blev ${rad.geokod}, inte geokodningens svar`;
+  if (rad.geokod_typ !== 'adress') return `geokod_typ blev ${rad.geokod_typ} för en gatuadress`;
+  return true;
+});
+
+await T('A5: mätt fördröjning skickas, inte ett antagande', () => {
+  const rad = facebook.byggRapport(fbTolkat, fbTraff, {
+    createdAt: nu - 6 * 60000, expiresAt: nu + 39 * 60000, nu,
+  });
+  return nara(rad.fordrojning_s, 360, 2) || `fick ${rad.fordrojning_s} s, väntade 360`;
+});
+
+await T('A5: okänd GPS och okänd fart skickas som okända, inte som nollor', () => {
+  const rad = facebook.byggRapport(fbTolkat, fbTraff, { nu });
+  // En nolla här hade betytt "perfekt noggrannhet, stillastående" och gjort
+  // ett främmande inlägg till den säkraste rapporten i hela flödet.
+  return (rad.gps_accuracy_m == null && rad.fart_kmh == null)
+    || `gps_accuracy_m=${rad.gps_accuracy_m}, fart_kmh=${rad.fart_kmh}`;
+});
+
+// Samma rad två gånger: som bryggan skickar den nu, och som den såg ut när
+// kvalitetsfälten saknades. Skillnaden mellan de två ÄR fyndet.
+function fbPar(extra = {}) {
+  const rad = { ...facebook.byggRapport(fbTolkat, fbTraff, {
+    text: 'Står polis vid Stora gatan 14',
+    createdAt: nu - 4 * 60000, expiresAt: nu + 41 * 60000, nu,
+  }), ...extra };
+  const utanFalt = { ...rad };
+  for (const k of ['parser_confidence', 'fordrojning_s', 'geokod', 'geokod_typ']) delete utanFalt[k];
+  const las = r => ({ ...r, createdAt: r.created_at, expiresAt: r.expires_at,
+                      ...store.kvalitetFranRad(r) });
+  return { med: las(rad), utan: las(utanFalt) };
+}
+
+await T('A5: fälten sänker osäkerheten från antagande till mätning', () => {
+  // Utan geokod faller kvalitet.js tillbaka på 'okand': −0,15 i poäng och
+  // 1 200 m antagen radie för en adress som i själva verket är en husnummer.
+  const { med, utan } = fbPar();
+  const a = kvalitet.bedomRapport(med, { nu });
+  const b = kvalitet.bedomRapport(utan, { nu });
+  if (!(a.osakerhetM < b.osakerhetM)) {
+    return `osäkerheten föll inte: ${a.osakerhetM} m med fälten, ${b.osakerhetM} m utan`;
+  }
+  return a.poang > b.poang
+    || `poängen steg inte: ${a.poang} med fälten, ${b.poang} utan`;
+});
+
+await T('A5: en bekräftad Facebook-rapport blir uppläst i stället för tystad', () => {
+  // Det här är hela skadan i A5, mätt. Två oberoende personer säger samma
+  // sak. Med fälten hedgas varningen och läses upp; utan dem drar den
+  // antagna radien på 1 200 m ner nivån till "syns på kartan, sägs aldrig" —
+  // trots att poängen räcker. Samma inlägg via Telegram-bryggan hörs.
+  const granne = { id: 'a5-granne', type: 'police', lat: 59.6100, lon: 16.5449,
+                   device_id: 'nagon-annan', source: 'app', geokod: 'gps',
+                   gpsAccuracyM: 12, createdAt: nu - 3 * 60000,
+                   expiresAt: nu + 40 * 60000, confirms: 1, denials: 0 };
+  const { med, utan } = fbPar({ confirms: 2 });
+  const a = kvalitet.bedomRapport(med, { nu, grannar: [granne] });
+  const b = kvalitet.bedomRapport(utan, { nu, grannar: [granne] });
+
+  const horbar = x => x === kvalitet.BEHANDLING.HEDGA || x === kvalitet.BEHANDLING.ANNONSERA;
+  if (!horbar(a.behandling)) {
+    return `den bekräftade rapporten fick ${a.behandling} (${a.poang}, ${a.osakerhetM} m)`;
+  }
+  return !horbar(b.behandling)
+    || `testet mäter ingenting: även utan fälten blev den ${b.behandling}`;
+});
+
+await T('A5: andrahandsuppgiften graderas ändå försiktigare än en egen rapport', () => {
+  // Fixen får inte svänga över åt andra hållet. Ett inlägg från en främling
+  // ska aldrig väga lika tungt som ett tryck i den egna bilen.
+  const rad = facebook.byggRapport(fbTolkat, fbTraff, {
+    createdAt: nu - 4 * 60000, expiresAt: nu + 41 * 60000, nu,
+  });
+  const fb = { ...rad, createdAt: rad.created_at, expiresAt: rad.expires_at,
+               ...store.kvalitetFranRad(rad) };
+  const egenNu = { ...egen, createdAt: nu - 4 * 60000, expiresAt: nu + 41 * 60000 };
+  const a = kvalitet.bedomRapport(fb, { nu }).poang;
+  const b = kvalitet.bedomRapport(egenNu, { nu }).poang;
+  return a < b || `Facebook fick ${a}, den egna rapporten ${b}`;
+});
+
+/* --- A10: koden som såg ut att göra något --- */
+
+await T('A10: rapportörshistoriken finns inte kvar som död kod', () => {
+  // Blocket lästes ur en kontextnyckel som det enda anropsstället aldrig
+  // skickade, och slog upp på ett device_id som det publika flödet med flit
+  // inte lämnar ut. Det gick alltså aldrig att köra. Kod som ser ut att
+  // fungera är sämre än både en riktig implementation och ingen alls.
+  const kvar = [];
+  if (/kontext\.historik/.test(kvalitetKod)) kvar.push('kontext.historik');
+  if (/slaUppHistorik/.test(kvalitetKod)) kvar.push('slaUppHistorik');
+  if (/historikVikt|historikNolla|daligHistorikNedrostningar/.test(kvalitetKod)) kvar.push('DEFAULTS-nycklarna');
+  if (/['"]dalig-historik['"]/.test(kvalitetKod)) kvar.push("flaggan 'dalig-historik'");
+  return !kvar.length
+    || `kvalitet.js läser fortfarande något ingen matar: ${kvar.join(', ')}`;
+});
+
+await T('A10: en påhittad historik ändrar ingenting (ingen dold gren kvar)', () => {
+  const r = { ...egen, id: 'a10', device_id: 'd1' };
+  const utan = kvalitet.bedomRapport(r, { nu });
+  const med = kvalitet.bedomRapport(r, { nu, historik: { d1: { confirmed: 0, denied: 40 } } });
+  return med.poang === utan.poang
+    || `poängen ändrades från ${utan.poang} till ${med.poang} av data ingen skickar`;
+});
+
+await T('A10: Kontext-typedefen lovar inget den inte tar emot', async () => {
+  // Ett dokumenterat fält som ingen kod läser är samma fälla en gång till,
+  // bara i jsdoc. Därför läses typedefen ur källan och jämförs mot koden.
+  const rå = await (await fetch('./js/kvalitet.js')).text();
+  const block = rå.match(/@typedef \{Object\} Kontext[\s\S]*?\*\//);
+  if (!block) return 'hopp';                    // typedefen har flyttat, testet är inte längre relevant
+  const namn = [...block[0].matchAll(/@property \{[^}]*\} \[(\w+)\]/g)].map(m => m[1]);
+  const olasta = namn.filter(n => !new RegExp(`kontext\\.${n}\\b`).test(kvalitetKod));
+  return !olasta.length || `dokumenterade men aldrig lästa: ${olasta.join(', ')}`;
 });
 
 /* ---- Kameradata ------------------------------------------------------ */

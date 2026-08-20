@@ -10,6 +10,10 @@
 
 import { uid, distance } from './util.js';
 import { apiHeaders } from './config.js';
+// Vilken grupp rapporten hör till. Bara en läsning av ett valt id — store
+// filtrerar ingenting och vet inget om medlemskap, det sitter i
+// radsäkerhetsreglerna i supabase/grupper.sql där det hör hemma.
+import { aktivGruppId } from './groups.js';
 
 const LOCAL_KEY = 'pv.reports.v1';
 const QUEUE_KEY = 'pv.queue.v1';
@@ -205,7 +209,12 @@ export class ReportStore extends EventTarget {
 
   /**
    * @param {{type:string, lat:number, lon:number, label:string,
-   *          note?:string, source?:string, ttlMinutes?:number}} input
+   *          note?:string, source?:string, ttlMinutes?:number,
+   *          groupId?:string|null}} input
+   *
+   * groupId utelämnad betyder "dit föraren valt att rapportera", vilket i sin
+   * tur är publikt tills hen valt en grupp. Skicka null uttryckligen för att
+   * tvinga en rapport publik oavsett vad som är valt.
    */
   async add(input) {
     const now = Date.now();
@@ -245,14 +254,33 @@ export class ReportStore extends EventTarget {
       geokodTyp: input.geokodTyp ?? null,
       geokodRadiusM: input.geokodRadiusM ?? null,
       parserConfidence: input.parserConfidence ?? null,
+
+      // Vilken grupp rapporten hör till. null = publik, precis som allt som
+      // fanns innan grupper.
+      //
+      // Det här fältet skrevs aldrig av klienten, trots att hela serversidan
+      // var byggd för det. Följden var inte att gruppfunktionen saknades utan
+      // att den ljög: ett åkeri som trodde att förarnas rapporter stannade
+      // internt fick varenda en utlagd publikt över hela länet. Läsregeln i
+      // supabase/grupper.sql kan bara skydda en rapport som faktiskt bär ett
+      // group_id.
+      group_id: input.groupId !== undefined ? (input.groupId || null) : aktivGruppId(),
     };
     // Interna alias så resten av koden slipper snake_case
     report.createdAt = report.created_at;
     report.expiresAt = report.expires_at;
+    report.groupId = report.group_id;
 
-    // Slå ihop med en näraliggande rapport av samma typ istället för dubblett
+    // Slå ihop med en näraliggande rapport av samma typ istället för dubblett.
+    //
+    // Bara inom samma publik. En bekräftelse på någon annans publika rapport
+    // är INTE en rapport till åkeriet, och tvärtom: hade en grupprapport fått
+    // svälja en publik rapport skulle hela länet blivit utan varning för att
+    // en förare råkade stå på samma gata.
     const dupe = this.active(now).find(r =>
-      r.type === report.type && distance(r.lat, r.lon, report.lat, report.lon) < 250);
+      r.type === report.type
+      && (r.group_id ?? null) === report.group_id
+      && distance(r.lat, r.lon, report.lat, report.lon) < 250);
     if (dupe) {
       await this.confirm(dupe.id);
       return { ...dupe, merged: true };
@@ -346,6 +374,14 @@ export class ReportStore extends EventTarget {
         const mine = this.reports.get(r.id);
         // Lokala obekräftade ändringar vinner inte över servern, förutom removed
         if (mine?.removed) continue;
+        // reports_feed lämnar inte ut group_id (se supabase/kvalitetsfalt.sql:
+        // kolumnen finns på tabellen men inte i vyn). Utan raden nedan skulle
+        // en egen grupprapport tappa sin grupp så fort den hunnit ett varv
+        // över servern, och därmed kunna slås ihop med en publik rapport.
+        if (r.group_id == null && mine?.group_id) {
+          r.group_id = mine.group_id;
+          r.groupId = mine.group_id;
+        }
         this.reports.set(r.id, r);
       }
       this.lastSync = Date.now();
@@ -389,6 +425,11 @@ export class ReportStore extends EventTarget {
         geokod_typ: report.geokodTyp,
         geokod_radius_m: report.geokodRadiusM,
         parser_confidence: report.parserConfidence,
+
+        // Utan den här raden går varje grupprapport ut publikt. Servern kan
+        // inte gissa åt oss: läsregeln släpper igenom allt som har
+        // group_id is null, och det är precis vad en rad utan fältet blir.
+        group_id: report.group_id,
       };
       // Ta bort det som är okänt. PostgREST avvisar hela insertet om en
       // kolumn inte finns än, och rapporten är viktigare än metadatan.

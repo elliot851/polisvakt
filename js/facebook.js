@@ -24,7 +24,11 @@ import { parseReportText } from './parser.js';
 import { geocode } from './geocode.js';
 import { TTL_MINUTES } from './store.js';
 import { CONFIG, apiHeaders, hasBackend } from './config.js';
-import { normalize, uid } from './util.js';
+import { normalize, uid, clamp } from './util.js';
+// Samma gissning som Telegram-bryggan gör. Lånad, inte kopierad: två
+// ordlistor som ska betyda samma sak glider isär första gången någon lägger
+// till "avfart" på det ena stället.
+import { gissaGeokodTyp } from './telegram.js';
 
 const SEEN_KEY = 'pv.fb.seen.v2';
 
@@ -93,6 +97,82 @@ export function keysFor(post, now = Date.now()) {
   const h = hash(normalize(post.text || ''));
   const bucket = Math.floor(now / DEDUP_WINDOW_MS).toString(36);
   return { stable: 'tx:' + h, externalId: `fb:${h}:${bucket}` };
+}
+
+/* ---- Rapportraden ----------------------------------------------------- */
+
+/**
+ * Färdig rad till public.reports.
+ *
+ * Bruten ur run() med flit: raden är det enda i hela bryggan som är värt att
+ * testa utan nät, och den var tidigare inbakad mitt i en loop med fetch i.
+ * Telegram-bryggan har samma funktion under samma namn, av samma skäl.
+ *
+ * @param {{type:string, place:string, confidence:number}} parsed  svar från parseReportText
+ * @param {{lat:number, lon:number, label?:string, source?:string, typ?:string}} hit
+ *        geokodningens träff
+ * @param {{ text?:string, deviceId?:string, externalId?:string,
+ *           createdAt?:number, expiresAt?:number, nu?:number, id?:string }} [val]
+ */
+export function byggRapport(parsed, hit, val = {}) {
+  const {
+    text = '', deviceId = BRIDGE_DEVICE, externalId = null,
+    createdAt = Date.now(), nu = Date.now(), id = uid(),
+  } = val;
+  const ttlMs = (TTL_MINUTES[parsed.type] ?? 45) * 60000;
+  const expiresAt = val.expiresAt ?? createdAt + ttlMs;
+
+  const row = {
+    id,
+    type: parsed.type,
+    lat: hit.lat,
+    lon: hit.lon,
+    label: String(hit.label || parsed.place).slice(0, 120),
+    note: String(text).trim().slice(0, 240),
+    source: 'facebook',
+    device_id: deviceId,
+    external_id: externalId,
+    created_at: createdAt,
+    expires_at: expiresAt,
+    confirms: 1,
+    denials: 0,
+
+    // Kvalitetsfälten, se supabase/kvalitetsfalt.sql och js/kvalitet.js.
+    //
+    // Utan dem antar graderaren det värsta: geokod 'okand' ger −0,15 i poäng
+    // och 1 200 m antagen radie, vilket ligger precis vid gränsen där en
+    // rapport hedgas bort eller tystas helt. Ett inlägg som kommer in hit ska
+    // graderas försiktigare än en knapptryckning i bilen — det är
+    // andrahandsuppgifter, och BAS_KALLA sätter 0,42 mot appens 0,62 — men
+    // det ska ske på verklig data, inte på att fälten saknas.
+    parser_confidence: Number(Number(parsed.confidence).toFixed(3)),
+
+    // Mätt fördröjning mellan att inlägget skrevs och att bryggan läste det.
+    // Ett GOLV, inte sanningen: tiden från att bilen sågs till att någon skrev
+    // om den går inte att veta. Men ett mätt golv är ärligare än
+    // kvalitetslagrets antagande.
+    fordrojning_s: Math.round(clamp((nu - createdAt) / 1000, 0, 86400)),
+
+    // geocode() svarar 'learned' | 'cache' | 'nominatim' — exakt de nycklar
+    // GEOKOD_DELTA i kvalitet.js är byggd för. Fältet är konstruerat för att
+    // bära just det värdet.
+    geokod: hit.source || 'okand',
+    geokod_typ: gissaGeokodTyp(parsed.place, hit),
+
+    // De tre nedan är null med flit. NULL betyder "vet inte" och ska aldrig
+    // tolkas som noll: vi vet ingenting om skribentens GPS eller fart, och en
+    // nolla där hade sagt "perfekt noggrannhet, stillastående". Radien lämnas
+    // åt kvalitet.js att räkna fram ur geokod_typ.
+    geokod_radius_m: null,
+    gps_accuracy_m: null,
+    fart_kmh: null,
+  };
+
+  // PostgREST avvisar hela insertet om en kolumn inte finns än, och en varning
+  // på kartan är viktigare än metadatan om den. Ett null bär dessutom ingen
+  // information — kolumnen blir NULL ändå om den utelämnas.
+  for (const k of Object.keys(row)) if (row[k] == null) delete row[k];
+  return row;
 }
 
 /* ---- Skrivning -------------------------------------------------------- */
@@ -258,21 +338,9 @@ export async function ingest(posts, options = {}) {
       continue;
     }
 
-    const row = {
-      id: uid(),
-      type: parsed.type,
-      lat: hit.lat,
-      lon: hit.lon,
-      label: String(hit.label || parsed.place).slice(0, 120),
-      note: post.text.trim().slice(0, 240),
-      source: 'facebook',
-      device_id: deviceId,
-      external_id: externalId,
-      created_at: createdAt,
-      expires_at: expiresAt,
-      confirms: 1,
-      denials: 0,
-    };
+    const row = byggRapport(parsed, hit, {
+      text: post.text, deviceId, externalId, createdAt, expiresAt, nu: now,
+    });
 
     if (dryRun) {
       summary.reports.push({ ...row, place: parsed.place, confidence: parsed.confidence });

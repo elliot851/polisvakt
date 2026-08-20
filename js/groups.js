@@ -35,6 +35,7 @@
 import { CONFIG, hasBackend, apiHeaders } from './config.js';
 
 const CACHE_KEY = 'pv.groups.v1';
+const ACTIVE_KEY = 'pv.groups.aktiv.v1';
 
 /**
  * Grupptyperna, i den ordning de ska stå i en meny.
@@ -156,6 +157,44 @@ function writeCache(v) {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify(v || [])); } catch {}
 }
 
+/* ---- Vart rapporterar jag? ---------------------------------------- */
+
+/**
+ * Vilken grupp nästa rapport hamnar i.
+ *
+ * Ligger på modulnivå och inte bara på instansen, för att js/store.js ska
+ * kunna fråga utan att någon behöver koppla ihop de två modulerna vid start.
+ * En bortglömd inkoppling är exakt hur den här funktionen kunde stå som
+ * färdig i ett år utan att en enda rapport någonsin fick ett group_id — och
+ * följden var inte en saknad funktion utan ett integritetsfel: åkeriets
+ * rapporter gick ut till hela länet.
+ *
+ * null betyder publikt, precis som allt som fanns innan grupper. Det är
+ * också det enda värde som gäller tills föraren själv valt en grupp — en
+ * rapport ska aldrig bli privat av en slump.
+ *
+ * Valet kontrolleras mot den cachade grupplistan vid varje läsning. Har man
+ * lämnat gruppen, blivit utkastad eller har den raderats, faller vi tillbaka
+ * på publikt. Alternativet vore att rapporten skickas till ett group_id
+ * servern nekar (radsäkerhetsregeln i supabase/grupper.sql kräver medlemskap)
+ * — alltså att varningen tyst försvinner helt.
+ */
+export function aktivGruppId() {
+  let vald = null;
+  try { vald = localStorage.getItem(ACTIVE_KEY); } catch { return null; }
+  if (!vald) return null;
+  return readCache().some(g => g.id === vald) ? vald : null;
+}
+
+/** Sätt gruppen. null eller ett okänt id betyder publikt. */
+export function setAktivGruppId(id) {
+  try {
+    if (id && readCache().some(g => g.id === id)) localStorage.setItem(ACTIVE_KEY, id);
+    else localStorage.removeItem(ACTIVE_KEY);
+  } catch {}
+  return aktivGruppId();
+}
+
 /* ---- Modulen ------------------------------------------------------ */
 
 export class Groups extends EventTarget {
@@ -171,6 +210,27 @@ export class Groups extends EventTarget {
 
   /** Grupp-id:n, för den som vill lägga en rapport i en av dem. */
   get ids() { return this.groups.map(g => g.id); }
+
+  /**
+   * Gruppen nästa rapport hamnar i, eller null för publikt.
+   *
+   * js/store.js läser samma värde direkt ur modulen när en rapport skapas, så
+   * det här är bara vyns väg in till det. Att låta store fråga modulen i
+   * stället för att app.js skickar med ett id vid varje anrop är avsiktligt:
+   * då finns det inget anropsställe kvar att glömma.
+   */
+  get aktivId() { return aktivGruppId(); }
+
+  /** Gruppen som objekt, för texten "du rapporterar till Åkeriet". */
+  get aktiv() { return this.get(this.aktivId); }
+
+  /** Välj var rapporterna hamnar. null = publikt. */
+  setAktiv(id) {
+    const fore = aktivGruppId();
+    const efter = setAktivGruppId(id);
+    if (fore !== efter) this.#emit('change');
+    return efter;
+  }
 
   get(id) { return this.groups.find(g => g.id === id) || null; }
   isOwner(id) { return this.get(id)?.roll === 'owner'; }
@@ -274,6 +334,10 @@ export class Groups extends EventTarget {
     this.lastSync = Date.now();
     this.groups = Array.isArray(res.data) ? res.data : [];
     writeCache(this.groups);
+    // Städa bort ett val som inte längre går att uppfylla. aktivGruppId()
+    // klarar sig utan det, men en kvarglömd nyckel skulle vakna till liv igen
+    // om samma grupp kom tillbaka i listan, och det har ingen bett om.
+    if (!aktivGruppId()) setAktivGruppId(null);
     this.#emit('change');
     return { ok: true, groups: this.groups };
   }

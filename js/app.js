@@ -385,7 +385,10 @@ function wireRemote() {
   remote.addEventListener('action', async e => {
     const { action, via } = e.detail;
     switch (action) {
-      case 'report-police':   await reportAt('police',   { source: via === 'ratt' ? 'app' : 'app' }); break;
+      // Rattknappen ger samma sorts rapport som en knapptryckning i appen -
+      // foraren star pa platsen. Har lag tidigare en ternar dar bada grenarna
+      // gav 'app', alltsa en rad som sag ut att skilja pa nagot den inte gjorde.
+      case 'report-police':   await reportAt('police'); break;
       case 'report-control':  await reportAt('control'); break;
       case 'report-camera':   await reportAt('camera'); break;
       case 'report-unmarked': await reportAt('unmarked'); break;
@@ -1456,11 +1459,28 @@ function allHazards({ forAlerts = false } = {}) {
   try {
     const { grupper } = Kvalitet.bedomFlodet(aktiva.map(harledKvalitet), {
       nu: Date.now(),
-      minaId: id => isMine(id),
     });
     graderade = grupper
-      .map(g => ({ ...g.kluster.ledare, lat: g.kluster.lat, lon: g.kluster.lon,
-                   label: g.kluster.label, bedomning: g.bedomning }))
+      .map(g => ({
+        ...g.kluster.ledare, lat: g.kluster.lat, lon: g.kluster.lon,
+        label: g.kluster.label, bedomning: g.bedomning,
+
+        /*
+         * Alla id:n i klustret följer med.
+         *
+         * Faran bär ledarens id. Står en polis på Vasagatan och tre förare
+         * rapporterar den, blir en av dem ledare — och är det inte min
+         * rapport tappar appen spåret av att jag var en av dem.
+         *
+         * Två saker gick sönder av det: appen började varna MIG för något
+         * jag själv nyss rapporterat, och listan slutade märka rapporten som
+         * min så jag inte kunde ta bort den. Sorteringen gör visserligen att
+         * en färsk egen rapport nästan alltid blir ledare — men "nästan
+         * alltid" är inte "alltid", och det syns bara som att appen betett
+         * sig konstigt en enstaka gång.
+         */
+        klusterIds: (g.kluster.medlemmar || []).map(m => m.id),
+      }))
       .filter(h => h.bedomning?.behandling !== Kvalitet.BEHANDLING.UNDANHALL);
   } catch {
     // Graderingen får aldrig kunna släcka varningarna. Går något fel faller
@@ -1484,6 +1504,18 @@ function allHazards({ forAlerts = false } = {}) {
 }
 
 const renderHazardsThrottled = debounce(() => renderHazards(), 1500);
+
+/**
+ * Är den här faran min?
+ *
+ * Faran bär klusterledarens id, inte nödvändigtvis mitt. Frågan måste därför
+ * ställas mot alla rapporter i klustret — annars slutar min egen rapport
+ * räknas som min så fort någon annan råkar bli ledare för samma polis.
+ */
+function arMin(h) {
+  if (isMine(h.id)) return true;
+  return (h.klusterIds || []).some(id => isMine(id));
+}
 
 function renderHazards() {
   const fix = geo.position;
@@ -1512,7 +1544,9 @@ function renderHazards() {
 
   for (const h of near) {
     const li = document.createElement('li');
-    const own = isMine(h.id);
+    // Min även om någon annans rapport blev klusterledare. Utan det försvinner
+    // "Borta"-knappen för en rapport jag själv skickat.
+    const own = arMin(h);
     li.innerHTML = `
       <span class="hz-ico">${TYPE_ICON[h.type] || '⚠️'}</span>
       <span class="hz-main">
