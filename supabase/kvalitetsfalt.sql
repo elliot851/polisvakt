@@ -100,3 +100,27 @@ commit;
 
      select gps_accuracy_m, geokod from public.reports_feed limit 1;
    -------------------------------------------------------------------- */
+
+-- =====================================================================
+-- group_id i flödet
+-- =====================================================================
+--
+-- Vyn utelämnade group_id, så appen kunde läsa tillbaka en rapport men inte
+-- se vilken grupp den hörde till. Skyddet fungerade ändå — radsäkerheten
+-- släpper bara igenom grupper man är med i, och klienten ska aldrig behöva
+-- filtrera själv — men appen kunde inte skriva "från Åkeriet" på en rad.
+--
+-- Kolumnen läcker ingenting: samma läsregel gäller för den som för raden.
+-- Ser du raden är du redan med i gruppen.
+
+create or replace view public.reports_feed
+with (security_invoker = on) as
+  select
+    id, type, lat, lon, label, note, source, external_id,
+    created_at, expires_at, confirms, denials, removed, inserted_at,
+    gps_accuracy_m, fart_kmh, fordrojning_s,
+    geokod, geokod_typ, geokod_radius_m, parser_confidence,
+    group_id
+  from public.reports;
+
+grant select (group_id) on public.reports to anon, authenticated;
