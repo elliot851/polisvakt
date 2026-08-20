@@ -1157,6 +1157,11 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 /* ============ Chatt ============
    Ett rum, ingen trädstruktur. Layouten är en kolumn: rubrik, rullande
    lista, och ett skrivfält som ligger still längst ner ovanför flikraden. */
+/* Måste vara id-selektor: .view[hidden] i grundreglerna är en klass plus
+   ett attribut och förlorar mot #view-chatt nedan. Utan den här raden fick
+   chattvyn sitt hidden-attribut men fortsatte visas ovanpå dashcamen. */
+#view-chatt[hidden] { display: none; }
+
 #view-chatt {
   display: flex;
   flex-direction: column;
@@ -1277,3 +1282,84 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .chatt-rad { max-width: min(88%, 560px); }
 .chatt-topp { max-width: 720px; margin: 0 auto; width: 100%; box-sizing: border-box; }
 #chattTomt { max-width: 720px; margin: 0 auto 10px; padding: 0 14px; width: 100%; box-sizing: border-box; }
+
+/* Antal olästa på chattfliken. Ett tal, inte en prick — skillnaden mellan
+   "något har hänt" och "tolv meddelanden, titta vid nästa rödljus". */
+.tab-antal {
+  position: absolute;
+  top: 4px; left: 50%;
+  transform: translateX(6px);
+  min-width: 17px; height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #ff4d4f; color: #fff;
+  font: 700 11px/17px -apple-system, system-ui, sans-serif;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* Chatten i hörnet medan kameran går. Ligger över bilden, inte bredvid —
+   dashcamen behöver hela ytan, och rutan ska gå att skjuta undan. */
+.dc-chatt-visa {
+  position: absolute;
+  right: 12px; bottom: 12px;
+  z-index: 5;
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 13px;
+  border: 1px solid var(--line, #26323f);
+  border-radius: 20px;
+  background: rgba(11, 15, 20, .82);
+  color: var(--ink, #eef4fa);
+  font: 600 14px/1 -apple-system, system-ui, sans-serif;
+  backdrop-filter: blur(6px);
+}
+.dc-chatt-visa.har-nytt { border-color: #ff4d4f; color: #fff; }
+.dc-chatt-visa.har-nytt #dcChattAntal {
+  background: #ff4d4f; border-radius: 8px; padding: 1px 6px; font-weight: 700;
+}
+
+.dc-chatt {
+  position: absolute;
+  right: 10px; bottom: 10px; left: 10px;
+  max-width: 380px; margin-left: auto;
+  z-index: 6;
+  border: 1px solid var(--line, #26323f);
+  border-radius: 12px;
+  background: rgba(11, 15, 20, .88);
+  backdrop-filter: blur(8px);
+  padding: 8px 10px 6px;
+}
+.dc-chatt[hidden] { display: none; }
+
+.dc-chatt-topp {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12.5px; color: var(--dim, #93a4b6); margin-bottom: 4px;
+}
+.dc-chatt-x { background: none; border: 0; color: var(--dim, #93a4b6); font-size: 15px; padding: 2px 6px; }
+
+.dc-chatt ul {
+  list-style: none; margin: 0; padding: 0;
+  max-height: 132px; overflow-y: auto;
+  font-size: 13.5px; line-height: 1.45;
+}
+.dc-chatt li { padding: 3px 0; overflow-wrap: anywhere; }
+.dc-chatt li b { color: #8fcaff; font-weight: 650; margin-right: 4px; }
+.dc-chatt li.mitt b { color: #2fd07a; }
+.dc-chatt li.tom { color: var(--dim, #93a4b6); }
+
+/* ============================================================
+   hidden ska betyda dold. Alltid.
+   ============================================================
+   Webbläsarens egen regel för [hidden] ligger i UA-stilmallen och har lägst
+   möjlig tyngd. Varje klass som sätter display — och det är ett trettiotal
+   här — vinner därför över den, så ett element kunde ha hidden satt i DOM:en
+   och ändå synas på skärmen.
+
+   Två buggar kom ur exakt det: chattvyn låg kvar ovanpå dashcamen vid
+   flikbyte, och inspelningsmärket "0:00" blinkade i skyltläsarläget trots att
+   ingenting spelades in — appen påstod något som inte var sant.
+
+   Att laga dem en och en hade lämnat resten kvar och gett samma bugg igen
+   nästa gång någon skriver display på en klass. Den här regeln stänger hela
+   familjen. Den ligger sist i filen med flit. */
+[hidden] { display: none !important; }

@@ -152,13 +152,17 @@ export const LJUD_NAMN = Object.keys(LJUD_RECEPT);
 /** Inställningarna app.js äger. Skickas in, läses aldrig härifrån. */
 export const LJUD_FORVAL = {
   ljudPa: true,      // gränssnittsljud alls
-  ljudVolym: 0.35,   // 0–1. Lågt förval med flit: varningarna ska höras bäst.
+  ljudVolym: 0.75,   // 0–1. Hörbart, men kliver undan för uppläsningen.
   haptikPa: true,    // kort vibration tillsammans med ljudet
 };
 
 /* Konstanter -------------------------------------------------------- */
 
-const BAS_NIVA = 0.35;        // taket innan volyminställningen; chime() i voice.js ligger på 0,22
+// Taket innan volyminställningen. Höjt från 0,35 sedan klickljuden knappt
+// hördes i en bil. Ligger nu strax över chime() i voice.js (0,22) — hörbart
+// utan att konkurrera, eftersom ljuden ändå tystnar helt medan en varning
+// läses upp.
+const BAS_NIVA = 0.45;
 const ATTACK_S = 0.012;       // mjuk anslagstid — kortare än så knäpper det
 const SLUT_NIVA = 0.0001;     // exponentiella ramper kan inte gå till noll
 const LOOKAHEAD_S = 0.008;    // liten framförhållning så första samplet inte kapas

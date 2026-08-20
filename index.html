@@ -353,6 +353,21 @@
       </div>
     </div>
     <div class="dc-rec" id="dcRec" hidden><span class="rec-dot"></span><span id="dcTime">0:00</span></div>
+
+    <!-- Chatten i hörnet medan kameran är igång.
+         Bara läsning. Skrivfältet finns inte här med flit — appen låser ändå
+         skrivandet så fort bilen rullar, och en tangentbordsruta ovanpå
+         dashcamen hade bjudit in till precis det man inte ska göra. -->
+    <div class="dc-chatt" id="dcChatt" hidden>
+      <div class="dc-chatt-topp">
+        <b>Chatt</b>
+        <button class="dc-chatt-x" id="dcChattStang" type="button" aria-label="Dölj chatten">✕</button>
+      </div>
+      <ul id="dcChattLista"></ul>
+    </div>
+    <button class="dc-chatt-visa" id="dcChattVisa" type="button" hidden>
+      💬 <span id="dcChattAntal">0</span>
+    </button>
   </div>
 
   <div class="dc-controls" id="dcControls" hidden>
@@ -760,7 +775,7 @@
   </button>
   <button data-view="chatt" class="tab" type="button">
     <svg viewBox="0 0 24 24"><use href="#i-chatt"/></svg><span>Chatt</span>
-    <span class="tab-prick" id="chattPrick" hidden></span>
+    <span class="tab-antal" id="chattAntal" hidden>0</span>
   </button>
   <button data-view="settings" class="tab" type="button">
     <svg viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Inställningar</span>

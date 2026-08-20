@@ -81,7 +81,8 @@ const defaults = {
   plEgna: [],
   plZoomLage: 'auto',
   ljudPa: true,
-  ljudVolym: 0.35,
+  ljudVolym: 0.75,
+  chattLastAt: 0,          // när chatten senast lästes, för antalet olästa
   haptikPa: true,
   notiser: null,          // fylls av notiser.js vid behov
 };
@@ -530,7 +531,34 @@ function showDisclaimer() {
   };
 }
 
+/* ============================================================
+ * TILLFÄLLIGT TESTLÄGE — SKA SLÅS AV IGEN
+ * ============================================================
+ *
+ * Så länge det bara är Elliot som testar appen fram och tillbaka är
+ * inloggningsrutan och introduktionsguiden bara två klick i vägen vid varje
+ * omladdning. Den här flaggan hoppar över båda.
+ *
+ * SÄTT TILLBAKA TILL false INNAN NÅGON ANNAN ANVÄNDER APPEN.
+ * Elliot säger till när det är dags. Sätt bara den här raden — allt som
+ * flaggan påverkar letar upp den, så det finns inget mer att komma ihåg.
+ *
+ * Vad flaggan INTE gör, och inte kan göra: chatten kräver fortfarande ett
+ * konto. Det kravet ligger i databasens radsäkerhet, inte i klienten, och att
+ * öppna chattabellen för anonyma vore att montera ner ett säkerhetsskydd i
+ * skarp drift för att slippa en inloggningsruta. Det gör jag inte. Logga in
+ * när chatten ska testas; allt annat fungerar utan.
+ */
+const TESTLAGE_UTAN_INLOGGNING = true;
+
 function afterDisclaimer() {
+  if (TESTLAGE_UTAN_INLOGGNING) {
+    if (!auth.decided) auth.continueAsGuest();
+    if (Install.shouldAutoShow()) setTimeout(() => openInstallGuide(true), 900);
+    if (settings.wakeWord && voiceInputSupported) listener.startWakeWord();
+    return;
+  }
+
   // Konto krävs. Utan det når rapporterna ingen annan, och då är appen bara
   // en karta. Gästläget finns kvar i koden men bara som nödutgång när
   // backend inte svarar alls.
@@ -821,8 +849,12 @@ function wireVarmevakt() {
   });
 
   // Vakten är bara meningsfull medan något tungt körs.
-  dashcam.addEventListener('start', () => varmevakt.start());
-  dashcam.addEventListener('stop', () => varmevakt.stopp());
+  dashcam.addEventListener('start', () => { varmevakt.start(); renderOlasta(); });
+  dashcam.addEventListener('stop', () => {
+    varmevakt.stopp();
+    $('dcChatt').hidden = true;
+    renderOlasta();
+  });
 
   setInterval(() => { if (varmevakt.aktiv) varmevakt.kontrollera(); }, 5000);
 }
@@ -1873,6 +1905,7 @@ window.polisvakt = {
   store, geo, speaker, dashcam, vakthund, varmevakt, routeGuide, map, coverage,
   // Läsaren skapas först när läget väljs, så den måste hämtas vid anrop.
   get plate() { return plate; },
+  chatt, ljud, korvanor,
 };
 
 /* ================= Gränssnitt ================= */
@@ -2051,7 +2084,8 @@ function showView(name) {
   // bilapp som hämtar meddelanden var åttonde sekund i bakgrunden hela resan
   // äter batteri för ingenting.
   chatt.sattVyAktiv(name === 'chatt');
-  if (name === 'chatt') { $('chattPrick').hidden = true; renderChatt(); }
+  if (name === 'chatt') { sattChattLast(); renderChatt(); }
+  if (name === 'dashcam') renderOlasta();
 
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
@@ -2217,6 +2251,9 @@ function renderBilling() {
 
 /** Är appen låst? Visa i så fall betalväggen — men aldrig under körning. */
 function gateOrPaywall() {
+  // Testläget släpper igenom allt. Betalväggen mitt i en testrunda är samma
+  // sorts hinder som inloggningsrutan. Se TESTLAGE_UTAN_INLOGGNING.
+  if (TESTLAGE_UTAN_INLOGGNING) return true;
   if (billing.allowed) { billing.beginTrial(); return true; }
   maybeShowPaywall(true);
   return false;
@@ -2421,6 +2458,9 @@ function wireModePicker() {
         : 'Den här telefonen erbjuder ingen zoom.';
 
       renderPlateList();
+
+
+      renderOlasta();      // chattknappen hor till kameravyn
     } catch (e) {
       $('plStatus').textContent = '';
       toast(e.message || 'Kunde inte starta kameran.', 6000);
@@ -2474,6 +2514,9 @@ function stoppaPlate() {
   plate.canvas.hidden = true;
   $('plControls').hidden = true;
   $('dcIdle').hidden = false;
+  // Chattrutan hör till kameran och ska inte ligga kvar över startskärmen.
+  $('dcChatt').hidden = true;
+  renderOlasta();
 }
 
 function wireDashcam() {
@@ -3001,7 +3044,7 @@ function renderChatt() {
 
     const huvud = document.createElement('div');
     huvud.className = 'chatt-huvud';
-    huvud.innerHTML = `<b>${escapeHtml(m.namn || 'Förare')}</b><span>${tid}</span>`;
+    huvud.innerHTML = `<b>${escapeHtml(m.visningsnamn || 'Förare')}</b><span>${tid}</span>`;
 
     const text = document.createElement('p');
     text.className = 'chatt-text';
@@ -3090,14 +3133,95 @@ async function skickaChatt() {
   renderChatt();
 }
 
+/* ---- Olästa meddelanden ----
+ *
+ * En prick sa bara "något har hänt". Ett tal säger om det är ett meddelande
+ * eller tolv, och det är skillnaden mellan att titta nu eller vänta till nästa
+ * rödljus.
+ *
+ * Räknas mot tidpunkten då chattvyn senast var öppen, inte mot en räknare som
+ * nollställs av sig själv — annars försvinner olästa om appen laddas om.
+ */
+function sattChattLast(nu = Date.now()) {
+  settings.chattLastAt = nu;
+  saveSettings();
+  renderOlasta();
+}
+
+function antalOlasta() {
+  const sedan = settings.chattLastAt || 0;
+  return chatt.meddelanden().filter(m => !m.mitt && m.skapadAt > sedan).length;
+}
+
+function renderOlasta() {
+  const n = antalOlasta();
+  const flik = $('chattAntal');
+  if (flik) {
+    flik.hidden = n === 0;
+    flik.textContent = n > 99 ? '99+' : String(n);
+  }
+
+  // Knappen i kameravyn. Visas bara när kameran faktiskt är igång — annars
+  // ligger den och skräpar över startskärmen.
+  const kameraIgang = dashcam.recording || plate?.running;
+  const visa = $('dcChattVisa');
+  const ruta = $('dcChatt');
+  if (!visa || !ruta) return;
+
+  if (!kameraIgang) { visa.hidden = true; ruta.hidden = true; return; }
+  if (!ruta.hidden) { visa.hidden = true; renderDcChatt(); return; }
+
+  visa.hidden = false;
+  $('dcChattAntal').textContent = n ? String(n) : '';
+  visa.classList.toggle('har-nytt', n > 0);
+}
+
+/** De senaste meddelandena, i hörnet, medan man kör. */
+function renderDcChatt() {
+  const ul = $('dcChattLista');
+  if (!ul) return;
+  // Bara de senaste. En lång lista i ögonvrån är värre än ingen lista.
+  const lista = chatt.meddelanden().slice(-4);
+  ul.innerHTML = '';
+  for (const m of lista) {
+    const li = document.createElement('li');
+    li.className = m.mitt ? 'mitt' : '';
+    li.innerHTML = `<b>${escapeHtml(m.visningsnamn || 'Förare')}</b> ${escapeHtml(m.text)}`;
+    ul.appendChild(li);
+  }
+  if (!lista.length) {
+    const li = document.createElement('li');
+    li.className = 'tom';
+    li.textContent = 'Inget nytt.';
+    ul.appendChild(li);
+  }
+  ul.scrollTop = ul.scrollHeight;
+}
+
+function wireDcChatt() {
+  const visa = $('dcChattVisa'), ruta = $('dcChatt'), stang = $('dcChattStang');
+  if (!visa) return;
+  visa.onclick = () => {
+    ruta.hidden = false;
+    visa.hidden = true;
+    sattChattLast();
+    renderDcChatt();
+  };
+  stang.onclick = () => { ruta.hidden = true; renderOlasta(); };
+}
+
 function wireChatt() {
   const falt = $('chattText');
   if (!falt) return;
 
   chatt.addEventListener('meddelanden', () => {
-    if (document.body.dataset.view === 'chatt') renderChatt();
-    else $('chattPrick').hidden = false;
+    if (document.body.dataset.view === 'chatt') { sattChattLast(); renderChatt(); }
+    else renderOlasta();
+    // Rutan i kameravyn uppdateras även när den redan står öppen.
+    if (!$('dcChatt').hidden) renderDcChatt();
   });
+
+  wireDcChatt();
 
   chatt.addEventListener('blockerat', e => {
     const s = $('chattSparr');
