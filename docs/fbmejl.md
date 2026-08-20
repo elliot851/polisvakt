@@ -241,9 +241,9 @@ faktiskt gör. Kör en gång i PowerShell:
 [Environment]::SetEnvironmentVariable('PV_IMAP_SERVER', 'imap.strato.de', 'User')
 [Environment]::SetEnvironmentVariable('PV_SUPABASE_URL', 'https://livvehyqowmcafnisxho.supabase.co', 'User')
 [Environment]::SetEnvironmentVariable('PV_SUPABASE_SERVICE_KEY', 'eyJ...', 'User')
-[Environment]::SetEnvironmentVariable('PV_FB_GRUPP', 'Här står polisen', 'User')
+[Environment]::SetEnvironmentVariable('PV_FB_GRUPP', 'Här Står Polisen - Västerås', 'User')
 # Grupp-id:t ur adressfältet när du öppnar gruppen. OBLIGATORISKT.
-[Environment]::SetEnvironmentVariable('PV_FB_GRUPP_ID', '1234567890', 'User')
+[Environment]::SetEnvironmentVariable('PV_FB_GRUPP_ID', '317968668373072', 'User')
 ```
 
 **`gruppId` är obligatorisk.** Saknas både `gruppId` och `grupp` vägrar

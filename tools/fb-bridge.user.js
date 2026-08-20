@@ -64,7 +64,11 @@
      * i, och det är precis det den aldrig får göra. Fel förval ska stoppa,
      * inte varna.
      */
-    groupId: '',
+    // "Här Står Polisen - Västerås", privat grupp, ~18 000 medlemmar.
+    // Gruppen har inget eget namn i adressen, bara siffrorna — därför är
+    // det den här formen som ska stå här, och samma form som Facebooks
+    // notismejl kommer att bära.
+    groupId: '317968668373072',
 
     minConfidence: 0.65,
     scanIntervalMs: 20000,
