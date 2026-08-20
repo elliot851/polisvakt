@@ -31,7 +31,8 @@
 <div id="ut"></div>
 
 <script type="module">
-import { lasRuta, haMotor, OCR_ALFABET } from './js/plate.js';
+import { lasRuta, lasKandidat, haMotor, OCR_ALFABET,
+         sokKandidater, Malsokare, MALSOK } from './js/plate.js';
 
 const ut = document.getElementById('ut');
 const summa = document.getElementById('summa');
@@ -164,15 +165,232 @@ for (let i = 0; i < fall.length; i++) {
                raText: raText || '(inget)', raOk, raMs,
                plat: p.plat || '(ingen giltig)', pOk, pMs, konf: p.sakerhet });
 }
+/* ================= Målsökning =================
+ *
+ * De tio fallen ovan lägger skylten mitt i bilden, för det var vad den fasta
+ * siktrutan krävde. Det kravet är fel: telefonen sitter i en hållare och
+ * skylten hamnar där den hamnar. Härifrån och ner mäts det motsatta — att
+ * läsaren själv letar upp skylten var som helst i bilden, låser på den och
+ * först då läser.
+ *
+ * Det viktigaste fallet är det sista. En vit skåpbilsdörr är ljus, avlång och
+ * rektangulär precis som en skylt. Låser siktet på den läser den fel skylt och
+ * visar den med tillförsikt, och det är värre än att missa.
+ */
+
+/** Ritar en skylt för sig, så den kan klistras in var som helst i en scen. */
+function skyltbild(text, bredd, { smuts = 0 } = {}) {
+  const ph = Math.round(bredd / 4.7);
+  const s = document.createElement('canvas');
+  s.width = bredd; s.height = ph;
+  const y = s.getContext('2d');
+  y.fillStyle = '#f2f2ef'; y.fillRect(0, 0, bredd, ph);
+  y.fillStyle = '#003399'; y.fillRect(0, 0, ph * 0.42, ph);
+  y.fillStyle = '#f2c200';
+  y.font = `700 ${Math.round(ph * 0.2)}px Arial`;
+  y.textAlign = 'center';
+  y.fillText('S', ph * 0.21, ph * 0.86);
+  y.fillStyle = '#111';
+  y.font = `700 ${Math.round(ph * 0.66)}px "Arial Narrow", Arial, sans-serif`;
+  y.textAlign = 'left'; y.textBaseline = 'middle';
+  y.fillText(text, ph * 0.58, ph * 0.55);
+  if (smuts) {
+    y.fillStyle = `rgba(60,50,40,${smuts})`;
+    for (let i = 0; i < 40; i++) {
+      y.beginPath(); y.arc((i * 37) % bredd, (i * 53) % ph, 1 + (i % 4), 0, 7); y.fill();
+    }
+  }
+  return s;
+}
+
+/**
+ * Fri scen: valfritt antal bilar och skyltar var som helst i bilden.
+ * Returnerar även var varje sak faktiskt hamnade, så mätningen kan kontrollera
+ * att siktet låste på rätt sak och inte bara på något.
+ */
+function friScen(saker, { sceneW = 900, sceneH = 500 } = {}) {
+  const c = document.createElement('canvas');
+  c.width = sceneW; c.height = sceneH;
+  const x = c.getContext('2d');
+  const grad = x.createLinearGradient(0, 0, 0, sceneH);
+  grad.addColorStop(0, '#5a6068'); grad.addColorStop(1, '#2e3237');
+  x.fillStyle = grad; x.fillRect(0, 0, sceneW, sceneH);
+
+  const ytor = [];
+  for (const s of saker) {
+    if (s.typ === 'bil') {
+      x.fillStyle = '#1d2733';
+      x.fillRect(s.fx * sceneW - s.bredd / 2, s.fy * sceneH - s.hojd / 2, s.bredd, s.hojd);
+      x.fillStyle = '#0f151d';
+      x.fillRect(s.fx * sceneW - s.bredd * 0.4, s.fy * sceneH - s.hojd * 0.4, s.bredd * 0.8, s.hojd * 0.34);
+      continue;
+    }
+    if (s.typ === 'vit') {
+      // En vit skåpbilsdörr: rätt form, rätt ljushet, inga tecken.
+      const h = Math.round(s.bredd / (s.kvot || 4.4));
+      const px = Math.round(s.fx * sceneW - s.bredd / 2), py = Math.round(s.fy * sceneH - h / 2);
+      const g2 = x.createLinearGradient(0, py, 0, py + h);
+      g2.addColorStop(0, '#ffffff'); g2.addColorStop(1, '#eceff1');
+      x.fillStyle = g2; x.fillRect(px, py, s.bredd, h);
+      ytor.push({ typ: 'vit', x: px, y: py, w: s.bredd, h, text: null });
+      continue;
+    }
+    const bild = skyltbild(s.text, s.bredd, s);
+    const px = Math.round(s.fx * sceneW - s.bredd / 2);
+    const py = Math.round(s.fy * sceneH - bild.height / 2);
+    x.save();
+    x.translate(px + s.bredd / 2, py + bild.height / 2);
+    if (s.vinkel) x.transform(1, 0, Math.tan(s.vinkel * Math.PI / 180), 1, 0, 0);
+    if (s.blur) x.filter = `blur(${s.blur}px)`;
+    x.drawImage(bild, -s.bredd / 2, -bild.height / 2);
+    x.restore();
+    ytor.push({ typ: 'skylt', x: px, y: py, w: s.bredd, h: bild.height, text: s.text });
+  }
+  return { canvas: c, ytor };
+}
+
+const inuti = (k, yta) => {
+  const cx = k.x + k.w / 2, cy = k.y + k.h / 2;
+  return cx >= yta.x && cx <= yta.x + yta.w && cy >= yta.y && cy <= yta.y + yta.h;
+};
+
+/**
+ * Kör målsökningen bildruta för bildruta mot en stillbild.
+ *
+ * Rutorna skakas en pixel mellan varven. Utan det testar vi bara att samma tal
+ * är lika med sig självt — spårningen ska klara att målet rör sig, det är hela
+ * dess uppgift.
+ */
+function simulera(canvas, bildrutor = 16) {
+  const m = new Malsokare();
+  let lastVid = null, sokMs = [];
+  for (let f = 1; f <= bildrutor; f++) {
+    const t0 = performance.now();
+    const k = sokKandidater(canvas, null, { arbetsbredd: 400 });
+    sokMs.push(performance.now() - t0);
+    const skak = k.map(c => ({ ...c, x: c.x + ((f % 3) - 1), y: c.y + (f % 2 ? 1 : -1) }));
+    const r = m.mata(skak, f * 120);
+    if (r.last && lastVid === null) lastVid = f;
+  }
+  sokMs.sort((a, b) => a - b);
+  return { m, lastVid, median: sokMs[sokMs.length >> 1] };
+}
+
+const malfall = [
+  { namn: 'skylten uppe i högra hörnet', vantat: 'ABC123',
+    saker: [{ typ: 'bil', fx: 0.78, fy: 0.24, bredd: 380, hojd: 210 },
+            { typ: 'skylt', text: 'ABC123', bredd: 220, fx: 0.80, fy: 0.16 }] },
+  { namn: 'skylten nere till vänster', vantat: 'RTN881',
+    saker: [{ typ: 'bil', fx: 0.24, fy: 0.74, bredd: 400, hojd: 230 },
+            { typ: 'skylt', text: 'RTN881', bredd: 220, fx: 0.22, fy: 0.82 }] },
+  { namn: 'nedre halvan (hållarvinkel)', vantat: 'MLK907',
+    saker: [{ typ: 'bil', fx: 0.5, fy: 0.72, bredd: 620, hojd: 260 },
+            { typ: 'skylt', text: 'MLK907', bredd: 300, fx: 0.5, fy: 0.80 }] },
+  { namn: 'två bilar — den mitt i vägen ska vinna', vantat: 'XKF42B', vantatAnnat: 'JHD556',
+    saker: [{ typ: 'bil', fx: 0.14, fy: 0.52, bredd: 320, hojd: 200 },
+            { typ: 'bil', fx: 0.54, fy: 0.60, bredd: 340, hojd: 210 },
+            { typ: 'skylt', text: 'JHD556', bredd: 230, fx: 0.14, fy: 0.55 },
+            { typ: 'skylt', text: 'XKF42B', bredd: 230, fx: 0.54, fy: 0.62 }] },
+  { namn: 'vit skåpbilsdörr — ska INTE låsas', vantat: null,
+    saker: [{ typ: 'bil', fx: 0.5, fy: 0.5, bredd: 700, hojd: 340 },
+            { typ: 'vit', bredd: 300, kvot: 4.4, fx: 0.5, fy: 0.52 }] },
+];
+
+const malrader = [];
+let malRatt = 0;
+for (let i = 0; i < malfall.length; i++) {
+  summa.textContent = `Målsökning ${i + 1} av ${malfall.length}…`;
+  const f = malfall[i];
+  const { canvas, ytor } = friScen(f.saker);
+  const kand = sokKandidater(canvas, null, { arbetsbredd: 400 });
+  const sim = simulera(canvas);
+  const last = sim.m.last;
+
+  const malyta = ytor.find(y => y.text === f.vantat) || ytor[0];
+  const trafferRatt = !!(last && f.vantat && inuti(last, malyta));
+
+  let plat = null, forb = null;
+  if (last && f.vantat) {
+    const r = await lasKandidat(canvas, last);
+    plat = r.plat; forb = r.bild;
+  }
+
+  // Utan skylt är rätt svar att ingenting låses. Med skylt är rätt svar att
+  // rätt yta låses och att texten kommer ut.
+  const ok = f.vantat ? (trafferRatt && plat === f.vantat) : !last;
+  if (ok) malRatt++;
+
+  malrader.push({
+    namn: f.namn, vantat: f.vantat || '(ingen skylt)',
+    kandidater: kand.length,
+    toppPoang: kand.length ? Math.round(kand[0].poang * 100) / 100 : 0,
+    toppByten: kand.length ? kand[0].teckenbyten : 0,
+    lastVid: sim.lastVid, trafferRatt,
+    plat: plat || (last ? '(ingen giltig)' : '—'),
+    sokMs: Math.round(sim.median * 100) / 100,
+    ok, forb, canvas,
+  });
+}
+
+/* Låset ska släppa. Två vägar in i det, och båda mäts:
+ *  – målet försvinner ur bild (spårningen tappar det)
+ *  – målet finns kvar men ger aldrig en giltig skylt (låset brinner upp) */
+const scenA = friScen(malfall[0].saker);
+const tapp = simulera(scenA.canvas);
+let tappEfter = null;
+if (tapp.m.last) {
+  for (let f = 1; f <= 8 && tappEfter === null; f++) {
+    const r = tapp.m.mata([], 2000 + f * 120);
+    if (!r.last) tappEfter = f;
+  }
+}
+
+const brannScen = friScen(malfall[2].saker);
+const brann = simulera(brannScen.canvas);
+let brannEfter = null, brannRelas = false;
+if (brann.m.last) {
+  const id = brann.m.last.id;
+  for (let f = 1; f <= 5 && brannEfter === null; f++) {
+    brann.m.rapporteraLasning(id, false);
+    if (!brann.m.last) brannEfter = f;
+  }
+  for (let f = 1; f <= 12; f++) {
+    const k = sokKandidater(brannScen.canvas, null, { arbetsbredd: 400 });
+    if (brann.m.mata(k, 5000 + f * 120).last) brannRelas = true;
+  }
+}
+
+/* Tid. Telefonbilden är 1920 × 1080, inte 900 × 500 — det är den siffran som
+ * betyder något. Söker vi på full upplösning kostar det tiofalt utan att hitta
+ * mer, så mätningen görs på nedskalade kopior i tre arbetsbredder. */
+const stor = document.createElement('canvas');
+stor.width = 1920; stor.height = 1080;
+stor.getContext('2d').drawImage(friScen(malfall[3].saker).canvas, 0, 0, 1920, 1080);
+
+function tidFor(bredd) {
+  sokKandidater(stor, null, { arbetsbredd: bredd });       // värm upp
+  const t = [];
+  for (let i = 0; i < 25; i++) {
+    const t0 = performance.now();
+    sokKandidater(stor, null, { arbetsbredd: bredd });
+    t.push(performance.now() - t0);
+  }
+  t.sort((a, b) => a - b);
+  return Math.round(t[12] * 100) / 100;
+}
+const tider = { b320: tidFor(320), b400: tidFor(400), b480: tidFor(480), b960: tidFor(960) };
+
 await raWorker.terminate();
 await worker.terminate();
 
 const medel = Math.round(rader.reduce((a, r) => a + r.pMs, 0) / rader.length);
-const klass = v => v === fall.length ? 'ok' : v ? 'halv' : 'fel';
+const klass = (v, av) => v === av ? 'ok' : v ? 'halv' : 'fel';
 summa.innerHTML =
-  `Rå bild: <span class="${klass(rattRa)}">${rattRa} av ${fall.length}</span> · ` +
-  `Pipeline: <span class="${klass(rattPipe)}">${rattPipe} av ${fall.length}</span> · ` +
-  `${medel} ms per bild · motorn laddade på ${(laddTid / 1000).toFixed(1)} s`;
+  `Rå bild: <span class="${klass(rattRa, fall.length)}">${rattRa} av ${fall.length}</span> · ` +
+  `Pipeline: <span class="${klass(rattPipe, fall.length)}">${rattPipe} av ${fall.length}</span> · ` +
+  `Målsökning: <span class="${klass(malRatt, malfall.length)}">${malRatt} av ${malfall.length}</span> · ` +
+  `${medel} ms per bild · sökning ${tider.b400} ms i 1920×1080 · ` +
+  `motorn laddade på ${(laddTid / 1000).toFixed(1)} s`;
 
 const tab = document.createElement('table');
 tab.innerHTML = '<tr><th>Fall</th><th>Skylt</th><th>Rå bild</th>' +
@@ -188,7 +406,61 @@ for (const r of rader) {
 }
 ut.appendChild(tab);
 
+/* ---- Målsökningens tabell ---- */
+const h2 = document.createElement('h1');
+h2.style.cssText = 'font-size:18px;margin:30px 0 4px';
+h2.textContent = 'Målsökning — skylten ligger inte mitt i bilden';
+ut.appendChild(h2);
+
+const p2 = document.createElement('p');
+p2.className = 'sub';
+p2.innerHTML =
+  'Ingen siktruta. Läsaren genomsöker hela bilden, spårar kandidaterna mellan ' +
+  `bildrutor och låser först efter ${MALSOK.bildrutorForLas} bildrutor i rad ` +
+  `(≈ 1 s vid 120 ms mellan sökningar). Kolumnen <b>lås</b> är vilken bildruta ` +
+  'låset satt vid. Sista fallet är en vit yta utan tecken — där är rätt svar ' +
+  'att ingenting låses alls.';
+ut.appendChild(p2);
+
+const tab2 = document.createElement('table');
+tab2.innerHTML = '<tr><th>Fall</th><th>Skylt</th><th>Kand.</th><th>Poäng</th>' +
+  '<th>Byten</th><th>Lås</th><th>Rätt yta</th><th>Läst</th><th>Scen</th><th>Sök</th></tr>';
+for (const r of malrader) {
+  const tr = document.createElement('tr');
+  const sceneMini = document.createElement('canvas');
+  sceneMini.width = 180; sceneMini.height = 100;
+  sceneMini.getContext('2d').drawImage(r.canvas, 0, 0, 180, 100);
+  tr.innerHTML = `<td>${r.namn}</td><td>${r.vantat}</td><td>${r.kandidater}</td>` +
+    `<td>${r.toppPoang}</td><td>${r.toppByten}</td>` +
+    `<td>${r.lastVid ? r.lastVid : '<span class="ok">aldrig</span>'}</td>` +
+    `<td class="${r.ok ? 'ok' : 'fel'}">${r.vantat === '(ingen skylt)' ? (r.lastVid ? 'LÅSTE FEL' : 'nej — rätt') : (r.trafferRatt ? 'ja' : 'nej')}</td>` +
+    `<td class="${r.ok ? 'ok' : 'fel'}">${r.plat}</td><td class="bild"></td><td>${r.sokMs} ms</td>`;
+  tr.querySelector('td.bild').appendChild(sceneMini);
+  tab2.appendChild(tr);
+}
+ut.appendChild(tab2);
+
+const p3 = document.createElement('p');
+p3.className = 'sub';
+p3.style.marginTop = '14px';
+p3.innerHTML =
+  `<b>Låset släpper.</b> Målet ur bild: låset satt kvar ${tappEfter ?? '—'} ` +
+  `bildrutor efter att kandidaten försvann (tak: ${MALSOK.tappForLas}). ` +
+  `Målet kvar men oläsbart: låset brann upp efter ${brannEfter ?? '—'} ` +
+  `misslyckade läsningar (tak: ${MALSOK.brandForsok}), och låste ` +
+  `${brannRelas ? '<span class="fel">om sig på samma sak igen</span>' : '<span class="ok">inte om sig på samma sak</span>'}.<br>` +
+  `<b>Kostnad.</b> Sökning i en 1920 × 1080-bild: ${tider.b320} ms vid arbetsbredd 320, ` +
+  `${tider.b400} ms vid 400, ${tider.b480} ms vid 480, ${tider.b960} ms vid 960. ` +
+  'Sökningen kör 8 gånger i sekunden, så 400 kostar under en procent av en kärna.';
+ut.appendChild(p3);
+
 window.__ocr = { ra: rattRa, pipeline: rattPipe, av: fall.length,
                  medelMs: medel, laddTidMs: laddTid,
-                 rader: rader.map(({ forb, ...x }) => x) };
+                 rader: rader.map(({ forb, ...x }) => x),
+                 malsokning: {
+                   ratt: malRatt, av: malfall.length,
+                   rader: malrader.map(({ forb, canvas, ...x }) => x),
+                   tappEfter, brannEfter, brannRelas, tider,
+                   krav: { ...MALSOK },
+                 } };
 </script>
