@@ -65,7 +65,21 @@ async function T(namn, fn) {
 
 /* =================================================================== */
 const chatt = await import('./js/chatt.js');
-const { Chatt, farSkicka, skrivlage, GRANSER, neutraltNamn, stadaNamn } = chatt;
+const {
+  Chatt, farSkicka, skrivlage, bedomFart, GRANSER, neutraltNamn, stadaNamn,
+  RUTA, RUTA_MONSTER, rutkod, rutIndex, arRutkod, grannrutor, rutansMitt,
+} = chatt;
+
+/* Riktiga positioner, för att testerna ska handla om Sverige och inte om
+   påhittade tal. */
+const PLATS = {
+  vasteras:  [59.6099, 16.5448],
+  halla:     [59.6265, 16.6100],   // Västerås östra utkant, cirka 4 km bort
+  sala:      [59.9270, 16.6050],   // cirka 35 km norrut, alltså grannruta
+  orebro:    [59.2741, 15.2066],   // cirka 100 km bort, ska inte nås
+  malmo:     [55.6050, 13.0038],
+  kiruna:    [67.8558, 20.2253],
+};
 
 const NU = 1_800_000_000_000;      // fast klocka, så inget test är tidsberoende
 
@@ -80,9 +94,9 @@ function nyChatt(cfg = {}) {
                      lagringsPrefix: prefix, ...cfg });
 }
 
-/** En rad som den ser ut i vyn chatt_flode. */
-const serverRad = (id, namn, nyckel, text, at) => ({
-  id, visningsnamn: namn, avsandarnyckel: nyckel, text,
+/** En rad som den ser ut i vyn chatt_flode. omrade = null betyder utan område. */
+const serverRad = (id, namn, nyckel, text, at, omrade = null) => ({
+  id, visningsnamn: namn, avsandarnyckel: nyckel, text, omrade,
   skapad_at: new Date(at).toISOString(), mitt: false,
 });
 
@@ -203,7 +217,10 @@ await T('skicka blockeras i farten, även med giltig text', () => {
 });
 await T('klassen låser när GPS matas in', async () => {
   const c = nyChatt();
-  c.notera({ speedKmh: 72 }, NU);
+  // Två avläsningar, för att en verklig körning ger en i sekunden. Ett enda
+  // utslag ska INTE låsa — se gruppen om falska utslag längre ner.
+  c.notera({ speedKmh: 72 }, NU - 1000);
+  c.notera({ speedKmh: 74 }, NU);
   const last = c.kanSkriva(NU);
   const r = await c.skicka('hej', NU);
   return (!last.ok && last.skal === 'kor' && !r.ok && r.skal === 'kor')
@@ -214,6 +231,123 @@ await T('och släpper när bilen stannar', async () => {
   c.notera({ speedKmh: 72 }, NU);
   c.notera({ speedKmh: 0 }, NU + 60000);
   const r = await c.skicka('Nu står jag still', NU + 60000);
+  return r.ok || `fick ${JSON.stringify(r)}`;
+});
+
+/* ---- Falska fartutslag --------------------------------------------- */
+/*
+ * Bakgrunden: ägaren satt blickstilla på ett kontor och fick ändå upp
+ * "Bilen rullar". GPS inomhus har ingen satellitfix och hoppar mellan
+ * wifi-gissningar; ett enda hopp räknades tidigare som fart och låste fältet
+ * i tjugo sekunder.
+ *
+ * En spärr som slår till när man står still lär användaren att den är
+ * trasig, och då litar hen inte på den när den har rätt. Testerna nedan är
+ * hela skälet till att spärren fortfarande går att lita på.
+ */
+G('Falska fartutslag — spärren får inte slå till när man står still');
+
+await T('ett enstaka utslag på 40 km/h låser INTE', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 0 }, NU - 3000);
+  c.notera({ speedKmh: 0 }, NU - 2000);
+  c.notera({ speedKmh: 40 }, NU);          // hoppet
+  const r = c.kanSkriva(NU);
+  return r.ok || `fick ${JSON.stringify(r)} — ett hopp ska inte låsa`;
+});
+await T('inte heller ett ensamt utslag på 90 km/h', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 90 }, NU);
+  return c.kanSkriva(NU).ok || 'ett enda mätvärde låste fältet';
+});
+await T('två mätvärden i rad över tröskeln låser', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 40 }, NU - 1000);
+  c.notera({ speedKmh: 42 }, NU);
+  const r = c.kanSkriva(NU);
+  return (!r.ok && r.skal === 'kor') || `fick ${JSON.stringify(r)}`;
+});
+await T('krav på antal träffar är just två, inte fler', () => {
+  return GRANSER.fartMinTraffar === 2 || `fick ${GRANSER.fartMinTraffar}`;
+});
+await T('en enda avläsning under tröskeln bryter serien', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 60 }, NU - 3000);
+  c.notera({ speedKmh: 60 }, NU - 2000);   // här är fältet låst
+  c.notera({ speedKmh: 0 },  NU - 1000);   // stannat
+  return c.kanSkriva(NU).ok || 'satt kvar i låst läge efter att bilen stannat';
+});
+await T('fältet öppnas igen när farten gått ner', async () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 80 }, NU - 4000);
+  c.notera({ speedKmh: 80 }, NU - 3000);
+  const last = c.kanSkriva(NU - 3000);
+  c.notera({ speedKmh: 3 }, NU - 1000);
+  const oppet = c.kanSkriva(NU);
+  const skickat = await c.skicka('nu står jag still', NU);
+  return (!last.ok && oppet.ok && skickat.ok)
+    || `låst=${JSON.stringify(last)} öppet=${JSON.stringify(oppet)} skickat=${JSON.stringify(skickat)}`;
+});
+await T('en fix med dålig noggrannhet låser inte', () => {
+  const c = nyChatt();
+  // 120 meters osäkerhet är typiskt inomhus. En position som får ligga så
+  // fel kan "flytta sig" hundratals meter utan att någon rört sig.
+  c.notera({ speedKmh: 70, accuracy: 120 }, NU - 1000);
+  c.notera({ speedKmh: 75, accuracy: 140 }, NU);
+  return c.kanSkriva(NU).ok || 'usel GPS låste fältet';
+});
+await T('men samma fart med god noggrannhet låser', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 70, accuracy: 8 }, NU - 1000);
+  c.notera({ speedKmh: 75, accuracy: 9 }, NU);
+  const r = c.kanSkriva(NU);
+  return (!r.ok && r.skal === 'kor') || `fick ${JSON.stringify(r)}`;
+});
+await T('en dålig fix kan inte heller låsa upp mitt i en körning', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 90, accuracy: 10 }, NU - 3000);
+  c.notera({ speedKmh: 92, accuracy: 10 }, NU - 2000);
+  c.notera({ speedKmh: 0,  accuracy: 900 }, NU - 1000);   // skräp, ska kastas
+  const r = c.kanSkriva(NU);
+  return (!r.ok && r.skal === 'kor') || `fick ${JSON.stringify(r)}`;
+});
+await T('saknad fart låser aldrig, inte ens efter en körning', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 90 }, NU - 2000);
+  c.notera({ speedKmh: 90 }, NU - 1000);
+  c.sattFart(null, NU);
+  return c.kanSkriva(NU).ok || 'okänd fart låste fältet';
+});
+await T('gamla mätvärden åldras ut och låser inte för alltid', () => {
+  const c = nyChatt();
+  c.notera({ speedKmh: 90 }, NU - 2000);
+  c.notera({ speedKmh: 90 }, NU - 1000);
+  const strax = c.kanSkriva(NU);
+  const senare = c.kanSkriva(NU + GRANSER.fartFarskMs + 1000);
+  return (!strax.ok && senare.ok) || `strax=${JSON.stringify(strax)} senare=${JSON.stringify(senare)}`;
+});
+await T('bedomFart räknar bara svansen av serien', () => {
+  const p = [
+    { kmh: 90, at: NU - 5000 }, { kmh: 90, at: NU - 4000 },
+    { kmh: 0,  at: NU - 3000 }, { kmh: 40, at: NU - 2000 },
+  ];
+  const b = bedomFart(p, NU, GRANSER);
+  return (b.traffar === 1 && b.laser === false && b.kmh === 40)
+    || `fick ${JSON.stringify(b)}`;
+});
+await T('bedomFart utan mätvärden låser inte', () => {
+  const b = bedomFart([], NU, GRANSER);
+  return (b.laser === false && b.kmh === null) || `fick ${JSON.stringify(b)}`;
+});
+await T('den rena vägen med ett enda värde tas fortfarande för god', () => {
+  // skrivlage(fartKmh) betyder "den här farten litar jag på". Den vägen
+  // används av anropare som redan bestämt sig, och ska inte kräva historik.
+  const r = skrivlage({ inloggad: true, fartKmh: 90, fartAlderMs: 0 });
+  return (!r.ok && r.skal === 'kor') || `fick ${JSON.stringify(r)}`;
+});
+await T('men inte när noggrannheten är usel', () => {
+  const r = skrivlage({ inloggad: true, fartKmh: 90, fartAlderMs: 0,
+                        fartNoggrannhetM: GRANSER.fartMaxOsakerhetM + 1 });
   return r.ok || `fick ${JSON.stringify(r)}`;
 });
 
@@ -406,6 +540,193 @@ await T('osynliga tecken städas bort ur smeknamn', () => {
   // namn som ser exakt ut som någon annans i listan.
   const n = stadaNamn('El\u200bli\u200cot\u202e');
   return n === 'Elliot' || `fick ${JSON.stringify(n)}`;
+});
+
+/* ---- Område -------------------------------------------------------- */
+/*
+ * Chatten är en trakt, inte ett land och inte en punkt. Testerna nedan
+ * skyddar två saker samtidigt: att ett meddelande når rätt förare, och att
+ * områdeskoden aldrig blir en positionslogg.
+ */
+G('Område — rutnätet');
+
+await T('rutan räknas rätt ur en position', () => {
+  const k = rutkod(...PLATS.vasteras);
+  return k === 'r238x33' || `fick ${k}`;
+});
+await T('koden har formen r<heltal>x<heltal> och inget mer', () => {
+  const k = rutkod(...PLATS.vasteras);
+  return RUTA_MONSTER.test(k) || `fick ${JSON.stringify(k)}`;
+});
+await T('två positioner i samma trakt hamnar i samma ruta', () => {
+  const a = rutkod(...PLATS.vasteras), b = rutkod(...PLATS.halla);
+  return a === b || `fick ${a} och ${b}`;
+});
+await T('en position en bit bort hamnar i en angränsande ruta', () => {
+  const a = rutkod(...PLATS.vasteras), b = rutkod(...PLATS.sala);
+  return (a !== b && grannrutor(a).includes(b)) || `fick ${a} och ${b}`;
+});
+await T('grannrutorna är nio och innehåller den egna', () => {
+  const g = grannrutor('r238x33');
+  return (g.length === 9 && g.includes('r238x33') && new Set(g).size === 9)
+    || `fick ${JSON.stringify(g)}`;
+});
+await T('Skåne ligger INTE i Västmanlands grannrutor', () => {
+  const hemma = rutkod(...PLATS.vasteras);
+  const skane = rutkod(...PLATS.malmo);
+  return (!grannrutor(hemma).includes(skane))
+    || `${skane} räknades som granne till ${hemma}`;
+});
+await T('Norrbotten ligger inte där heller', () => {
+  const hemma = rutkod(...PLATS.vasteras);
+  return !grannrutor(hemma).includes(rutkod(...PLATS.kiruna)) || 'Kiruna räknades som granne';
+});
+await T('inte ens Örebro, tio mil bort', () => {
+  const hemma = rutkod(...PLATS.vasteras);
+  return !grannrutor(hemma).includes(rutkod(...PLATS.orebro)) || 'Örebro räknades som granne';
+});
+await T('rutan är ungefär 25 km, inte 2 och inte 200', () => {
+  // Latitudsteget är konstant överallt: 0,25 grad = 27,75 km.
+  const km = RUTA.latSteg * 111.32;
+  return (km > 20 && km < 35) || `fick ${km.toFixed(1)} km`;
+});
+
+G('Område — koden får aldrig avslöja en position');
+
+await T('all precision utöver rutan går förlorad', () => {
+  // Två positioner cirka 16 km isär ger EXAKT samma kod. Går det inte att
+  // skilja dem åt går det inte att följa någon.
+  const a = rutkod(59.6099, 16.5448);
+  const b = rutkod(59.7499, 16.9999);
+  return (a === b && a === 'r238x33') || `fick ${a} och ${b}`;
+});
+await T('hela rutan kollapsar till en enda kod', () => {
+  const koder = new Set();
+  for (let i = 0; i < 200; i++) {
+    const lat = 59.50 + Math.random() * RUTA.latSteg * 0.99;
+    const lon = 16.50 + Math.random() * RUTA.lonSteg * 0.99;
+    koder.add(rutkod(lat, lon));
+  }
+  return koder.size === 1 || `fick ${koder.size} olika koder: ${[...koder].join(',')}`;
+});
+await T('koden innehåller inga decimaler', () => {
+  const k = rutkod(59.60991234, 16.54487654);
+  return (!k.includes('.') && !/\d{5,}/.test(k)) || `fick ${k}`;
+});
+await T('allt som går att läsa ur koden är rutans mitt', () => {
+  const mitt = rutansMitt('r238x33');
+  const langtIfran = Math.abs(mitt.lat - PLATS.vasteras[0]) > 0.01;
+  return (mitt.lat === 59.625 && mitt.lon === 16.75 && langtIfran)
+    || `fick ${JSON.stringify(mitt)}`;
+});
+await T('en kod med extra text avvisas helt', () => {
+  const smugglat = ['r238x33 59.6099,16.5448', 'r238.4x33.09', 'r238x33;lat=59.6',
+                    'R238X33 ', '', null, 'hej'];
+  const kvar = smugglat.filter(arRutkod);
+  return kvar.length === 0 || `dessa släpptes igenom: ${JSON.stringify(kvar)}`;
+});
+await T('index utanför Norden avvisas', () => {
+  return (!arRutkod('r999x999') && !arRutkod('r0x0') && rutIndex('r238x33') !== null)
+    || 'gränskontrollen släpper igenom fel index';
+});
+await T('en position utanför fönstret ger ingen ruta alls', () => {
+  // Mitt i Atlanten. Hellre "utan område" än en påhittad trakt.
+  return rutkod(30.0, -40.0) === null || `fick ${rutkod(30.0, -40.0)}`;
+});
+await T('en position som saknas ger ingen ruta', () => {
+  return (rutkod(null, null) === null && rutkod(NaN, 16.5) === null
+          && rutkod(undefined, undefined) === null) || 'saknad position gav en kod';
+});
+
+G('Område — vad som når föraren');
+
+await T('klienten får sin ruta ur en GPS-fix, utan att spara positionen', () => {
+  const c = nyChatt();
+  c.notera({ lat: PLATS.vasteras[0], lon: PLATS.vasteras[1], speedKmh: 0 }, NU);
+  const sparat = JSON.stringify(c);
+  return (c.rutkod === 'r238x33'
+          && !sparat.includes('59.6099') && !sparat.includes('16.5448'))
+    || `rutkod=${c.rutkod}, hittade koordinater i objektet: ${sparat.slice(0, 200)}`;
+});
+await T('frågan till servern filtrerar på nio rutor plus null', () => {
+  const c = nyChatt();
+  c.notera({ lat: PLATS.vasteras[0], lon: PLATS.vasteras[1] }, NU);
+  const koder = c.omradeKoder;
+  return (koder.length === 9 && koder.includes('r238x33'))
+    || `fick ${JSON.stringify(koder)}`;
+});
+await T('utan GPS finns inget filter — då hämtas allt som förut', () => {
+  const c = nyChatt();
+  return c.omradeKoder === null || `fick ${JSON.stringify(c.omradeKoder)}`;
+});
+await T('ett meddelande utan område markeras och filtreras INTE bort', () => {
+  const c = nyChatt();
+  c.notera({ lat: PLATS.vasteras[0], lon: PLATS.vasteras[1] }, NU);
+  c.mottaRader([serverRad('m1', 'Anna', 'k1', 'nån som vet?', NU - 60000, null)]);
+  const l = c.meddelanden(NU);
+  return (l.length === 1 && l[0].utanOmrade === true && l[0].omrade === null)
+    || `fick ${JSON.stringify(l)}`;
+});
+await T('grannens meddelande når fram, Skånes gör det inte', () => {
+  const c = nyChatt();
+  c.notera({ lat: PLATS.vasteras[0], lon: PLATS.vasteras[1] }, NU);
+  c.mottaRader([
+    serverRad('hemma',  'Anna',  'k1', 'polis vid Erikslund', NU - 60000, rutkod(...PLATS.vasteras)),
+    serverRad('granne', 'Bosse', 'k2', 'kamera mot Sala',     NU - 50000, rutkod(...PLATS.sala)),
+    serverRad('skane',  'Cissi', 'k3', 'polis vid Värnhem',   NU - 40000, rutkod(...PLATS.malmo)),
+    serverRad('okant',  'David', 'k4', 'ingen GPS här',       NU - 30000, null),
+  ]);
+  const ids = c.meddelanden(NU).map(m => m.id).sort().join(',');
+  return ids === 'granne,hemma,okant' || `fick ${ids}`;
+});
+await T('utan egen ruta filtreras ingenting bort', () => {
+  const c = nyChatt();
+  c.mottaRader([
+    serverRad('hemma', 'Anna',  'k1', 'a', NU - 60000, rutkod(...PLATS.vasteras)),
+    serverRad('skane', 'Cissi', 'k3', 'b', NU - 40000, rutkod(...PLATS.malmo)),
+  ]);
+  return c.meddelanden(NU).length === 2 || `fick ${c.meddelanden(NU).length}`;
+});
+await T('ett skickat meddelande får rutan med sig, aldrig positionen', async () => {
+  const c = nyChatt();
+  c.notera({ lat: PLATS.vasteras[0], lon: PLATS.vasteras[1], speedKmh: 0 }, NU);
+  await c.skicka('står de kvar?', NU);
+  const m = c.meddelanden(NU)[0];
+  return (m.omrade === 'r238x33' && m.utanOmrade === false
+          && !('lat' in m) && !('lon' in m)) || `fick ${JSON.stringify(m)}`;
+});
+await T('utan GPS blir det egna meddelandet "utan område", inte tystat', async () => {
+  const c = nyChatt();
+  await c.skicka('hör någon mig?', NU);
+  const m = c.meddelanden(NU)[0];
+  return (m.omrade === null && m.utanOmrade === true) || `fick ${JSON.stringify(m)}`;
+});
+await T('en serverrad med skräp i omrade behandlas som utan område', () => {
+  const c = nyChatt();
+  c.mottaRader([serverRad('m1', 'Anna', 'k1', 'hej', NU - 60000, 'r238x33 59.6,16.5')]);
+  const m = c.meddelanden(NU)[0];
+  return (m.omrade === null && m.utanOmrade === true) || `fick ${JSON.stringify(m)}`;
+});
+await T('ett rutbyte tvingar fram en full hämtning', () => {
+  const c = nyChatt();
+  c.notera({ lat: PLATS.vasteras[0], lon: PLATS.vasteras[1] }, NU);
+  const forsta = c._nyRuta;
+  c.notera({ lat: PLATS.vasteras[0] + 0.0001, lon: PLATS.vasteras[1] }, NU + 1000);
+  const samma = c._nyRuta;
+  c._nyRuta = false;
+  c.notera({ lat: PLATS.malmo[0], lon: PLATS.malmo[1] }, NU + 2000);
+  return (forsta === true && samma === true && c._nyRuta === true && c.rutkod === 'r222x26')
+    || `fick ${forsta}/${samma}/${c._nyRuta}, rutkod=${c.rutkod}`;
+});
+await T('cachen i localStorage innehåller aldrig koordinater', async () => {
+  const c = nyChatt();
+  c.notera({ lat: PLATS.vasteras[0], lon: PLATS.vasteras[1], speedKmh: 0 }, NU);
+  await c.skicka('test', NU);
+  const rader = Object.keys(localStorage)
+    .filter(k => k.includes('cache'))
+    .map(k => localStorage.getItem(k) || '')
+    .join('');
+  return (!rader.includes('59.6') && !rader.includes('16.54')) || 'koordinater låg i cachen';
 });
 
 /* ---- Batteri ------------------------------------------------------- */

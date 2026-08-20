@@ -1,9 +1,13 @@
-// Chatt — ett gemensamt rum för alla som kör appen.
+// Chatt — ett rum som följer med dit man kör.
 //
-// Inga grupper, inga privata meddelanden, inga trådar. Ett rum. Det är ett
-// medvetet beslut: den som sitter i en bil ska kunna fråga "står de kvar vid
-// Erikslund?" och få svar av någon som just körde förbi. Delar man upp folk i
-// rum blir varje rum tomt, och en tom chatt är värre än ingen chatt.
+// Inga grupper, inga privata meddelanden, inga trådar. Ett rum per trakt. Det
+// är ett medvetet beslut: den som sitter i en bil ska kunna fråga "står de kvar
+// vid Erikslund?" och få svar av någon som just körde förbi. Delar man upp folk
+// i namngivna rum blir varje rum tomt, och en tom chatt är värre än ingen chatt
+// — men ett enda rikstäckande rum är lika illa åt andra hållet: skriver någon i
+// Malmö att polisen står vid Värnhem hjälper det ingen i Västerås.
+//
+// Därför ett grovt rutnät istället för rum. Se avsnittet OMRÅDE nedan.
 //
 // Tre saker skiljer det här från en vanlig chatt, och alla tre finns för att
 // appen används bakom en ratt:
@@ -70,6 +74,51 @@ export const GRANSER = {
    */
   fartFarskMs: 20000,
 
+  /**
+   * Hur många färska avläsningar i rad som måste ligga över tröskeln innan
+   * fältet låses.
+   *
+   * Bakgrund: spärren slog till för folk som satt blickstilla inomhus. GPS
+   * inomhus har ingen satellitfix att gå på och positionen hoppar mellan
+   * wifi- och mastgissningar. Två gissningar 30 meter isär med en sekund
+   * emellan blir 108 km/h i geo.js härledning — ett enda sådant utslag låste
+   * tidigare fältet i hela tjugo sekunder (fartFarskMs), och nästa utslag
+   * förlängde låsningen. Det såg ut som slumpen.
+   *
+   * Två avläsningar i rad, inte en. Ett hopp räcker inte; en verklig körning
+   * ger en ny avläsning i sekunden och låser alltså inom ett par sekunder —
+   * långt innan någon hunnit skriva något.
+   *
+   * Avvägningen, uttalad: spärren finns för att ingen ska sitta och skriva i
+   * nittio. Men en spärr som slår till när man står still lär användaren att
+   * den är trasig, och då litar hen inte på den när den har rätt. Ett litet
+   * glapp åt det öppna hållet är billigare än att hela funktionen förlorar
+   * sin trovärdighet — särskilt eftersom grinden prövas en gång till när
+   * Skicka trycks.
+   *
+   * Låsningen är därför medvetet OSYMMETRISK: den slår till på den andra
+   * avläsningen över tröskeln, men släpper på den första trovärdiga
+   * avläsningen under den. Fel åt det låsande hållet kan låsa någon ute i
+   * tjugo sekunder; fel åt det öppna hållet varar en sekund, tills nästa
+   * avläsning kommer in.
+   */
+  fartMinTraffar: 2,
+
+  /**
+   * Sämsta GPS-noggrannhet (meter) vi tar en fartavläsning på allvar från.
+   *
+   * geo.js ber om enableHighAccuracy. Utomhus med satellitfix ligger
+   * accuracy på 5–20 meter. Inomhus finns ingen fix och accuracy landar på
+   * 30–2000 meter. En position som får ligga femtio meter fel kan "flytta
+   * sig" hundra meter mellan två avläsningar utan att någon rört sig, och en
+   * fart räknad ur den säger ingenting om bilen rullar. Sådana avläsningar
+   * kastas helt — de får varken låsa eller låsa upp.
+   *
+   * Saknas accuracy (äldre anrop, sattFart utan mer information) litar vi på
+   * värdet. Vi kan inte straffa en anropare för att den inte berättade.
+   */
+  fartMaxOsakerhetM: 50,
+
   /** Pollintervall när chattvyn syns. */
   pollAktivMs: 8000,
   /** Pollintervall när chatten är öppen men vyn inte visas. */
@@ -109,10 +158,73 @@ const nej = skal => ({ ok: false, skal, meddelande: SKAL_TEXT[skal] || 'Går int
  */
 
 /**
+ * Väg samman de senaste fartavläsningarna till ett besked: rullar bilen?
+ *
+ * Ren funktion, ingen klocka och inget GPS. Hela tåligheten mot skräpvärden
+ * ligger här, och därför går den att testa rakt av.
+ *
+ * Tre steg, i tur och ordning:
+ *
+ *   1. Kasta det som inte går att lita på — för gammalt (fartFarskMs) eller
+ *      mätt med för dålig noggrannhet (fartMaxOsakerhetM). Blir ingenting
+ *      kvar vet vi ingenting om farten, och då är fältet ÖPPET. Okänd fart
+ *      har aldrig låst och ska aldrig göra det: annars låser en telefon utan
+ *      GPS-tillstånd ute sin ägare för alltid.
+ *
+ *   2. Räkna svansen: hur många av de SENASTE avläsningarna i rad som ligger
+ *      över tröskeln. Just svansen, inte totalen — en enda avläsning under
+ *      tröskeln nollar räknaren, vilket är precis det som ska hända när man
+ *      stannar.
+ *
+ *   3. Lås om svansen är minst fartMinTraffar lång.
+ *
+ * @param {Array<{kmh:number, at:number, noggrannhetM?:number|null}>} prover
+ * @param {number} nu
+ * @param {object} granser
+ * @returns {{kmh:number|null, traffar:number, prover:number, laser:boolean}}
+ */
+export function bedomFart(prover, nu = Date.now(), granser = GRANSER) {
+  const g = { ...GRANSER, ...(granser || {}) };
+
+  const farska = (Array.isArray(prover) ? prover : [])
+    .filter(p => p && Number.isFinite(p.kmh) && Number.isFinite(p.at))
+    .filter(p => nu - p.at <= g.fartFarskMs && nu - p.at >= -1000)
+    .filter(p => !Number.isFinite(p.noggrannhetM) || p.noggrannhetM <= g.fartMaxOsakerhetM)
+    .sort((a, b) => a.at - b.at);
+
+  if (!farska.length) return { kmh: null, traffar: 0, prover: 0, laser: false };
+
+  let traffar = 0;
+  for (let i = farska.length - 1; i >= 0; i--) {
+    if (farska[i].kmh > g.farttroskelKmh) traffar++;
+    else break;
+  }
+
+  return {
+    kmh: farska[farska.length - 1].kmh,
+    traffar,
+    prover: farska.length,
+    laser: traffar >= g.fartMinTraffar,
+  };
+}
+
+/**
  * Får föraren skriva just nu? Avgör om inmatningsfältet ska vara låst.
  *
+ * Två vägar in, och det är avsiktligt:
+ *
+ *   - fartProver: en lista avläsningar. Då gäller bedomFart ovan med allt vad
+ *     det innebär av tålighet mot enstaka utslag. Det är vägen Chatt-klassen
+ *     går, och alltså vägen appen går.
+ *
+ *   - fartKmh + fartAlderMs: EN fart som anroparen redan bestämt sig för att
+ *     lita på. Då tas den för god. Den vägen finns kvar för anropare som
+ *     själva vet vad de mätt, och för att kunna ställa en fråga om en enskild
+ *     fart utan att först bygga en historik.
+ *
  * @param {{inloggad?:boolean, fartKmh?:number|null, fartAlderMs?:number,
- *          granser?:object}} lage
+ *          fartNoggrannhetM?:number|null,
+ *          fartProver?:Array, nu?:number, granser?:object}} lage
  * @returns {{ok:boolean, skal:string|null, meddelande:string}}
  */
 export function skrivlage(lage = {}) {
@@ -120,9 +232,16 @@ export function skrivlage(lage = {}) {
 
   if (lage.inloggad === false) return nej('inte_inloggad');
 
+  if (Array.isArray(lage.fartProver)) {
+    return bedomFart(lage.fartProver, lage.nu ?? Date.now(), g).laser ? nej('kor') : ok();
+  }
+
   const fart = lage.fartKmh;
   const alder = lage.fartAlderMs ?? 0;
-  const farsk = Number.isFinite(fart) && alder <= g.fartFarskMs;
+  // En fix med usel noggrannhet ger en fart som inte är värd att agera på.
+  const osaker = Number.isFinite(lage.fartNoggrannhetM)
+    && lage.fartNoggrannhetM > g.fartMaxOsakerhetM;
+  const farsk = Number.isFinite(fart) && alder <= g.fartFarskMs && !osaker;
   if (farsk && fart > g.farttroskelKmh) return nej('kor');
 
   return ok();
@@ -207,6 +326,130 @@ export function stadaNamn(namn) {
     .slice(0, 20);
 }
 
+/* ---- OMRÅDE ---------------------------------------------------------- */
+/*
+ * Ett meddelande hör hemma i en trakt, inte i hela landet och inte på en
+ * punkt. Varje meddelande får därför en områdeskod: numret på den ruta i ett
+ * grovt rutnät som avsändaren befann sig i. Klienten hämtar sin egen ruta plus
+ * de åtta omkringliggande.
+ *
+ * VARFÖR RUTNÄT OCH INTE LÄN
+ *
+ * Länsgränser skär rakt genom vardagen. Den som kör två kilometer in i Uppsala
+ * län ska självklart se en varning från Västerås — gränsen finns på en karta,
+ * inte på vägen. Ett rutnät ger "nära mig", vilket är det ägaren egentligen
+ * menar med "i Västmanland". Dessutom kräver en länsuppslagning ett anrop per
+ * meddelande, och ett rutnät kräver noll.
+ *
+ * VARFÖR ALDRIG EXAKTA KOORDINATER — det tyngsta skälet
+ *
+ * Ett chattmeddelande med lat och lon är en post i en logg över var en enskild
+ * person befunnit sig och när. Sju dagars sådana rader är en rörelsekarta över
+ * någons liv: hemadress, arbetsplats, vilka kvällar hen inte var hemma. Den
+ * loggen får inte finnas, för allt som finns kan begäras ut, läcka eller
+ * missbrukas. Det säkraste sättet att inte läcka den är att aldrig skapa den.
+ *
+ * En ruta på cirka 25 km säger "trakten", inte "platsen". Den räcker för att
+ * avgöra om ett meddelande angår mig, och den räcker inte för att följa någon.
+ * Koden består av exakt två heltal och kan aldrig bära mer information än så —
+ * hela Västerås med förorter delar en och samma kod.
+ *
+ * SÅ RÄKNAS DEN
+ *
+ * Latitud golvas till närmaste 0,25 grad (cirka 27,8 km, konstant överallt).
+ * Longitud golvas till närmaste 0,5 grad. En longitudgrad krymper norrut, så
+ * rutans bredd går från cirka 31 km i Skåne till cirka 21 km i Kiruna. Det är
+ * med flit: fasta steg i grader gör grannrutorna till en ren heltalsaddition,
+ * och en ruta som är lite smalare långt norrut skadar ingen.
+ *
+ * Koden skrivs "r" + latitudindex + "x" + longitudindex, till exempel r238x33
+ * för Västerås. Negativa index skrivs med minustecken.
+ */
+
+export const RUTA = {
+  /** Latitudsteg i grader. 0,25 grad = cirka 27,8 km, överallt. */
+  latSteg: 0.25,
+  /** Longitudsteg i grader. 0,5 grad = cirka 31 km i Skåne, 21 km i Kiruna. */
+  lonSteg: 0.5,
+  /*
+   * Rimlighetsfönster. Ligger positionen utanför är den inte något appen kan
+   * göra något vettigt av, och meddelandet blir "utan område" istället för att
+   * få en påhittad ruta. Fönstret är också taket för hur många olika koder
+   * som över huvud taget kan lagras, alltså taket för hur mycket den kan
+   * avslöja.
+   */
+  latMin: 54, latMax: 72,
+  lonMin: 2,  lonMax: 34,
+};
+
+/** Enda tillåtna formen. Två heltal, ingenting annat. */
+export const RUTA_MONSTER = /^r(-?\d{1,4})x(-?\d{1,4})$/;
+
+/** Texten gränssnittet ska visa på ett meddelande utan områdeskod. */
+export const UTAN_OMRADE_TEXT = 'Utan område — syns för alla';
+
+const rutkodAvIndex = (y, x) => `r${y}x${x}`;
+
+/**
+ * Rutan en position ligger i, eller null om positionen saknas eller ligger
+ * utanför rimlighetsfönstret.
+ *
+ * Math.floor, inte Math.round: golvning ger rutor med fasta kanter som ligger
+ * still. Avrundning hade lagt rutgränsen mitt i rutan och gjort grannlogiken
+ * fel i kanterna.
+ */
+export function rutkod(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < RUTA.latMin || lat > RUTA.latMax) return null;
+  if (lon < RUTA.lonMin || lon > RUTA.lonMax) return null;
+  return rutkodAvIndex(Math.floor(lat / RUTA.latSteg), Math.floor(lon / RUTA.lonSteg));
+}
+
+/** Heltalen ur en kod, eller null om koden inte har rätt form. */
+export function rutIndex(kod) {
+  const m = RUTA_MONSTER.exec(String(kod ?? ''));
+  if (!m) return null;
+  const y = Number(m[1]), x = Number(m[2]);
+  const yMin = Math.floor(RUTA.latMin / RUTA.latSteg), yMax = Math.floor(RUTA.latMax / RUTA.latSteg);
+  const xMin = Math.floor(RUTA.lonMin / RUTA.lonSteg), xMax = Math.floor(RUTA.lonMax / RUTA.lonSteg);
+  if (y < yMin || y > yMax || x < xMin || x > xMax) return null;
+  return { y, x };
+}
+
+/** Är det här en giltig områdeskod? */
+export function arRutkod(kod) { return rutIndex(kod) !== null; }
+
+/**
+ * Den egna rutan plus de åtta omkringliggande, nio koder.
+ *
+ * Nio och inte en, för att en ruta är godtyckligt utlagd: står man femtio
+ * meter från rutkanten är hälften av "nära mig" i grannrutan. Med grannarna
+ * med blir det garanterade avståndet till kanten minst en hel ruta.
+ */
+export function grannrutor(kod) {
+  const i = rutIndex(kod);
+  if (!i) return null;
+  const ut = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) ut.push(rutkodAvIndex(i.y + dy, i.x + dx));
+  }
+  return ut;
+}
+
+/**
+ * Rutans mittpunkt. Finns för kartor och tester — det är ALLT som går att
+ * återskapa ur en kod, och det är hela poängen. Mittpunkten är inte var någon
+ * var; den är mitten av en yta stor som en kommun.
+ */
+export function rutansMitt(kod) {
+  const i = rutIndex(kod);
+  if (!i) return null;
+  return {
+    lat: (i.y + 0.5) * RUTA.latSteg,
+    lon: (i.x + 0.5) * RUTA.lonSteg,
+  };
+}
+
 /* ---- Lagring --------------------------------------------------------- */
 
 function lasJSON(k, reserv) {
@@ -241,6 +484,9 @@ export class Chatt extends EventTarget {
     this.synkFel = null;
     this.fartKmh = null;
     this.fartAt = 0;
+    this.fartProver = [];                // rullande fönster av fartavläsningar
+    this.rutkod = null;                  // egen områdeskod, null tills GPS svarat
+    this._nyRuta = false;                // rutan bytte — nästa hämtning tas om helt
     this._pollRakning = 0;
 
     this.tystade = new Set(lasJSON(this.#nyckel('tystade'), []));
@@ -340,23 +586,78 @@ export class Chatt extends EventTarget {
     this.#emit('status');
   }
 
-  /** Mata in en position från geo.js. Samma namn som Vakthund.notera. */
+  /**
+   * Mata in en position från geo.js. Samma namn som Vakthund.notera.
+   *
+   * Fixen bär både fart, noggrannhet och koordinater. Koordinaterna används
+   * här och bara här: de blir en områdeskod och kastas sedan. Ingen lat och
+   * ingen lon lagras, varken i minnet, i localStorage eller på servern.
+   */
   notera(fix, nu = Date.now()) {
     if (!fix) return;
-    if (Number.isFinite(fix.speedKmh)) { this.fartKmh = fix.speedKmh; this.fartAt = nu; }
+    if (Number.isFinite(fix.speedKmh)) this.sattFart(fix.speedKmh, nu, fix.accuracy);
+    if (Number.isFinite(fix.lat) && Number.isFinite(fix.lon)) {
+      this.sattPosition(fix.lat, fix.lon);
+    }
   }
 
-  /** Sätt farten direkt, utan en hel GPS-fix. */
-  sattFart(kmh, nu = Date.now()) {
-    this.fartKmh = Number.isFinite(kmh) ? kmh : null;
+  /**
+   * Sätt farten direkt, utan en hel GPS-fix.
+   *
+   * @param {number|null} kmh
+   * @param {number} nu
+   * @param {number|null} noggrannhetM GPS-noggrannhet i meter, om den är känd.
+   */
+  sattFart(kmh, nu = Date.now(), noggrannhetM = null) {
+    if (!Number.isFinite(kmh)) {
+      // Farten är okänd. Ingen okänd fart får låsa något, så töm fönstret.
+      this.fartKmh = null;
+      this.fartAt = nu;
+      this.fartProver = [];
+      return;
+    }
+    this.fartKmh = kmh;
     this.fartAt = nu;
+    this.fartProver = [
+      ...this.fartProver,
+      { kmh, at: nu, noggrannhetM: Number.isFinite(noggrannhetM) ? noggrannhetM : null },
+    ]
+      .filter(p => nu - p.at <= this.granser.fartFarskMs)
+      .slice(-20);
   }
+
+  /**
+   * Vilken ruta befinner sig föraren i? Bara rutan sparas.
+   *
+   * Byter rutan tas nästa hämtning om helt (se hamta). Annars hade den
+   * inkrementella hämtningen bara sett nya rader, och den som kör in i en ny
+   * trakt hade fått ett tomt rum tills någon skrev något nytt.
+   */
+  sattPosition(lat, lon) {
+    const kod = rutkod(lat, lon);
+    if (kod === this.rutkod) return;
+    this.rutkod = kod;
+    this._nyRuta = true;
+    this.#emit('status');
+  }
+
+  /**
+   * De nio koder som räknas som "nära mig", eller null när rutan är okänd.
+   *
+   * Är den null filtrerar vi ingenting alls — utan GPS ska ingen tystas, och
+   * hellre ett meddelande från fel del av landet än en tom skärm utan
+   * förklaring.
+   */
+  get omradeKoder() { return grannrutor(this.rutkod); }
 
   /* ---- Grinden ------------------------------------------------------ */
 
   #lage(nu = Date.now()) {
     return {
       inloggad: this.inloggad,
+      // fartProver avgör låsningen. fartKmh och fartAlderMs följer med för
+      // gränssnittet och för den som vill läsa av senaste värdet.
+      fartProver: this.fartProver,
       fartKmh: this.fartKmh,
       fartAlderMs: this.fartAt ? nu - this.fartAt : Infinity,
       historik: this.egnaTider,
@@ -364,6 +665,9 @@ export class Chatt extends EventTarget {
       nu,
     };
   }
+
+  /** Fartbedömningen bakom låset. För felsökning och för gränssnittet. */
+  fartlage(nu = Date.now()) { return bedomFart(this.fartProver, nu, this.granser); }
 
   /** Ska inmatningsfältet vara låst? Anropas av gränssnittet. */
   kanSkriva(nu = Date.now()) { return skrivlage(this.#lage(nu)); }
@@ -376,11 +680,23 @@ export class Chatt extends EventTarget {
   /**
    * Meddelandena att visa: äldst först, tystade avsändare bortfiltrerade och
    * allt äldre än gallringsgränsen borta.
+   *
+   * Områdesfiltret är serverns jobb — det är hela poängen med att skicka
+   * rutan i frågan istället för att hämta hela landet över mobildatan. Det
+   * som görs här är städning av det som redan ligger i cachen: kör man från
+   * Västerås till Örebro ska Västeråsmeddelandena inte bli kvar på skärmen
+   * fram till nästa fulla hämtning.
+   *
+   * Meddelanden UTAN områdeskod passerar alltid. Den som skrev utan GPS ska
+   * höras, inte tystas.
    */
   meddelanden(nu = Date.now()) {
     const grans = nu - this.granser.gallringDygn * 86400000;
+    const koder = this.omradeKoder;
+    const nara = koder ? new Set(koder) : null;
     return [...this.meddelandenMap.values()]
       .filter(m => (m.skapadAt || 0) >= grans)
+      .filter(m => !nara || !m.omrade || nara.has(m.omrade))
       .filter(m => !this.tystade.has(m.avsandarnyckel))
       .sort((a, b) => a.skapadAt - b.skapadAt);
   }
@@ -412,6 +728,10 @@ export class Chatt extends EventTarget {
       visningsnamn: this.#mittNamn(),
       avsandarnyckel: 'jag',      // servern ger den riktiga nyckeln vid hämtning
       mitt: true,
+      // Rutan, aldrig positionen. Är den null blir meddelandet "utan område"
+      // och når alla — det är bättre än att skrivas ut i tomma intet.
+      omrade: this.rutkod,
+      utanOmrade: !this.rutkod,
       skapadAt: nu,
       status: this.harBackend ? 'kö' : 'lokalt',
     };
@@ -540,13 +860,18 @@ export class Chatt extends EventTarget {
 
     // Var tionde hämtning tas hela fönstret om. Inkrementell hämtning ser
     // bara nya rader — den som raderat sitt meddelande skulle annars ligga
-    // kvar på alla andras skärmar tills appen startades om.
-    const full = (this._pollRakning++ % this.granser.fullHamtningVar) === 0;
+    // kvar på alla andras skärmar tills appen startades om. Ett rutbyte
+    // tvingar också fram en full hämtning; den nya traktens äldre meddelanden
+    // finns inte i cachen och kommer aldrig med i en inkrementell fråga.
+    const tur = (this._pollRakning++ % this.granser.fullHamtningVar) === 0;
+    const full = tur || this._nyRuta;
+    this._nyRuta = false;
     const senaste = full ? 0 : this.#senasteTid();
 
     const filter = senaste ? `&skapad_at=gt.${encodeURIComponent(new Date(senaste).toISOString())}` : '';
     const url = `${this.cfg.url}/rest/v1/chatt_flode` +
-      `?select=*&order=skapad_at.desc&limit=${this.granser.hamtaAntal}${filter}`;
+      `?select=*&order=skapad_at.desc&limit=${this.granser.hamtaAntal}` +
+      `${this.#omradeFilter()}${filter}`;
 
     try {
       const r = await fetch(url, { headers: apiHeaders() });
@@ -571,6 +896,29 @@ export class Chatt extends EventTarget {
       this.#emit('status');
     }
     this.tommKo();
+  }
+
+  /**
+   * Frågedelen som gör hämtningen till en trakt istället för ett land.
+   *
+   * Filtret sätts på SERVERN, inte här. Att hämta hela landet och sålla
+   * lokalt hade betytt att varje pollning drar hem meddelanden från Malmö
+   * till Kiruna över mobildata som föraren betalar för, var åttonde sekund.
+   *
+   * "eller utan områdeskod" måste vara med. Utan den delen försvinner varje
+   * meddelande från någon utan GPS-läsning ur allas flöden, och den som
+   * skrev får aldrig veta varför ingen svarar.
+   *
+   * Utan egen ruta: inget filter alls. Vet vi inte var vi är kan vi inte
+   * påstå att något inte angår oss.
+   */
+  #omradeFilter() {
+    const koder = this.omradeKoder;
+    if (!koder) return '';
+    // Koderna innehåller bara r, x, siffror och minus. Ingenting som behöver
+    // kodas om, och ingenting som kan bryta sig ut ur frågan — RUTA_MONSTER
+    // har redan avvisat allt annat innan koden hamnade i this.rutkod.
+    return `&or=(omrade.in.(${koder.join(',')}),omrade.is.null)`;
   }
 
   /**
@@ -627,11 +975,17 @@ export class Chatt extends EventTarget {
   }
 
   #franRad(rad) {
+    // Bara koden tas emot. Skulle servern någon gång börja skicka
+    // koordinater plockas de aldrig upp här, och kan alltså inte råka hamna
+    // i cachen i localStorage.
+    const omrade = arRutkod(rad.omrade) ? rad.omrade : null;
     return {
       id: rad.id,
       text: rad.text || '',
       visningsnamn: rad.visningsnamn || 'Förare',
       avsandarnyckel: rad.avsandarnyckel || '',
+      omrade,
+      utanOmrade: !omrade,
       mitt: !!rad.mitt,
       skapadAt: typeof rad.skapad_at === 'number' ? rad.skapad_at : Date.parse(rad.skapad_at),
       status: 'skickat',
@@ -674,6 +1028,10 @@ export class Chatt extends EventTarget {
           avsandare: this.cfg.identitet,
           text: jobb.m.text,
           visningsnamn: jobb.m.visningsnamn,
+          // Rutan, och ingenting mer. Servern normaliserar om koden ändå
+          // (chatt-omrade.sql) — det som skickas härifrån är ett förslag,
+          // inte något databasen litar blint på.
+          omrade: jobb.m.omrade ?? null,
         }),
       });
       if (!r.ok) throw await this.#fel(r);
