@@ -189,7 +189,6 @@ async function boot() {
   wireUI();
   wireVoice();
   wireDashcam();
-  wireChatt();
   wireLjud();
   hanteraGenvag();
   wireSettingsUI();
@@ -222,6 +221,10 @@ async function boot() {
   // sedan konto eller gäst, sist installationsguiden. Tre saker på en gång
   // hade blivit en vägg av modaler.
   wireAuth();
+  // Chatten efter inloggningen, aldrig före. RLS slapper bara in den som ar
+  // inloggad, sa startar pollningen innan wireAuth satt token gar forsta
+  // hamtningen ivag med anonyma nyckeln och far 401.
+  wireChatt();
   if (!settings.disclaimerAccepted) {
     showDisclaimer();
   } else {
@@ -3104,7 +3107,20 @@ function wireChatt() {
 
   chatt.addEventListener('status', () => {
     const el = $('chattStatus');
-    if (el) el.textContent = chatt.synkFel ? `Ingen kontakt med servern: ${chatt.synkFel}` : '';
+    if (!el) return;
+    /*
+     * Modulen formulerar hela meningen själv, så inget prefix här.
+     *
+     * Tidigare stod det "Ingen kontakt med servern: HTTP 401", och när
+     * modulen började svara med begriplig text blev det i stället "Ingen
+     * kontakt med servern: Logga in för att se chatten" — två påståenden
+     * ovanpå varandra där bara det ena stämde.
+     *
+     * Är man utloggad står skälet redan vid skrivfältet. Att upprepa det
+     * här gör bara samma sak sagd två gånger.
+     */
+    const utloggad = !chatt.inloggad;
+    el.textContent = (chatt.synkFel && !utloggad) ? chatt.synkFel : '';
   });
 
   // Fältet växer med texten istället för att rulla i en enrads-ruta.

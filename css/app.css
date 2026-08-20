@@ -1262,3 +1262,18 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   background: rgba(143, 202, 255, .10);
 }
 #plZoom:disabled { opacity: .55; }
+
+/* Chatten på bredare skärmar.
+   .btn-primary har width:100% globalt, vilket är rätt för fullbreda knappar
+   i korten men fel i en rad bredvid ett textfält — knappen åt hela bredden
+   och fältet klämdes ihop till en remsa. */
+.chatt-skriv .btn-primary { width: auto; flex: 0 0 auto; }
+
+/* En chattbubbla som är två tusen pixlar bred går inte att läsa. Samma
+   radlängd som en tidning, oavsett hur stort fönstret är. */
+.chatt-lista,
+.chatt-botten > * { max-width: 720px; margin-left: auto; margin-right: auto; }
+.chatt-lista { width: 100%; box-sizing: border-box; }
+.chatt-rad { max-width: min(88%, 560px); }
+.chatt-topp { max-width: 720px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+#chattTomt { max-width: 720px; margin: 0 auto 10px; padding: 0 14px; width: 100%; box-sizing: border-box; }

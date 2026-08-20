@@ -555,12 +555,41 @@ export class Chatt extends EventTarget {
 
       this.mottaRader(rader, { full });
       this.senasteSynk = Date.now();
+      /*
+       * Nollställningen måste också ut på skärmen.
+       *
+       * Tidigare sattes synkFel till null här utan att någon händelse gick
+       * iväg, så en felruta från en enda misslyckad hämtning stod kvar för
+       * alltid — även när chatten hämtade utan problem sekunden efter. Det
+       * såg ut som att appen var trasig när den redan lagat sig.
+       */
+      const hadeFel = this.synkFel !== null;
       this.synkFel = null;
+      if (hadeFel) this.#emit('status');
     } catch (e) {
-      this.synkFel = e.message;
+      this.synkFel = this.#synkfelText(e);
       this.#emit('status');
     }
     this.tommKo();
+  }
+
+  /**
+   * Översätt ett nätverksfel till något en förare kan agera på.
+   *
+   * "Ingen kontakt med servern: HTTP 401" säger ingenting till den som ser
+   * det. 401 betyder här nästan alltid en enda sak: anropet gick iväg utan
+   * inloggning, för chatten är stängd för utomstående.
+   */
+  #synkfelText(e) {
+    const m = String(e?.message || '');
+    if (m.includes('401') || m.includes('403')) {
+      return this.inloggad
+        ? 'Inloggningen har gått ut. Logga in igen för att se chatten.'
+        : 'Logga in för att se chatten.';
+    }
+    if (m.includes('404')) return 'Chatten är inte påslagen på servern än.';
+    if (m.includes('Failed to fetch')) return 'Ingen internetanslutning.';
+    return 'Ingen kontakt med servern just nu.';
   }
 
   /**
