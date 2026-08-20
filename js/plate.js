@@ -532,10 +532,23 @@ export class PlateReader extends EventTarget {
     return false;
   }
 
-  /** Största zoom telefonen klarar, kamerans egen plus lite digital ovanpå. */
+  /**
+   * Största zoom den här telefonen klarar.
+   *
+   * Taket kommer från kameran, inte från ett tal valt på måfå. Skillnaden är
+   * stor och verklig: en modern toppmodell har tiotals gångers zoom i
+   * hårdvara, en några år gammal telefon knappt någon alls. Ett fast tak hade
+   * antingen strypt den ena eller lovat något den andra inte kan hålla.
+   *
+   * Saknar telefonen zoom helt finns bara digital förstoring kvar, och den
+   * begränsas till tre gånger. Bortom det tillför den ingen information —
+   * pixlarna blir bara större, och en suddig skylt läses inte bättre för att
+   * den är stor. Det är ett ärligt tak, inte ett snålt.
+   */
   get maxZoom() {
     const k = this.stream?.getVideoTracks?.()[0]?.getCapabilities?.();
-    return Math.min(8, (k?.zoom?.max || 1) * 3);
+    const kamera = Number(k?.zoom?.max) || 0;
+    return kamera > 1 ? kamera : 3;
   }
 
   #zoomAndrad(fran) {
