@@ -436,6 +436,64 @@ await T('okänd typ i adressen ignoreras', () => {
     || 'ingen vitlista — vad som helst i adressen skulle bli en rapport';
 });
 
+
+/* ---- Skarvarna mellan lagren ------------------------------------------
+ *
+ * Tre buggar av samma sort hittades på en kväll: kvalitetsfälten som aldrig
+ * lästes, avsändarnamnet som hette fel, och poängräkningen som jämförde mot
+ * ett fält servern medvetet inte lämnar ut. Ingen av dem syntes — allt
+ * fortsatte fungera, bara sämre.
+ *
+ * De här testerna bevakar skarvarna i stället för att jaga fel ett i taget.
+ */
+G('Skarvar mellan lagren');
+
+await T('service workern lyssnar på push', async () => {
+  // Utan den här lyssnaren tar telefonen emot notisen, dekrypterar den och
+  // slänger den. Servern får 201 Created och allt ser grönt ut i loggen.
+  // Hela notisfunktionen var död i den här appen tills det upptäcktes.
+  const src = await (await fetch('./sw.js')).text();
+  const saknas = [];
+  if (!/addEventListener\(\s*['"]push['"]/.test(src)) saknas.push('push');
+  if (!/addEventListener\(\s*['"]notificationclick['"]/.test(src)) saknas.push('notificationclick');
+  return !saknas.length || `sw.js saknar lyssnare: ${saknas.join(', ')}`;
+});
+
+await T('push-notisen ritas inuti waitUntil', async () => {
+  // Utan waitUntil får service workern dödas innan notisen hunnit ritas.
+  const src = await (await fetch('./sw.js')).text();
+  const i = src.indexOf("addEventListener('push'");
+  const kropp = i >= 0 ? src.slice(i, i + 900) : '';
+  return /waitUntil[\s\S]{0,200}showNotification/.test(kropp)
+    || 'showNotification ligger utanför waitUntil';
+});
+
+await T('poängräkningen frågar inte efter ett fält servern döljer', async () => {
+  // reports_feed utelämnar device_id med flit. Jämför man mot det blir
+  // svaret alltid falskt och bekräftelser räknas aldrig.
+  const src = await (await fetch('./js/reputation.js')).text();
+  return !/r\.device_id\s*!==/.test(src)
+    || 'reputation.js jämför fortfarande mot r.device_id, som aldrig finns i svaret';
+});
+
+await T('inbjudningskoden läses från rätt fält', async () => {
+  // groups.invite() svarar { ok, invite: { kod } }. Läser man r.kod blir
+  // texten "Inbjudningskod: undefined" och ingen kan bjuda in någon.
+  const g = await (await fetch('./js/groups.js')).text();
+  const nastlad = /invite:\s*\{/.test(g);
+  const laser = /r\.invite\?\.kod/.test(appSrc);
+  if (!nastlad) return 'hopp';                 // formen har ändrats, testet är inte längre relevant
+  return laser || 'app.js läser inte r.invite.kod';
+});
+
+await T('serverns kvalitetsfält översätts vid hämtning', async () => {
+  // Postgres svarar snake_case, kvalitet.js läser camelCase. Utan
+  // översättningen graderas varje rapport från en annan förare på antaganden.
+  const src = await (await fetch('./js/store.js')).text();
+  return /kvalitetFranRad/.test(src)
+    || 'store.js översätter inte serverns kolumnnamn';
+});
+
 /* ---- Kameradata ------------------------------------------------------ */
 G('Fartkameror');
 

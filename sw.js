@@ -9,7 +9,7 @@
 // lugnt. Föraren behöver aldrig göra något — och blir aldrig avbruten mitt i
 // en körning, eftersom omladdningen väntar tills bilen står still.
 
-const VERSION = '2026-08-20-44';
+const VERSION = '2026-08-20-45';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -103,6 +103,50 @@ self.addEventListener('message', e => {
     e.source?.postMessage({ type: 'version', version: VERSION });
   }
   if (e.data?.type === 'skipWaiting') self.skipWaiting();
+});
+
+/* ---- Push från servern ----------------------------------------------
+ *
+ * Utan de två lyssnarna nedan kastas varje push tyst. Telefonen tar emot
+ * meddelandet, dekrypterar det, hittar ingen som lyssnar och slänger det.
+ *
+ * Det här var inte en teoretisk risk. Hela kedjan var byggd och såg grön ut —
+ * push.js prenumererade, prenumerationen sparades, servern valde ut
+ * mottagare, edge-funktionen fick 201 Created och luckan markerades som
+ * skickad — men lyssnaren fanns inte, så ingen notis har någonsin nått fram.
+ * En kedja där varje led rapporterar framgång och slutresultatet ändå är noll
+ * är den svåraste sortens fel att upptäcka, och exakt varför docs/NOTISER.md
+ * kallar just det här steget "det vanligaste felet av alla".
+ */
+
+self.addEventListener('push', e => {
+  let d = { title: 'Polisvakt', body: 'Dags att köra?', tag: 'polisvakt-reminder', url: './' };
+  try { d = { ...d, ...(e.data?.json() ?? {}) }; } catch {}
+
+  // waitUntil, alltid. Utan den får service workern dödas innan notisen
+  // hunnit ritas, och på en telefon med lite minne händer det ofta.
+  e.waitUntil(self.registration.showNotification(d.title, {
+    body: d.body,
+    icon: './icon.svg',
+    badge: './icon.svg',
+    tag: d.tag,
+    data: { url: d.url },
+    // Ingen requireInteraction: en påminnelse ska gå att svepa bort, inte
+    // ligga kvar i luren tills man rör vid den.
+  }));
+});
+
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = e.notification.data?.url || './';
+  // Finns appen redan öppen ska den fokuseras, inte öppnas en gång till.
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then(list => {
+        for (const c of list) if ('focus' in c) return c.focus();
+        return self.clients.openWindow(url);
+      })
+  );
 });
 
 self.addEventListener('fetch', e => {

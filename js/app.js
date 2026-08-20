@@ -473,7 +473,7 @@ function renderStats() {
 /* ================= Rapportpoäng ================= */
 
 function renderReputation() {
-  reputation.refreshFromStore(store, deviceId());
+  reputation.refreshFromStore(store, isMine);
   const scoreEl = $('repScore');
   if (!scoreEl) return;
   scoreEl.textContent = reputation.score();
@@ -907,7 +907,16 @@ function wireGroups() {
           if (r?.ok) {
             // Koden visas, inte kopieras tyst. Ägaren ska se exakt vad hen
             // delar ut — en kod som läcker öppnar hela gruppen.
-            $('groupStatus').textContent = `Inbjudningskod: ${r.kod || r.code}`;
+            //
+            // Koden ligger i r.invite.kod. Den här raden läste r.kod och
+            // r.code, som båda är undefined, så rutan sa "Inbjudningskod:
+            // undefined" och ingen kunde bjuda in någon. Funktionen stod
+            // ändå som färdig — felet syntes bara för den som faktiskt
+            // tryckte på knappen.
+            const kod = r.invite?.kod;
+            $('groupStatus').textContent = kod
+              ? `Inbjudningskod: ${kod}`
+              : 'Gruppen har ingen aktiv inbjudningskod just nu.';
           } else {
             $('groupStatus').textContent = r?.error || 'Kunde inte hämta koden.';
           }

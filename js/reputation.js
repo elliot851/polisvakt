@@ -48,12 +48,27 @@ export class Reputation extends EventTarget {
    * Räkna om hur många bekräftelser och nedröstningar mina egna rapporter
    * fått. Görs från rapportlistan, så siffran stämmer även efter omstart.
    */
-  refreshFromStore(store, deviceId) {
+  /**
+   * @param {object} store
+   * @param {(id:string)=>boolean} arMin  avgör om en rapport är min
+   *
+   * Tog tidigare emot ett device_id och jämförde mot `r.device_id` på varje
+   * rapport. Det kunde aldrig fungera: servern lämnar inte ut device_id.
+   * Vyn `reports_feed` utelämnar kolumnen med flit, eftersom den knyter varje
+   * rapport till en enskild telefon. Jämförelsen blev alltså alltid falsk,
+   * loopen hoppade över allt, och bekräftelser räknades aldrig — poängen
+   * fastnade på "antal rapporter" medan appen påstod att den belönar
+   * rapporter som andra bekräftar.
+   *
+   * `isMine` i store.js håller reda på det lokalt, vilket är rätt ställe:
+   * vilka rapporter som är mina behöver bara jag veta.
+   */
+  refreshFromStore(store, arMin) {
     const m = this.#month();
     let confirmed = 0, denied = 0;
     const from = new Date(); from.setDate(1); from.setHours(0, 0, 0, 0);
     for (const r of store.reports.values()) {
-      if (r.device_id !== deviceId) continue;
+      if (!arMin(r.id)) continue;
       if ((r.createdAt || 0) < from.getTime()) continue;
       confirmed += Math.max(0, (r.confirms || 1) - 1);   // egen rapport räknas inte
       denied += r.denials || 0;
