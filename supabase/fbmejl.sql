@@ -147,9 +147,21 @@ returns text
 language sql
 immutable
 set search_path = pg_catalog, pg_temp as $$
+  -- Separatorn måste tåla HTML-entiteter, inte bara ett rakt &.
+  --
+  -- Mönstret krävde förut att tecknet omedelbart före parameternamnet var
+  -- ?, &, %3F eller %26. Men i giltig HTML skrivs en href med &amp;, och
+  -- Facebooks notismejl ÄR HTML-brev. Tecknet före n_m är då ett semikolon,
+  -- ingen regex matchade, och mottagarens mejladress låg kvar i klartext i
+  -- brodtext -- alltså i varje databasbackup. Precis det som avsnittet
+  -- INTEGRITET ovan säger aldrig får hända.
+  --
+  -- Värdeklassen släpper igenom quoted-printables mjuka radbrott (=CRLF),
+  -- annars kapades matchningen mitt i adressen och resten blev kvar.
+  -- mid= lämnas orörd med flit: dedupnyckel, avslöjar ingenting.
   select regexp_replace(
            coalesce(p_text, ''),
-           '([?&]|%3F|%26)(n_m|notif_id|bcode|aref|nid)(=|%3D)[^&[:space:]"''<>]*',
+           '([?&](?:amp;)*|&#0*38;|&#[xX]0*26;|%3F|%26|%253F|%2526)(n_m|notif_id|bcode|aref|nid)(?:=|%3D|%253D)(?:=\r?\n|[^&[:space:]"''<>])*',
            '\1\2=BORTTAGET',
            'gi');
 $$;
@@ -1234,6 +1246,7 @@ declare
   v_rad         jsonb;
   v_nyckel      text;
   v_text_nyckel text;
+  v_text_nycklar text[];      -- huvudnyckeln plus grannfacken, se avdubblingen
   v_msg_id      text;
   v_note        text;
   v_id          text;
@@ -1285,10 +1298,29 @@ begin
       continue;
     end if;
 
+    -- Textnyckelns grannfack räknas som samma text.
+    --
+    -- Nyckeln är 'tx:<hash>:<fack>' där facket är floor(nu / 3 timmar) -- ett
+    -- FAST fack, inte ett glidande fönster. Två mejl med identisk text två
+    -- minuter isär, men på var sin sida om en fackgräns, fick därför olika
+    -- nycklar och blev två nålar på samma plats. Vid varje fackgräns, var
+    -- tredje timme.
+    --
+    -- js/fbmejl.js skickar med grannfacken i text_nyckel_grannar just för
+    -- det här. Saknas fältet faller vi tillbaka på enbart huvudnyckeln, så
+    -- en äldre anropare fortsätter fungera.
+    v_text_nycklar := array_remove(
+      array[v_text_nyckel] || coalesce(
+        (select array_agg(x) from jsonb_array_elements_text(
+           case when jsonb_typeof(v_rad->'text_nyckel_grannar') = 'array'
+                then v_rad->'text_nyckel_grannar' else '[]'::jsonb end) as t(x)),
+        array[]::text[]),
+      null);
+
     -- Avdubbling, tre frågor.
     perform 1 from public.fbmejl_lasta
      where nyckel = v_nyckel
-        or (v_text_nyckel is not null and text_nyckel = v_text_nyckel);
+        or (v_text_nyckel is not null and text_nyckel = any(v_text_nycklar));
     v_krock := found;
 
     -- Korsvis mot Telegram-spegeln, om den är installerad. Samma inlägg kan
@@ -1296,8 +1328,8 @@ begin
     -- görs dynamiskt så att den här filen går att köra utan telegram.sql.
     if not v_krock and v_text_nyckel is not null
        and to_regclass('public.telegram_lasta') is not null then
-      execute 'select exists (select 1 from public.telegram_lasta where text_nyckel = $1)'
-        into v_krock using v_text_nyckel;
+      execute 'select exists (select 1 from public.telegram_lasta where text_nyckel = any($1))'
+        into v_krock using v_text_nycklar;
     end if;
 
     if v_krock then

@@ -242,9 +242,23 @@ faktiskt gör. Kör en gång i PowerShell:
 [Environment]::SetEnvironmentVariable('PV_SUPABASE_URL', 'https://livvehyqowmcafnisxho.supabase.co', 'User')
 [Environment]::SetEnvironmentVariable('PV_SUPABASE_SERVICE_KEY', 'eyJ...', 'User')
 [Environment]::SetEnvironmentVariable('PV_FB_GRUPP', 'Här står polisen', 'User')
-# Grupp-id:t ur adressfältet när du öppnar gruppen. Bättre filter än namnet.
+# Grupp-id:t ur adressfältet när du öppnar gruppen. OBLIGATORISKT.
 [Environment]::SetEnvironmentVariable('PV_FB_GRUPP_ID', '1234567890', 'User')
 ```
+
+**`gruppId` är obligatorisk.** Saknas både `gruppId` och `grupp` vägrar
+`js/fbmejl.js` att tolka och svarar med skälet `inget-gruppfilter`. Att köra
+utan filter kräver ett uttryckligt `kravGrupp: false`. Förvalet var förut att
+släppa igenom allt, vilket betydde att varje grupp kontot är med i kunde
+hamna på kartan — fel förval ska stoppa, inte varna.
+
+**Stava den som i länken.** Facebook använder antingen siffror
+(`/groups/1234567890/`) eller ett eget namn (`/groups/harstarpolisen/`), och
+jämförelsen är exakt. Sätter du siffrorna medan länken bär namnet läser
+bryggan ingenting alls — och tystnaden ser precis ut som ett tomt flöde. Det
+går inte att lösa i kod: ingenting i mejlet säger att de två är samma grupp.
+Därför syns det i stället i summeringen som `fel grupp: harstarpolisen`. Ser
+du den raden är det stavningen som är fel, inte flödet som är tomt.
 
 Vill du hellre ha en fil heter den `tools/fbmejl.hemligheter.json`:
 
@@ -540,6 +554,32 @@ De skrubbas i **tre led**, med flit:
    maskin**. Det ledet är det som räknas mest.
 2. `js/fbmejl.js` → `saneraLankar()`, innan något tolkas.
 3. `supabase/fbmejl.sql` → `fbmejl_sanera()`, innan något skrivs.
+
+### `&amp;`-fällan — den som faktiskt läckte
+
+Alla tre leden krävde förut att tecknet **omedelbart** före parameternamnet
+var `?`, `&`, `%3F` eller `%26`. Men i giltig HTML skrivs en `href` med
+`&amp;`, och Facebooks notismejl **är** HTML-brev. Tecknet före `n_m` är då
+ett semikolon, ingen regex matchade, och adressen låg kvar i klartext i alla
+tre leden samtidigt.
+
+Ett mönster som bara täcker den ena skrivformen är alltså inget skydd alls.
+Separatorn måste tåla:
+
+| Form | Var den dyker upp |
+|---|---|
+| `&n_m=` | ren text |
+| `&amp;n_m=` | **HTML-brevets normalform** |
+| `&amp;amp;n_m=` | dubbelkodat, händer när brev vidarebefordras |
+| `&#38;` / `&#x26;` | numeriska entiteter |
+| `%26` / `%2526` | procentkodat och dubbelt procentkodat |
+
+Värdeklassen måste dessutom släppa igenom quoted-printables mjuka radbrott
+(`=` följt av CRLF), annars kapas matchningen mitt i adressen och resten blir
+kvar. PowerShell-ledet måste avkoda quoted-printable **före** skrubbningen —
+gör det inte det ligger `&am=\np;n_m=…` kvar oskrubbat.
+
+`mid=` lämnas orörd med flit: den är dedupnyckel och avslöjar ingenting.
 
 Tre exemplar är avsiktligt. Till skillnad från nykterhetsfiltret kan en
 avvikelse här bara betyda att ett led skrubbar *mer* än ett annat, och det är
