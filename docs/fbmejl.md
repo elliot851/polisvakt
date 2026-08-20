@@ -333,10 +333,17 @@ process som ligger kvar istället för ett schemalagt anrop:
 
 ---
 
-## Edge-funktionerna du måste bygga
+## Edge-funktionerna
 
-Två stycken. De kan inte ligga i repot ännu — filerna nedan finns inte, de ska
-skapas.
+Två stycken, och de **finns nu i repot** (skapade 20 aug 2026):
+`supabase/functions/fbmejl-tom/index.ts` och
+`supabase/functions/fbmejl-push/index.ts`.
+
+Koden nedan är den ursprungliga skissen och är **inte** vad som ligger i
+repot. De färdiga filerna kör ett mejl i taget, så att ett nätverksfel i
+geokodningen inte markerar mejlet som bortsorterat, och de kräver
+`Authorization: Bearer <service_role_key>` — anon-nyckeln ligger i appens
+källkod och hade annars räknats som en giltig JWT. Läs filerna, inte skissen.
 
 ### `supabase/functions/fbmejl-tom/index.ts`
 
@@ -596,7 +603,9 @@ select * from public.fbmejl_halsa;
 | `fastnade` > 0 | Formatfel | `select amne, brodtext from fbmejl_ko where forsok >= 5` |
 | `rapporter_dygn` = 0 men kön töms | Tolkningen kastar allt | Formatet. Se *Verifiera*. |
 | `notis_fel` > 0 | Notiskedjan trasig | `notis_senaste_fel` säger vad |
-| `notiser_dygn` = 0, `sparrade_dygn` högt | Spärrarna gör sitt jobb | Inget fel. Justera värdena om du vill. |
+| `notiser_kvitterade_dygn` = 0, `sparrade_dygn` högt | Spärrarna gör sitt jobb | Inget fel. Justera värdena om du vill. |
+| `ingen_mottagare_dygn` högt | Ingen har slagit på gruppnotiser | Se *Slå på dem*. Ingen push skickas alls då. |
+| `notiser_koade_dygn` högt men `notiser_kvitterade_dygn` = 0 | Pushen köas men edge-funktionen svarar aldrig | `fbmejl-push` inte utrullad, eller fel nyckel. Kör `select public.fbmejl_notis_stam_av();` |
 | `gruppnotis_mottagare` = 0 | Ingen har slagit på det | Se *Slå på dem* |
 
 Gick en omgång fel och la ut skräp? Sista blocket i `supabase/fbmejl.sql`
@@ -710,8 +719,14 @@ Userscriptet ska inte köras i drift. Punkt.
   ämnesraden gick inte att belägga en enda gång.
 - **Buntningen är okänd.** Hur ofta Facebook buntar, och därmed om
   minutkravet håller, går inte att veta utan att köra i en vecka.
-- **`fbmejl-tom` och `fbmejl-push` finns inte.** Koden står ovan, filerna är
-  inte skrivna.
+- ~~**`fbmejl-tom` och `fbmejl-push` finns inte.**~~ Rättat 20 aug 2026 —
+  båda ligger i `supabase/functions/`. Kvar: de är inte utrullade, och
+  schemat i dashboarden måste sättas med
+  `Authorization: Bearer <service_role_key>` (eller `x-cron-secret` för
+  tom-funktionen), annars 401.
+- **`kvitterad` betyder inte att notisen syntes.** Den betyder att
+  edge-funktionen svarade 2xx. Ingenting i kedjan mäter om en telefon
+  faktiskt ritade något — det kräver en kvittens från `sw.js`.
 - ~~**Appen har ingen knapp för gruppnotiser.**~~ Rättat 20 aug 2026:
   `sattGruppnotiser()`/`harGruppnotiser()` finns i `js/push.js`, reglaget
   `setGruppnotiser` i `index.html`, och det gråas ut med en riktig förklaring

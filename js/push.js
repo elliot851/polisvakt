@@ -522,17 +522,70 @@ export async function sattGruppnotiser(pa) {
   const st = load();
   if (!st.endpoint || !st.device) return false;
   try {
-    await rpc('fbmejl_satt_gruppnotiser', {
+    /*
+     * Svaret läses numera. Förut kastades det.
+     *
+     * Funktionen på servern var ett update ... where endpoint = ... and
+     * device_id = ... som returnerade void. Träffade den noll rader syntes
+     * det ingenstans: PostgREST svarar 200, den här funktionen returnerade
+     * true, och appen skrev "På. Du får en notis när det kommit nya inlägg."
+     * medan servern stod kvar på av.
+     *
+     * Det är inte hypotetiskt. Prenumererar man utloggad får raden ett
+     * slumpat enhets-id; loggar man sedan in skrivs raden om till
+     * auth.uid(). Loggar man ut igen och drar reglaget matchar ingenting,
+     * noll rader ändras, och notiser kommer aldrig — utan att något i
+     * appen säger emot.
+     *
+     * Nu returnerar servern {ok, pa, rader, skal} och vi sparar det värde
+     * SERVERN rapporterar, inte det anroparen bad om.
+     */
+    const svar = await rpc('fbmejl_satt_gruppnotiser', {
       p_endpoint: st.endpoint, p_device: st.device, p_pa: !!pa,
     });
-    save({ ...st, gruppnotiser: !!pa });
+    if (!svar?.ok) return false;
+    save({ ...st, gruppnotiser: !!svar.pa });
     return true;
   } catch {
     return false;
   }
 }
 
-/** Vad telefonen tror att inställningen är. Servern äger sanningen. */
+/**
+ * Vad telefonen tror att inställningen är.
+ *
+ * Bara en cache. Kommentaren här sa förut "Servern äger sanningen" medan
+ * koden aldrig frågade servern — töms lagringen visade rutan "Av" fastän
+ * servern skickade, och tvärtom. Använd `hamtaGruppnotiser()` när det
+ * spelar roll; den här finns för att kunna rita något direkt vid start.
+ */
 export function harGruppnotiser() {
   return !!load().gruppnotiser;
+}
+
+/**
+ * Frågar servern vad som faktiskt gäller.
+ *
+ * @returns {Promise<{finns:boolean, pa:boolean, aktiv:boolean, nadde:boolean}>}
+ *   finns  — prenumerationen känns igen. false = telefonen har en
+ *            prenumeration servern inte hittar, och den måste sparas om.
+ *   aktiv  — raden lever (påslagen och inte utslagen av upprepade fel).
+ *   nadde  — vi fick svar. false = offline, säg inget tvärsäkert då.
+ */
+export async function hamtaGruppnotiser() {
+  const st = load();
+  if (!st.endpoint || !st.device) {
+    return { finns: false, pa: false, aktiv: false, nadde: true };
+  }
+  try {
+    const s = await rpc('fbmejl_har_gruppnotiser', {
+      p_endpoint: st.endpoint, p_device: st.device,
+    });
+    const ut = { finns: !!s?.finns, pa: !!s?.pa, aktiv: !!s?.aktiv, nadde: true };
+    // Cachen följer serverns svar, så nästa start ritar rätt direkt.
+    save({ ...st, gruppnotiser: ut.pa });
+    return ut;
+  } catch {
+    return { finns: true, pa: harGruppnotiser(), aktiv: true, nadde: false };
+  }
 }

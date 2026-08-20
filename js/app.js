@@ -2133,6 +2133,8 @@ window.polisvakt = {
   // Belöningsbeskedet går att provköra utan att vänta på ett månadsskifte.
   visaBelaning, renderKorfalt, remote, groups,
   get nav() { return nav; },
+  // Gruppnotisreglagets fem lägen, för mätning. Se ritaGruppnotis.
+  ritaGruppnotis: s => ritaGruppnotis(s),
 };
 
 /* ================= Gränssnitt ================= */
@@ -2294,6 +2296,17 @@ function showUndo(report) {
   undoTimer = setTimeout(() => { el.hidden = true; }, 6000);
 }
 
+/* Sätts när inställningarna kopplas. showView ligger på modulnivå medan
+   funktionen bor i wire-blocket, så den måste räckas ut hit — annars blir
+   anropet nedan ett ReferenceError som fångas av en catch och försvinner. */
+let synkaGruppnotis = () => {};
+
+/* Samma sak, men för att kunna mäta. Gruppnotisreglaget har fem lägen och
+   fyra av dem går bara att se när servern svarar på ett visst sätt — de
+   ritas aldrig i en webbläsare där notiser är nekade. Utan den här kroken
+   är de fyra oprövade tills en riktig användare hamnar i dem. */
+let ritaGruppnotis = () => {};
+
 function showView(name) {
   document.body.dataset.view = name;
   for (const v of ['map', 'dashcam', 'chatt', 'settings']) {
@@ -2316,7 +2329,7 @@ function showView(name) {
 
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
-  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); }
+  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); }
 }
 
 function renderStatus() {
@@ -3501,7 +3514,7 @@ function wireSettingsUI() {
    * Funktionsdeklaration, inte const: renderNotify() anropar den och körs
    * längre upp i samma block.
    */
-  function renderGruppnotis() {
+  function renderGruppnotis(server) {
     const box = $('setGruppnotiser');
     if (!box) return;
     const l = notisLage();
@@ -3509,10 +3522,53 @@ function wireSettingsUI() {
     if (l.blockerad) box.checked = false;
     const status = $('gruppnotisStatus');
     if (!status || status.dataset.egen === '1') return;
-    status.textContent = l.blockerad
-      ? (l.kanFraga ? 'Tillåt notiser först — knappen ovanför.' : l.text)
-      : (Push.harGruppnotiser() ? 'På. Du får en notis när det kommit nya inlägg.' : 'Av.');
+    if (l.blockerad) {
+      status.textContent = l.kanFraga ? 'Tillåt notiser först — knappen ovanför.' : l.text;
+      return;
+    }
+    /*
+     * Tre lägen till utöver På och Av, och de är inte kosmetik.
+     *
+     * finns=false betyder att telefonen har en prenumeration servern inte
+     * känner igen. Det händer på riktigt: prenumererar man utloggad får
+     * raden ett slumpat enhets-id, loggar man sedan in skrivs den om till
+     * kontots id. Reglaget kan då dras hur mycket som helst utan att något
+     * ändras. Förut sa appen "På" i det läget.
+     *
+     * aktiv=false betyder att raden finns men är utslagen — påslagen men
+     * med för många misslyckade utskick bakom sig.
+     */
+    if (server && !server.nadde) {
+      status.textContent = server.pa
+        ? 'På (kunde inte nå servern för att bekräfta).'
+        : 'Av (kunde inte nå servern för att bekräfta).';
+      return;
+    }
+    if (server && !server.finns) {
+      box.checked = false;
+      status.textContent = 'Notiserna behöver slås på igen — tryck "Tillåt notiser" ovanför.';
+      return;
+    }
+    if (server && server.pa && !server.aktiv) {
+      box.checked = true;
+      status.textContent = 'På, men servern når inte den här telefonen. Slå av och på igen.';
+      return;
+    }
+    const pa = server ? server.pa : Push.harGruppnotiser();
+    box.checked = pa;
+    status.textContent = pa ? 'På. Du får en notis när det kommit nya inlägg.' : 'Av.';
   }
+
+  /* Frågar servern och ritar om. Anropas när inställningarna öppnas — inte
+     vid varje omritning, eftersom det är ett nätanrop. */
+  ritaGruppnotis = renderGruppnotis;
+
+  synkaGruppnotis = async () => {
+    if (notisLage().blockerad) return;
+    const status = $('gruppnotisStatus');
+    if (status) delete status.dataset.egen;   // serverns svar vinner över gammal egen text
+    try { renderGruppnotis(await Push.hamtaGruppnotiser()); } catch {}
+  };
 
   const gnBox = $('setGruppnotiser');
   if (gnBox) {
@@ -3528,7 +3584,7 @@ function wireSettingsUI() {
         gnBox.checked = !vill;
         status.textContent =
           Push.permission() === 'granted'
-            ? 'Kunde inte nå servern. Prova igen.'
+            ? 'Gick inte att spara. Servern känner kanske inte igen den här telefonen — tryck "Tillåt notiser" ovanför.'
             : 'Tillåt notiser först — knappen ovanför.';
         return;
       }

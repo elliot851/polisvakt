@@ -35,6 +35,10 @@
 --   fbmejl_ko_hamta()  tolkaren hämtar det som inte är avgjort.
 --   fbmejl_ta_emot()   tar emot färdigtolkade rader och skapar rapporter.
 --   fbmejl_notis_ut()  EN push per omgång, med spärrar. Se avsnittet TAKTEN.
+--   fbmejl_notis_stam_av()  läser pg_nets svar i efterhand och skriver vad som
+--                      FAKTISKT hände med notisen. Se avsnittet STÄM AV.
+--   fbmejl_normalisera_msgid()  den kanoniska formen av ett Message-ID. Allt
+--                      som rör kön går genom den. Se avsnittet EN FORM.
 --   fbmejl_senaste     revisionsvy: vad kom in senaste dygnet.
 --   fbmejl_halsa       revisionsvy: går bryggan alls, och håller den måttet.
 --
@@ -150,10 +154,46 @@ set search_path = pg_catalog, pg_temp as $$
            'gi');
 $$;
 
+-- ============================ MESSAGE-ID: EN FORM ====================
+--
+-- Ett Message-ID kan skrivas på flera sätt och betyda samma sak:
+--
+--   <ABC.123@facebookmail.com>     som pollaren läser det ur IMAP-huvudet
+--   abc.123@facebookmail.com       som js/fbmejl.js normaliserar det
+--
+-- Det här har redan kostat en gång. Pollaren la in den råa formen med
+-- vinkelparenteser, tolkaren skickade tillbaka den normaliserade, och varje
+-- "update fbmejl_ko ... where message_id = ..." i fbmejl_ta_emot() träffade
+-- NOLL rader. Kön tömdes aldrig, samma mejl plockades upp om och om igen,
+-- forsok räknades upp, och efter fem varv dök de upp som "fastnade" i
+-- fbmejl_halsa trots att de för länge sedan blivit rapporter på kartan. Ett
+-- fel där varje led rapporterade framgång.
+--
+-- KONTRAKTET: den normaliserade formen är den kanoniska. Gemener, utan
+-- vinkelparenteser, trimmad, kapad till 200 tecken. Kön LAGRAR den formen
+-- (fbmejl_ko_in normaliserar vid insättning), och alla uppslag går genom den
+-- här funktionen. Då spelar det ingen roll vilken form anroparen skickar.
+--
+-- Identisk med normaliseraMessageId() i js/fbmejl.js — samma ordning på
+-- stegen, samma längdgräns. Ändras det ena, ändra det andra.
+--
+-- Tom sträng ger null, inte '': ett mejl utan Message-ID har ingen identitet
+-- och ska avvisas, inte lagras under en tom nyckel som alla krockar med.
+
+create or replace function public.fbmejl_normalisera_msgid(p_id text)
+returns text
+language sql
+immutable
+set search_path = pg_catalog, pg_temp as $$
+  select nullif(
+           left(lower(btrim(regexp_replace(btrim(coalesce(p_id, '')), '^<|>$', '', 'g'))), 200),
+           '');
+$$;
+
 -- ============================ KÖN IN =================================
 --
 -- Råa mejl, precis som pollaren läste dem. Ett mejl per rad, nyckel är
--- Message-ID.
+-- Message-ID i den kanoniska formen ovan.
 --
 -- Innehållet är andra människors text ordagrant, plus deras namn. Tabellen är
 -- därför oåtkomlig för både anon och inloggade, och städas efter sju dagar.
@@ -222,6 +262,68 @@ create index if not exists fbmejl_lasta_msg_idx  on public.fbmejl_lasta (message
 
 alter table public.fbmejl_lasta enable row level security;
 revoke all on public.fbmejl_lasta from anon, authenticated;
+
+-- ============================ GAMMALT FORMAT I KÖN ===================
+--
+-- Rader som skrevs innan kontraktet ovan fanns ligger kvar med
+-- vinkelparenteser och versaler. De går inte att matcha mot det tolkaren
+-- skickar tillbaka, alltså blir de aldrig avgjorda — de ligger och räknar upp
+-- forsok tills de dyker upp som "fastnade" i fbmejl_halsa.
+--
+-- Blocket nedan skriver om dem en gång. Det är avsiktligt idempotent: har
+-- filen redan körts hittar det noll rader och säger ingenting.
+--
+-- Ordningen spelar roll. message_id är PRIMÄRNYCKEL, så en omskrivning kan
+-- krocka: <ABC@x> och abc@x är två rader idag och samma rad efteråt, och det
+-- gäller även <ABC@x> mot <abc@x>. En rå update hade dött på ett unique-fel
+-- och tagit hela filkörningen med sig. Alltså raderas krockarna först.
+--
+-- Vilken rad som överlever: den som redan står i kanonisk form om en sådan
+-- finns, annars den äldsta. De bär samma mejl — Message-ID är per definition
+-- unikt per meddelande — så valet spelar bara roll för hamtat_at.
+--
+-- I skrivande stund finns inga sådana rader i produktion. Blocket finns för
+-- den som kör en databas som hunnit ta emot mejl med den gamla koden, och för
+-- att svaret på "vad händer med de gamla raderna?" ska stå i koden och inte
+-- bara i ett samtal.
+
+do $$
+declare n_bort int := 0; n_om int := 0;
+begin
+  delete from public.fbmejl_ko k
+   where public.fbmejl_normalisera_msgid(k.message_id) is not null
+     and (public.fbmejl_normalisera_msgid(k.message_id), k.message_id) not in (
+       select distinct on (public.fbmejl_normalisera_msgid(k2.message_id))
+              public.fbmejl_normalisera_msgid(k2.message_id), k2.message_id
+         from public.fbmejl_ko k2
+        where public.fbmejl_normalisera_msgid(k2.message_id) is not null
+        order by public.fbmejl_normalisera_msgid(k2.message_id),
+                 (k2.message_id = public.fbmejl_normalisera_msgid(k2.message_id)) desc,
+                 k2.hamtat_at asc);
+  get diagnostics n_bort = row_count;
+
+  update public.fbmejl_ko k
+     set message_id = public.fbmejl_normalisera_msgid(k.message_id)
+   where public.fbmejl_normalisera_msgid(k.message_id) is not null
+     and public.fbmejl_normalisera_msgid(k.message_id) is distinct from k.message_id;
+  get diagnostics n_om = row_count;
+
+  -- Rader helt utan brukbart Message-ID kan inte avdubblas och skulle bli en
+  -- ny varning vid varje pollning. De ska inte finnas — fbmejl_ko_in avvisar
+  -- dem — men om de gör det är kön fel plats för dem.
+  delete from public.fbmejl_ko
+   where public.fbmejl_normalisera_msgid(message_id) is null;
+
+  -- Minnet joinas mot kön på message_id. Samma form måste gälla där.
+  update public.fbmejl_lasta l
+     set message_id = public.fbmejl_normalisera_msgid(l.message_id)
+   where l.message_id is not null
+     and public.fbmejl_normalisera_msgid(l.message_id) is distinct from l.message_id;
+
+  if n_om > 0 or n_bort > 0 then
+    raise notice 'Message-ID i gammalt format: % omskrivna, % raderade som dubbletter.', n_om, n_bort;
+  end if;
+end $$;
 
 -- ============================ BRYGGANS TILLSTÅND =====================
 --
@@ -339,18 +441,62 @@ revoke all on public.fbmejl_notis_lage from anon, authenticated;
 
 -- Loggen finns för att frågan "varför ringde det inte?" ska gå att besvara i
 -- efterhand. Utan den ser en tyst spärr exakt likadan ut som en trasig kedja.
+--
+-- ---------------------------------------------------------------------
+-- Om ordet 'skickad', och varför det inte finns kvar
+--
+-- Den gamla loggen skrev 'skickad' direkt efter net.http_post(). Det var inte
+-- sant. net.http_post är ASYNKRON: den lägger anropet i pg_nets kö och
+-- returnerar ett id på en gång. exception-blocket runt den fångar bara att
+-- KÖANDET misslyckades — inte att nyckeln var fel (401), att funktionen inte
+-- var utrullad (404), eller att noll människor hade slagit på gruppnotiser.
+-- Alla tre gav 'skickad' i loggen och räknades upp i fbmejl_halsa.
+--
+-- Det är exakt det felmönster som redan drabbat den här appen en gång: varje
+-- led rapporterade framgång och noll notiser nådde fram, i veckor.
+--
+-- Nu står det i loggen vad vi faktiskt vet, och inte mer:
+--
+--   ingen-mottagare  noll personer har gruppnotiser på. Inget skickades.
+--   koad             pg_net har tagit emot anropet. Vi vet INTE mer än så än.
+--   kvitterad        edge-funktionen svarade 2xx. skal bär dess svarskropp,
+--                    som säger hur många pushar som gick ut. Det betyder att
+--                    SERVERN gjorde sitt — inte att en telefon visade något.
+--   fel              pg_net vägrade, eller svaret var 4xx/5xx/timeout.
+--   sparrad          en av de fyra spärrarna sa nej. Inget fel.
+--   okand            pg_net hann städa bort svaret innan vi läste det.
+--
+-- 'skickad' står kvar i villkoret enbart för rader som redan ligger i
+-- databasen från den gamla versionen. Ingen ny rad skrivs med det värdet.
+
 create table if not exists public.fbmejl_notis_logg (
   id          bigint generated always as identity primary key,
   skickat_at  timestamptz not null default now(),
   antal       int not null default 0,
   titel       text,
   text        text,
-  utfall      text not null default 'skickad'
-              check (utfall in ('skickad', 'sparrad', 'fel')),
-  skal        text
+  utfall      text not null default 'koad',
+  skal        text,
+  -- pg_nets kvitto. Nyckeln in i net._http_response, se
+  -- fbmejl_notis_stam_av() nedan. Null när ingenting skickades.
+  net_id      bigint
 );
 
+-- Kolumnen och villkoret ändrades efter att tabellen först skapades. Den som
+-- kör om filen på en befintlig databas har en tabell utan net_id och med det
+-- gamla tre-värdes-villkoret, och create table if not exists gör ingenting åt
+-- det. Alltså uttryckligt:
+alter table public.fbmejl_notis_logg add column if not exists net_id bigint;
+alter table public.fbmejl_notis_logg alter column utfall set default 'koad';
+alter table public.fbmejl_notis_logg drop constraint if exists fbmejl_notis_logg_utfall_check;
+alter table public.fbmejl_notis_logg add constraint fbmejl_notis_logg_utfall_check
+  check (utfall in ('koad', 'kvitterad', 'sparrad', 'fel', 'ingen-mottagare', 'okand', 'skickad'));
+
 create index if not exists fbmejl_notis_logg_tid_idx on public.fbmejl_notis_logg (skickat_at desc);
+-- Avstämningen nedan letar bara efter rader som väntar på svar. Utan index
+-- går den igenom hela loggen var femte minut.
+create index if not exists fbmejl_notis_logg_koad_idx on public.fbmejl_notis_logg (net_id)
+  where utfall = 'koad';
 
 alter table public.fbmejl_notis_logg enable row level security;
 revoke all on public.fbmejl_notis_logg from anon, authenticated;
@@ -392,6 +538,30 @@ $$;
 --
 -- Funktionen skapas bara om push.sql är körd — annars finns varken tabellen
 -- eller actor(), och ett create som misslyckas hade dödat hela filen.
+--
+-- ---------------------------------------------------------------------
+-- Varför den returnerar något, och inte void
+--
+-- Den gamla versionen var ett rent "update ... where endpoint = ... and
+-- device_id = ..." som returnerade void. Träffade den noll rader syntes det
+-- ingenstans: PostgREST svarar 200 på en void-funktion oavsett, appen skrev
+-- "På" i reglaget, och notiserna kom aldrig.
+--
+-- Det är inte ett teoretiskt fall. Prenumererar man utloggad skrivs raden med
+-- ett anonymt device_id. Loggar man sedan in skrivs raden om till auth.uid().
+-- Loggar man ut igen och drar reglaget matchar varken endpoint + gammalt
+-- device_id eller endpoint + nytt — noll rader, tyst "På", tystnad.
+--
+-- Nu svarar funktionen med vad som FAKTISKT står i databasen efteråt. Träffar
+-- den ingen rad säger den det rakt ut, och appen kan be användaren slå på
+-- notiser igen istället för att ljuga i reglaget.
+--
+-- Svaret:
+--   { "ok": true,  "pa": true|false, "rader": 1, "skal": null }
+--   { "ok": false, "pa": false,      "rader": 0, "skal": "ingen-rad" }
+--
+-- Läs tillbaka sanningen med fbmejl_har_gruppnotiser() — appen ska aldrig
+-- behöva lita på localStorage för det här.
 
 do $$
 begin
@@ -400,27 +570,89 @@ begin
     return;
   end if;
 
+  -- Returtypen ändrades från void till jsonb. create or replace kan inte
+  -- ändra returtyp, alltså måste den gamla bort först. Utan det här steget
+  -- dör körningen med "cannot change return type of existing function" på
+  -- varje databas som kört en tidigare version av filen.
+  execute 'drop function if exists public.fbmejl_satt_gruppnotiser(text, text, boolean)';
+
   execute $fn$
     create or replace function public.fbmejl_satt_gruppnotiser(
       p_endpoint text, p_device text, p_pa boolean
     )
-    returns void
-    language plpgsql security definer set search_path = public as $kropp$
-    declare v_actor text;
+    returns jsonb
+    language plpgsql security definer set search_path = public, pg_temp as $kropp$
+    declare
+      v_actor text;
+      v_pa    boolean;
+      v_n     int;
     begin
       v_actor := public.actor(p_device);
-      update push_subscriptions s
+
+      update public.push_subscriptions s
          set gruppnotiser = coalesce(p_pa, false),
              updated_at = now()
-       where s.endpoint = p_endpoint and s.device_id = v_actor;
+       where s.endpoint = p_endpoint and s.device_id = v_actor
+      returning s.gruppnotiser into v_pa;
+
+      get diagnostics v_n = row_count;
+
+      if v_n = 0 then
+        -- Ingen rad matchade. Antingen finns prenumerationen inte, eller så
+        -- tillhör den ett annat device_id än det anroparen kan visa upp.
+        -- Skillnaden spelar ingen roll för appen: båda betyder "spara om
+        -- prenumerationen och försök igen".
+        return jsonb_build_object('ok', false, 'pa', false, 'rader', 0, 'skal', 'ingen-rad');
+      end if;
+
+      return jsonb_build_object('ok', true, 'pa', coalesce(v_pa, false), 'rader', v_n, 'skal', null);
     end $kropp$;
   $fn$;
 
+  -- Läs tillbaka det sanna värdet. Det fanns ingen sådan väg tidigare, och
+  -- därför läste appen sitt eget localStorage och kallade det för sanning.
+  --
+  -- Svaret:
+  --   { "finns": true,  "pa": true|false, "aktiv": true|false }
+  --   { "finns": false, "pa": false,      "aktiv": false }
+  --
+  -- aktiv = raden lever (enabled och under felgränsen). En prenumeration med
+  -- gruppnotiser = true som pushtjänsten slutat svara på får ändå inga
+  -- notiser, och det ska gå att se skillnad på det och ett avslaget reglage.
+  execute $fn2$
+    create or replace function public.fbmejl_har_gruppnotiser(
+      p_endpoint text, p_device text
+    )
+    returns jsonb
+    language plpgsql security definer stable set search_path = public, pg_temp as $kropp2$
+    declare
+      v_actor text;
+      v_pa    boolean;
+      v_aktiv boolean;
+    begin
+      v_actor := public.actor(p_device);
+
+      select coalesce(s.gruppnotiser, false),
+             (s.enabled and s.failures < 5)
+        into v_pa, v_aktiv
+        from public.push_subscriptions s
+       where s.endpoint = p_endpoint and s.device_id = v_actor;
+
+      if not found then
+        return jsonb_build_object('finns', false, 'pa', false, 'aktiv', false);
+      end if;
+
+      return jsonb_build_object('finns', true, 'pa', v_pa, 'aktiv', coalesce(v_aktiv, false));
+    end $kropp2$;
+  $fn2$;
+
   execute 'revoke execute on function public.fbmejl_satt_gruppnotiser(text, text, boolean) from public';
   execute 'grant execute on function public.fbmejl_satt_gruppnotiser(text, text, boolean) to anon, authenticated';
-  raise notice 'fbmejl_satt_gruppnotiser() finns — se docs/fbmejl.md för knappen i appen.';
+  execute 'revoke execute on function public.fbmejl_har_gruppnotiser(text, text) from public';
+  execute 'grant execute on function public.fbmejl_har_gruppnotiser(text, text) to anon, authenticated';
+  raise notice 'fbmejl_satt_gruppnotiser() och fbmejl_har_gruppnotiser() finns — se docs/fbmejl.md.';
 exception when others then
-  raise notice 'Kunde inte skapa fbmejl_satt_gruppnotiser (%). Notiserna gar att sla pa med SQL anda.', sqlerrm;
+  raise notice 'Kunde inte skapa gruppnotis-funktionerna (%). Notiserna gar att sla pa med SQL anda.', sqlerrm;
 end $$;
 
 -- ============================ NOTISER: MOTTAGARE =====================
@@ -444,7 +676,7 @@ returns int
 language plpgsql
 security definer
 stable
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 declare n int;
 begin
   if to_regclass('public.push_subscriptions') is null then return 0; end if;
@@ -464,7 +696,7 @@ returns table (endpoint text, p256dh text, auth text)
 language plpgsql
 security definer
 stable
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 begin
   if to_regclass('public.push_subscriptions') is null then
     return;
@@ -497,6 +729,24 @@ end $$;
 -- kö och returnerar direkt. Det betyder att en trög eller nere edge-funktion
 -- ALDRIG kan hålla upp fbmejl_ta_emot och därmed rapporterna. Rapporten på
 -- kartan är viktigare än notisen om den.
+--
+-- Priset för det är att funktionen INTE kan veta om notisen gick fram. Den
+-- vet att pg_net tagit emot anropet, och den skriver 'koad' — inte 'skickad'.
+-- Vad som sedan hände läses av fbmejl_notis_stam_av() ur net._http_response.
+--
+-- Två saker till skiljer den här versionen från den första:
+--
+--   1. Har ingen slagit på gruppnotiser skickas ingenting alls. Det är den
+--      vanligaste anledningen till att en notiskedja ser frisk ut och inte
+--      når fram, och den syntes inte förut: pg_net köade lydigt, edge-
+--      funktionen svarade 200, loggen sa 'skickad', och noll telefoner
+--      ringde. Nu står det 'ingen-mottagare' i loggen, och räknaren i
+--      fbmejl_halsa.gruppnotis_mottagare säger varför.
+--
+--   2. Tillståndet (senaste_at, antal_idag, odelade = 0) skrivs FÖRST när
+--      anropet är köat. Skrevs det före och köandet sedan misslyckades var
+--      odelade nollställt utan att någon fått veta något — varningarna gick
+--      tyst förlorade, vilket är precis vad odelade finns för att förhindra.
 
 create or replace function public.fbmejl_notis_ut(
   p_nya          jsonb,
@@ -508,7 +758,7 @@ create or replace function public.fbmejl_notis_ut(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 declare
   v_antal    int;
   v_lage     public.fbmejl_notis_lage%rowtype;
@@ -522,6 +772,8 @@ declare
   v_url      text;
   v_nyckel   text;
   v_skal     text;
+  v_mottagare int;
+  v_net_id   bigint;
 begin
   if p_nya is null or jsonb_typeof(p_nya) <> 'array' then
     return jsonb_build_object('skickad', false, 'skal', 'inget');
@@ -530,6 +782,21 @@ begin
   v_antal := jsonb_array_length(p_nya);
   if v_antal = 0 then
     return jsonb_build_object('skickad', false, 'skal', 'inget');
+  end if;
+
+  -- Lyssnar någon?
+  --
+  -- Först av allt, och före spärrarna: har ingen slagit på gruppnotiser finns
+  -- det inget att spärra. Tillståndet rörs INTE — varken senaste_at eller
+  -- odelade. Att räkna upp odelade när ingen lyssnar hade betytt att den
+  -- första som slår på notiser får "312 nya varningar i gruppen" som
+  -- välkomsthälsning.
+  v_mottagare := public.fbmejl_gruppnotis_antal();
+  if coalesce(v_mottagare, 0) = 0 then
+    insert into public.fbmejl_notis_logg (antal, utfall, skal)
+    values (v_antal, 'ingen-mottagare', 'noll prenumeranter med gruppnotiser pa');
+    return jsonb_build_object('skickad', false, 'skal', 'ingen-mottagare',
+                              'antal', v_antal, 'mottagare', 0);
   end if;
 
   v_timme := extract(hour from (v_lokal at time zone 'Europe/Stockholm'))::int;
@@ -592,26 +859,26 @@ begin
     v_text  := coalesce(v_platser, 'Öppna Polisvakt för att se var.');
   end if;
 
-  update public.fbmejl_notis_lage
-     set senaste_at = now(),
-         antal_idag = v_lage.antal_idag + 1,
-         dag = v_dag,
-         odelade = 0,
-         senaste_fel = null,
-         uppdaterad = now()
-   where id = 1;
-
   -- Ut på nätet, om vägen dit finns. Saknas pg_net eller adressen loggas det
   -- som ett fel istället för att tyst försvinna — en notiskedja som ser frisk
   -- ut och inte når fram är den svåraste sortens fel, och den har den här
   -- appen redan haft en gång.
+  --
+  -- Observera att tillståndet inte är rört än. Varje väg ut härifrån som INTE
+  -- lyckas köa anropet lägger tillbaka varningarna i odelade, precis som en
+  -- spärr gör. Det är hela skillnaden mot den första versionen, där odelade
+  -- nollställdes innan man visste om något ens gick att skicka.
   v_url    := current_setting('app.fbmejl_push_url', true);
   v_nyckel := current_setting('app.service_role_key', true);
 
   if v_url is null or v_url = '' then
+    update public.fbmejl_notis_lage
+       set odelade = odelade + v_antal, dag = v_dag,
+           antal_idag = v_lage.antal_idag,
+           senaste_fel = 'app.fbmejl_push_url saknas', uppdaterad = now()
+     where id = 1;
     insert into public.fbmejl_notis_logg (antal, titel, text, utfall, skal)
     values (v_totalt, v_titel, v_text, 'fel', 'app.fbmejl_push_url saknas');
-    update public.fbmejl_notis_lage set senaste_fel = 'app.fbmejl_push_url saknas' where id = 1;
     return jsonb_build_object('skickad', false, 'skal', 'ingen-url', 'titel', v_titel);
   end if;
 
@@ -624,14 +891,21 @@ begin
       join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'net' and p.proname = 'http_post'
   ) then
+    update public.fbmejl_notis_lage
+       set odelade = odelade + v_antal, dag = v_dag,
+           antal_idag = v_lage.antal_idag,
+           senaste_fel = 'pg_net saknas', uppdaterad = now()
+     where id = 1;
     insert into public.fbmejl_notis_logg (antal, titel, text, utfall, skal)
     values (v_totalt, v_titel, v_text, 'fel', 'pg_net saknas');
-    update public.fbmejl_notis_lage set senaste_fel = 'pg_net saknas' where id = 1;
     return jsonb_build_object('skickad', false, 'skal', 'pg_net-saknas', 'titel', v_titel);
   end if;
 
   begin
-    perform net.http_post(
+    -- Id:t sparas. Det är den enda kopplingen mellan den här raden i loggen
+    -- och pg_nets svar i net._http_response, och utan den går det inte att i
+    -- efterhand svara på om notisen faktiskt togs emot av edge-funktionen.
+    select net.http_post(
       url     := v_url,
       headers := jsonb_build_object(
         'Content-Type',  'application/json',
@@ -646,18 +920,153 @@ begin
         'url',   './',
         'antal', v_totalt
       )
-    );
+    ) into v_net_id;
   exception when others then
+    update public.fbmejl_notis_lage
+       set odelade = odelade + v_antal, dag = v_dag,
+           antal_idag = v_lage.antal_idag,
+           senaste_fel = left(sqlerrm, 500), uppdaterad = now()
+     where id = 1;
     insert into public.fbmejl_notis_logg (antal, titel, text, utfall, skal)
     values (v_totalt, v_titel, v_text, 'fel', left(sqlerrm, 200));
-    update public.fbmejl_notis_lage set senaste_fel = left(sqlerrm, 500) where id = 1;
     return jsonb_build_object('skickad', false, 'skal', 'fel', 'detalj', sqlerrm);
   end;
 
-  insert into public.fbmejl_notis_logg (antal, titel, text, utfall)
-  values (v_totalt, v_titel, v_text, 'skickad');
+  -- Först här. Anropet ligger i pg_nets kö, glesspärren och dygnstaket får
+  -- räknas upp, och odelade nollställs eftersom varningarna nu är med i den
+  -- text som ligger på väg ut.
+  update public.fbmejl_notis_lage
+     set senaste_at = now(),
+         antal_idag = v_lage.antal_idag + 1,
+         dag = v_dag,
+         odelade = 0,
+         senaste_fel = null,
+         uppdaterad = now()
+   where id = 1;
 
-  return jsonb_build_object('skickad', true, 'antal', v_totalt, 'titel', v_titel);
+  insert into public.fbmejl_notis_logg (antal, titel, text, utfall, net_id)
+  values (v_totalt, v_titel, v_text, 'koad', v_net_id);
+
+  -- 'koad', inte 'skickad', och nyckeln heter fortfarande skickad i svaret av
+  -- bakåtkompatibilitet — men den betyder "köad hos pg_net", ingenting mer.
+  -- Vad som hände sedan står i fbmejl_notis_stam_av().
+  return jsonb_build_object('skickad', true, 'utfall', 'koad', 'antal', v_totalt,
+                            'titel', v_titel, 'mottagare', v_mottagare,
+                            'net_id', v_net_id);
+end $$;
+
+-- ============================ NOTISER: STÄM AV =======================
+--
+-- Vad hände med anropet?
+--
+-- pg_net kör anropet i en bakgrundsprocess och lägger svaret i tabellen
+-- net._http_response, nycklad på det id som net.http_post() returnerade. Där
+-- står status_code, svarskroppen, och error_msg om anropet aldrig gick fram.
+-- Den tabellen städas av pg_net självt efter ett par timmar (net.ttl,
+-- normalt sex), så avstämningen måste hinna före det.
+--
+-- Det här är det enda stället i hela kedjan där ordet "gick fram" kan sägas
+-- med någon täckning alls. Och även här är täckningen begränsad, så det ska
+-- sägas rakt ut: 2xx betyder att EDGE-FUNKTIONEN svarade, inte att en telefon
+-- visade en notis. Edge-funktionen svarar 200 även när varenda push
+-- misslyckades — precis som send-reminder gör, och av samma skäl. Därför
+-- heter utfallet 'kvitterad' och inte 'levererad', och därför sparas
+-- svarskroppen i skal: den bär edge-funktionens egen räkning av hur många
+-- pushar som gick ut och hur många som föll.
+--
+-- Funktionen är byggd att kunna köras när som helst, hur ofta som helst, och
+-- på en databas utan pg_net. Schemaläggs var femte minut längst ner i filen.
+
+create or replace function public.fbmejl_notis_stam_av(p_max int default 500)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp as $$
+declare
+  n_kvitterade int := 0;
+  n_fel        int := 0;
+  n_okanda     int := 0;
+begin
+  if to_regclass('net._http_response') is null then
+    -- Inget pg_net, eller en version utan svarstabellen. Då finns ingenting
+    -- att stämma av, och raderna får ligga kvar som 'koad'. Det är ett ärligt
+    -- utfall: vi vet inte.
+    return jsonb_build_object('pg_net', false, 'kvitterade', 0, 'fel', 0, 'okanda', 0);
+  end if;
+
+  -- Dynamiskt, för net-schemat finns inte när filen körs på en databas utan
+  -- pg_net, och en direkt referens hade fått hela transaktionen att dö redan
+  -- vid CREATE.
+  --
+  -- Två körningar istället för en med case: det enda sättet att få ut ETT
+  -- ärligt tal per utfall. En enda update kan bara säga hur många rader den
+  -- rörde, och "8 rader avstämda" svarar inte på frågan som ställdes, som är
+  -- om notiserna gick fram.
+  --
+  -- Kolumnnamnen är pg_nets: id, status_code, content, timed_out, error_msg.
+
+  execute format($q$
+    update public.fbmejl_notis_logg l
+       set utfall = 'kvitterad',
+           skal   = left('HTTP ' || r.status_code || ' ' || coalesce(r.content, ''), 200)
+      from net._http_response r
+     where r.id = l.net_id
+       and l.utfall = 'koad'
+       and r.error_msg is null
+       and coalesce(r.timed_out, false) = false
+       and r.status_code between 200 and 299
+       and l.skickat_at > now() - interval '7 hours'
+       and l.id in (select id from public.fbmejl_notis_logg
+                     where utfall = 'koad' and net_id is not null
+                     order by skickat_at desc limit %s)
+  $q$, greatest(1, least(coalesce(p_max, 500), 5000)));
+  get diagnostics n_kvitterade = row_count;
+
+  execute format($q$
+    update public.fbmejl_notis_logg l
+       set utfall = 'fel',
+           skal   = case
+                      when r.error_msg is not null then left(r.error_msg, 200)
+                      when coalesce(r.timed_out, false) then 'tidsgrans'
+                      else left('HTTP ' || r.status_code || ' ' || coalesce(r.content, ''), 200)
+                    end
+      from net._http_response r
+     where r.id = l.net_id
+       and l.utfall = 'koad'
+       and (r.error_msg is not null
+            or coalesce(r.timed_out, false)
+            or r.status_code is null
+            or r.status_code not between 200 and 299)
+       and l.skickat_at > now() - interval '7 hours'
+       and l.id in (select id from public.fbmejl_notis_logg
+                     where utfall = 'koad' and net_id is not null
+                     order by skickat_at desc limit %s)
+  $q$, greatest(1, least(coalesce(p_max, 500), 5000)));
+  get diagnostics n_fel = row_count;
+
+  -- Svaret hann städas bort av pg_net innan vi kom hit. Raden blir 'okand' —
+  -- inte 'kvitterad'. Att gissa åt det hållet vore samma lögn som förut.
+  update public.fbmejl_notis_logg
+     set utfall = 'okand',
+         skal = coalesce(skal, 'pg_net hade redan stadat bort svaret')
+   where utfall = 'koad'
+     and net_id is not null
+     and skickat_at < now() - interval '6 hours';
+  get diagnostics n_okanda = row_count;
+
+  -- Senaste kända felet upp i lägestabellen, så fbmejl_halsa kan visa det.
+  update public.fbmejl_notis_lage n
+     set senaste_fel = (select left(l.skal, 500) from public.fbmejl_notis_logg l
+                         where l.utfall = 'fel'
+                           and l.skickat_at > now() - interval '24 hours'
+                         order by l.skickat_at desc limit 1),
+         uppdaterad = now()
+   where n.id = 1
+     and exists (select 1 from public.fbmejl_notis_logg l
+                  where l.utfall = 'fel' and l.skickat_at > now() - interval '24 hours');
+
+  return jsonb_build_object('pg_net', true, 'kvitterade', n_kvitterade,
+                            'fel', n_fel, 'okanda', n_okanda);
 end $$;
 
 -- ============================ POLLAREN LÄGGER IN =====================
@@ -679,7 +1088,7 @@ create or replace function public.fbmejl_ko_in(p_mejl jsonb)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 declare
   v_rad       jsonb;
   v_id        text;
@@ -699,7 +1108,13 @@ begin
 
   for v_rad in select * from jsonb_array_elements(p_mejl) loop
     v_mottagna := v_mottagna + 1;
-    v_id := nullif(trim(coalesce(v_rad->>'message_id', '')), '');
+
+    -- KANONISK FORM redan här. Pollaren läser Message-ID rått ur IMAP-huvudet,
+    -- alltså med vinkelparenteser: <ABC@facebookmail.com>. Tolkaren skickar
+    -- tillbaka den normaliserade formen. Lagras den råa formen träffar varje
+    -- senare uppslag noll rader och kön töms aldrig. Se avsnittet
+    -- MESSAGE-ID: EN FORM längst upp.
+    v_id := public.fbmejl_normalisera_msgid(v_rad->>'message_id');
 
     -- Utan Message-ID finns ingen avdubbling, och då blir samma mejl en ny
     -- varning vid varje pollning. Raden avvisas hellre än skrivs.
@@ -716,7 +1131,10 @@ begin
     insert into public.fbmejl_ko
       (message_id, avsandare, amne, brodtext, skickat_at, imap_uid, status, skal, avgjort_at)
     values (
-      left(v_id, 200),
+      -- Redan kapad till 200 av fbmejl_normalisera_msgid(), samma gräns som
+      -- normaliseraMessageId() i js/fbmejl.js. Kapas den om här kan de två
+      -- glida isär.
+      v_id,
       left(coalesce(v_rad->>'from', ''), 200),
       left(public.fbmejl_sanera(coalesce(v_rad->>'subject', '')), 1000),
       -- Brödtexten kapas. Ett Facebook-mejl i HTML kan vara hundra kilobyte
@@ -776,7 +1194,7 @@ returns table (
 )
 language plpgsql
 security definer
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 -- returns table(...) skapar variabler som heter EXAKT som kolumnerna nedan.
 -- Utan den här raden riskerar varje okvalificerad kolumnreferens att bli
 -- "column reference is ambiguous" — ett fel som bara syns vid körning, alltså
@@ -811,7 +1229,7 @@ create or replace function public.fbmejl_ta_emot(p_rader jsonb)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 declare
   v_rad         jsonb;
   v_nyckel      text;
@@ -841,7 +1259,10 @@ begin
     v_mottagna    := v_mottagna + 1;
     v_nyckel      := nullif(v_rad->>'external_id', '');
     v_text_nyckel := nullif(v_rad->>'text_nyckel', '');
-    v_msg_id      := nullif(v_rad->>'message_id', '');
+    -- Genom normaliseringen, alltid. Kön lagrar den kanoniska formen, och det
+    -- är den de fem update-satserna nedan måste matcha mot. Skickar en
+    -- framtida anropare den råa formen med vinkelparenteser fungerar det ändå.
+    v_msg_id      := public.fbmejl_normalisera_msgid(v_rad->>'message_id');
     v_note        := coalesce(v_rad->>'note', '');
     v_typ         := v_rad->>'type';
 
@@ -856,16 +1277,16 @@ begin
     -- ligger redan i appen med rätt position och mätriktning.
     if v_typ = 'camera' then
       v_vagrade := v_vagrade + 1;
-      insert into fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, skal)
+      insert into public.fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, skal)
       values (v_nyckel, v_text_nyckel, v_msg_id, v_rad->>'inlaggs_id', 'vagrad', 'kamera')
       on conflict (nyckel) do nothing;
-      update fbmejl_ko set status = 'vagrad', skal = 'kamera', avgjort_at = now()
+      update public.fbmejl_ko set status = 'vagrad', skal = 'kamera', avgjort_at = now()
        where message_id = v_msg_id;
       continue;
     end if;
 
     -- Avdubbling, tre frågor.
-    perform 1 from fbmejl_lasta
+    perform 1 from public.fbmejl_lasta
      where nyckel = v_nyckel
         or (v_text_nyckel is not null and text_nyckel = v_text_nyckel);
     v_krock := found;
@@ -881,17 +1302,17 @@ begin
 
     if v_krock then
       v_dubbletter := v_dubbletter + 1;
-      update fbmejl_ko set status = 'klar', skal = 'dubblett', avgjort_at = now()
+      update public.fbmejl_ko set status = 'klar', skal = 'dubblett', avgjort_at = now()
        where message_id = v_msg_id;
       continue;
     end if;
 
     if public.fbmejl_ar_nykterhetskontroll(v_note) then
       v_vagrade := v_vagrade + 1;
-      insert into fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, skal)
+      insert into public.fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, skal)
       values (v_nyckel, v_text_nyckel, v_msg_id, v_rad->>'inlaggs_id', 'vagrad', 'nykterhet')
       on conflict (nyckel) do nothing;
-      update fbmejl_ko set status = 'vagrad', skal = 'nykterhet', avgjort_at = now()
+      update public.fbmejl_ko set status = 'vagrad', skal = 'nykterhet', avgjort_at = now()
        where message_id = v_msg_id;
       continue;
     end if;
@@ -941,21 +1362,21 @@ begin
         'typ',   v_typ,
         'plats', left(coalesce(nullif(v_rad->>'label', ''), ''), 60)
       ));
-      insert into fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, rapport_id)
+      insert into public.fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, rapport_id)
       values (v_nyckel, v_text_nyckel, v_msg_id, v_rad->>'inlaggs_id', 'rapport', v_id)
       on conflict (nyckel) do update set rapport_id = excluded.rapport_id,
                                          utfall = 'rapport';
-      update fbmejl_ko set status = 'klar', skal = null, avgjort_at = now()
+      update public.fbmejl_ko set status = 'klar', skal = null, avgjort_at = now()
        where message_id = v_msg_id;
     else
       -- Fanns redan i reports men inte i fbmejl_lasta: minnet hade rensats
       -- eller raden kom in via Telegram-spegeln eller userscriptet. Skriv
       -- minnet, räkna som dubblett.
       v_dubbletter := v_dubbletter + 1;
-      insert into fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, skal)
+      insert into public.fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, skal)
       values (v_nyckel, v_text_nyckel, v_msg_id, v_rad->>'inlaggs_id', 'bortsorterad', 'fanns-redan')
       on conflict (nyckel) do nothing;
-      update fbmejl_ko set status = 'klar', skal = 'fanns-redan', avgjort_at = now()
+      update public.fbmejl_ko set status = 'klar', skal = 'fanns-redan', avgjort_at = now()
        where message_id = v_msg_id;
     end if;
   end loop;
@@ -998,18 +1419,26 @@ create or replace function public.fbmejl_ko_avfard(p_message_ids jsonb, p_skal t
 returns int
 language plpgsql
 security definer
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 declare n int;
 begin
   if p_message_ids is null or jsonb_typeof(p_message_ids) <> 'array' then
     return 0;
   end if;
 
+  -- Genom normaliseringen, samma som i fbmejl_ta_emot(). Tolkaren skickar
+  -- tillbaka den normaliserade formen, men den som anropar den här funktionen
+  -- har ibland kvar den råa listan från kön i handen. Båda ska fungera —
+  -- annars är det just den här funktionen som slutar tömma kön, och det syns
+  -- inte förrän raderna dyker upp som "fastnade" i fbmejl_halsa.
   update public.fbmejl_ko
      set status = case when p_skal = 'nykterhet' or p_skal = 'kamera' then 'vagrad' else 'klar' end,
          skal = left(coalesce(p_skal, 'bortsorterad'), 60),
          avgjort_at = now()
-   where message_id in (select jsonb_array_elements_text(p_message_ids))
+   where message_id in (
+           select public.fbmejl_normalisera_msgid(t.rad)
+             from jsonb_array_elements_text(p_message_ids) as t(rad)
+            where public.fbmejl_normalisera_msgid(t.rad) is not null)
      and status = 'ny';
 
   get diagnostics n = row_count;
@@ -1023,7 +1452,7 @@ returns jsonb
 language sql
 security definer
 stable
-set search_path = public as $$
+set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'uidvalidity', coalesce(max(uidvalidity), 0),
     'senaste_uid', coalesce(max(senaste_uid), 0)
@@ -1039,7 +1468,7 @@ create or replace function public.fbmejl_satt_lage(
 returns void
 language plpgsql
 security definer
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 declare v_nuvarande bigint;
 begin
   select uidvalidity into v_nuvarande from public.fbmejl_brygga where id = 1;
@@ -1082,18 +1511,18 @@ create or replace function public.stada_fbmejl()
 returns jsonb
 language plpgsql
 security definer
-set search_path = public as $$
+set search_path = public, pg_temp as $$
 declare n_ko int; n_lasta int; n_logg int;
 begin
-  delete from fbmejl_ko where hamtat_at < now() - interval '7 days';
+  delete from public.fbmejl_ko where hamtat_at < now() - interval '7 days';
   get diagnostics n_ko = row_count;
 
-  delete from fbmejl_lasta where last_at < now() - interval '14 days';
+  delete from public.fbmejl_lasta where last_at < now() - interval '14 days';
   get diagnostics n_lasta = row_count;
 
   -- Notisloggen är bara till för felsökning. Trettio dagar räcker för att
   -- kunna svara på "varför ringde det inte i fredags".
-  delete from fbmejl_notis_logg where skickat_at < now() - interval '30 days';
+  delete from public.fbmejl_notis_logg where skickat_at < now() - interval '30 days';
   get diagnostics n_logg = row_count;
 
   return jsonb_build_object('ko', n_ko, 'lasta', n_lasta, 'notislogg', n_logg);
@@ -1117,6 +1546,7 @@ revoke execute on function public.fbmejl_lage()                           from p
 revoke execute on function public.fbmejl_satt_lage(bigint, bigint, text)  from public, anon, authenticated;
 revoke execute on function public.stada_fbmejl()                          from public, anon, authenticated;
 revoke execute on function public.fbmejl_push_mottagare(int)              from public, anon, authenticated;
+revoke execute on function public.fbmejl_notis_stam_av(int)               from public, anon, authenticated;
 revoke execute on function public.fbmejl_notis_ut(jsonb, int, int, smallint, smallint)
                                                                           from public, anon, authenticated;
 
@@ -1128,12 +1558,15 @@ grant execute on function public.fbmejl_lage()                            to ser
 grant execute on function public.fbmejl_satt_lage(bigint, bigint, text)   to service_role;
 grant execute on function public.stada_fbmejl()                           to service_role;
 grant execute on function public.fbmejl_push_mottagare(int)               to service_role;
+grant execute on function public.fbmejl_notis_stam_av(int)                to service_role;
 grant execute on function public.fbmejl_notis_ut(jsonb, int, int, smallint, smallint)
                                                                           to service_role;
 
--- Typnamnet avslöjar ingenting och är en ren uppslagning.
+-- Typnamnet avslöjar ingenting och är en ren uppslagning. Detsamma gäller
+-- normaliseringen — den är ren textbehandling och bekväm att kunna prova.
 grant execute on function public.fbmejl_typnamn(text)                     to anon, authenticated, service_role;
 grant execute on function public.fbmejl_sanera(text)                      to anon, authenticated, service_role;
+grant execute on function public.fbmejl_normalisera_msgid(text)           to anon, authenticated, service_role;
 
 revoke execute on function public.fbmejl_gruppnotis_antal()               from public, anon, authenticated;
 grant  execute on function public.fbmejl_gruppnotis_antal()               to service_role;
@@ -1144,11 +1577,35 @@ grant execute on function public.fbmejl_ar_nykterhetskontroll(text)       to ano
 
 -- ============================ REVISIONSVYER ==========================
 --
--- Läses i SQL-editorn, inte av appen. Inga grants till anon: kolumnen note
--- innehåller andra människors text ordagrant och ska inte gå att hämta med
--- den publika nyckeln. Samma resonemang som i facebook.sql och telegram.sql.
+-- Läses i SQL-editorn, inte av appen. Kolumnen note innehåller andra
+-- människors text ordagrant och ska inte gå att hämta med den publika
+-- nyckeln. Samma resonemang som i facebook.sql och telegram.sql.
+--
+-- Det räcker INTE att låta bli att skriva ett grant. Supabase kör med
+-- "alter default privileges ... grant select on tables to anon" i public,
+-- alltså får anon SELECT på varje ny vy som skapas här — utan att någon rad
+-- i den här filen ber om det. Kommentaren som tidigare stod här påstod
+-- motsatsen, och det var fel.
+--
+-- Vyerna är visserligen security_invoker = on, så radsäkerheten på de
+-- underliggande tabellerna gäller fortfarande och fbmejl_ko/fbmejl_lasta/
+-- fbmejl_brygga har noll policyer. Inget nytt läcker alltså i praktiken. Men
+-- "det läcker inte för att en annan spärr råkar hålla" är inte samma sak som
+-- "det går inte att komma åt", och skillnaden är exakt den som gör att en
+-- framtida policy på reports tyst öppnar en dörr ingen visste fanns.
+--
+-- Alltså: uttryckligt revoke efter varje create, och nu stämmer kommentaren.
+-- (revoke måste stå EFTER create or replace view — den vyn finns inte att
+-- återkalla rättigheter på innan den är skapad.)
 
-create or replace view public.fbmejl_senaste
+-- drop före create, inte "create or replace". Den senare vägrar byta namn på
+-- en befintlig kolumn ("cannot change name of view column"), och kolumnerna i
+-- fbmejl_halsa nedan har bytt namn: notiser_dygn räknade ett värde som ljög.
+-- Vyerna innehåller ingen data — de är frågor — så en drop kostar ingenting.
+drop view if exists public.fbmejl_senaste;
+drop view if exists public.fbmejl_halsa;
+
+create view public.fbmejl_senaste
 with (security_invoker = on) as
   select
     to_char(to_timestamp(r.created_at / 1000.0) at time zone 'Europe/Stockholm',
@@ -1175,6 +1632,9 @@ with (security_invoker = on) as
     and r.created_at > (extract(epoch from now()) * 1000)::bigint - 24 * 3600 * 1000
   order by r.created_at desc;
 
+revoke all on public.fbmejl_senaste from anon, authenticated;
+grant select on public.fbmejl_senaste to service_role;
+
 -- Går bryggan alls? Den vanligaste frågan efter en vecka i drift, och den
 -- går inte att besvara från appen — där ser "inga rapporter" och "bryggan är
 -- död" exakt likadant ut.
@@ -1187,7 +1647,7 @@ with (security_invoker = on) as
 --   fastnade              mejl som fått fem försök och gett upp. Här ligger
 --                         formatfelen: kolla dem i fbmejl_ko med brödtexten.
 
-create or replace view public.fbmejl_halsa
+create view public.fbmejl_halsa
 with (security_invoker = on) as
   select
     b.uidvalidity,
@@ -1209,22 +1669,50 @@ with (security_invoker = on) as
       where device_id = 'fb-mejl' and denials > 0
         and created_at > (extract(epoch from now()) * 1000)::bigint - 7 * 24 * 3600 * 1000)
                                                                  as nedrostade_veckan,
-    -- Notiskedjan. Tre tal som skiljer "det ringde inte för att det inte hänt
-    -- något" från "det ringde inte för att kedjan är trasig":
-    --   notiser_dygn   noll trots rapporter_dygn > 0 = något är fel.
-    --   sparrade_dygn  spärrarna gör sitt jobb. Högt tal = livlig grupp.
-    --   notis_fel      ingen url, ingen pg_net, eller ett svar som inte gick fram.
+    -- Notiskedjan. Talen skiljer "det ringde inte för att det inte hänt
+    -- något" från "det ringde inte för att kedjan är trasig". Det gjorde de
+    -- INTE tidigare: kolumnen hette notiser_dygn och räknade utfall
+    -- 'skickad', ett värde som skrevs direkt efter net.http_post() och alltså
+    -- var sant även när nyckeln var fel, funktionen inte var utrullad, eller
+    -- noll människor hade slagit på gruppnotiser. Hälsovyn lyste grönt medan
+    -- ingenting nådde fram.
+    --
+    --   notiser_kvitterade_dygn  edge-funktionen svarade 2xx. Så nära "gick
+    --                            fram" som databasen kan komma — den vet inte
+    --                            om en telefon visade något.
+    --   notiser_koade_dygn       hos pg_net, svar ännu inte avläst. Står talet
+    --                            still och kvitterade är noll: kör
+    --                            fbmejl_notis_stam_av(), eller så är den inte
+    --                            schemalagd.
+    --   ingen_mottagare_dygn     omgångar där noll prenumeranter hade
+    --                            gruppnotiser på. Inget skickades, och det är
+    --                            inte ett fel — men det är svaret på "varför
+    --                            ringde det aldrig".
+    --   sparrade_dygn            spärrarna gör sitt jobb. Högt tal = livlig grupp.
+    --   notis_fel                ingen url, ingen pg_net, eller ett svar som
+    --                            inte gick fram.
+    --   notis_okand_dygn         pg_net hann städa bort svaret först. Vet inte.
     (select count(*) from public.fbmejl_notis_logg
-      where utfall = 'skickad' and skickat_at > now() - interval '24 hours') as notiser_dygn,
+      where utfall = 'kvitterad' and skickat_at > now() - interval '24 hours') as notiser_kvitterade_dygn,
     (select count(*) from public.fbmejl_notis_logg
-      where utfall = 'sparrad' and skickat_at > now() - interval '24 hours') as sparrade_dygn,
+      where utfall = 'koad' and skickat_at > now() - interval '24 hours')      as notiser_koade_dygn,
     (select count(*) from public.fbmejl_notis_logg
-      where utfall = 'fel'     and skickat_at > now() - interval '24 hours') as notis_fel,
-    (select n.senaste_fel from public.fbmejl_notis_lage n where n.id = 1)    as notis_senaste_fel,
-    (select n.odelade     from public.fbmejl_notis_lage n where n.id = 1)    as odelade_varningar,
-    public.fbmejl_gruppnotis_antal()                                         as gruppnotis_mottagare
+      where utfall = 'ingen-mottagare'
+        and skickat_at > now() - interval '24 hours')                          as ingen_mottagare_dygn,
+    (select count(*) from public.fbmejl_notis_logg
+      where utfall = 'sparrad' and skickat_at > now() - interval '24 hours')   as sparrade_dygn,
+    (select count(*) from public.fbmejl_notis_logg
+      where utfall = 'fel'     and skickat_at > now() - interval '24 hours')   as notis_fel,
+    (select count(*) from public.fbmejl_notis_logg
+      where utfall = 'okand'   and skickat_at > now() - interval '24 hours')   as notis_okand_dygn,
+    (select n.senaste_fel from public.fbmejl_notis_lage n where n.id = 1)      as notis_senaste_fel,
+    (select n.odelade     from public.fbmejl_notis_lage n where n.id = 1)      as odelade_varningar,
+    public.fbmejl_gruppnotis_antal()                                           as gruppnotis_mottagare
   from public.fbmejl_brygga b
   where b.id = 1;
+
+revoke all on public.fbmejl_halsa from anon, authenticated;
+grant select on public.fbmejl_halsa to service_role;
 
 commit;
 
@@ -1258,6 +1746,42 @@ begin
   raise notice 'Städning av fbmejl_ko och fbmejl_lasta schemalagd 04:55 varje natt.';
 exception when others then
   raise notice 'Kunde inte schemalägga städningen (%). Kör funktionen manuellt då och då.', sqlerrm;
+end $$;
+
+-- Avstämningen av notisloggen. Utan den står varje rad kvar som 'koad' och
+-- fbmejl_halsa kan inte svara på om notiserna gick fram — bara på att de
+-- lämnades över till pg_net, vilket är precis den halvsanning som hela
+-- omskrivningen av fbmejl_notis_ut() handlar om att bli av med.
+--
+-- Var femte minut. Tätare behövs inte: pg_net kör anropet inom sekunder, och
+-- svaret ligger kvar i net._http_response i ett par timmar. Glesare än en
+-- timme är däremot farligt — då hinner pg_net städa bort svaret och varje rad
+-- blir 'okand'.
+--
+-- Går det inte att schemalägga är det ingen katastrof: kör
+-- "select public.fbmejl_notis_stam_av();" när du vill veta.
+
+do $$
+begin
+  perform 1 from pg_extension where extname = 'pg_cron';
+  if not found then
+    raise notice 'pg_cron saknas — kör "select public.fbmejl_notis_stam_av();" manuellt för att stämma av notisloggen.';
+    return;
+  end if;
+  perform 1 from cron.job where jobname = 'polisvakt-fbmejl-notisavstamning';
+  if found then perform cron.unschedule('polisvakt-fbmejl-notisavstamning'); end if;
+  -- Minutlistan är utskriven med flit istället för det korta uttrycket med
+  -- stjärna-snedstreck-fem. Den formen innehåller tecknen som avslutar en
+  -- blockkommentar, och den kombinationen har redan dödat en körning i det
+  -- här projektet en gång — se varningen längst upp i filen. Filen har inga
+  -- blockkommentarer idag, men den dagen någon lägger till en ska den här
+  -- raden inte vara den som spränger.
+  perform cron.schedule('polisvakt-fbmejl-notisavstamning',
+                        '0,5,10,15,20,25,30,35,40,45,50,55 * * * *',
+                        'select public.fbmejl_notis_stam_av();');
+  raise notice 'Avstämning av notisloggen schemalagd var femte minut.';
+exception when others then
+  raise notice 'Kunde inte schemalägga notisavstämningen (%). Kör fbmejl_notis_stam_av() manuellt.', sqlerrm;
 end $$;
 
 -- Tömningen av kön, om du vill ha den i databasen istället för i Dashboard.
@@ -1411,8 +1935,39 @@ end $$;
 --      delete from public.fbmejl_lasta where nyckel like 'fbm:test:%';
 --      delete from public.reports      where external_id like 'fbm:test:%';
 --
+-- 7b. Message-ID-kontraktet. Ska ge fyra gånger samma sträng, alltså true:
+--
+--      select public.fbmejl_normalisera_msgid('<ABC@facebookmail.com>')
+--             = public.fbmejl_normalisera_msgid('abc@facebookmail.com')
+--        and public.fbmejl_normalisera_msgid('  <AbC@facebookmail.com>  ')
+--             = 'abc@facebookmail.com'
+--        and public.fbmejl_normalisera_msgid('') is null
+--        and public.fbmejl_normalisera_msgid(null) is null;
+--
+--    Och på riktigt, hela vägen: lägg in ett mejl med vinkelparenteser, avfärda
+--    det med den normaliserade formen, och se att kön faktiskt markerades.
+--    Sista frågan ska ge status 'klar', inte 'ny':
+--
+--      select public.fbmejl_ko_in(jsonb_build_array(jsonb_build_object(
+--        'message_id','<TEST-NORM@facebookmail.com>',
+--        'from','notification@facebookmail.com',
+--        'subject','Anna skrev i Här står polisen',
+--        'body','Polis står vid Erikslund','date', now()::text)));
+--
+--      select public.fbmejl_ko_avfard(
+--        jsonb_build_array('test-norm@facebookmail.com'), 'bortsorterad');
+--
+--      select message_id, status, skal from public.fbmejl_ko
+--       where message_id = 'test-norm@facebookmail.com';
+--
+--      delete from public.fbmejl_ko where message_id = 'test-norm@facebookmail.com';
+--
 -- 8. Notisen. Slå först på gruppnotiser för din egen telefon — byt ut
---    device_id mot ditt eget, det står i appens inställningar:
+--    device_id mot ditt eget, det står i appens inställningar.
+--
+--    Utan minst en mottagare skickas ingenting alls, och svaret blir
+--    skal = 'ingen-mottagare'. Det är med flit: notisloggen ska inte påstå
+--    att något gick ut när noll människor lyssnar.
 --
 --      update public.push_subscriptions
 --         set gruppnotiser = true
@@ -1447,6 +2002,32 @@ end $$;
 --
 --      select count(*) from public.fbmejl_notis_logg
 --       where skickat_at > now() - interval '1 minute';
+--
+-- 9b. Notisloggen ljuger inte längre. Efter en riktig omgång ska raden stå
+--     som 'koad' och sedan bli 'kvitterad' eller 'fel' — aldrig 'skickad':
+--
+--      select id, skickat_at, antal, utfall, net_id, left(skal, 120)
+--        from public.fbmejl_notis_logg order by skickat_at desc limit 10;
+--
+--      select public.fbmejl_notis_stam_av();
+--
+--     Står allt kvar som 'koad' efter avstämningen saknas pg_net, eller så
+--     hann svaret städas bort. Står det 'fel' med "HTTP 401" är
+--     app.service_role_key fel; "HTTP 404" betyder att edge-funktionen
+--     fbmejl-push inte är utrullad.
+--
+-- 9c. Reglaget för gruppnotiser. Ska ge ok = false och skal = 'ingen-rad' för
+--     en endpoint som inte finns, alltså precis det fall som tidigare gav ett
+--     tyst "På" i appen:
+--
+--      select public.fbmejl_satt_gruppnotiser('https://finns.inte/x', 'nagon', true);
+--      select public.fbmejl_har_gruppnotiser('https://finns.inte/x', 'nagon');
+--
+--     Och med din egen endpoint (hämta den ur appens inställningar) ska de
+--     två svaren stämma överens:
+--
+--      select public.fbmejl_satt_gruppnotiser('<din-endpoint>', '<ditt-device-id>', true);
+--      select public.fbmejl_har_gruppnotiser('<din-endpoint>', '<ditt-device-id>');
 --
 -- 10. Hälsan, när bryggan väl går:
 --
