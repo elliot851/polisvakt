@@ -518,6 +518,11 @@ export class RouteGuide extends EventTarget {
         durationS: raw.duration,
       });
 
+      // Råsvaret sparas för navigeringen. Den behöver stegen, och de ska
+      // komma från exakt det här svaret — inte från ett eget anrop som kan
+      // ge en annan väg. Se kommentaren vid #fetchRoute.
+      this.rawRoute = raw;
+
       // Projektionerna hör till en viss rutt och måste räknas om.
       this._projections.clear();
       this._projRouteId = this.route.id;
@@ -562,15 +567,21 @@ export class RouteGuide extends EventTarget {
    * en avfartsslinga hamnar den hundratals meter fel — vilket är precis den
    * storleksordning hela korridorlogiken arbetar i.
    *
-   * steps och annotations stängs av. De skulle mångdubbla svaret utan att
-   * tillföra något: vi behöver geometrin, inte svängbeskrivningarna.
+   * steps=true numera, annotations fortfarande av.
+   *
+   * Svängbeskrivningarna används inte här — RouteGuide bryr sig bara om
+   * geometrin. De hämtas för navigeringens skull, och skälet att göra det i
+   * SAMMA anrop är viktigt: hämtade de två modulerna varsin rutt kunde OSRM
+   * svara med två olika vägar. Då varnar appen för polis längs väg A medan
+   * rösten säger svängar för väg B, och båda har rätt var för sig. Ett anrop,
+   * en rutt, en sanning.
    *
    * Två värdar, tre försök. En rutt som inte går att räkna om är samma sak som
    * ingen rutt, så det är värt att vara envis här.
    */
   async #fetchRoute(start, dest) {
     const coords = `${start.lon},${start.lat};${dest.lon},${dest.lat}`;
-    const qs = '?overview=full&geometries=geojson&alternatives=false&steps=false&annotations=false';
+    const qs = '?overview=full&geometries=geojson&alternatives=false&steps=true&annotations=false';
     let lastErr = null;
 
     for (let attempt = 0; attempt < 3; attempt++) {

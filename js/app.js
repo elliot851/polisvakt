@@ -39,6 +39,7 @@ import { Chatt, UTAN_OMRADE_TEXT } from './chatt.js';
 import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
 import * as Korvanor from './korvanor.js';
+import { Navigering, tolkaOsrmRutt } from './navigering.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -274,6 +275,7 @@ function wireGeo() {
     dashcam.overlay.speedKmh = fix.speedKmh;
     vakthund.notera(fix);
     chatt.notera(fix);
+    navFix(fix);
     updateSpeedo(fix);
     map.updateMe(fix);
     autoTheme(fix);
@@ -702,8 +704,17 @@ function wireRoute() {
     } catch { toast('Kunde inte beräkna rutten.', 5000); }
   });
 
-  routeGuide.addEventListener('route', () => { showRoute(); toast('Rutt klar.'); });
-  routeGuide.addEventListener('route-cleared', showRoute);
+  routeGuide.addEventListener('route', e => {
+    showRoute();
+    nyNavRutt(e.detail?.reason === 'recalc' ? 'omberakning' : 'ny');
+    toast('Rutt klar.');
+  });
+  routeGuide.addEventListener('route-cleared', () => {
+    showRoute();
+    nav.rensa();
+    renderNav(null);
+    map.rensaRutt();
+  });
   routeGuide.addEventListener('progress', showRoute);
   routeGuide.addEventListener('recalculating', () => toast('Du lämnade rutten — räknar om.'));
   routeGuide.addEventListener('error', e => toast(e.detail.message, 5000));
@@ -3025,6 +3036,146 @@ function wireSettingsUI() {
    */
 }
 
+
+
+/* ================= Navigering ================= */
+/*
+ * Svängbeskrivningar ovanpå ruttvarningarna.
+ *
+ * De två delar rutt med flit. rutt.js hämtar den, navigering.js får samma
+ * råsvar. Hämtade de varsin kunde OSRM svara med två olika vägar — appen
+ * varnar för polis längs väg A medan rösten säger svängar för väg B, och båda
+ * har rätt var för sig.
+ *
+ * Polisvarningarna går alltid först. En missad avfart kostar fem minuter; en
+ * missad fartkamera kostar tusentals kronor.
+ */
+
+const nav = new Navigering();
+
+/**
+ * Säg det navigeringen vill ha sagt.
+ *
+ * Varje yttrande bär ett bäst-före. Hamnar det i kö bakom en polisvarning och
+ * hinner bli gammalt ska det kastas, inte läsas — "sväng höger nu" tolv
+ * sekunder efter korsningen får föraren att leta efter en avtagsväg som inte
+ * finns.
+ */
+function talaNav(yttranden, nu = Date.now()) {
+  if (!settings.tts) return;
+  for (const y of yttranden || []) {
+    if (y.giltigTillTs && nu > y.giltigTillTs) continue;
+    speaker.say(y.text, { priority: y.prioritet ?? 0, interrupt: false });
+  }
+}
+
+function renderNav(t) {
+  const kort = $('navManover');
+  const bar = $('navAnkomst');
+  const varn = $('navVarning');
+  if (!kort) return;
+
+  if (!t || !nav.rutt) {
+    kort.hidden = true;
+    if (bar) bar.hidden = true;
+    if (varn) varn.hidden = true;
+    return;
+  }
+
+  if (varn) {
+    varn.hidden = !t.varning;
+    varn.textContent = t.varning || '';
+  }
+
+  const m = t.nastaManover;
+  if (t.lage === 'avvikande') {
+    kort.hidden = false;
+    $('navPil').textContent = '⟳';
+    $('navAvstand').textContent = 'Räknar om';
+    $('navGata').textContent = 'Du lämnade rutten';
+    $('navSedan').hidden = true;
+  } else if (t.framme) {
+    kort.hidden = false;
+    $('navPil').textContent = '⚑';
+    $('navAvstand').textContent = 'Framme';
+    $('navGata').textContent = nav.mal?.label || '';
+    $('navSedan').hidden = true;
+  } else if (m) {
+    kort.hidden = false;
+    $('navPil').textContent = m.symbol || '↑';
+    $('navAvstand').textContent = shortDistance(m.avstandM);
+    $('navGata').textContent = m.gata || m.kort || '';
+    $('navSedan').hidden = !t.efterfoljande;
+    $('navSedan').textContent = t.efterfoljande || '';
+  } else {
+    kort.hidden = true;
+  }
+
+  if (bar) {
+    // Klockslag, inte minuter kvar.
+    bar.hidden = !t.ankomstTs;
+    if (t.ankomstTs) {
+      bar.textContent = 'Framme ' + new Date(t.ankomstTs)
+        .toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+    }
+  }
+}
+
+/** Rita rutten, med den körda delen dämpad. */
+function ritaNavRutt(zoomaUt = false) {
+  const r = nav.publikRutt();
+  if (!r) { map.rensaRutt(); return; }
+  map.ritaRutt(r, nav.linjeDelad());
+  if (zoomaUt) map.visaHelaRutten(r);
+}
+
+/**
+ * Koppla ihop rutten från rutt.js med navigeringen.
+ *
+ * Anropas när RouteGuide fått en ny rutt. Råsvaret innehåller stegen eftersom
+ * steps=true numera — utan dem finns geometrin men inga svängar, och då säger
+ * navigeringen ingenting.
+ */
+function nyNavRutt(orsak = 'ny') {
+  const raw = routeGuide.rawRoute;
+  const pr = routeGuide.publicRoute?.();
+  if (!raw || !pr) { nav.rensa(); renderNav(null); map.rensaRutt(); return; }
+
+  try {
+    const tolkad = tolkaOsrmRutt(raw);
+    const { tal } = nav.satt(
+      { ...tolkad, mal: routeGuide.destination },
+      { nu: Date.now(), orsak });
+    talaNav(tal);
+    ritaNavRutt(orsak === 'ny');
+    renderNav(nav.tillstand(Date.now()));
+  } catch (e) {
+    // Navigeringen får aldrig sänka varningarna. Går tolkningen fel kör
+    // appen vidare utan svängbeskrivningar i stället för att gå sönder.
+    nav.rensa();
+    renderNav(null);
+    console.warn('Navigering kunde inte starta:', e.message);
+  }
+}
+
+/** Mata navigeringen med varje GPS-fix. Anropas ur geo-lyssnaren. */
+function navFix(fix) {
+  if (!nav.rutt) return;
+  const nu = Date.now();
+  let t;
+  try { t = nav.uppdatera({ ...fix, ts: nu }, nu); } catch { return; }
+
+  talaNav(t.tal, nu);
+  renderNav(t);
+
+  // Rita om linjen så den körda delen dämpas efter hand.
+  const r = nav.publikRutt();
+  if (r) map.ritaRutt(r, nav.linjeDelad());
+
+  // Modulen hämtar aldrig själv. Den säger till, appen gör anropet — och
+  // RouteGuide äger hämtningen, så båda får samma nya väg.
+  if (t.begarOmberakning) routeGuide.recalculate?.(t.begarOmberakning);
+}
 
 /* ================= Chatt ================= */
 /*

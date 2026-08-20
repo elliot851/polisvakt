@@ -215,10 +215,25 @@
       </button>
     </div>
     <ul class="route-results" id="routeResults"></ul>
+    <!-- Manöverskylten. Stor pil, stort avstånd, gatunamnet under.
+         Det här läses i ögonvrån i nittio — allt annat än stort är fel. -->
+    <div class="nav-manover" id="navManover" hidden>
+      <span class="nav-pil" id="navPil">↑</span>
+      <div class="nav-text">
+        <b id="navAvstand">—</b>
+        <span id="navGata"></span>
+        <small id="navSedan" hidden></small>
+      </div>
+    </div>
+
     <div class="route-bar" id="routeBar" hidden>
       <span id="routeText"></span>
+      <!-- Klockslag, inte "38 min kvar". Ingen ska behöva räkna i huvudet
+           bakom en ratt för att veta när de är framme. -->
+      <span class="nav-ankomst" id="navAnkomst" hidden></span>
       <button class="route-stop" id="routeClear" type="button">Avsluta</button>
     </div>
+    <p class="nav-varning" id="navVarning" hidden></p>
   </div>
   </div>
 

@@ -107,6 +107,7 @@ export class HazardMap extends EventTarget {
     });
 
     this.markers = new Map();
+    this.manoverMarkers = new Map();
     this.meMarker = null;
     this.accuracyCircle = null;
     this.follow = true;
@@ -267,6 +268,77 @@ export class HazardMap extends EventTarget {
     for (const [id, m] of this.markers) {
       if (!seen.has(id)) { this.map.removeLayer(m); this.markers.delete(id); }
     }
+  }
+
+  /* ---- Ruttlinjen -------------------------------------------------------
+   *
+   * Två linjer ovanpå varandra: en mörk under och en blå över. En ensam blå
+   * linje försvinner rakt in i motorvägarnas gula och de gröna fälten på
+   * kartan — den mörka kanten är det som gör den läsbar i en bil, i solsken,
+   * i ögonvrån.
+   *
+   * Linjerna hamnar i Leaflets overlayPane, alltså UNDER farornålarna. Det är
+   * rätt ordning: rutten är bakgrund, en polis framför dig är inte det.
+   */
+  ritaRutt(rutt, delad = null) {
+    if (!rutt?.punkter?.length) { this.rensaRutt(); return; }
+
+    const kvar = delad?.kvar?.length ? delad.kvar : rutt.punkter;
+    const passerad = delad?.passerad?.length ? delad.passerad : [];
+
+    if (!this._ruttLager) {
+      this._ruttLager = {
+        kant:     L.polyline([], { color: '#06121f', weight: 12, opacity: .9, lineJoin: 'round' }).addTo(this.map),
+        passerad: L.polyline([], { color: '#5b6b7d', weight: 7, opacity: .55, lineJoin: 'round' }).addTo(this.map),
+        kvar:     L.polyline([], { color: '#3d9bff', weight: 7, opacity: .95, lineJoin: 'round' }).addTo(this.map),
+      };
+    }
+    this._ruttLager.kant.setLatLngs(rutt.punkter);
+    this._ruttLager.passerad.setLatLngs(passerad);
+    this._ruttLager.kvar.setLatLngs(kvar);
+
+    // Svängpilarna. pv-upright motroterar symbolen när kartan är vriden —
+    // utan den ligger pilarna på sidan så fort man kör åt något annat håll
+    // än norrut, och en pil som pekar fel är värre än ingen pil.
+    const vill = new Set();
+    for (const m of rutt.manovrar || []) {
+      if (!m.punkt || !m.symbol) continue;
+      vill.add(m.index);
+      let mk = this.manoverMarkers.get(m.index);
+      if (!mk) {
+        mk = L.marker(m.punkt, {
+          icon: L.divIcon({
+            className: 'manover-ikon',
+            html: `<span class="pv-upright">${m.symbol}</span>`,
+            iconSize: [26, 26], iconAnchor: [13, 13],
+          }),
+          interactive: false,
+        }).addTo(this.map);
+        this.manoverMarkers.set(m.index, mk);
+      } else {
+        mk.setLatLng(m.punkt);
+      }
+    }
+    for (const [i, mk] of this.manoverMarkers) {
+      if (!vill.has(i)) { this.map.removeLayer(mk); this.manoverMarkers.delete(i); }
+    }
+  }
+
+  rensaRutt() {
+    if (this._ruttLager) {
+      for (const l of Object.values(this._ruttLager)) this.map.removeLayer(l);
+      this._ruttLager = null;
+    }
+    for (const mk of this.manoverMarkers.values()) this.map.removeLayer(mk);
+    this.manoverMarkers.clear();
+  }
+
+  /** Zooma så hela rutten syns. Används en gång, när rutten precis lagts in. */
+  visaHelaRutten(rutt) {
+    if (!rutt?.punkter?.length) return;
+    try {
+      this.map.fitBounds(L.latLngBounds(rutt.punkter), { padding: [40, 40], maxZoom: 15 });
+    } catch {}
   }
 
   /** Ritar om med senast kända lista. Används när kartan panorerats. */
