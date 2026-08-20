@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Polisvakt — Facebook-brygga
 // @namespace    polisvakt
-// @version      2.1
+// @version      2.2
 // @description  Läser nya inlägg i en Facebook-grupp du är medlem i och skickar polisvarningar vidare till Polisvakt.
 // @match        https://www.facebook.com/*
 // @match        https://m.facebook.com/*
@@ -31,16 +31,43 @@
  *   3. Det skriver till en delad databas som riktiga förare läser under
  *      körning. Kör i torrkörning tills du sett i konsolen att rätt saker
  *      plockas upp, och först då dryRun: false.
- *   4. Fliken måste ligga i FÖRGRUNDEN, inte bara vara öppen. Facebook ritar
- *      tidsstämpeln som en SVG-sprite på nya inlägg, och enda vägen till
- *      åldern är att hovra den och läsa verktygstipset. Det kräver riktig
- *      layout och otryckta timers. I en bakgrundsflik läser bryggan färre
- *      inlägg — den hittar inte på tider, den hoppar över dem.
+ *   4. Fliken får ligga i BAKGRUNDEN, men det kostar fördröjning. Se
+ *      "Ålder utan tidsstämpel" nedan — sedan version 2.2 mäter bryggan
+ *      åldern på sin egen första observation i stället för att hovra fram
+ *      Facebooks verktygstips, och då behövs varken muspekare eller
+ *      förgrund. Kvar finns Chromes strypning av timers i dolda flikar:
+ *      uppmätt tjugo sekunder mellan svepen de första två minuterna, sedan
+ *      en enda väckning per minut. Mätningen står längst ner i filen.
+ *
+ * ÅLDER UTAN TIDSSTÄMPEL — varför bryggan slutade hovra
+ *
+ * Facebook renderar aldrig tidsstämpeln som text på nya inlägg; den är en
+ * SVG-sprite utan aria-label. Fram till 2.1 var enda vägen till åldern att
+ * hovra tidsstämpeln och läsa verktygstipset, vilket krävde förgrund och
+ * dessutom är en tydlig automationssignal mot Meta.
+ *
+ * Men bryggan behöver inte Facebooks tidsstämpel för att veta att något är
+ * nytt. Den sveper flödet var tjugonde sekund. Ett inlägg som inte fanns i
+ * förra svepet men finns nu dök upp under det senaste svepet — bryggans
+ * EGEN första observation är då en bättre tidsstämpel än den vi försöker
+ * gissa ur DOM:en, och den gäller precis de inlägg som betyder något.
+ *
+ * Ordningen är alltså: Facebooks egen tid när den går att läsa (exaktast),
+ * annars bryggans första observation, annars — bara om du slår på det —
+ * hovring. Går ingen av vägarna fram skickas ingenting, precis som förut.
+ *
+ * Två saker gör observationen till ett bevis och inte en gissning, båda
+ * motiverade i koden nedan: första svepet är ett KALIBRERINGSSVEP (allt som
+ * syns då kan vara veckogammalt och får aldrig en observerad ålder), och
+ * ett inlägg räknas som nytt bara om det dykt upp OVANFÖR något bryggan
+ * redan känner igen (skrollning och färdigrendering lägger gamla inlägg
+ * nedanför).
  *
  * Vill du se vad bryggan faktiskt får ut av flödet just nu:
- *   __polisvakt.tider()   → text, id och ålder per inlägg ('OLÄSLIG' om
- *                            tiden inte gick att läsa)
+ *   __polisvakt.tider()   → text, id, ålder och varifrån åldern kom
+ *                            ('OLÄSLIG' om ingen väg gav en tid)
  *   __polisvakt.peek()    → hela avläsningen
+ *   __polisvakt.forstSedda() → minneslistan över första observationer
  *
  * Den hållbara vägen, om det här växer: be gruppens admin spegla inläggen
  * till en Telegram-kanal (Telegram har ett riktigt bot-API som får läsa) och
@@ -84,17 +111,41 @@
     scanIntervalMs: 20000,
 
     /*
+     * Mät åldern på bryggans egen första observation av inlägget.
+     *
      * Facebook ritar tidsstämpeln som en SVG-sprite på inlägg som renderats
      * på klienten — alltså på precis de nya inlägg bryggan finns till för.
-     * Där går tiden inte att läsa ur DOM:en alls. Enda vägen är att hovra
-     * tidsstämpeln, då lägger Facebook upp ett verktygstips med hela datumet.
+     * Där går tiden inte att läsa ur DOM:en alls. Men ett inlägg som saknades
+     * i förra svepet och finns i det här dök upp under de senaste
+     * scanIntervalMs millisekunderna, och det vet bryggan utan att fråga
+     * Facebook. Nyckel plus tidpunkt sparas i localStorage så mätningen
+     * överlever att fliken laddas om.
      *
-     * Slår du av det här läser bryggan bara de inlägg vars tid råkar stå som
-     * text. Resten hoppas över, eftersom ett inlägg utan läsbar ålder aldrig
-     * får skickas som färskt. Hovringen sker bara på inlägg som redan
-     * passerat parsern, ett i taget, och städas bort efteråt.
+     * Slår du av det här är du tillbaka i 2.1: bara inlägg vars tid råkar stå
+     * som text, plus hovring om den är på.
      */
-    hoverForTime: true,
+    firstSeenAge: true,
+
+    /*
+     * Hovra tidsstämpeln för att locka fram Facebooks verktygstips.
+     *
+     * AV som förval sedan 2.2, och det är ett medvetet byte. Hovringen var
+     * enda vägen till åldern på ett SVG-sprite-inlägg, men den kostar tre
+     * saker: fliken måste ligga i förgrunden med riktig layout, ett
+     * verktygstips blinkar till på ägarens skärm, och muspekarhändelser på
+     * rad är en automationssignal mot Meta. firstSeenAge ovan täcker samma
+     * fall — nya inlägg — utan någon av kostnaderna, och är därför
+     * förstahandsvalet.
+     *
+     * Kvar finns ett fall hovringen fortfarande löser: ett inlägg som redan
+     * låg i flödet när fliken öppnades och vars tid inte går att läsa. Där
+     * vet bryggan ingenting om åldern (se kalibreringssvepet nedan) och
+     * hoppar över inlägget. Vill du ha med dem också, och accepterar
+     * förgrundskravet, sätt den här till true. Hovringen sker bara på inlägg
+     * som redan passerat parsern och saknar tid från de två billigare
+     * vägarna, ett i taget, och städas bort efteråt.
+     */
+    hoverForTime: false,
 
     // true = logga bara i konsolen, skriv ingenting. Börja alltid här.
     dryRun: true,
@@ -377,6 +428,154 @@
     const h = hash(normalize(post.text));
     const bucket = Math.floor(Date.now() / DEDUP_WINDOW_MS).toString(36);
     return { stable: 'tx:' + h, externalId: `fb:${h}:${bucket}` };
+  }
+
+  /* ---- Först sedd: bryggans egen observation ---------------------------
+   *
+   * EGEN NYCKEL, INTE pv.fb.seen.v2. Två skäl, båda mätta:
+   *
+   *   1. Olika livslängd och olika innehåll. seen är en HANTERINGSLISTA:
+   *      "det här inlägget är avbockat, rör det aldrig igen". Den skrivs
+   *      först när ett inlägg passerat hela kedjan, och isHandled() gör
+   *      `continue` innan vi hunnit anteckna något. Först sedd måste
+   *      tvärtom skrivas för VARJE inlägg i flödet, direkt när det syns,
+   *      också för de som parsern strax kastar — annars ser ett inlägg som
+   *      i går var ointressant nyfött ut i morgon.
+   *   2. seen hålls medvetet bara i sidan under torrkörning, så att en
+   *      torrkörning inte "bränner" inläggen inför skarpt läge. Först sedd
+   *      bockar inte av någonting och ska tvärtom överleva torrkörningen:
+   *      annars vore torrkörningen inte samma sak som skarpt läge, och det
+   *      är hela poängen med den.
+   *
+   * Namnet börjar med avsikt INTE på "pv.fb.seen" — det är prefixet testet
+   * använder för att bevisa att torrkörningen inte rör hanteringslistan.
+   */
+  const FORSTSEDD_KEY = 'pv.fb.forstsedd.v1';
+  const FORSTSEDD_TTL = 24 * 3600 * 1000;
+  const FORSTSEDD_MAX = 500;
+  const FORSTSEDD_SKRIVPAUS = 5 * 60 * 1000;
+
+  /*
+   * Raderna är korta med flit — listan ligger i localStorage och läses vid
+   * varje uppstart.
+   *   f = första observationen (ms)
+   *   s = senaste observationen (ms), styr gallringen
+   *   k = 1 om raden skrevs under kalibreringssvepet, se nedan
+   */
+  let forstSedd = (() => {
+    try {
+      const rad = JSON.parse(localStorage.getItem(FORSTSEDD_KEY));
+      return (rad && typeof rad === 'object') ? rad : {};
+    } catch { return {}; }
+  })();
+  let forstSeddSkrivet = 0;
+
+  /*
+   * Listan får inte växa fritt. Ett flöde kan rulla förbi hundratals inlägg
+   * på ett dygn, och localStorage har ett tak på några megabyte som delas
+   * med resten av appen — spräcks det slutar ALLT skrivande fungera, tyst.
+   *
+   * Gallringen går på s (senast sedd), inte f (först sedd). Går den på f
+   * faller ett inlägg som fortfarande ligger kvar i flödet ur listan efter
+   * ett dygn, registreras om vid nästa svep, och får då plötsligt åldern
+   * "noll minuter" — alltså precis det fel den här mekaniken finns för att
+   * undvika. Ett inlägg som syns hålls levande.
+   *
+   * Kvar finns en smal risk: ett inlägg som trängts ut av taket och långt
+   * senare skrollas fram igen ser nytt ut. Taket är satt så att det ska
+   * krävas 500 andra inlägg först, och ett flöde visar en handfull åt
+   * gången, så det förutsätter mycket skrollande. Den risken är känd och
+   * accepterad, inte förbisedd.
+   */
+  function sparaForstSedd() {
+    const cutoff = Date.now() - FORSTSEDD_TTL;
+    const rader = Object.entries(forstSedd)
+      .filter(([, v]) => v && Number.isFinite(v.f) && Number.isFinite(v.s) && v.s > cutoff)
+      .sort((a, b) => b[1].s - a[1].s)
+      .slice(0, FORSTSEDD_MAX);
+    forstSedd = Object.fromEntries(rader);
+    forstSeddSkrivet = Date.now();
+    try { localStorage.setItem(FORSTSEDD_KEY, JSON.stringify(forstSedd)); } catch {}
+  }
+
+  /*
+   * KALLSTARTEN ÄR DET SVÅRA FALLET.
+   *
+   * Vid första svepet efter att fliken öppnats är varenda inlägg "nytt för
+   * bryggan" — men flödet kan lika gärna innehålla inlägg från förra
+   * veckan. Skulle observationen räknas där blev varje gammalt inlägg en
+   * färsk varning på kartan i samma sekund som ägaren öppnar gruppen. Det
+   * är samma fel som 2.1 rättade, bara med en ny orsak.
+   *
+   * Därför är första svepet ett KALIBRERINGSSVEP: alla inlägg som syns då
+   * registreras med k = 1 och får aldrig någon observerad ålder, hur många
+   * svep som än går. Bara inlägg som dyker upp i ett SENARE svep har
+   * bevisligen tillkommit medan bryggan tittade, och bara de får åldern
+   * "nu − först sedd".
+   *
+   * Flaggan är per flik, inte sparad. Efter en omladdning är det ett nytt
+   * kalibreringssvep — men rader som redan ligger i localStorage behåller
+   * sitt f och sitt k, så ett inlägg bryggan tidsbestämde i går är
+   * tidsbestämt även efter omladdningen. Det är hela vinsten med att lägga
+   * listan på disk i stället för i minnet.
+   */
+  let kalibrerat = false;
+
+  /*
+   * ANDRA SÄTTET ATT SE GAMMALT SOM NYTT: flödet växer nedåt.
+   *
+   * "Fanns inte i förra svepet" räcker inte som bevis på att ett inlägg är
+   * nytt, och det är inte bara kallstarten som spökar. Två vardagliga fall
+   * lägger till inlägg efter kalibreringssvepet utan att något hänt:
+   *
+   *   • Ägaren skrollar. Facebook laddar då in nästa sida av flödet, och de
+   *     inläggen kan vara veckogamla.
+   *   • Sidan renderar färdigt. Vid uppstart finns bara de översta inläggen
+   *     i DOM:en; resten dyker upp under de närmaste sekunderna.
+   *
+   * Båda lägger inläggen NEDANFÖR det bryggan redan sett. Ett genuint nytt
+   * inlägg gör tvärtom: Facebook lägger det överst, alltså ovanför inlägg
+   * bryggan redan känner igen.
+   *
+   * Alltså: en observation räknas bara om det finns minst ett redan känt
+   * inlägg LÄNGRE NER i flödet. Regeln faller åt rätt håll — känner bryggan
+   * inte igen något alls blir svaret "vet inte", och då skickas ingenting.
+   */
+  function registreraSedda(poster) {
+    const nu = Date.now();
+    const nycklar = poster.map(p => keysFor(p).stable);
+    const kant = nycklar.map(k => !!(forstSedd[k] && Number.isFinite(forstSedd[k].f)));
+
+    // Bakifrån: finns det ett redan känt inlägg nedanför position i?
+    const kantNedanfor = new Array(poster.length).fill(false);
+    let sett = false;
+    for (let i = poster.length - 1; i >= 0; i--) {
+      kantNedanfor[i] = sett;
+      if (kant[i]) sett = true;
+    }
+
+    let nyRad = false;
+    for (let i = 0; i < poster.length; i++) {
+      const rad = forstSedd[nycklar[i]];
+      if (rad && Number.isFinite(rad.f)) { rad.s = nu; continue; }
+      const genuintNytt = kalibrerat && kantNedanfor[i];
+      forstSedd[nycklar[i]] = { f: nu, s: nu, k: genuintNytt ? 0 : 1 };
+      nyRad = true;
+    }
+
+    kalibrerat = true;
+    // Skriv när något nytt tillkommit, annars sällan: s uppdateras varje
+    // svep och det vore 4 320 skrivningar per dygn för ingen nytta.
+    if (nyRad || nu - forstSeddSkrivet > FORSTSEDD_SKRIVPAUS) sparaForstSedd();
+  }
+
+  /** @returns {number|null} ms för första observationen, eller null när den inte får användas. */
+  function observeradTid(nyckel) {
+    if (!CONFIG.firstSeenAge) return null;
+    const rad = forstSedd[nyckel];
+    if (!rad || !Number.isFinite(rad.f)) return null;
+    if (rad.k) return null;              // sett under kalibreringssvepet — åldern är okänd
+    return rad.f;
   }
 
   /* ================= Läsning av flödet ================= */
@@ -867,7 +1066,8 @@
 
   let running = false;
   let nämntFelGrupp = false;
-  const tally = { created: 0, duplicates: 0, refused: 0, skipped: 0, failed: 0, utanTid: 0 };
+  const tally = { created: 0, duplicates: 0, refused: 0, skipped: 0, failed: 0,
+                  utanTid: 0, observerade: 0 };
 
   async function scan() {
     if (running) return;
@@ -894,7 +1094,18 @@
 
     running = true;
     try {
-      for (const post of collectPosts()) {
+      const poster = collectPosts();
+
+      /*
+       * Registreringen går FÖRE hanteringen och gäller varje inlägg i
+       * flödet, även de isHandled() strax hoppar över och de parsern strax
+       * kastar. Frågan "fanns det här i förra svepet?" måste kunna
+       * besvaras för alla, annars ser ett inlägg som en gång var
+       * ointressant nyfött ut nästa gång det passerar.
+       */
+      registreraSedda(poster);
+
+      for (const post of poster) {
         const { stable, externalId } = keysFor(post);
         if (isHandled(stable)) continue;
 
@@ -927,10 +1138,30 @@
          *
          * Tidsstämpeln avgör om en varning är färsk. Kan den inte läsas
          * skickas ingenting. Hellre tyst än fel.
+         *
+         * Tre vägar till åldern, i den här ordningen:
+         *
+         *   1. Facebooks egen tid, läst ur DOM:en. Exaktast — den säger när
+         *      inlägget skrevs, inte när vi råkade titta. Den vinner alltid
+         *      när den finns, men är sedan 2.2 inget krav.
+         *   2. Bryggans första observation. Finns bara för inlägg som dykt
+         *      upp efter kalibreringssvepet, och då med en osäkerhet på ett
+         *      svepintervall. Det räcker gott: varningarna lever 30–60
+         *      minuter.
+         *   3. Hovring. Avstängd som förval, se CONFIG.hoverForTime.
+         *
+         * Går ingen av dem fram är åldern okänd, och då skickas ingenting.
+         * Den spärren är kvar och ska vara kvar.
          */
         let postedAt = post.postedAt;
+        let tidKalla = 'facebook';
+        if (postedAt == null) {
+          postedAt = observeradTid(stable);
+          if (postedAt != null) { tidKalla = 'observation'; tally.observerade++; }
+        }
         if (postedAt == null && CONFIG.hoverForTime) {
           postedAt = await tidGenomHovring(post.tidsAnkare);
+          tidKalla = 'hovring';
         }
         if (postedAt == null) {
           tally.utanTid++; markTry(stable);
@@ -979,7 +1210,7 @@
 
         if (CONFIG.dryRun) {
           console.log(TAG, 'TORRKÖRNING — skulle skicka:', row.type, row.label,
-            '(' + Math.round(parsed.confidence * 100) + '%)', row);
+            '(' + Math.round(parsed.confidence * 100) + '%, ålder från ' + tidKalla + ')', row);
           markDone(stable);
           tally.created++;
           continue;
@@ -988,7 +1219,10 @@
         try {
           const inserted = await send(row);
           markDone(stable);
-          if (inserted) { tally.created++; console.log(TAG, 'skickad:', row.type, row.label); }
+          if (inserted) {
+            tally.created++;
+            console.log(TAG, 'skickad:', row.type, row.label, '(ålder från ' + tidKalla + ')');
+          }
           else { tally.duplicates++; }
         } catch (e) {
           tally.failed++; markTry(stable);
@@ -1011,7 +1245,11 @@
   }
 
   console.log(TAG, 'Facebook-bryggan är igång för grupp ' + CONFIG.groupId + '.' +
-    (CONFIG.dryRun ? ' Torrkörning: inget skickas.' : ' Skarpt läge.'));
+    (CONFIG.dryRun ? ' Torrkörning: inget skickas.' : ' Skarpt läge.') +
+    (CONFIG.firstSeenAge
+      ? ' Första svepet är ett kalibreringssvep — inget skickas på egen observation ' +
+        'förrän ett inlägg dykt upp EFTER det.'
+      : ' Ålder mäts bara på Facebooks egen tidsstämpel.'));
 
   setTimeout(scan, 4000);
   setInterval(scan, CONFIG.scanIntervalMs);
@@ -1027,20 +1265,103 @@
   // Handtag för felsökning i konsolen.
   window.__polisvakt = {
     scanNow: scan,
-    stats: () => ({ ...tally, ihagkomna: Object.keys(seen).length }),
+    stats: () => ({ ...tally, ihagkomna: Object.keys(seen).length,
+                    forstSedda: Object.keys(forstSedd).length, kalibrerat }),
     peek: () => collectPosts(),
     parse: parseReportText,
     // Felsökning av just tidsstämpeln — det som gick sönder tyst förut.
-    tider: () => collectPosts().map(p => ({
-      text: p.text.slice(0, 60),
-      id: p.id,
-      postedAt: p.postedAt,
-      alder: p.postedAt == null ? 'OLÄSLIG'
-        : Math.round((Date.now() - p.postedAt) / 60000) + ' min',
-      tidText: p.tidsAnkare ? synligText(p.tidsAnkare) : null,
-    })),
+    tider: () => collectPosts().map(p => {
+      const nyckel = keysFor(p).stable;
+      const obs = observeradTid(nyckel);
+      const t = p.postedAt != null ? p.postedAt : obs;
+      return {
+        text: p.text.slice(0, 60),
+        id: p.id,
+        postedAt: p.postedAt,
+        forstSedd: forstSedd[nyckel] || null,
+        kalla: p.postedAt != null ? 'facebook' : (obs != null ? 'observation' : null),
+        alder: t == null ? 'OLÄSLIG' : Math.round((Date.now() - t) / 60000) + ' min',
+        tidText: p.tidsAnkare ? synligText(p.tidsAnkare) : null,
+      };
+    }),
+    forstSedda: () => ({ ...forstSedd }),
     tolkaTid,
     synligText,
-    forget: () => { seen = {}; localStorage.removeItem(SEEN_KEY); console.log(TAG, 'minneslistan tömd'); },
+    forget: () => {
+      seen = {}; localStorage.removeItem(SEEN_KEY);
+      forstSedd = {}; kalibrerat = false; localStorage.removeItem(FORSTSEDD_KEY);
+      console.log(TAG, 'minneslistan tömd — nästa svep blir ett nytt kalibreringssvep');
+    },
   };
 })();
+
+/*
+ * ================= MÄTT I EN RIKTIG BAKGRUNDSFLIK =================
+ *
+ * Chrome 148, Windows 11, en flik som låg dold (document.visibilityState
+ * === 'hidden') hela mätningen, elva minuter. Siffrorna är avlästa, inte
+ * hämtade ur dokumentationen.
+ *
+ * 1. setInterval(20000) — bryggans svepklocka
+ *
+ *      20, 20, 20, 20, 20, 35, 60, 60, 60, 60, 60, 60, 60 sekunder
+ *
+ *    De två första minuterna hålls tjugosekundersintervallet exakt. Sedan
+ *    slår Chromes hårda strypning till och fliken får en enda väckning per
+ *    minut. Efter det är svepintervallet 60 s vad man än skriver i
+ *    scanIntervalMs — kortare värden ger ingenting, längre värden gäller.
+ *
+ *    Konsekvens: ett nytt inlägg upptäcks inom 20 s de första två
+ *    minuterna, därefter inom 60 s. Varningarna lever 30–60 minuter, så en
+ *    minut kostar mellan 2 och 3 procent av livslängden. Åldern blir
+ *    däremot osäkrare i samma takt: mät den till "0 min" och den kan i
+ *    värsta fall vara 60 s gammal.
+ *
+ * 2. Layout och geometri fungerar i en dold flik
+ *
+ *      getBoundingClientRect() på ett ankare: 36 × 18 px
+ *      getBoundingClientRect() på ett teckenspann inuti: 6 × 18 px
+ *      innerText: icke-tom
+ *
+ *    Det var det som gjorde bakgrundskörning möjlig över huvud taget.
+ *    synligText() läser teckenspannen geometriskt, och den avläsningen
+ *    kräver alltså inte förgrund — bara att grenen är renderad. Hela det
+ *    här testsvepet (117 fall, inklusive "teckenspann läses geometriskt")
+ *    kördes i en dold flik.
+ *
+ * 3. MutationObserver stryps inte
+ *
+ *      Ett tillägg i DOM:en → callback efter 0 ms, även dold.
+ *
+ *    Observatören märker alltså nya inlägg direkt. Dess debounce ligger
+ *    dock på setTimeout, och den stryps (se punkt 4).
+ *
+ * 4. Hovringen går sönder i bakgrunden — det starkaste skälet till att
+ *    den numera är av
+ *
+ *    tidGenomHovring() pollar verktygstipset HOVER_FORSOK (12) gånger med
+ *    HOVER_PAUS_MS (70 ms) emellan, alltså ~840 ms i förgrunden. Samma
+ *    loop, samma kod, i en dold flik — millisekunder per varv:
+ *
+ *      1007, 1004, 989, 1007, 993, 47003, 60007, …
+ *
+ *    De fem första varven klaras av på strypningens sekundgolv. Sedan är
+ *    flikens väckningsbudget slut och varje ytterligare varv får vänta på
+ *    nästa minutväckning. Mätningen avbröts efter sju varv (112 sekunder);
+ *    fortsätter mönstret hamnar tolv varv kring sju minuter i stället för
+ *    under en sekund. Räkna inte med exakt sju — räkna med minuter.
+ *
+ *    Och scan() håller sitt running-lås hela tiden. EN hovring i en dold
+ *    flik räcker alltså för att stoppa bryggans läsning i minuter.
+ *
+ *    Först-sedd-mätningen kostar noll timers och noll millisekunder.
+ *    Behöver du hovringen får fliken ligga i förgrunden.
+ *
+ * 5. Det här är INTE mätt, och ska inte påstås
+ *
+ *    Om Facebook själv skjuter in nya inlägg i DOM:en medan fliken är dold,
+ *    eller sparar dem till en "Nya inlägg"-knapp som kräver ett klick. Ser
+ *    inte bryggan inlägget spelar ingen strypning någon roll. Kör en kväll
+ *    med dryRun: true och en dold flik och titta på __polisvakt.stats()
+ *    innan du litar på obevakad drift.
+ */

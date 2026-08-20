@@ -292,7 +292,11 @@ function bygg({
   groupId = GRUPP,
   sokvag = '/groups/' + GRUPP + '/',
   dryRun = false,
+  // Hovringen är AV i bryggans förval sedan 2.2. Testharnessen slår på den
+  // ändå, för att de fall som byggdes för att bevisa hovringen ska fortsätta
+  // bevisa den. Fall som gäller först-sedd skickar hoverForTime: false.
   hoverForTime = true,
+  firstSeenAge = true,
   poster = [],
   cache = {},
   struntaIBounded = false,
@@ -393,7 +397,7 @@ function bygg({
     pathname: sokvag,
     href: 'http://polisvakt-test.local' + sokvag,
   };
-  const fejkFonster = { __pvBryggaConfig: { groupId, dryRun, hoverForTime } };
+  const fejkFonster = { __pvBryggaConfig: { groupId, dryRun, hoverForTime, firstSeenAge } };
 
   const kor = new Function(
     'window', 'document', 'location', 'localStorage', 'fetch', 'console',
@@ -405,6 +409,19 @@ function bygg({
     fonster: fejkFonster,
     handtag: fejkFonster.__polisvakt,
     behallare,
+    // Ett inlägg som dyker upp MELLAN två svep — hela poängen med
+    // först-sedd-mätningen. Utan den här går det inte att skilja
+    // kalibreringssvepet från ett riktigt nytt inlägg.
+    //
+    // Positionen är inte kosmetisk. Facebook lägger nya inlägg ÖVERST;
+    // skrollning och färdigrendering lägger gamla inlägg NEDERST. Bryggan
+    // skiljer på de två, alltså måste testet kunna göra båda.
+    laggTill(p, overst = true) {
+      const nod = inlagg(p, behallare);
+      if (overst) flode.insertBefore(nod, komponera.nextSibling);
+      else flode.appendChild(nod);
+      return nod;
+    },
     natverk, supabase, nominatim, konsol, lagring, skrivningar,
     timers, intervaller, observatorer,
     konsoltext: () => konsol.map(r => r.text).join('\n'),
@@ -1233,6 +1250,322 @@ await T('gammalt men läsbart datum ger fortfarande ingen varning', async () => 
   });
   const n = m.supabase.length; m.stang();
   return n === 0 || 'skickade en varning från ' + tips;
+});
+
+/* =================================================================== */
+G('Ålder ur bryggans egen första observation');
+
+anm('Fram till 2.1 fanns bara en väg till åldern på ett nytt inlägg: hovra tidsstämpeln ' +
+    'och läsa Facebooks verktygstips. Det krävde att fliken låg i förgrunden, och ' +
+    'hovring på rad är en automationssignal mot Meta — alltså kunde bryggan inte köra ' +
+    'obevakad, vilket var hela poängen. 2.2 vänder på frågan: ett inlägg som saknades i ' +
+    'förra svepet och finns i det här dök upp under de senaste tjugo sekunderna. Det ' +
+    'vet bryggan utan att fråga Facebook.');
+
+const FS_KEY = 'pv.fb.forstsedd.v1';
+const fsCache = rader => ({ [FS_KEY]: JSON.stringify(rader) });
+const fsLast = m => JSON.parse(m.lagring.get(FS_KEY) || '{}');
+
+await T('hovringen är AV som förval i filen', () => {
+  const m = /hoverForTime:\s*(true|false)/.exec(KALLA);
+  if (!m) return 'hittar ingen hoverForTime i CONFIG';
+  return m[1] === 'false' || 'förvalet är fortfarande ' + m[1];
+});
+await T('först-sedd-mätningen är PÅ som förval', () => {
+  const m = /firstSeenAge:\s*(true|false)/.exec(KALLA);
+  if (!m) return 'hittar ingen firstSeenAge i CONFIG';
+  return m[1] === 'true' || 'förvalet är ' + m[1];
+});
+
+await T('kalibreringssvepet skickar ingenting', async () => {
+  // Allt är "nytt för bryggan" vid första svepet — men flödet kan innehålla
+  // inlägg från förra veckan. Skulle observationen räknas här blev varje
+  // gammalt inlägg en färsk varning i samma sekund som fliken öppnas.
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    poster: [
+      { text: 'Polis står vid Erikslund', id: '980001', tid: 'sprite' },
+      { text: 'Trafikkontroll vid Hälla', id: '980002', tid: 'sprite' },
+    ],
+  });
+  const n = m.supabase.length;
+  const s = m.handtag.stats();
+  m.stang();
+  if (n !== 0) return `${n} varningar skickades på kallstartens flöde`;
+  if (s.utanTid !== 2) return 'räknade utanTid=' + s.utanTid;
+  return s.observerade === 0 || 'använde observationen ' + s.observerade + ' gånger';
+});
+
+await T('kalibreringssvepet registrerar ändå allt som sett', async () => {
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    poster: [
+      { text: 'Polis står vid Erikslund', id: '980003', tid: 'sprite' },
+      // Nykterhetsinlägget kastas av parsern — men måste ändå registreras,
+      // annars ser det nyfött ut nästa gång det passerar.
+      { text: 'Alkohol kontroll vid Erikslund', id: '980004', tid: 'sprite' },
+    ],
+  });
+  const lista = fsLast(m);
+  m.stang();
+  const nycklar = Object.keys(lista).sort();
+  if (nycklar.length !== 2) return 'sparade ' + JSON.stringify(nycklar);
+  const kal = Object.values(lista).every(v => v.k === 1);
+  return kal || 'raderna saknar kalibreringsmärket: ' + JSON.stringify(lista);
+});
+
+// Ett gammalt inlägg som redan låg i flödet vid kalibreringen. Det skickas
+// aldrig självt (tre dygn gammalt), men det är ankaret bryggan känner igen
+// när ett nytt inlägg lägger sig ovanför.
+const ANKARE = { text: 'Trafikkontroll vid Hälla', id: '980100', alder: '3 d' };
+
+await T('inlägg som dyker upp i svep 2 får ålder ≈ 0', async () => {
+  const m = bygg({ groupId: GRUPP, hoverForTime: false, poster: [ANKARE] });
+  await m.handtag.scanNow();                     // svep 1: kalibrering
+  m.laggTill({ text: 'Polis står vid Erikslund', id: '980005', tid: 'sprite' });
+  await m.handtag.scanNow();                     // svep 2: genuint nytt, överst
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  const s = m.handtag.stats();
+  m.stang();
+  if (!r) return 'inget skickades trots att inlägget var nytt i svep 2';
+  const alder = Math.round((Date.now() - r.created_at) / 1000);
+  if (alder < 0 || alder > 3) return `ålder ${alder} s, väntade ~0`;
+  return s.observerade === 1 || 'observerade=' + s.observerade;
+});
+
+await T('samma sak utan permalänk — texthashen bär nyckeln', async () => {
+  const m = bygg({ groupId: GRUPP, hoverForTime: false, poster: [ANKARE] });
+  await m.handtag.scanNow();
+  m.laggTill({ text: 'Polis står vid Erikslund', tid: 'sprite' });   // inget id
+  await m.handtag.scanNow();
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  const nycklar = Object.keys(fsLast(m));
+  m.stang();
+  if (!r) return 'inget skickades';
+  return nycklar.some(k => k.startsWith('tx:')) || 'fick nycklarna ' + JSON.stringify(nycklar);
+});
+
+await T('inlägg som laddas in NEDANFÖR vid skrollning räknas inte som nytt', async () => {
+  // Skrollar ägaren laddar Facebook in nästa sida av flödet, och de inläggen
+  // kan vara veckogamla. De lägger sig under det bryggan redan sett — till
+  // skillnad från ett nytt inlägg, som Facebook lägger överst. Utan den
+  // skillnaden blir varje skrollning en skur av falska färska varningar.
+  const m = bygg({ groupId: GRUPP, hoverForTime: false, poster: [ANKARE] });
+  await m.handtag.scanNow();
+  m.laggTill({ text: 'Polis står vid Erikslund', id: '980017', tid: 'sprite' }, false);
+  await m.handtag.scanNow();
+  const n = m.supabase.length;
+  const rad = fsLast(m)['id:980017'];
+  const s = m.handtag.stats();
+  m.stang();
+  if (n !== 0) return `${n} varningar från ett inlägg som skrollades fram`;
+  if (!rad) return 'inlägget registrerades inte alls';
+  if (rad.k !== 1) return 'raden märktes som genuint ny: ' + JSON.stringify(rad);
+  return s.utanTid >= 1 || 'räknades inte som saknad tid: ' + JSON.stringify(s);
+});
+
+await T('sidan som renderar färdigt uppifrån och ner räknas inte som nya inlägg', async () => {
+  // Vid uppstart finns bara de översta inläggen i DOM:en. Resten dyker upp
+  // under de närmaste sekunderna — nedifrån räknat — och är lika gamla som
+  // de andra.
+  const m = bygg({ groupId: GRUPP, hoverForTime: false,
+                   poster: [{ text: 'Trafikkontroll vid Hälla', id: '980200', alder: '3 d' }] });
+  await m.handtag.scanNow();
+  for (const id of ['980018', '980019', '980020']) {
+    m.laggTill({ text: 'Polis står vid Erikslund ' + id, id, tid: 'sprite' }, false);
+  }
+  await m.handtag.scanNow();
+  const n = m.supabase.length;
+  m.stang();
+  return n === 0 || `${n} varningar ur en färdigrendering`;
+});
+
+await T('ett inlägg som fanns vid kalibreringen får aldrig observerad ålder', async () => {
+  // Två extra svep ändrar ingenting: bryggan såg det aldrig dyka upp, alltså
+  // vet den inte hur gammalt det är. Hellre tyst än fel.
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    poster: [{ text: 'Polis står vid Erikslund', id: '980006', tid: 'sprite' }],
+  });
+  await m.handtag.scanNow();
+  await m.handtag.scanNow();
+  const n = m.supabase.length;
+  const s = m.handtag.stats();
+  m.stang();
+  if (n !== 0) return `${n} varningar från ett inlägg med okänd ålder`;
+  return s.observerade === 0 || 'observerade=' + s.observerade;
+});
+
+await T('ett inlägg sett för 40 minuter sedan behåller sin ålder över omladdning', async () => {
+  // Ny flik, ny kalibrering — men raden ligger kvar i localStorage, och då
+  // är åldern känd trots att svepet är det första i den här fliken.
+  const sett = Date.now() - 40 * 60000;
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    cache: fsCache({ 'id:980007': { f: sett, s: sett, k: 0 } }),
+    poster: [{ text: 'Polis står vid Erikslund', id: '980007', tid: 'sprite' }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  m.stang();
+  if (!r) return 'inget skickades — åldern överlevde inte omladdningen';
+  const alder = Math.round((Date.now() - r.created_at) / 60000);
+  return (alder >= 39 && alder <= 41) || `ålder ${alder} min, väntade 40`;
+});
+
+await T('en observation äldre än varningens livslängd ger ingen varning', async () => {
+  // Polisvarningar lever 45 minuter. Ett inlägg bryggan först såg för två
+  // timmar sedan är förbrukat, oavsett att åldern är känd.
+  const sett = Date.now() - 120 * 60000;
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    cache: fsCache({ 'id:980008': { f: sett, s: sett, k: 0 } }),
+    poster: [{ text: 'Polis står vid Erikslund', id: '980008', tid: 'sprite' }],
+  });
+  const n = m.supabase.length; m.stang();
+  return n === 0 || `${n} varningar från en två timmar gammal observation`;
+});
+
+await T('Facebooks egen tid vinner över observationen', async () => {
+  // Bryggan såg inlägget för två minuter sedan, men Facebook säger 30 min.
+  // Facebooks tid är exaktare — den säger när inlägget SKREVS, inte när vi
+  // råkade titta — och ska alltid vinna när den går att läsa.
+  const sett = Date.now() - 2 * 60000;
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    cache: fsCache({ 'id:980009': { f: sett, s: sett, k: 0 } }),
+    poster: [{ text: 'Polis står vid Erikslund', id: '980009', tid: 'spann', alder: '30 min' }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  const s = m.handtag.stats();
+  m.stang();
+  if (!r) return 'inget skickades';
+  const alder = Math.round((Date.now() - r.created_at) / 60000);
+  if (alder < 29 || alder > 31) return `ålder ${alder} min, väntade 30 (observationen vann)`;
+  return s.observerade === 0 || 'observationen räknades ändå: ' + s.observerade;
+});
+
+await T('hovringen är sista utvägen — den rörs inte när observationen räcker', async () => {
+  const sett = Date.now() - 3 * 60000;
+  let hovrat = 0;
+  const m = bygg({
+    groupId: GRUPP, hoverForTime: true,          // påslagen, och används ändå inte
+    cache: fsCache({ 'id:980010': { f: sett, s: sett, k: 0 } }),
+    poster: [{ text: 'Polis står vid Erikslund', id: '980010', tid: 'sprite',
+               hovertid: 'Onsdag 19 augusti 2026 kl. 16:59' }],
+  });
+  for (const a of m.behallare.querySelectorAll('a')) {
+    a.addEventListener('mouseover', () => hovrat++);
+    a.addEventListener('pointerover', () => hovrat++);
+  }
+  await m.handtag.scanNow();
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  m.stang();
+  if (hovrat !== 0) return `${hovrat} hovringar trots att åldern redan var känd`;
+  if (!r) return 'inget skickades';
+  const alder = Math.round((Date.now() - r.created_at) / 60000);
+  return alder === 3 || `ålder ${alder} min, väntade 3`;
+});
+
+await T('okänd ålder skickar fortfarande ingenting — spärren är kvar', async () => {
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false, firstSeenAge: false,
+    poster: [{ text: 'Polis står vid Erikslund', id: '980011', tid: 'sprite' }],
+  });
+  const n = m.supabase.length;
+  const s = m.handtag.stats();
+  const txt = m.konsoltext();
+  m.stang();
+  if (n !== 0) return `${n} varningar utan känd ålder`;
+  if (s.utanTid !== 1) return 'räknade utanTid=' + s.utanTid;
+  return /går inte att läsa/.test(txt) || 'inget sades i konsolen';
+});
+
+await T('minneslistan växer inte obegränsat', async () => {
+  // 800 rader in, taket är 500. Utan gallring växer listan tills
+  // localStorage spräcks — och då slutar ALLT skrivande fungera, tyst.
+  const nu = Date.now();
+  const fyllning = {};
+  for (let i = 0; i < 800; i++) fyllning['id:9' + i] = { f: nu - i * 1000, s: nu - i * 1000, k: 0 };
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false, cache: fsCache(fyllning),
+    poster: [{ text: 'Polis står vid Erikslund', id: '980012', tid: 'sprite' }],
+  });
+  const lista = fsLast(m);
+  m.stang();
+  const antal = Object.keys(lista).length;
+  if (antal > 500) return `${antal} rader kvar, taket är 500`;
+  if (antal < 400) return `bara ${antal} rader kvar — gallringen tog för mycket`;
+  // De nyaste ska överleva, inte de äldsta.
+  if (!lista['id:980012']) return 'det nyaste inlägget gallrades bort';
+  return !lista['id:9799'] || 'den äldsta raden överlevde gallringen';
+});
+
+await T('rader äldre än ett dygn gallras bort', async () => {
+  const nu = Date.now();
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    cache: fsCache({
+      'id:970100': { f: nu - 25 * 3600000, s: nu - 25 * 3600000, k: 0 },
+      'id:970101': { f: nu - 2 * 3600000, s: nu - 2 * 3600000, k: 0 },
+    }),
+    poster: [{ text: 'Polis står vid Erikslund', id: '980013', tid: 'sprite' }],
+  });
+  const lista = fsLast(m);
+  m.stang();
+  if (lista['id:970100']) return 'ett dygn gammal rad ligger kvar';
+  return !!lista['id:970101'] || 'gallringen tog även den färska raden';
+});
+
+await T('ett inlägg som fortfarande syns gallras inte trots gammal första observation', async () => {
+  // Gallringen måste gå på SENAST sedd, inte först sedd. Gör den inte det
+  // faller ett inlägg som legat kvar ett dygn ur listan, registreras om vid
+  // nästa svep och får då åldern "noll minuter" — precis det fel som
+  // mekaniken finns för att undvika.
+  const nu = Date.now();
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    cache: fsCache({ 'id:980014': { f: nu - 30 * 3600000, s: nu - 60000, k: 0 } }),
+    poster: [{ text: 'Polis står vid Erikslund', id: '980014', tid: 'sprite' }],
+  });
+  const lista = fsLast(m);
+  const n = m.supabase.length;
+  m.stang();
+  if (!lista['id:980014']) return 'raden gallrades bort trots att inlägget syns';
+  if (lista['id:980014'].f !== nu - 30 * 3600000) return 'första observationen skrevs över';
+  return n === 0 || `${n} varningar från ett 30 timmar gammalt inlägg`;
+});
+
+await T('torrkörningen sparar först-sedd men rör inte hanteringslistan', async () => {
+  // Motsatt regel mot pv.fb.seen: först sedd bockar inte av någonting, och
+  // ska överleva torrkörningen — annars mäter torrkörningen inte samma sak
+  // som skarpt läge, vilket är hela poängen med den.
+  const m = await skanna({
+    groupId: GRUPP, dryRun: true, hoverForTime: false,
+    poster: [{ text: 'Polis står vid Erikslund', id: '980015', tid: 'sprite' }],
+  });
+  const seenNycklar = [...m.lagring.keys()].filter(k => k.startsWith('pv.fb.seen'));
+  const lista = fsLast(m);
+  m.stang();
+  if (seenNycklar.length) return 'torrkörningen skrev hanteringslistan: ' + JSON.stringify(seenNycklar);
+  return !!lista['id:980015'] || 'först-sedd sparades inte i torrkörning';
+});
+
+await T('nyckeln krockar inte med hanteringslistans prefix', () =>
+  !FS_KEY.startsWith('pv.fb.seen') ||
+  'nyckeln ' + FS_KEY + ' ligger under samma prefix som pv.fb.seen — ' +
+  'torrkörningens test kan då inte skilja dem åt');
+
+await T('trasig minneslista kraschar inte bryggan', async () => {
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    cache: { [FS_KEY]: '{ det här är inte json' },
+    poster: [{ text: 'Polis står vid Erikslund', id: '980016', tid: 'sprite' }],
+  });
+  const lista = fsLast(m);
+  const s = m.handtag.stats();
+  m.stang();
+  if (!s) return 'bryggan startade inte';
+  return !!lista['id:980016'] || 'listan byggdes inte om efter skräpet';
 });
 
 /* =================================================================== */
