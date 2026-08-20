@@ -32,7 +32,9 @@
 
 <script type="module">
 import { lasRuta, lasKandidat, haMotor, OCR_ALFABET,
-         sokKandidater, Malsokare, MALSOK } from './js/plate.js';
+         sokKandidater, Malsokare, MALSOK,
+         hashaPlat, nyttSalt, ocrVarianter, haFordonsregister,
+         minneslagring, migreraKlartext, FORDON_NYCKEL, MAX_BYTEN } from './js/plate.js';
 
 const ut = document.getElementById('ut');
 const summa = document.getElementById('summa');
@@ -380,6 +382,71 @@ function tidFor(bredd) {
 }
 const tider = { b320: tidFor(320), b400: tidFor(400), b480: tidFor(480), b960: tidFor(960) };
 
+/* ================= Integritet: hashade egna fordon =================
+ *
+ * Listan över egna fordon lagras som saltade hashar, med felläsningarna
+ * förgenererade. Det här mäter att bytet faktiskt håller — att uppslagningen
+ * fortfarande fungerar, att den inte börjat matcha främmande fordon, och att
+ * det inte ligger kvar något läsbart registreringsnummer i lagringen.
+ */
+summa.textContent = 'Integritetstester…';
+
+const intrader = [];
+const kolla = (namn, ok, detalj) => intrader.push({ namn, ok: !!ok, detalj: String(detalj) });
+
+// 1. Samma nummer och samma salt ger samma hash — annars kan inget slås upp.
+const saltA = nyttSalt();
+const hashA1 = await hashaPlat('ABC123', saltA);
+const hashA2 = await hashaPlat('ABC123', saltA);
+kolla('samma nummer ger samma hash', hashA1 === hashA2, `${hashA1.slice(0, 20)}…`);
+
+// 2. Ett annat salt ger en annan hash. Utan det vore hasharna en global
+//    identifierare för fordonet och gick att slå upp mot vilken annan
+//    installation som helst.
+const hashB = await hashaPlat('ABC123', nyttSalt());
+kolla('olika salt ger olika hash', hashB !== hashA1, `${hashB.slice(0, 20)}…`);
+
+// 3. En felläsning av det egna numret matchar. XKF 42B slutar på B, och B
+//    läses som åtta — sista positionen får vara både bokstav och siffra, så
+//    normaliseraPlat kan inte rätta den. Det är precis fallet varianterna finns för.
+const lagring = minneslagring();
+const reg = haFordonsregister(lagring);
+const lagd = await reg.laggTill('XKF 42B', 'Bilen');
+const varianter = ocrVarianter('XKF42B');
+kolla('en OCR-variant matchar', await reg.arEget('XKF428'),
+      `${varianter.length} varianter: ${varianter.join(', ')}`);
+
+// 4. Ett främmande fordon matchar inte. Det är det dyra felet: en falsk träff
+//    säger "ditt fordon" om någon annans bil.
+const framlingar = ['ZZZ999', 'ABC123', 'RTN881', 'XKF42A'];
+const falska = [];
+for (const f of framlingar) if (await reg.arEget(f)) falska.push(f);
+kolla('främmande nummer matchar inte', falska.length === 0,
+      falska.length ? `matchade fel: ${falska.join(', ')}` : `${framlingar.length} prövade, noll träffar`);
+
+// 5. Inget läsbart nummer i lagringen. Saltet räknas bort ur jämförelsen —
+//    det är slumpade byte i base64 och kan råka innehålla vad som helst.
+//    Jämförelsen är skiftlägeskänslig med flit: nummer lagras versalt, hashar
+//    är gemener, så "abc123" inuti en hash är inte ett nummer.
+const ratext = lagring.getItem(FORDON_NYCKEL);
+const utanSalt = JSON.stringify({ ...JSON.parse(ratext), salt: '' });
+const lackta = ocrVarianter('XKF42B').filter(v => utanSalt.includes(v));
+kolla('ingen klartext i lagringen', lackta.length === 0,
+      lackta.length ? `hittade ${lackta.join(', ')}` : `${ratext.length} tecken JSON, bara hashar och etiketter`);
+
+// 6. Migreringen tappar inga fordon, och får köras om. Andra körningen ska
+//    hitta allt redan på plats och inte skapa dubbletter.
+const lagring2 = minneslagring();
+const mig1 = await migreraKlartext(['ABC 123', 'XKF42B'], lagring2);
+const mig2 = await migreraKlartext(['ABC 123', 'XKF42B'], lagring2);
+const reg2 = haFordonsregister(lagring2);
+const migOk = mig1.nya === 2 && mig1.ok && mig2.nya === 0 && mig2.fanns === 2 &&
+              reg2.antal === 2 && await reg2.arEget('ABC123') && await reg2.arEget('XKF42B');
+kolla('migreringen tappar inga fordon', migOk,
+      `körning 1: ${mig1.nya} nya · körning 2: ${mig2.nya} nya, ${mig2.fanns} fanns redan · registret: ${reg2.antal} fordon`);
+
+const intRatt = intrader.filter(r => r.ok).length;
+
 await raWorker.terminate();
 await worker.terminate();
 
@@ -389,6 +456,7 @@ summa.innerHTML =
   `Rå bild: <span class="${klass(rattRa, fall.length)}">${rattRa} av ${fall.length}</span> · ` +
   `Pipeline: <span class="${klass(rattPipe, fall.length)}">${rattPipe} av ${fall.length}</span> · ` +
   `Målsökning: <span class="${klass(malRatt, malfall.length)}">${malRatt} av ${malfall.length}</span> · ` +
+  `Integritet: <span class="${klass(intRatt, intrader.length)}">${intRatt} av ${intrader.length}</span> · ` +
   `${medel} ms per bild · sökning ${tider.b400} ms i 1920×1080 · ` +
   `motorn laddade på ${(laddTid / 1000).toFixed(1)} s`;
 
@@ -454,6 +522,33 @@ p3.innerHTML =
   'Sökningen kör 8 gånger i sekunden, så 400 kostar under en procent av en kärna.';
 ut.appendChild(p3);
 
+/* ---- Integritetens tabell ---- */
+const h3 = document.createElement('h1');
+h3.style.cssText = 'font-size:18px;margin:30px 0 4px';
+h3.textContent = 'Integritet — vad som faktiskt ligger på telefonen';
+ut.appendChild(h3);
+
+const p4 = document.createElement('p');
+p4.className = 'sub';
+p4.innerHTML =
+  'Listan över egna fordon lagras som ett slumpat salt och saltade SHA-256-hashar, ' +
+  `med felläsningarna förgenererade (högst ${MAX_BYTEN} bytta tecken per variant). ` +
+  'Inget registreringsnummer finns läsbart, inte ens lokalt. Läsaren för ingen ' +
+  'lista: en skylt som inte matchar ett eget fordon kastas i samma bildrutecykel ' +
+  'som den lästes. Se <code>docs/skyltintegritet.md</code>.';
+ut.appendChild(p4);
+
+const tab3 = document.createElement('table');
+tab3.innerHTML = '<tr><th>Kontroll</th><th>Utfall</th><th>Vad som mättes</th></tr>';
+for (const r of intrader) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${r.namn}</td>` +
+    `<td class="${r.ok ? 'ok' : 'fel'}">${r.ok ? 'ja' : 'NEJ'}</td>` +
+    `<td class="noll">${r.detalj}</td>`;
+  tab3.appendChild(tr);
+}
+ut.appendChild(tab3);
+
 window.__ocr = { ra: rattRa, pipeline: rattPipe, av: fall.length,
                  medelMs: medel, laddTidMs: laddTid,
                  rader: rader.map(({ forb, ...x }) => x),
@@ -462,5 +557,12 @@ window.__ocr = { ra: rattRa, pipeline: rattPipe, av: fall.length,
                    rader: malrader.map(({ forb, canvas, ...x }) => x),
                    tappEfter, brannEfter, brannRelas, tider,
                    krav: { ...MALSOK },
+                 },
+                 integritet: {
+                   ratt: intRatt, av: intrader.length, rader: intrader,
+                   varianter: { 'XKF42B': ocrVarianter('XKF42B'),
+                                'ABC123': ocrVarianter('ABC123'),
+                                'ODO12D': ocrVarianter('ODO12D') },
+                   forstaFordon: lagd,
                  } };
 </script>

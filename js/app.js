@@ -34,7 +34,7 @@ import { Vakthund } from './vakthund.js';
 import { Varmevakt } from './varme.js';
 import * as Kvalitet from './kvalitet.js';
 import * as Betalning from './betalning.js';
-import { PlateReader, plateSupported, visaPlat, normaliseraPlat } from './plate.js';
+import { PlateReader, plateSupported, visaPlat, haFordonsregister, migreraKlartext } from './plate.js';
 import { Chatt, UTAN_OMRADE_TEXT } from './chatt.js';
 import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
@@ -79,7 +79,6 @@ const defaults = {
   plRate: 700,
   plKrav: 2,
   plPip: true,
-  plEgna: [],
   plZoomLage: 'auto',
   ljudPa: true,
   ljudVolym: 0.75,
@@ -103,6 +102,28 @@ applyOverrides(settings);
 if (hasBackend() && settings.mode === 'local' && !settings.modeChosen) {
   settings.mode = 'supabase';           // finns backend är delat läge det rimliga
 }
+
+/*
+ * Äldre versioner sparade egna registreringsnummer i klartext under
+ * settings.plEgna. De hashas in och klartexten raderas.
+ *
+ * Körs vid varje start och är idempotent. Går skrivningen fel behålls
+ * klartexten — att radera först och spara sedan hade kunnat kosta någon
+ * hela sin fordonslista vid full lagring.
+ */
+(async () => {
+  if (!Array.isArray(settings.plEgna) || !settings.plEgna.length) {
+    if ('plEgna' in settings) { delete settings.plEgna; saveSettings(); }
+    return;
+  }
+  const r = await migreraKlartext(settings.plEgna);
+  if (!r.ok) return;
+  delete settings.plEgna;
+  saveSettings();
+  if (r.ogiltiga?.length) {
+    toast(`Kunde inte tolka som registreringsnummer: ${r.ogiltiga.join(', ')}`, 6000);
+  }
+})();
 function readJSON(k, f) { try { return JSON.parse(localStorage.getItem(k)) || f; } catch { return f; } }
 function writeJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {} }
@@ -2543,10 +2564,10 @@ function plateInst() {
   if (!plate) {
     plate = new PlateReader({ settings: plateSettings() });
     plate.addEventListener('status', e => { $('plStatus').textContent = e.detail.text; });
-    plate.addEventListener('lista', renderPlateList);
+    // Skickas numera BARA for egna fordon. Frammande skyltar kastas i samma
+    // bildrutecykel och nar aldrig hit.
     plate.addEventListener('traff', e => {
-      const { plat, egen } = e.detail;
-      if (egen) toast(`${visaPlat(plat)} — ditt eget fordon`, 3000);
+      toast(`${visaPlat(e.detail.plat)} — ${e.detail.etikett}`, 3000);
     });
     plate.addEventListener('fel', e => {
       $('plStatus').textContent = e.detail.fel?.message || 'Något gick fel i läsningen.';
@@ -2568,30 +2589,10 @@ function plateSettings() {
     intervalMs: Number(settings.plRate ?? 700),
     krav: Number(settings.plKrav ?? 2),
     pip: settings.plPip !== false,
-    egnaFordon: (settings.plEgna || []),
     zoomLage: settings.plZoomLage || 'auto',
   };
 }
 
-function renderPlateList() {
-  const p = plate;
-  const ul = $('plList');
-  if (!p || !ul) return;
-  ul.innerHTML = '';
-  for (const t of p.traffar) {
-    const li = document.createElement('li');
-    li.className = 'pl-item' + (t.egen ? ' egen' : '');
-    const tid = new Date(t.t).toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    li.innerHTML = `<b class="pl-nr">${visaPlat(t.plat)}</b>` +
-      `<span class="pl-meta">${tid}${t.sakerhet ? ` · ${t.sakerhet}%` : ''}` +
-      `${t.egen ? ' · ditt fordon' : ''}</span>`;
-    ul.appendChild(li);
-  }
-  $('plEmpty').hidden = p.traffar.length > 0;
-  $('plCount').textContent = p.traffar.length ? `${p.traffar.length} st` : '';
-}
-
-/** Visar rätt panel för valt läge. Ett läge i taget, hela vägen. */
 function visaLage(lage) {
   plateLage = lage;
   const inspelning = lage === 'record';
@@ -2663,7 +2664,6 @@ function wireModePicker() {
         ? `Den här telefonen klarar upp till ${tak.toFixed(1).replace('.', ',')}×.`
         : 'Den här telefonen erbjuder ingen zoom.';
 
-      renderPlateList();
 
 
       renderOlasta();      // chattknappen hor till kameravyn
@@ -2678,7 +2678,6 @@ function wireModePicker() {
   };
 
   $('plStop').onclick = () => stoppaPlate();
-  $('plClear').onclick = () => plate?.rensa();
 
   const visaZoom = v => { $('plZoomVal').textContent = v.toFixed(1).replace('.', ',') + '×'; };
 
@@ -3006,23 +3005,76 @@ function wireSettingsUI() {
   const platePaVerkan = () => { if (plate) Object.assign(plate.settings, plateSettings()); };
   bind('setPlPip', 'plPip', v => !!v, platePaVerkan);
 
-  $('setPlEgna').value = (settings.plEgna || []).map(visaPlat).join('\n');
-  $('btnPlEgnaSave').onclick = () => {
-    const rader = $('setPlEgna').value.split('\n').map(r => r.trim()).filter(Boolean);
-    const giltiga = [], ogiltiga = [];
-    for (const r of rader) {
-      const p = normaliseraPlat(r);
-      p ? giltiga.push(p) : ogiltiga.push(r);
+  /*
+   * Egna fordon — som saltade hashar, aldrig som nummer.
+   *
+   * Textrutan som låg här sparade registreringsnummer i klartext i telefonens
+   * lagring. Nu lagras bara saltade hashar plus de troliga felläsningarna av
+   * varje nummer, så att en felläst femma ändå matchar. Inget läsbart nummer
+   * finns kvar — varken i lagringen, i en enhetsbackup eller i en felrapport.
+   *
+   * Listan visar därför namnet du gett fordonet, inte numret. Det är inte en
+   * begränsning som gömts undan, det är hela poängen: appen kan inte visa ett
+   * nummer den inte har.
+   */
+  const fordon = haFordonsregister();
+
+  function renderFordon() {
+    const ul = $('plFordonLista');
+    if (!ul) return;
+    ul.innerHTML = '';
+    for (const f of fordon.lista()) {
+      const li = document.createElement('li');
+      li.className = 'pl-item';
+      li.innerHTML = '<b class="pl-nr"></b><span class="pl-meta"></span>';
+      li.querySelector('.pl-nr').textContent = f.etikett;
+      li.querySelector('.pl-meta').textContent =
+        `${f.varianter} hash${f.varianter === 1 ? '' : 'ar'} · inget nummer lagrat`;
+      const bort = document.createElement('button');
+      bort.type = 'button';
+      bort.className = 'btn-ghost small';
+      bort.textContent = 'Ta bort';
+      bort.onclick = () => { fordon.taBort(f.id); renderFordon(); };
+      li.appendChild(bort);
+      ul.appendChild(li);
     }
-    settings.plEgna = [...new Set(giltiga)];
-    saveSettings();
-    platePaVerkan();
-    $('setPlEgna').value = settings.plEgna.map(visaPlat).join('\n');
-    // Säg vad som inte gick igenom istället för att tyst tappa raden.
-    $('plEgnaStatus').textContent = ogiltiga.length
-      ? `Sparade ${giltiga.length}. Känns inte igen som svenskt regnummer: ${ogiltiga.join(', ')}`
-      : (giltiga.length ? `Sparade ${giltiga.length} fordon.` : 'Listan är tom.');
+    $('plFordonTom').hidden = fordon.antal > 0;
+  }
+
+  $('btnPlLagg').onclick = async () => {
+    const r = await fordon.laggTill($('plNytt').value, $('plNyttNamn').value);
+    // Numret ska inte ligga kvar i fältet efteråt.
+    $('plNytt').value = '';
+    if (r.status === 'ogiltig') {
+      $('plEgnaStatus').textContent = 'Känns inte igen som ett svenskt registreringsnummer.';
+      return;
+    }
+    if (r.status === 'fanns') {
+      $('plEgnaStatus').textContent = `Fordonet finns redan (${r.etikett}).`;
+      return;
+    }
+    if (r.sparad === false) {
+      $('plEgnaStatus').textContent = 'Kunde inte spara — telefonens lagring är full eller avstängd.';
+      return;
+    }
+    $('plNyttNamn').value = '';
+    $('plEgnaStatus').textContent =
+      `Sparade ${r.etikett} som ${r.varianter} hash${r.varianter === 1 ? '' : 'ar'}. Numret är inte lagrat.`;
+    renderFordon();
   };
+
+  // Att kunna prova ett nummer är enda sättet att kontrollera att rätt fordon
+  // ligger inne, när numret inte går att visa.
+  $('btnPlProva').onclick = async () => {
+    const t = await fordon.slaUpp($('plProva').value);
+    $('plProva').value = '';
+    $('plEgnaStatus').textContent = t
+      ? `Ja — det numret hör till ${t.etikett}${t.exakt ? '' : ' (som en trolig felläsning)'}.`
+      : 'Nej, det numret ligger inte i registret.';
+  };
+
+  renderFordon();
+
   $('plSupportNote').textContent = plateSupported
     ? 'Textigenkänningen laddas ner första gången du startar läsaren, ungefär 4 MB. Sen fungerar den utan internet.'
     : 'Den här webbläsaren ger inte appen tillgång till kameran, så skyltläsaren kan inte användas här.';

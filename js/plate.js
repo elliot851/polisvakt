@@ -25,6 +25,11 @@
  * Se docs/malsokning.md.
  *
  * Allt sker på telefonen. Ingen bild och ingen skylt lämnar enheten.
+ *
+ * Läsaren för ingen lista. Den enda skylt som någonsin lämnar den här modulen
+ * är en som matchar ett av dina egna fordon — allt annat kastas i samma
+ * bildrutecykel som det lästes. Dina egna fordon ligger som saltade hashar,
+ * aldrig som nummer. Se docs/skyltintegritet.md.
  */
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
@@ -92,6 +97,338 @@ export function normaliseraPlat(ratext) {
 
 /** ABC123 → "ABC 123". Bara för visning. */
 export const visaPlat = p => (p && p.length === 6 ? `${p.slice(0, 3)} ${p.slice(3)}` : p || '');
+
+/* ---- Egna fordon: saltade hashar ----------------------------------------
+ *
+ * "Mina fordon" är den enda lista appen har, och den är personuppgifter i
+ * samma ögonblick som den går att läsa. Därför lagras inga registreringsnummer
+ * över huvud taget. Det som ligger på telefonen är ett slumpat salt och en
+ * samling SHA-256-hashar.
+ *
+ * Hashar går bara att jämföra exakt, och det är ett problem här: OCR:en läser
+ * fel ibland. Lösningen är att gissa i förväg — när numret matas in räknas
+ * alla rimliga felläsningar fram och hashas de också. Uppslagningen blir då
+ * en exakt jämförelse, vilket är den enda sorts jämförelse en hash klarar.
+ *
+ * Vad det inte är: ett skydd mot någon som har telefonen, saltet och hasharna
+ * och vill veta vilka nummer som ligger där. Det finns knappt 39 miljoner
+ * giltiga svenska skyltar, och att hasha alla med ett känt salt tar sekunder.
+ * Poängen är att inget nummer går att *läsa* — inte i lagringen, inte i en
+ * enhetsbackup, inte i en felrapport, och inte av appen själv efter att du
+ * matat in det. Se docs/skyltintegritet.md.
+ */
+
+/** Egen nyckel, med flit utanför settings-objektet. Se docs/skyltintegritet.md. */
+export const FORDON_NYCKEL = 'pv.fordon.v1';
+const FORDON_VERSION = 1;
+
+/*
+ * Vilka tecken som ser lika ut, som en graf.
+ *
+ * TILL_BOKSTAV och TILL_SIFFRA säger vad ett tecken ska rättas till när
+ * positionen kräver den andra teckentypen. Läses de åt båda hållen och det som
+ * hänger ihop slås samman får man de visuella klasserna: 0, O, D och Q är en
+ * enda klass, eftersom alla tre bokstäverna läses som nolla.
+ *
+ * Det är klasserna som betyder något, inte pilarnas riktning. normaliseraPlat
+ * rättar redan korsningarna mellan bokstav och siffra på de positioner där
+ * formatet är bestämt — en åtta på första positionen har blivit ett B innan vi
+ * ser den. Det som blir kvar, och som varianterna finns för, är två fall:
+ * bokstav förväxlad med bokstav (O och D), och sista positionen, som får vara
+ * både siffra och bokstav och därför inte går att rätta.
+ */
+const TECKENKLASS = (() => {
+  const grannar = new Map();
+  const kant = (a, b) => {
+    if (!grannar.has(a)) grannar.set(a, new Set());
+    if (!grannar.has(b)) grannar.set(b, new Set());
+    grannar.get(a).add(b); grannar.get(b).add(a);
+  };
+  for (const [siffra, bokstav] of Object.entries(TILL_BOKSTAV)) kant(siffra, bokstav);
+  for (const [bokstav, siffra] of Object.entries(TILL_SIFFRA)) kant(bokstav, siffra);
+
+  // Hela den sammanhängande komponenten, inte bara närmaste granne — annars
+  // hamnar O och D i olika klasser trots att båda är nollan.
+  const klass = new Map();
+  for (const start of grannar.keys()) {
+    const sedda = new Set([start]);
+    const ko = [start];
+    while (ko.length) {
+      for (const g of grannar.get(ko.pop()) || []) {
+        if (!sedda.has(g)) { sedda.add(g); ko.push(g); }
+      }
+    }
+    sedda.delete(start);
+    klass.set(start, [...sedda]);
+  }
+  return klass;
+})();
+
+/*
+ * Taket på varianterna.
+ *
+ * Två byten, samma tak som normaliseraPlat har på antalet rättningar, och av
+ * samma skäl: en läsning som skiljer sig på tre tecken är inte en felläsning
+ * av ditt nummer, det är ett annat fordon.
+ *
+ * Varje variant är ett riktigt registreringsnummer som appen kommer att kalla
+ * ditt. Räkningen: av 23³ × 10² × 32 ≈ 38,9 miljoner giltiga svenska skyltar
+ * blir som mest elva stycken dina, och det bara för nummer som består nästan
+ * enbart av O och D. De flesta nummer får en enda variant — sig självt.
+ * Fler varianter betyder fler främmande bilar som pipar som dina. Det är
+ * priset, och det är därför taket är lågt och inte generöst.
+ *
+ * MAX_VARIANTER är en ren spärr; med två byten går det inte att nå den.
+ */
+export const MAX_BYTEN = 2;
+export const MAX_VARIANTER = 24;
+
+/**
+ * Alla rimliga felläsningar av ett registreringsnummer, numret självt först.
+ *
+ * Kombinationer som inte är giltiga svenska skyltar faller bort — och det är
+ * inte en detalj utan själva filtret. En etta i en siffrposition kan läsas som
+ * L, men "ABL23" är ingen skylt, så normaliseraPlat hade rättat tillbaka den
+ * innan vi någonsin fick se den. Att hasha sådana varianter vore att lagra
+ * strängar som aldrig kan dyka upp.
+ */
+export function ocrVarianter(plat, { maxByten = MAX_BYTEN, max = MAX_VARIANTER } = {}) {
+  const bas = normaliseraPlat(plat);
+  if (!bas) return [];
+
+  const tecken = bas.split('');
+  const val = tecken.map(t => [t, ...(TECKENKLASS.get(t) || [])]);
+  const funna = [];
+  const bygg = (i, byggd, byten) => {
+    if (i === 6) {
+      const v = byggd.join('');
+      if (PLAT_RE.test(v)) funna.push({ plat: v, byten });
+      return;
+    }
+    for (const a of val[i]) {
+      const n = byten + (a === tecken[i] ? 0 : 1);
+      if (n > maxByten) continue;
+      byggd.push(a); bygg(i + 1, byggd, n); byggd.pop();
+    }
+  };
+  bygg(0, [], 0);
+
+  // Närmast först, så att en eventuell kapning tar de mest långsökta.
+  funna.sort((a, b) => a.byten - b.byten);
+  const unika = [], sedda = new Set();
+  for (const v of funna) {
+    if (sedda.has(v.plat)) continue;
+    sedda.add(v.plat); unika.push(v.plat);
+  }
+  return unika.slice(0, max);
+}
+
+const TEXT = new TextEncoder();
+const HASH_DOMAN = 'polisvakt-fordon-v1';
+
+const tillHex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+
+function slumpBytes(n) {
+  const u = new Uint8Array(n);
+  crypto.getRandomValues(u);
+  return u;
+}
+
+const slumpHex = n => tillHex(slumpBytes(n));
+
+/** Nytt salt, en gång per installation. 32 byte, base64 för att rymmas i JSON. */
+export function nyttSalt() {
+  return btoa(String.fromCharCode(...slumpBytes(32)));
+}
+
+/**
+ * Saltad SHA-256 av ett registreringsnummer, som hex.
+ *
+ * Domänsträngen fram gör att hasharna inte går att jämföra mot en tabell som
+ * någon annan råkat räkna fram över samma salt för något annat ändamål.
+ */
+export async function hashaPlat(plat, salt) {
+  const d = await crypto.subtle.digest('SHA-256', TEXT.encode(`${HASH_DOMAN}|${salt}|${plat}`));
+  return tillHex(d);
+}
+
+/**
+ * Ett Storage-liknande objekt i minnet. Finns för mätningen i ocr-test.html —
+ * den ska kunna köra hela registret utan att röra användarens localStorage.
+ */
+export function minneslagring(start = {}) {
+  const m = new Map(Object.entries(start));
+  return {
+    getItem: k => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => { m.set(k, String(v)); },
+    removeItem: k => { m.delete(k); },
+  };
+}
+
+/**
+ * Registret över egna fordon.
+ *
+ * Innehåller salt, hashar och en etikett per fordon. Etiketten är det du själv
+ * skrivit, eller "Fordon 1" — den är det enda läsbara som finns, och den är
+ * med flit inte numret. Det betyder att listan inte kan visa dig vilka nummer
+ * som ligger i den. Vill du kontrollera att ett visst nummer finns får du
+ * skriva in det och fråga; se `slaUpp`. Det är en verklig försämring av
+ * gränssnittet, och den är avsiktlig.
+ */
+export class Fordonsregister {
+  #lagring; #data; #index;
+
+  constructor(lagring, data) {
+    this.#lagring = lagring;
+    this.#data = data;
+    this.#byggIndex();
+  }
+
+  static ladda(lagring = localStorage) {
+    let data = null;
+    try { data = JSON.parse(lagring.getItem(FORDON_NYCKEL) || 'null'); } catch {}
+    const giltig = data && data.v === FORDON_VERSION &&
+      typeof data.salt === 'string' && data.salt && Array.isArray(data.fordon);
+    if (!giltig) {
+      data = { v: FORDON_VERSION, salt: nyttSalt(), raknare: 0, fordon: [] };
+      try { lagring.setItem(FORDON_NYCKEL, JSON.stringify(data)); } catch {}
+    }
+    if (typeof data.raknare !== 'number') data.raknare = data.fordon.length;
+    return new Fordonsregister(lagring, data);
+  }
+
+  get salt() { return this.#data.salt; }
+  get antal() { return this.#data.fordon.length; }
+
+  /** Det gränssnittet får visa: etikett och antal varianter, aldrig ett nummer. */
+  lista() {
+    return this.#data.fordon.map(f => ({
+      id: f.id, etikett: f.etikett, skapad: f.skapad, varianter: f.hashar.length,
+    }));
+  }
+
+  hasha(plat) { return hashaPlat(plat, this.#data.salt); }
+
+  /**
+   * Uppslagning på en färdig hash. Synkron med flit: läsaren hashar en gång
+   * per bekräftad läsning och ska inte behöva vänta en gång till.
+   */
+  slaUppHash(hash) {
+    const id = this.#index.get(hash);
+    if (!id) return null;
+    const f = this.#data.fordon.find(x => x.id === id);
+    if (!f) return null;
+    // hashar[0] är numret självt, resten är felläsningar av det.
+    return { id: f.id, etikett: f.etikett, exakt: f.hashar[0] === hash };
+  }
+
+  async slaUpp(plat) {
+    const p = normaliseraPlat(plat);
+    if (!p) return null;
+    return this.slaUppHash(await this.hasha(p));
+  }
+
+  async arEget(plat) { return !!(await this.slaUpp(plat)); }
+
+  /**
+   * Lägger till ett fordon. Numret hashas här och slängs — det finns inte kvar
+   * någonstans efter att den här funktionen returnerat.
+   *
+   * `sparad: false` betyder att lagringen vägrade. Anroparen måste bry sig:
+   * det är skillnaden mellan ett tillagt fordon och ett fordon som försvann.
+   */
+  async laggTill(plat, etikett = null) {
+    const bas = normaliseraPlat(plat);
+    if (!bas) return { status: 'ogiltig' };
+
+    const varianter = ocrVarianter(bas);
+    const hashar = [];
+    for (const v of varianter) hashar.push(await this.hasha(v));
+
+    const fanns = this.slaUppHash(hashar[0]);
+    if (fanns) return { status: 'fanns', id: fanns.id, etikett: fanns.etikett, sparad: true };
+
+    const n = ++this.#data.raknare;
+    const f = {
+      id: slumpHex(8),
+      etikett: String(etikett || '').trim() || `Fordon ${n}`,
+      skapad: Date.now(),
+      hashar,
+    };
+    this.#data.fordon.push(f);
+    this.#byggIndex();
+    const sparad = this.#spara();
+    return { status: 'ny', id: f.id, etikett: f.etikett, varianter: hashar.length, sparad };
+  }
+
+  /** Byter etikett. Rör inga hashar. */
+  dopOm(id, etikett) {
+    const f = this.#data.fordon.find(x => x.id === id);
+    if (!f) return false;
+    f.etikett = String(etikett || '').trim() || f.etikett;
+    return this.#spara();
+  }
+
+  taBort(id) {
+    const fore = this.#data.fordon.length;
+    this.#data.fordon = this.#data.fordon.filter(f => f.id !== id);
+    if (this.#data.fordon.length === fore) return false;
+    this.#byggIndex();
+    return this.#spara();
+  }
+
+  rensaAllt() {
+    this.#data.fordon = [];
+    this.#byggIndex();
+    return this.#spara();
+  }
+
+  #byggIndex() {
+    this.#index = new Map();
+    for (const f of this.#data.fordon) {
+      for (const h of f.hashar) this.#index.set(h, f.id);
+    }
+  }
+
+  #spara() {
+    try { this.#lagring.setItem(FORDON_NYCKEL, JSON.stringify(this.#data)); return true; }
+    catch { return false; }
+  }
+}
+
+/* Ett register per lagring. Läsaren och inställningssidan måste se samma —
+ * två instanser över samma nyckel hade skrivit över varandras fordon. */
+const registerCache = new WeakMap();
+
+export function haFordonsregister(lagring = localStorage) {
+  const l = lagring || localStorage;
+  if (!registerCache.has(l)) registerCache.set(l, Fordonsregister.ladda(l));
+  return registerCache.get(l);
+}
+
+/**
+ * Migrering från den gamla klartextlistan (settings.plEgna).
+ *
+ * Idempotent: ett nummer som redan finns läggs inte till igen, eftersom
+ * uppslagningen sker på exakt samma hash. Får köras vid varje start.
+ *
+ * Anroparen ska radera klartexten först när `ok` är sant. Går skrivningen till
+ * lagringen fel är den gamla listan det enda som är kvar av fordonen, och att
+ * radera den då är att tappa dem. Rader som inte är svenska registreringsnummer
+ * rapporteras i `ogiltiga` men blockerar inte — de kunde ändå aldrig matcha.
+ */
+export async function migreraKlartext(klartext, lagring = localStorage) {
+  const reg = haFordonsregister(lagring);
+  const svar = { ok: true, nya: 0, fanns: 0, ogiltiga: [], antal: 0 };
+  for (const rad of Array.isArray(klartext) ? klartext : []) {
+    const r = await reg.laggTill(rad, null);
+    if (r.status === 'ny') { svar.nya++; if (r.sparad === false) svar.ok = false; }
+    else if (r.status === 'fanns') svar.fanns++;
+    else svar.ogiltiga.push(String(rad));
+  }
+  svar.antal = reg.antal;
+  return svar;
+}
 
 /* ---- Bildbehandling ------------------------------------------------------ */
 
@@ -775,15 +1112,22 @@ export const plateSupported = !!(navigator.mediaDevices?.getUserMedia && window.
 /**
  * Håller kameran, målsöker skylten och matar OCR:en.
  *
+ * Läsaren för ingen lista och skickar inte vidare det den ser. En läsning som
+ * inte matchar ett eget fordon slutar inuti #rosta och finns inte kvar efter
+ * att den funktionen returnerat — varken som händelse, i minnet eller i DOM:en.
+ * En läsare som visar varje skylt den ser är en logg över främmande fordon,
+ * oavsett att loggen bara ligger i minnet.
+ *
  * Händelser:
- *   'traff'       {plat, sakerhet, egen}   en skylt som två bildrutor är överens om
+ *   'traff'       {plat, sakerhet, egen, fordonId, etikett, exakt}
+ *                 ETT AV DINA EGNA fordon. Skickas aldrig för någon annans.
  *   'kandidater'  {kandidater, last, ...}  var siktet ser skyltar, för uppritning
  *   'status'      {text}                   vad den håller på med, för sökarens text
  *   'zoom'        {zoom, optisk, fran}
  *   'fel'         {fel}
  */
 export class PlateReader extends EventTarget {
-  constructor({ settings } = {}) {
+  constructor({ settings, register } = {}) {
     super();
     this.settings = Object.assign({
       intervalMs: 700,        // hur ofta en bildruta skickas till OCR
@@ -791,7 +1135,6 @@ export class PlateReader extends EventTarget {
       fonsterMs: 6000,        // ...inom det här tidsfönstret
       franvaroMs: 8000,       // så länge måste en skylt ha varit borta för att räknas som ny
       pip: true,
-      egnaFordon: [],
       zoomLage: 'auto',      // 'auto' eller 'manuell'
       zoomVilaMs: 1800,      // minsta tid mellan tva zoomandringar
 
@@ -807,15 +1150,30 @@ export class PlateReader extends EventTarget {
       fallbackMs: 3000,
     }, settings || {});
 
+    /*
+     * Den gamla klartextlistan finns inte längre. Skickar appen ändå med en
+     * kastas den här — den ska inte överleva i minnet heller, och att tyst
+     * använda den hade byggt tillbaka precis det som togs bort.
+     */
+    delete this.settings.egnaFordon;
+
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'pl-canvas';
     this.video = document.createElement('video');
     this.video.playsInline = true; this.video.muted = true;
 
     this.running = false;
-    this.senaste = [];          // {plat, t}
-    this.sedd = new Map();       // plat -> när den senast sågs
-    this.traffar = [];          // sessionens lista, bara i minnet
+    /*
+     * Rösträkningen behöver veta att två bildrutor läste samma sak, men inte
+     * vad de läste. Därför är nyckeln en saltad hash och inte ett nummer:
+     * ingenting läsbart korsar en bildrutegräns. Båda samlingarna gallras på
+     * tid — utan det blir `sedd` en liggande förteckning över varje främmande
+     * bil sedan starten, hashad men ändå en förteckning.
+     */
+    this.senaste = [];          // {h, t} — hash, inte nummer
+    this.sedd = new Map();      // hash -> {sistSedd, annonserad}
+    this.register = register || null;
+    this.antalLasta = 0;        // ren räknare, nollas vid stop. Ingen historik.
     this.stream = null;
     this.arbetar = false;
     this._roi = null;
@@ -836,12 +1194,21 @@ export class PlateReader extends EventTarget {
     this.sokMsMedel = 0;      // rullande medel, för mätning i fält
     this._sistLast = 0;
     this._sisteStatus = null;
-  }
 
-  get antalTraffar() { return this.traffar.length; }
+    /*
+     * Reservsalt för det fall registret inte gick att läsa. Då kan läsaren
+     * fortfarande rösta — den kan bara aldrig säga att något är ditt fordon,
+     * vilket är rätt svar när den inte vet.
+     */
+    try { this._sessionSalt = nyttSalt(); } catch { this._sessionSalt = null; }
+  }
 
   async start() {
     if (this.running) return;
+
+    if (!this.register) {
+      try { this.register = haFordonsregister(); } catch { this.register = null; }
+    }
 
     // Samma hårda krav som dashcamen: får vi selfiekameran är läget
     // meningslöst, och ett tydligt fel är bättre än en sökare mot taket.
@@ -891,11 +1258,13 @@ export class PlateReader extends EventTarget {
     this.kandidater = [];
     this.#slappStream();
     this.video.srcObject = null;
+    // Rösträkningens hashar har inget att göra i minnet när kameran är av.
+    this.rensa();
   }
 
+  /** Nollar rösträkningen. Det finns ingen lista att rensa längre. */
   rensa() {
-    this.traffar = []; this.senaste = []; this.sedd.clear();
-    this.dispatchEvent(new CustomEvent('lista'));
+    this.senaste = []; this.sedd.clear(); this.antalLasta = 0;
   }
 
   /** Zoom via kameran när telefonen kan, annars digitalt genom en snävare ruta. */
@@ -1266,7 +1635,7 @@ export class PlateReader extends EventTarget {
       // Ett lås som aldrig ger en giltig skylt ska brinna upp, inte sitta
       // kvar. Rapporten är det som gör det.
       if (lasId) this.malsokare.rapporteraLasning(lasId, !!plat);
-      if (plat) this.#rosta(plat, sakerhet);
+      if (plat) await this.#rosta(plat, sakerhet);
     } catch (e) {
       this.#fel(e);
     } finally {
@@ -1275,12 +1644,41 @@ export class PlateReader extends EventTarget {
   }
 
   /**
+   * Hashar en läsning. Registrets salt när det finns, annars ett salt som
+   * bara lever så länge appen är öppen.
+   */
+  async #hasha(plat) {
+    if (this.register) return this.register.hasha(plat);
+    if (!this._sessionSalt) return null;
+    return hashaPlat(plat, this._sessionSalt);
+  }
+
+  /**
    * Rösträkningen. En enda läsning duger inte — motorn är för säker på sina
    * misstag för det. Kräver att samma skylt dyker upp minst två gånger inom
-   * tidsfönstret innan den visas.
+   * tidsfönstret.
+   *
+   * Räkningen sker på hashen, inte på numret. Numret finns bara som argument
+   * till den här funktionen och lämnar den bara om det visar sig vara ditt
+   * eget fordon. Är det någon annans slutar det här, i samma bildrutecykel
+   * som det lästes.
    */
-  #rosta(plat, sakerhet) {
+  async #rosta(plat, sakerhet) {
     const nu = Date.now();
+
+    let h = null;
+    try { h = await this.#hasha(plat); } catch {}
+    if (!h) {
+      /*
+       * Utan hashning går det varken att rösta eller att avgöra om skylten är
+       * din. Att falla tillbaka på att jämföra nummer i klartext hade byggt
+       * tillbaka det som togs bort, så läsaren säger ifrån istället.
+       * Inträffar i praktiken bara utanför säker kontext (http mot annat än
+       * localhost), där crypto.subtle inte finns.
+       */
+      this.#status('Den här webbläsaren kan inte jämföra fordon säkert.');
+      return;
+    }
 
     /*
      * En "syn" är en sammanhängande period då skylten finns i bild. Skylten
@@ -1296,35 +1694,50 @@ export class PlateReader extends EventTarget {
      * läsning såg skylten aldrig ut att ha varit borta, och ingenting visades
      * någonsin. Presence och annonsering måste hållas isär.
      */
-    let syn = this.sedd.get(plat);
-    if (!syn || nu - syn.sistSedd > this.settings.franvaroMs) {
+    /*
+     * Gallringen är inte städning, den är själva poängen. Utan den växer
+     * `sedd` till en förteckning över varje fordon som passerat sedan appen
+     * startade. Att posterna är hashade gör den mindre läsbar, inte mindre
+     * till en förteckning.
+     */
+    for (const [nyckel, s] of this.sedd) {
+      if (nu - s.sistSedd > this.settings.franvaroMs) this.sedd.delete(nyckel);
+    }
+
+    let syn = this.sedd.get(h);
+    if (!syn) {
       syn = { sistSedd: nu, annonserad: false };     // skylten är tillbaka
-      this.sedd.set(plat, syn);
+      this.sedd.set(h, syn);
     }
     syn.sistSedd = nu;
 
     this.senaste = this.senaste.filter(r => nu - r.t < this.settings.fonsterMs);
-    this.senaste.push({ plat, t: nu });
+    this.senaste.push({ h, t: nu });
 
-    const antal = this.senaste.filter(r => r.plat === plat).length;
+    const antal = this.senaste.filter(r => r.h === h).length;
     if (antal < this.settings.krav) {
+      // Statusraden sa förut vilken skylt som höll på att bekräftas. Det var
+      // en logg över främmande fordon, målad direkt i gränssnittet.
       this._statusLas = nu + 1500;
-      this.#status(`Ser ${visaPlat(plat)} — bekräftar…`);
-    } else {
-      this._statusLas = 0;
-      this.#status(this.#lagesText());
+      this.#status('Bekräftar skylt…');
+      return;
     }
-    if (antal < this.settings.krav) return;
+    this._statusLas = 0;
+    this.#status(this.#lagesText());
     if (syn.annonserad) return;
     syn.annonserad = true;
+    this.antalLasta++;
 
-    const egen = this.settings.egnaFordon.includes(plat);
-    this.traffar.unshift({ plat, sakerhet, t: nu, egen });
-    if (this.traffar.length > 50) this.traffar.length = 50;
+    const traff = this.register ? this.register.slaUppHash(h) : null;
+    if (!traff) return;      // någon annans fordon — slutar här, inget sparas
 
-    if (this.settings.pip) this.#pip(egen);
-    this.dispatchEvent(new CustomEvent('traff', { detail: { plat, sakerhet, egen } }));
-    this.dispatchEvent(new CustomEvent('lista'));
+    if (this.settings.pip) this.#pip(true);
+    this.dispatchEvent(new CustomEvent('traff', {
+      detail: {
+        plat, sakerhet, egen: true,
+        fordonId: traff.id, etikett: traff.etikett, exakt: traff.exakt,
+      },
+    }));
   }
 
   #pip(hog) {
