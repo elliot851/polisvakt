@@ -1253,3 +1253,12 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   border-radius: 50%;
   background: #8fcaff;
 }
+
+/* Lägesväljaren för skyltläsarens zoom. Samma tvåknappsmönster som
+   inspelning/skyltläsning, så det känns igen. */
+.pl-zoomlage .btn-ghost.on {
+  border-color: #8fcaff;
+  color: #8fcaff;
+  background: rgba(143, 202, 255, .10);
+}
+#plZoom:disabled { opacity: .55; }

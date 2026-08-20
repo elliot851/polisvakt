@@ -79,6 +79,7 @@ const defaults = {
   plKrav: 2,
   plPip: true,
   plEgna: [],
+  plZoomLage: 'auto',
   ljudPa: true,
   ljudVolym: 0.35,
   haptikPa: true,
@@ -2304,6 +2305,14 @@ function plateInst() {
     plate.addEventListener('fel', e => {
       $('plStatus').textContent = e.detail.fel?.message || 'Något gick fel i läsningen.';
     });
+    // Reglaget följer med när appen zoomar själv. Annars står det 1,0× medan
+    // bilden är fyrfaldigt förstorad, och då litar man inte på det.
+    plate.addEventListener('zoom', e => {
+      const z = e.detail.zoom;
+      $('plZoom').value = z;
+      $('plZoomVal').textContent = z.toFixed(1).replace('.', ',') + '×' +
+        (e.detail.optisk > 1 ? '' : ' (digital)');
+    });
   }
   return plate;
 }
@@ -2314,6 +2323,7 @@ function plateSettings() {
     krav: Number(settings.plKrav ?? 2),
     pip: settings.plPip !== false,
     egnaFordon: (settings.plEgna || []),
+    zoomLage: settings.plZoomLage || 'auto',
   };
 }
 
@@ -2394,6 +2404,19 @@ function wireModePicker() {
       $('dcIdle').hidden = true;
       $('plControls').hidden = false;
       $('dcRec').hidden = true;      // inspelningsmärket hör inte hemma här
+
+      /*
+       * Reglaget får sitt tak från kameran, inte från ett gissat värde i
+       * markupen. Telefoner skiljer sig: en med optisk zoom klarar långt mer
+       * än en utan. Står det 8 i reglaget medan telefonen stannar på 3 drar
+       * användaren förbi taket och tror att appen hängt sig.
+       */
+      const tak = Math.round(p.maxZoom * 10) / 10;
+      $('plZoom').max = String(tak);
+      $('plZoomTak').textContent = tak > 1
+        ? `Den här telefonen klarar upp till ${tak.toFixed(1).replace('.', ',')}×.`
+        : 'Den här telefonen erbjuder ingen zoom.';
+
       renderPlateList();
     } catch (e) {
       $('plStatus').textContent = '';
@@ -2408,11 +2431,36 @@ function wireModePicker() {
   $('plStop').onclick = () => stoppaPlate();
   $('plClear').onclick = () => plate?.rensa();
 
+  const visaZoom = v => { $('plZoomVal').textContent = v.toFixed(1).replace('.', ',') + '×'; };
+
+  const sattZoomLage = lage => {
+    settings.plZoomLage = lage;
+    saveSettings();
+    if (plate) plate.settings.zoomLage = lage;
+    const auto = lage === 'auto';
+    $('plZoomAuto').classList.toggle('on', auto);
+    $('plZoomManuell').classList.toggle('on', !auto);
+    $('plZoomAuto').setAttribute('aria-pressed', String(auto));
+    $('plZoomManuell').setAttribute('aria-pressed', String(!auto));
+    // Reglaget är kvar synligt i autoläget men går inte att dra. Att dölja
+    // det hade gjort att bilden hoppar när man byter läge, och man ser ändå
+    // vad appen valt.
+    $('plZoom').disabled = auto;
+    $('plZoomNot').textContent = auto
+      ? 'Appen zoomar själv tills skylten fyller rutan. Ställ telefonen i hållaren och låt den sköta sig.'
+      : 'Du styr zoomen. Sikta så att skylten fyller den blå rutan.';
+  };
+
+  $('plZoomAuto').onclick = () => sattZoomLage('auto');
+  $('plZoomManuell').onclick = () => sattZoomLage('manuell');
+
   $('plZoom').oninput = e => {
     const v = Number(e.target.value);
-    $('plZoomVal').textContent = v.toFixed(1).replace('.', ',') + '×';
-    plate?.zooma(v);
+    visaZoom(v);
+    plate?.zooma(v, { fran: 'manuell' });
   };
+
+  sattZoomLage(settings.plZoomLage || 'auto');
 
   visaLage('record');
 }

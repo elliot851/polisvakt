@@ -419,6 +419,8 @@ export class PlateReader extends EventTarget {
       franvaroMs: 8000,       // så länge måste en skylt ha varit borta för att räknas som ny
       pip: true,
       egnaFordon: [],
+      zoomLage: 'auto',      // 'auto' eller 'manuell'
+      zoomVilaMs: 1800,      // minsta tid mellan tva zoomandringar
     }, settings || {});
 
     this.canvas = document.createElement('canvas');
@@ -433,6 +435,11 @@ export class PlateReader extends EventTarget {
     this.stream = null;
     this.arbetar = false;
     this._roi = null;
+    this.zoom = 1;
+    this.optiskZoom = 1;
+    this.digitalZoom = 1;
+    this._sistZoomAt = 0;
+    this._bomkast = 0;
   }
 
   get antalTraffar() { return this.traffar.length; }
@@ -489,15 +496,95 @@ export class PlateReader extends EventTarget {
   }
 
   /** Zoom via kameran när telefonen kan, annars digitalt genom en snävare ruta. */
-  async zooma(faktor) {
+  /**
+   * Ställ zoomen.
+   *
+   * Två vägar, i den ordningen: kamerans egen zoom om telefonen har den, annars
+   * digital förstoring i ritningen. Kamerazoom är alltid bättre — den ger fler
+   * riktiga pixlar på skylten, medan digital zoom bara förstorar de pixlar som
+   * redan finns. Men digital duger, eftersom det som avgör om OCR:en lyckas är
+   * hur stor skylten är i den ruta som skickas in, och den blir större åt båda
+   * hållen.
+   *
+   * Att bara krympa siktrutan, som första versionen gjorde, var fel: rutan
+   * blev mindre på skärmen men bilden förstorades inte, så det såg ut som att
+   * zoomen gjorde tvärtom.
+   */
+  async zooma(faktor, { fran = 'manuell' } = {}) {
+    const v = Math.max(1, Math.min(this.maxZoom, faktor));
+    this.zoom = v;
+
     const t = this.stream?.getVideoTracks?.()[0];
     const k = t?.getCapabilities?.();
     if (k?.zoom) {
-      const v = Math.max(k.zoom.min, Math.min(k.zoom.max, faktor));
-      try { await t.applyConstraints({ advanced: [{ zoom: v }] }); return true; } catch {}
+      const kv = Math.max(k.zoom.min, Math.min(k.zoom.max, v));
+      try {
+        await t.applyConstraints({ advanced: [{ zoom: kv }] });
+        this.optiskZoom = kv;
+        this.digitalZoom = v / kv;              // resten tas digitalt
+        this.#zoomAndrad(fran);
+        return true;
+      } catch {}
     }
-    this._digitalZoom = faktor;
+    this.optiskZoom = 1;
+    this.digitalZoom = v;
+    this.#zoomAndrad(fran);
     return false;
+  }
+
+  /** Största zoom telefonen klarar, kamerans egen plus lite digital ovanpå. */
+  get maxZoom() {
+    const k = this.stream?.getVideoTracks?.()[0]?.getCapabilities?.();
+    return Math.min(8, (k?.zoom?.max || 1) * 3);
+  }
+
+  #zoomAndrad(fran) {
+    this.dispatchEvent(new CustomEvent('zoom', {
+      detail: { zoom: this.zoom, optisk: this.optiskZoom, fran, lage: this.settings.zoomLage },
+    }));
+  }
+
+  /**
+   * Autozoom.
+   *
+   * Styr på det som faktiskt avgör om en skylt går att läsa: hur stor den är i
+   * rutan. Mätningen i ocr-test.html visade att en skylt som fyller sökaren
+   * läses nästan alltid, medan en som är en bråkdel av den nästan aldrig går
+   * fram. Skärpa hade varit ett sämre mått — en suddig men stor skylt läses
+   * ofta ändå, en knivskarp men liten gör det aldrig.
+   *
+   * Regleringen är avsiktligt trög. En snabb loop börjar jaga: den zoomar in,
+   * tappar skylten ur bild, zoomar ut, hittar den igen, och pumpar fram och
+   * tillbaka utan att någonsin stå still länge nog för en läsning.
+   */
+  #justeraZoom(traff) {
+    if (this.settings.zoomLage !== 'auto' || !this._roi) return;
+
+    const nu = Date.now();
+    if (nu - this._sistZoomAt < this.settings.zoomVilaMs) return;
+
+    let mal = null;
+    if (!traff) {
+      // Ingen skylt hittad. Bara zooma ut, och först efter flera bomkast —
+      // en enstaka bildruta utan träff betyder oftast bara att bilen framför
+      // svängde eller att någon gick förbi.
+      if (++this._bomkast < 4) return;
+      if (this.zoom <= 1) { this._bomkast = 0; return; }
+      mal = Math.max(1, this.zoom - 0.5);
+    } else {
+      this._bomkast = 0;
+      const andel = traff.w / this._roi.w;
+      // Under en tredjedel av rutan är skylten för liten för att läsas säkert.
+      if (andel < 0.34) mal = this.zoom + 0.4;
+      // Över nio tiondelar riskerar kanttecknen att hamna utanför.
+      else if (andel > 0.9) mal = this.zoom - 0.3;
+      else return;                                  // lagom, rör ingenting
+    }
+
+    mal = Math.max(1, Math.min(this.maxZoom, Math.round(mal * 10) / 10));
+    if (Math.abs(mal - this.zoom) < 0.05) return;
+    this._sistZoomAt = nu;
+    this.zooma(mal, { fran: 'auto' });
   }
 
   #slappStream() {
@@ -532,8 +619,9 @@ export class PlateReader extends EventTarget {
    * också fyller bildrutan vi skickar till OCR:en.
    */
   #beraknaRoi(vb, vh) {
-    const zoom = this._digitalZoom || 1;
-    const w = Math.min(vb * 0.82 / zoom, vh * 2.6);
+    // Rutan är en fast andel av det man ser. Zoomen förstorar bilden, inte
+    // krymper rutan — annars ser det ut som att zoomen gör tvärtom.
+    const w = Math.min(vb * 0.82, vh * 2.6);
     const h = w / 4.7;
     return { x: (vb - w) / 2, y: (vh - h) / 2, w, h };
   }
@@ -543,9 +631,31 @@ export class PlateReader extends EventTarget {
     if (!v.videoWidth) return;
     const c = this.canvas, g = c.getContext('2d');
     if (c.width !== v.videoWidth) { c.width = v.videoWidth; c.height = v.videoHeight; }
-    g.drawImage(v, 0, 0, c.width, c.height);
 
-    const roi = this._roi = this.#beraknaRoi(c.width, c.height);
+    /*
+     * Digital zoom görs här, genom att rita ett mindre utsnitt över hela
+     * canvasen. Då ser användaren en verkligt förstorad bild — inte en
+     * krympt ruta i en oförändrad bild, vilket var det gamla beteendet och
+     * såg ut som en bugg.
+     *
+     * Utsnittet sparas, eftersom OCR:en läser ur videon och inte ur canvasen.
+     * Siktrutans koordinater måste därför räknas om till videons pixlar innan
+     * de skickas vidare, annars läser motorn på fel ställe.
+     */
+    const dz = Math.max(1, this.digitalZoom || 1);
+    const uw = v.videoWidth / dz, uh = v.videoHeight / dz;
+    const ux = (v.videoWidth - uw) / 2, uy = (v.videoHeight - uh) / 2;
+    this._utsnitt = { x: ux, y: uy, w: uw, h: uh };
+    g.drawImage(v, ux, uy, uw, uh, 0, 0, c.width, c.height);
+
+    const roi = this.#beraknaRoi(c.width, c.height);
+    // Rutan i videons koordinater — det är den OCR:en får.
+    this._roi = {
+      x: ux + roi.x * (uw / c.width),
+      y: uy + roi.y * (uh / c.height),
+      w: roi.w * (uw / c.width),
+      h: roi.h * (uh / c.height),
+    };
 
     // Allt utanför rutan dämpas. Det säger utan text var man ska sikta.
     g.save();
@@ -565,6 +675,12 @@ export class PlateReader extends EventTarget {
     if (!this.running || this.arbetar || !this._roi || !this.video.videoWidth) return;
     this.arbetar = true;
     try {
+      // Var skylten sitter i rutan styr autozoomen, oavsett om den gick att
+      // läsa. En skylt som hittas men är för liten är precis det fall zoomen
+      // finns för.
+      const traff = hittaPlat(this.video, this._roi);
+      this.#justeraZoom(traff);
+
       const { plat, sakerhet } = await lasRuta(this.video, this._roi);
       if (plat) this.#rosta(plat, sakerhet);
     } catch (e) {
