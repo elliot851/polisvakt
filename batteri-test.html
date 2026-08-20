@@ -1,0 +1,949 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — batterimätning</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; max-width: 62em; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; z-index: 3; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .grupp p.not { color: #6d7d8e; font-size: 12.5px; margin: -2px 0 10px; max-width: 62em; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; text-align: right; }
+  code { color: #8fcaff; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 4px; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid #1a232d; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; white-space: normal; }
+  th { color: #93a4b6; font-weight: 600; font-size: 11.5px; text-transform: uppercase;
+       letter-spacing: .05em; }
+  td.n0 { color: #2fd07a; }
+  td.nn { color: #ff8b6b; }
+  .tabellskal { overflow-x: auto; }
+  /* Ramen med den riktiga appen. Liten men INTE display:none och inte
+     visibility:hidden — en dold iframe komponeras inte, och då slutar
+     kartan, videoelementen och rAF att bete sig som i verkligheten.
+     Vi mäter appen som den körs, inte en avstängd variant av den. */
+  #ramskal { position: fixed; right: 6px; bottom: 6px; width: 220px; height: 400px;
+             opacity: .35; border: 1px solid #26323f; border-radius: 8px; overflow: hidden;
+             z-index: 1; pointer-events: none; }
+  #ram { width: 360px; height: 660px; border: 0; transform: scale(.606);
+         transform-origin: 0 0; }
+  #fas { position: fixed; left: 0; right: 0; bottom: 0; background: #12406b; color: #fff;
+         padding: 9px 14px; font-weight: 700; font-size: 14px; z-index: 5; }
+</style>
+
+<h1>Polisvakt — batterimätning</h1>
+<p class="sub">
+  Frågan sidan svarar på: <b>vad kostar appen medan den står på, och vad
+  fortsätter kosta när skärmen slocknar?</b> En varningsapp som föraren stänger
+  av för att telefonen blir varm varnar för ingenting.<br><br>
+  Körtid: knappt tre minuter. Fas 4 väntar 30 s på att någon byter flik.<br><br>
+  Metod: den riktiga <code>index.html</code> körs i ramen nere till höger, med
+  <code>setInterval</code>, <code>setTimeout</code>, <code>requestAnimationFrame</code>,
+  <code>fetch</code>, <code>watchPosition</code>, <code>wakeLock</code>,
+  <code>getUserMedia</code> och <code>AudioContext</code> ombytta mot räknande
+  omslag <i>innan</i> appens moduler laddas. Varje timer får sitt ursprung ur
+  anropsstacken, så fil och radnummer är avlästa och inte påhittade.
+  Nätverket mäts dessutom oberoende med <code>PerformanceObserver</code>
+  (<code>resource</code>), huvudtråden med <code>longtask</code>.<br><br>
+  <b>Vad sidan inte kan mäta:</b> milliampere. Det här är en dator, inte en
+  telefon i en bilhållare i solen. Radiosändning, GPS-mottagare, skärmens
+  bakgrundsbelysning och videokodning i hårdvara kostar batteri utan att synas
+  som en enda millisekund på huvudtråden. Siffrorna nedan är
+  <i>arbetsmängd</i>, inte energi.
+</p>
+
+<div id="summa">Startar…</div>
+<div id="ut"></div>
+<div id="ramskal"><iframe id="ram" allow="geolocation; camera; microphone; autoplay"></iframe></div>
+<div id="fas">Startar…</div>
+
+<script type="module">
+/* ==================================================================== */
+/* Insamlaren. Ligger på den här sidan; omslagen inne i ramen skriver hit. */
+/* ==================================================================== */
+
+const M = {
+  timers: new Map(),   // id -> { id, ms, kalla, n, tid, levande }
+  timeouts: new Map(), // kalla -> { kalla, n, tid, msSumma }
+  raf: { n: 0, tid: 0 },
+  fetchar: [],         // { url, t }
+  geo: [],             // { typ, opts, t }
+  geoFix: 0,
+  geoFel: [],
+  wakeLock: [],        // { t, ok }
+  media: [],           // { opts, t }
+  audio: [],           // { t }
+  tal: 0,
+  redo: false,
+  bootfel: null,
+  // Egna sonder inne i ramen. Appen kör ingen kontinuerlig rAF-loop när den
+  // står stilla, så utan en egen sond går det inte att mäta OM uppritningen
+  // fryser — bara att appen inte råkade rita något. Samma sak för
+  // timerstrypning: en 5-sekunderstimer märker inte att webbläsaren klämt
+  // ner minsta tillåtna intervall till en sekund.
+  prov: { raf: 0, timer: 0 },
+};
+window.__pvMat = M;
+
+/** Fil och rad ur en anropsstack. about:blank = inline-skript i ramen. */
+M.plats = function (stack) {
+  const rader = String(stack || '').split('\n').slice(1);
+  for (const r of rader) {
+    if (r.includes('about:blank')) continue;
+    if (r.includes('batteri-test.html')) continue;
+    const m = /([\w.\-]+\.(?:js|html)):(\d+):(\d+)/.exec(r);
+    if (m) return `${m[1]}:${m[2]}`;
+  }
+  return 'okänd';
+};
+
+/* ==================================================================== */
+/* Omslagen som körs inne i ramen, före appens moduler.                  */
+/* ==================================================================== */
+
+const BOOTSTRAP = `<script>(function(){
+  var M = parent.__pvMat;
+  var w = window, d = document;
+  var _si = w.setInterval, _ci = w.clearInterval, _st = w.setTimeout;
+  var _raf = w.requestAnimationFrame;
+
+  function plats(){ try { return M.plats(new Error().stack); } catch(e){ return 'okänd'; } }
+  function kor(fn, rec, args){
+    var t0 = performance.now();
+    try { return typeof fn === 'function' ? fn.apply(this, args) : w.eval(String(fn)); }
+    finally { rec.n++; rec.tid += performance.now() - t0; }
+  }
+
+  w.setInterval = function(fn, ms){
+    var extra = [].slice.call(arguments, 2);
+    var rec = { id: 0, ms: +ms || 0, kalla: plats(), n: 0, tid: 0, levande: true };
+    var id = _si.apply(w, [function(){ return kor.call(this, fn, rec, arguments); }, ms].concat(extra));
+    rec.id = id; M.timers.set(id, rec);
+    return id;
+  };
+  w.clearInterval = function(id){
+    var r = M.timers.get(id); if (r) r.levande = false;
+    return _ci.call(w, id);
+  };
+  w.setTimeout = function(fn, ms){
+    var extra = [].slice.call(arguments, 2);
+    var k = plats();
+    var rec = M.timeouts.get(k);
+    if (!rec) { rec = { kalla: k, n: 0, tid: 0, msSumma: 0 }; M.timeouts.set(k, rec); }
+    rec.msSumma += (+ms || 0);
+    return _st.apply(w, [function(){ return kor.call(this, fn, rec, arguments); }, ms].concat(extra));
+  };
+  w.requestAnimationFrame = function(fn){
+    return _raf.call(w, function(ts){
+      var t0 = performance.now();
+      try { return fn(ts); } finally { M.raf.n++; M.raf.tid += performance.now() - t0; }
+    });
+  };
+
+  var _f = w.fetch;
+  w.fetch = function(input, init){
+    var u = ''; try { u = typeof input === 'string' ? input : (input && input.url) || ''; } catch(e){}
+    M.fetchar.push({ url: u, t: Date.now(), kalla: plats() });
+    return _f.apply(w, arguments);
+  };
+
+  if (w.navigator.geolocation) {
+    var g = w.navigator.geolocation;
+    var _wp = g.watchPosition.bind(g), _gp = g.getCurrentPosition.bind(g), _cw = g.clearWatch.bind(g);
+    g.watchPosition = function(ok, fel, opts){
+      var post = { typ: 'watchPosition', opts: opts || {}, t: Date.now(), kalla: plats(), levande: true, id: 0 };
+      M.geo.push(post);
+      var id = _wp(function(p){ M.geoFix++; return ok && ok(p); },
+                   function(e){ M.geoFel.push(e.code); return fel && fel(e); }, opts);
+      post.id = id; return id;
+    };
+    g.getCurrentPosition = function(ok, fel, opts){
+      M.geo.push({ typ: 'getCurrentPosition', opts: opts || {}, t: Date.now(), kalla: plats() });
+      return _gp(ok, fel, opts);
+    };
+    g.clearWatch = function(id){
+      M.geo.forEach(function(x){ if (x.id === id) x.levande = false; });
+      return _cw(id);
+    };
+  }
+
+  if (w.navigator.wakeLock) {
+    var _wl = w.navigator.wakeLock.request.bind(w.navigator.wakeLock);
+    w.navigator.wakeLock.request = function(typ){
+      var post = { typ: typ, t: Date.now(), kalla: plats(), ok: null };
+      M.wakeLock.push(post);
+      return _wl(typ).then(function(s){ post.ok = true; return s; },
+                           function(e){ post.ok = false; throw e; });
+    };
+  }
+
+  if (w.navigator.mediaDevices && w.navigator.mediaDevices.getUserMedia) {
+    var _gum = w.navigator.mediaDevices.getUserMedia.bind(w.navigator.mediaDevices);
+    w.navigator.mediaDevices.getUserMedia = function(c){
+      M.media.push({ opts: c, t: Date.now(), kalla: plats() });
+      return _gum(c);
+    };
+  }
+
+  ['AudioContext','webkitAudioContext'].forEach(function(namn){
+    var C = w[namn]; if (!C) return;
+    var Ny = function(){ M.audio.push({ t: Date.now(), kalla: plats(), namn: namn });
+                         return new C(arguments[0]); };
+    Ny.prototype = C.prototype;
+    try { w[namn] = Ny; } catch(e){}
+  });
+
+  if (w.speechSynthesis) {
+    var _sp = w.speechSynthesis.speak.bind(w.speechSynthesis);
+    w.speechSynthesis.speak = function(u){ M.tal++; return _sp(u); };
+  }
+
+  // Sonderna. Registreras med de OPATCHADE funktionerna så de inte räknas
+  // som appens eget arbete.
+  (function prov(){
+    var steg = function(){ M.prov.raf++; _raf.call(w, steg); };
+    _raf.call(w, steg);
+    _si.call(w, function(){ M.prov.timer++; }, 100);
+  })();
+
+  w.addEventListener('polisvakt:ready', function(){ M.redo = true; });
+  w.addEventListener('error', function(e){ if (!M.bootfel) M.bootfel = String(e.message || e); });
+})();<\/script>`;
+
+/* ==================================================================== */
+/* Rapportering                                                          */
+/* ==================================================================== */
+
+const ut = document.getElementById('ut');
+const fasRuta = document.getElementById('fas');
+let ok = 0, fel = 0, hopp = 0, grupp = null;
+
+function G(namn, not) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>` + (not ? `<p class="not">${not}</p>` : '');
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  if (status === 'ok') ok++; else if (status === 'fel') fel++; else hopp++;
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+function tabell(kolumner, rader) {
+  const skal = document.createElement('div');
+  skal.className = 'tabellskal';
+  const t = document.createElement('table');
+  t.innerHTML = `<thead><tr>${kolumner.map(k => `<th>${k}</th>`).join('')}</tr></thead>` +
+    `<tbody>${rader.map(r => `<tr>${r.map((c, i) => {
+      const v = typeof c === 'object' && c ? c.v : c;
+      const kl = typeof c === 'object' && c ? c.kl || '' : '';
+      return `<td class="${kl}">${v}</td>`;
+    }).join('')}</tr>`).join('')}</tbody>`;
+  skal.appendChild(t);
+  (grupp || ut).appendChild(skal);
+}
+const n1 = x => (Math.round(x * 10) / 10).toString().replace('.', ',');
+const n2 = x => (Math.round(x * 100) / 100).toString().replace('.', ',');
+const sov = ms => new Promise(r => setTimeout(r, ms));
+const status = s => { fasRuta.textContent = s; document.getElementById('summa').textContent = s; };
+
+/* ==================================================================== */
+/* Starta ramen med den riktiga appen                                    */
+/* ==================================================================== */
+
+// Hoppa över ansvarsrutan så appen bootar hela vägen, precis som för en
+// användare som redan tryckt "jag förstår". Utan det stannar mätningen på
+// en modal.
+try {
+  const nyckel = 'pv.settings.v1';
+  const s = JSON.parse(localStorage.getItem(nyckel) || '{}');
+  s.disclaimerAccepted = true;
+  s.keepAwake = true;
+  localStorage.setItem(nyckel, JSON.stringify(s));
+  localStorage.setItem('pv.tour.v1', JSON.stringify({ seen: true }));
+} catch {}
+
+status('Hämtar index.html…');
+const ramEl = document.getElementById('ram');
+let rHtml = '';
+try {
+  rHtml = await (await fetch('./index.html', { cache: 'no-store' })).text();
+} catch (e) {
+  status('Kunde inte hämta index.html: ' + e.message);
+  throw e;
+}
+// Basadress först, sedan omslagen, sedan appens egen HTML. Ordningen är hela
+// poängen: omslagen måste finnas innan js/app.js laddas.
+const injektion = `<base href="/">` + BOOTSTRAP;
+const srcdoc = /<!doctype html>/i.test(rHtml)
+  ? rHtml.replace(/<!doctype html>/i, m => m + '\n' + injektion)
+  : injektion + rHtml;
+
+const laddad = new Promise(r => ramEl.addEventListener('load', r, { once: true }));
+ramEl.srcdoc = srcdoc;
+await laddad;
+
+status('Appen laddad — väntar 9 s på att uppstarten ska lägga sig…');
+await sov(9000);
+
+const ramW = ramEl.contentWindow;
+const ramD = ramEl.contentDocument;
+
+/* ---- Observatörer ---- */
+const resurser = [];
+const langa = [];
+let obsFel = null;
+try {
+  new ramW.PerformanceObserver(l => { for (const e of l.getEntries()) resurser.push(e); })
+    .observe({ type: 'resource', buffered: true });
+} catch (e) { obsFel = e.message; }
+try {
+  new PerformanceObserver(l => { for (const e of l.getEntries()) langa.push(e); })
+    .observe({ type: 'longtask', buffered: true });
+} catch (e) { /* longtask saknas i vissa webbläsare */ }
+
+/* ---- Batteri, om webbläsaren släpper fram det ---- */
+let batt = null;
+try { batt = await navigator.getBattery?.(); } catch {}
+
+/* ==================================================================== */
+/* Mätfönster                                                            */
+/* ==================================================================== */
+
+// Mätfönstret måste vara längre än appens längsta intervall, annars mäter man
+// inte takt utan tur. app.js har en timer på två minuter; 62 sekunder räcker
+// för att fånga 5-, 10-, 20-, 30- och 60-sekunderstimrarna med rätt takt, och
+// tvåminuterstimern redovisas med sin nominella takt bredvid den uppmätta.
+const FONSTER_MS = 62000;
+
+async function mat(namn, ms = FONSTER_MS) {
+  const snapTimer = new Map();
+  for (const [id, r] of M.timers) snapTimer.set(id, { n: r.n, tid: r.tid });
+  const snapTo = new Map();
+  for (const [k, r] of M.timeouts) snapTo.set(k, { n: r.n, tid: r.tid });
+  const raf0 = { ...M.raf };
+  const f0 = M.fetchar.length, r0 = resurser.length, l0 = langa.length;
+  const gf0 = M.geoFix, tal0 = M.tal;
+  const prov0 = { ...M.prov };
+  const b0 = batt ? batt.level : null;
+  const t0 = Date.now();
+
+  // Håll reda på om fliken FAKTISKT var synlig hela fönstret. I ett
+  // fjärrstyrt fönster kan den bli dold utan att någon bett om det, och då
+  // är "synlig"-fasen inte synlig. Bättre att veta det än att tro på siffran.
+  let synProv = 0, synVisible = 0;
+  const synKlocka = setInterval(() => {
+    synProv++; if (document.visibilityState === 'visible') synVisible++;
+  }, 500);
+
+  await sov(ms);
+  clearInterval(synKlocka);
+
+  const dt = (Date.now() - t0) / 1000;
+  const perMin = x => x * 60 / dt;
+  const andelSynlig = synProv ? synVisible / synProv : null;
+
+  const timers = [];
+  for (const [id, r] of M.timers) {
+    const s = snapTimer.get(id) || { n: 0, tid: 0 };
+    const dn = r.n - s.n, dtid = r.tid - s.tid;
+    // Döda timers behålls med flit. En rad som försvinner ur tabellen ser ut
+    // som "kostar ingenting", men skillnaden mellan en modul som PAUSAR sig
+    // själv och en som råkade inte hinna fyra under ett kort fönster är hela
+    // poängen med mätningen.
+    timers.push({ kalla: r.kalla, ms: r.ms, levande: r.levande,
+                  fires: dn, perMin: perMin(dn), msArbete: dtid, msPerMin: perMin(dtid) });
+  }
+  // Slå ihop timers som kommer från samma rad (t.ex. omstartade)
+  const slagna = new Map();
+  for (const t of timers) {
+    const k = `${t.kalla}|${t.ms}`;
+    const f = slagna.get(k);
+    if (f) { f.fires += t.fires; f.perMin += t.perMin; f.msArbete += t.msArbete;
+             f.msPerMin += t.msPerMin; f.levande = f.levande || t.levande; }
+    else slagna.set(k, { ...t });
+  }
+
+  const timeouts = [];
+  for (const [k, r] of M.timeouts) {
+    const s = snapTo.get(k) || { n: 0, tid: 0 };
+    if (r.n - s.n === 0) continue;
+    timeouts.push({ kalla: k, fires: r.n - s.n, perMin: perMin(r.n - s.n),
+                    msPerMin: perMin(r.tid - s.tid) });
+  }
+
+  const nyaResurser = resurser.slice(r0);
+  const endpoints = new Map();
+  for (const e of nyaResurser) {
+    const k = andpunkt(e.name);
+    const f = endpoints.get(k) || { namn: k, n: 0, bytes: 0, ms: 0 };
+    f.n++; f.bytes += e.transferSize || 0; f.ms += e.duration || 0;
+    endpoints.set(k, f);
+  }
+  for (const e of endpoints.values()) { e.perMin = perMin(e.n); e.bytesPerMin = perMin(e.bytes); }
+
+  const nyaLanga = langa.slice(l0);
+
+  return {
+    namn, sekunder: dt,
+    synlighet: document.visibilityState,
+    andelSynlig,
+    provRafPerMin: perMin(M.prov.raf - prov0.raf),
+    provTimerPerMin: perMin(M.prov.timer - prov0.timer),
+    timers: [...slagna.values()].sort((a, b) => b.msPerMin - a.msPerMin || b.perMin - a.perMin),
+    timeouts: timeouts.sort((a, b) => b.perMin - a.perMin),
+    raf: { n: M.raf.n - raf0.n, perMin: perMin(M.raf.n - raf0.n),
+           msPerMin: perMin(M.raf.tid - raf0.tid) },
+    fetchar: M.fetchar.length - f0,
+    fetchPerMin: perMin(M.fetchar.length - f0),
+    endpoints: [...endpoints.values()].sort((a, b) => b.perMin - a.perMin),
+    resurser: nyaResurser.length,
+    resurserPerMin: perMin(nyaResurser.length),
+    bytesPerMin: perMin(nyaResurser.reduce((s, e) => s + (e.transferSize || 0), 0)),
+    langa: nyaLanga.length,
+    langaPerMin: perMin(nyaLanga.length),
+    langaMsPerMin: perMin(nyaLanga.reduce((s, e) => s + e.duration, 0)),
+    gpsFix: M.geoFix - gf0, gpsFixPerMin: perMin(M.geoFix - gf0),
+    tal: M.tal - tal0,
+    batteriDelta: batt && b0 != null ? batt.level - b0 : null,
+  };
+}
+
+/** Kort, läsbart namn på en ändpunkt. */
+function andpunkt(url) {
+  try {
+    const u = new URL(url, location.href);
+    if (u.hostname.endsWith('supabase.co')) {
+      const p = u.pathname.replace(/^\/rest\/v1\//, '').replace(/^\/auth\/v1\//, 'auth/');
+      return 'supabase · ' + (p.split('?')[0] || u.pathname);
+    }
+    if (u.hostname.includes('overpass')) return 'overpass (hastighetsgränser)';
+    if (u.hostname.includes('basemaps') || u.hostname.includes('cartocdn')) return 'kartbrickor (carto)';
+    if (u.hostname.includes('unpkg')) return 'unpkg (leaflet)';
+    if (u.hostname.includes('api.met.no')) return 'met.no (vinterväder)';
+    if (u.hostname.includes('nominatim')) return 'nominatim (geokodning)';
+    if (u.hostname.includes('router.project-osrm') || u.pathname.includes('/route/')) return 'osrm (ruttdragning)';
+    if (u.origin === location.origin) return 'lokal · ' + u.pathname;
+    return u.hostname + u.pathname.slice(0, 30);
+  } catch { return String(url).slice(0, 40); }
+}
+
+/* ==================================================================== */
+/* Fas 1 — synlig flik                                                   */
+/* ==================================================================== */
+
+// Vänta in att fliken verkligen är synlig innan referensfasen. Ett fönster
+// som ligger minimerat eller helt övertäckt rapporterar hidden, och då mäter
+// "synlig"-fasen något helt annat än den påstår.
+status('Fas 1 av 4: väntar på att fliken ska vara SYNLIG (upp till 45 s) — lägg fönstret överst.');
+await new Promise(res => {
+  if (document.visibilityState === 'visible') return res();
+  const klocka = setTimeout(() => { document.removeEventListener('visibilitychange', h); res(); }, 45000);
+  const h = () => { if (document.visibilityState === 'visible') {
+    clearTimeout(klocka); document.removeEventListener('visibilitychange', h); res(); } };
+  document.addEventListener('visibilitychange', h);
+});
+status('Fas 1 av 4: mäter med fliken SYNLIG (62 s)…');
+const F1 = await mat('synlig');
+
+/* ==================================================================== */
+/* Fas 2 — appen tror att den är dold, webbläsaren stryper inte          */
+/* ==================================================================== */
+/* Skiljer appens egen paus-logik från webbläsarens energisparande. Går
+   siffran ner här är det MODULEN som pausar. Går den ner först i fas 3 är
+   det webbläsaren som strypt en modul som själv ville fortsätta. */
+
+status('Fas 2 av 4: mäter med appen tillsagd att den är DOLD (62 s)…');
+let F2 = null, f2fel = null;
+try {
+  Object.defineProperty(ramD, 'visibilityState', { configurable: true, get: () => 'hidden' });
+  Object.defineProperty(ramD, 'hidden', { configurable: true, get: () => true });
+  ramD.dispatchEvent(new ramW.Event('visibilitychange'));
+  await sov(400);
+  F2 = await mat('dold-logisk');
+} catch (e) { f2fel = e.message; }
+try {
+  delete ramD.visibilityState; delete ramD.hidden;
+  ramD.dispatchEvent(new ramW.Event('visibilitychange'));
+} catch {}
+await sov(1500);
+
+/* ==================================================================== */
+/* Fas 3 — appen körs men ritas inte upp                                 */
+/* ==================================================================== */
+/* Släckt skärm gör två saker: sidan slutar ritas, och webbläsaren stryper
+   timers. Den första halvan går att framkalla exakt — ta ramen ur
+   uppritningen. Då fryser requestAnimationFrame medan setInterval fortsätter,
+   och det är precis den skillnaden kommentarerna i dashcam.js och plate.js
+   bygger hela sin timer-över-rAF-lösning på. Här mäts om det stämmer. */
+
+status('Fas 3 av 4: mäter med ramen UR UPPRITNING (20 s)…');
+const ramskal = document.getElementById('ramskal');
+ramskal.style.display = 'none';
+await sov(600);
+const F3 = await mat('ej-uppritad', 20000);
+ramskal.style.display = '';
+await sov(1200);
+
+/* ==================================================================== */
+/* Fas 4 — fliken verkligen dold: appens logik OCH webbläsarens strypning */
+/* ==================================================================== */
+/* Går bara att mäta om någon faktiskt byter flik eller minimerar fönstret.
+   I ett fjärrstyrt webbläsarfönster händer det inte av sig själv, och då är
+   ärligast att skriva att fasen hoppades över. */
+
+status('Fas 4 av 4: BYT TILL EN ANNAN FLIK ELLER MINIMERA FÖNSTRET NU — mätningen startar av sig själv (väntar 30 s).');
+
+const blevDold = await new Promise(res => {
+  if (document.visibilityState === 'hidden') return res(true);
+  const klocka = setTimeout(() => { document.removeEventListener('visibilitychange', h); res(false); }, 30000);
+  const h = () => {
+    if (document.visibilityState === 'hidden') {
+      clearTimeout(klocka); document.removeEventListener('visibilitychange', h); res(true);
+    }
+  };
+  document.addEventListener('visibilitychange', h);
+});
+
+let F4 = null;
+if (blevDold) F4 = await mat('dold-verklig', 30000);
+
+status('Sammanställer…');
+await new Promise(res => {
+  if (document.visibilityState === 'visible') return res();
+  const h = () => { if (document.visibilityState === 'visible') {
+    document.removeEventListener('visibilitychange', h); res(); } };
+  document.addEventListener('visibilitychange', h);
+  setTimeout(res, 60000);
+});
+fasRuta.hidden = true;
+
+/* ==================================================================== */
+/* Utskrift                                                              */
+/* ==================================================================== */
+
+const faser = [F1, F2, F3, F4].filter(Boolean);
+const fasNamn = {
+  'synlig': 'Synlig',
+  'dold-logisk': 'Dold (app)',
+  'ej-uppritad': 'Ej uppritad',
+  'dold-verklig': 'Dold (på riktigt)',
+};
+
+G('Bootade appen alls?',
+  'Går det här sönder är inget annat på sidan värt något — då mätte vi en app som aldrig kom igång.');
+rad(M.redo ? 'ok' : 'fel', 'index.html nådde <code>polisvakt:ready</code>',
+    M.redo ? 'boot klar' : (M.bootfel || 'signalen uteblev'));
+rad(M.timers.size > 0 ? 'ok' : 'fel', 'timers fångades av omslagen',
+    `${M.timers.size} setInterval registrerade sedan start`);
+rad(obsFel ? 'hopp' : 'ok', 'PerformanceObserver kopplad till ramens tidslinje',
+    obsFel || `${resurser.length} resurser sedda`);
+rad(F3 ? 'ok' : 'hopp', 'ramen kunde tas ur uppritning',
+    F3 ? `${n1(F3.sekunder)} s utan komposition` : 'fasen misslyckades');
+rad(F4 ? 'ok' : 'hopp', 'fliken hann bli verkligt dold',
+    F4 ? `${n1(F4.sekunder)} s i bakgrunden`
+       : 'ingen bytte flik — webbläsarens egen timerstrypning kunde INTE mätas');
+rad(F1.andelSynlig >= 0.9 ? 'ok' : 'fel', 'referensfasen var verkligen synlig',
+    F1.andelSynlig >= 0.9
+      ? `${Math.round(F1.andelSynlig * 100)} % av fönstret`
+      : `BARA ${Math.round(F1.andelSynlig * 100)} % — fönstret låg dolt eller övertäckt. ` +
+        'Allt som står i kolumnen "Synlig" är då redan strypt av webbläsaren och för lågt. ' +
+        'Kör om med fönstret överst.');
+
+/* ---- Översikt ---- */
+G('Översikt per fas — allt per minut',
+  'Uppmätt. "Dold (app)" = appen tillsagd att den är dold men webbläsaren stryper inte. ' +
+  '"Ej uppritad" = ramen tagen ur komposition. ' +
+  '"Dold (på riktigt)" = fliken verkligen i bakgrunden; då gäller både appens paus-logik och ' +
+  'webbläsarens timerstrypning. Raden "Fliken faktiskt synlig" avgör om kolumnen Synlig går att lita på.');
+tabell(['Mått', ...faser.map(f => fasNamn[f.namn])], [
+  ['Timerutlösningar / min', ...faser.map(f => ({
+    v: n1(f.timers.reduce((s, t) => s + t.perMin, 0)),
+    kl: f.timers.reduce((s, t) => s + t.perMin, 0) > 0 ? 'nn' : 'n0' }))],
+  ['setTimeout-utlösningar / min', ...faser.map(f => n1(f.timeouts.reduce((s, t) => s + t.perMin, 0)))],
+  ['rAF-bildrutor / min (appens egna)', ...faser.map(f => n1(f.raf.perMin))],
+  ['SOND: rAF-bildrutor / min', ...faser.map(f => ({ v: n1(f.provRafPerMin), kl: f.provRafPerMin < 60 ? 'n0' : 'nn' }))],
+  ['SOND: 100 ms-timer, utlösningar / min (nominellt 600)',
+    ...faser.map(f => ({ v: n1(f.provTimerPerMin), kl: f.provTimerPerMin > 300 ? 'nn' : 'n0' }))],
+  ['Fliken faktiskt synlig, andel av fönstret',
+    ...faser.map(f => ({ v: f.andelSynlig == null ? '–' : Math.round(f.andelSynlig * 100) + ' %',
+      kl: f.namn === 'synlig' && f.andelSynlig < 0.9 ? 'nn' : '' }))],
+  ['Appens timers: andel av nominell takt',
+    ...faser.map(f => {
+      const nom = f.timers.reduce((s, t) => s + (t.ms ? 60000 / t.ms : 0), 0);
+      const fak = f.timers.reduce((s, t) => s + t.perMin, 0);
+      return { v: nom ? Math.round(fak / nom * 100) + ' %' : '–', kl: nom && fak / nom > 0.5 ? 'nn' : 'n0' };
+    })],
+  ['Huvudtrådsarbete i timers, ms/min', ...faser.map(f => n1(
+    f.timers.reduce((s, t) => s + t.msPerMin, 0) + f.timeouts.reduce((s, t) => s + t.msPerMin, 0) + f.raf.msPerMin))],
+  ['Långa uppgifter (>50 ms) / min', ...faser.map(f => ({ v: n1(f.langaPerMin), kl: f.langaPerMin > 0 ? 'nn' : 'n0' }))],
+  ['Blockerad tid i långa uppgifter, ms/min', ...faser.map(f => n1(f.langaMsPerMin))],
+  ['Nätverksanrop / min (fetch)', ...faser.map(f => ({ v: n1(f.fetchPerMin), kl: f.fetchPerMin > 0 ? 'nn' : 'n0' }))],
+  ['Nätverksresurser / min (PerformanceObserver)', ...faser.map(f => n1(f.resurserPerMin))],
+  ['Överförda byte / min', ...faser.map(f => Math.round(f.bytesPerMin).toLocaleString('sv-SE'))],
+  ['GPS-positioner / min', ...faser.map(f => n1(f.gpsFixPerMin))],
+  ['Uppläsningar (speechSynthesis)', ...faser.map(f => f.tal)],
+  ['Mätfönstrets längd, s', ...faser.map(f => n1(f.sekunder))],
+]);
+
+/* ---- Timers ---- */
+G('Varje återkommande timer, med fil och rad',
+  'Ursprunget är läst ur anropsstacken vid registreringen — inte ur en lista någon skrivit för hand. ' +
+  'Kolumnerna visar utlösningar per minut i respektive fas. Noll i "Dold" = modulen pausar sig själv (grönt). ' +
+  'Ett tal kvar i "Dold (på riktigt)" = timern går vidare medan telefonen ligger i fickan.');
+
+const allaKallor = new Map();
+for (const f of faser) for (const t of f.timers) {
+  const k = `${t.kalla}|${t.ms}`;
+  const rec = allaKallor.get(k) || { kalla: t.kalla, ms: t.ms, per: {}, arbete: {}, lever: {} };
+  rec.per[f.namn] = t.perMin; rec.arbete[f.namn] = t.msPerMin; rec.lever[f.namn] = t.levande;
+  allaKallor.set(k, rec);
+}
+const timerRader = [...allaKallor.values()]
+  .sort((a, b) => (b.arbete['synlig'] || 0) - (a.arbete['synlig'] || 0) || (b.per['synlig'] || 0) - (a.per['synlig'] || 0))
+  .map(r => [
+    `<code>${r.kalla}</code>`,
+    r.ms >= 60000 ? `${n1(r.ms / 60000)} min` : `${n1(r.ms / 1000)} s`,
+    n1(60000 / (r.ms || 60000)),
+    ...faser.map(f => {
+      const v = r.per[f.namn] || 0;
+      const lever = r.lever[f.namn];
+      // "avregistrerad" = modulen har själv kallat clearInterval. Det är det
+      // enda hårda beviset på att den pausar; ett nollställe i ett mätfönster
+      // kan lika gärna vara en långsam timer som råkade inte hinna fyra.
+      const txt = lever === false ? 'avreg.' : n1(v);
+      return { v: txt, kl: f.namn === 'synlig' ? '' : (lever === false ? 'n0' : (v > 0 ? 'nn' : '')) };
+    }),
+    n2(r.arbete['synlig'] || 0),
+  ]);
+tabell(['Registrerad i', 'Intervall', 'Nominellt /min',
+        ...faser.map(f => fasNamn[f.namn] + ' /min'), 'ms arbete/min (synlig)'], timerRader);
+
+/* ---- setTimeout ---- */
+if (F1.timeouts.length || (F2 && F2.timeouts.length)) {
+  G('Engångstimers som ändå går om och om', 'setTimeout räknat per registreringsställe.');
+  const kallor = new Map();
+  for (const f of faser) for (const t of f.timeouts) {
+    const rec = kallor.get(t.kalla) || { kalla: t.kalla, per: {} };
+    rec.per[f.namn] = t.perMin; kallor.set(t.kalla, rec);
+  }
+  tabell(['Registrerad i', ...faser.map(f => fasNamn[f.namn] + ' /min')],
+    [...kallor.values()].sort((a, b) => (b.per['synlig'] || 0) - (a.per['synlig'] || 0))
+      .map(r => [`<code>${r.kalla}</code>`, ...faser.map(f => n1(r.per[f.namn] || 0))]));
+}
+
+/* ---- Nätverk ---- */
+G('Nätverksanrop per minut, per ändpunkt',
+  'Mätt med PerformanceObserver på ramens egen tidslinje. Radion är en av de dyraste sakerna i en telefon: ' +
+  'varje anrop väcker modemet och håller det vaket i flera sekunder efteråt, oavsett hur få byte det gällde.');
+const nätKällor = new Map();
+for (const f of faser) for (const e of f.endpoints) {
+  const rec = nätKällor.get(e.namn) || { namn: e.namn, per: {}, bytes: {} };
+  rec.per[f.namn] = e.perMin; rec.bytes[f.namn] = e.bytesPerMin; nätKällor.set(e.namn, rec);
+}
+if (nätKällor.size) {
+  tabell(['Ändpunkt', ...faser.map(f => fasNamn[f.namn] + ' /min'), 'byte/min (synlig)'],
+    [...nätKällor.values()].sort((a, b) => (b.per['synlig'] || 0) - (a.per['synlig'] || 0)).map(r => [
+      r.namn,
+      ...faser.map(f => ({ v: n1(r.per[f.namn] || 0),
+                           kl: f.namn === 'synlig' ? '' : ((r.per[f.namn] || 0) > 0 ? 'nn' : 'n0') })),
+      Math.round(r.bytes['synlig'] || 0).toLocaleString('sv-SE'),
+    ]));
+} else {
+  rad('hopp', 'inga nätverksresurser sågs under mätfönstren', 'offline eller allt ur cache');
+}
+
+/* ---- Det som lever utan användaren ---- */
+G('Vad som håller igång utan att någon rör telefonen',
+  'Allt nedan är avläst genom att byta ut webbläsarens egna funktioner mot räknande omslag i ramen.');
+
+const gpsWatch = M.geo.filter(g => g.typ === 'watchPosition');
+const hogNoggrannhet = gpsWatch.filter(g => g.opts && g.opts.enableHighAccuracy);
+rad(gpsWatch.length && hogNoggrannhet.length ? 'fel' : (gpsWatch.length ? 'ok' : 'hopp'),
+  'GPS-prenumeration (<code>watchPosition</code>)',
+  gpsWatch.length
+    ? `${gpsWatch.length} st, varav ${hogNoggrannhet.length} med enableHighAccuracy:true — ` +
+      `från ${gpsWatch.map(g => g.kalla).join(', ')}`
+    : 'ingen startades');
+rad(M.geoFix > 0 ? 'ok' : 'hopp', 'GPS levererade positioner under mätningen',
+  M.geoFix ? `${M.geoFix} fixar` : `0 fixar (felkoder: ${M.geoFel.join(',') || 'inga'}) — datorn har ingen GPS`);
+rad(M.wakeLock.length ? 'fel' : 'ok', 'Skärmlås (<code>wakeLock.request</code>)',
+  M.wakeLock.length
+    ? `${M.wakeLock.length} begäran, ${M.wakeLock.filter(w => w.ok).length} beviljade — från ${[...new Set(M.wakeLock.map(w => w.kalla))].join(', ')}`
+    : 'ingen begärd');
+rad(M.media.length ? 'fel' : 'ok', 'Kameraström (<code>getUserMedia</code>)',
+  M.media.length ? `${M.media.length} anrop — ${[...new Set(M.media.map(m => m.kalla))].join(', ')}` : 'ingen startad');
+rad(M.audio.length ? 'fel' : 'ok', 'Ljudkontexter (<code>AudioContext</code>)',
+  M.audio.length ? `${M.audio.length} skapade — ${[...new Set(M.audio.map(a => a.kalla))].join(', ')}` : 'ingen skapad');
+const kartbrickor = F1.endpoints.find(e => e.namn.startsWith('kartbrickor'));
+rad(kartbrickor ? 'fel' : 'hopp', 'Kartbrickor hämtas från nätet',
+  kartbrickor
+    ? `${n1(kartbrickor.perMin)} brickor/min synlig`
+    : 'inga under mätfönstret — kartan stod still eftersom datorn saknar GPS. ' +
+      'I en rullande bil hämtas nya brickor kontinuerligt; det gick inte att mäta här');
+
+/* ---- Bedömningen ---- */
+G('Bedömning — vad borde pausa och gör det inte',
+  'Grönt = tystnar när fliken döljs. Rött = fortsätter kosta medan ingen tittar. ' +
+  'Varningar och GPS SKA fortsätta i bakgrunden; det är hela poängen med appen. ' +
+  'Chattpollning, statistik, topplistor och omritning av listvyn ska det inte.');
+
+const doldFas = F4 || F2;
+if (!doldFas) {
+  rad('hopp', 'ingen dold fas kördes', 'kunde inte bedöma');
+} else {
+  const kvar = doldFas.timers.filter(t => t.levande);
+  const nätKvar = doldFas.endpoints.filter(e => e.perMin > 0.05);
+
+  const chattSedd = [...allaKallor.values()].some(r => r.kalla.startsWith('chatt.js')) ||
+                    F1.endpoints.some(e => /chatt/.test(e.namn));
+  const chattKvar = nätKvar.filter(e => /chatt/.test(e.namn));
+  rad(!chattSedd ? 'hopp' : (chattKvar.length ? 'fel' : 'ok'),
+    'chatt.js pausar pollningen när fliken döljs',
+    !chattSedd
+      ? 'chatten startade aldrig under mätningen (kräver inloggning) — pausningen finns i chatt.js men mättes inte'
+      : (chattKvar.map(e => `${e.namn} ${n1(e.perMin)}/min`).join(', ') || '0 anrop i dold fas'));
+
+  const reports = nätKvar.filter(e => /reports|report_history|rpc/.test(e.namn));
+  rad(reports.length ? 'fel' : 'ok',
+    'rapport- och statistiksynk pausar när fliken döljs',
+    reports.map(e => `${e.namn} ${n1(e.perMin)}/min`).join(', ') || '0 anrop i dold fas');
+
+  rad(kvar.length ? 'fel' : 'ok',
+    'inga setInterval lever kvar i dold flik',
+    kvar.length ? `${kvar.length} timers kvar: ` + kvar.slice(0, 8).map(t => `${t.kalla} (${n1(60000 / (t.ms || 60000))}/min nom.)`).join(', ') : 'alla avregistrerade');
+
+  rad(doldFas.langaPerMin > 0 ? 'fel' : 'ok',
+    'inga långa uppgifter (>50 ms) i dold flik',
+    doldFas.langaPerMin > 0 ? `${n1(doldFas.langaPerMin)}/min, ${n1(doldFas.langaMsPerMin)} ms/min` : '0');
+
+  // Byte går inte att använda som mått: Supabase skickar inget
+  // Timing-Allow-Origin, och då rapporterar PerformanceObserver transferSize
+  // som noll för varje anrop. Räkna anrop i stället — det är ändå anropet,
+  // inte storleken, som väcker modemet.
+  rad(doldFas.resurserPerMin > 0.05 ? 'fel' : 'ok',
+    'radion får vila i dold flik',
+    `${n1(doldFas.resurserPerMin)} anrop/min (byte kan inte mätas: ` +
+    `Supabase skickar inget Timing-Allow-Origin, så transferSize blir 0)`);
+
+  // Strypningsfaktor: hur mycket långsammare gick timers när fliken var dold
+  // på riktigt jämfört med när appen bara TRODDE att den var det?
+  if (F4) {
+    // Jämför mot NOMINELL takt, inte mot en annan fas. Ligger båda faserna
+    // redan strypta blir en fas-mot-fas-kvot 100 % och ser ut som att inget
+    // hände — vilket är precis tvärtemot vad som hände.
+    const nom = F4.timers.reduce((s, t) => s + (t.ms ? 60000 / t.ms : 0), 0);
+    const fak = F4.timers.reduce((s, t) => s + t.perMin, 0);
+    const andel = nom ? fak / nom : null;
+    rad(andel != null && andel < 0.3 ? 'ok' : 'fel',
+      'webbläsaren stryper appens timers i verklig bakgrund',
+      andel != null
+        ? `${n1(fak)} av ${n1(nom)} utlösningar/min = ${Math.round(andel * 100)} % av nominell takt`
+        : 'gick inte att jämföra');
+  } else {
+    rad('hopp', 'webbläsarens egen timerstrypning i bakgrundsflik',
+      'gick inte att framkalla i den här webbläsarsessionen');
+  }
+}
+
+/* ---- Ritning kontra timers ---- */
+G('Släckt skärm: vad fryser och vad fortsätter',
+  'Uppmätt genom att ta ramen ur uppritning. Det är den halva av "släckt skärm" som går att framkalla exakt. ' +
+  'dashcam.js och plate.js valde med flit setInterval framför requestAnimationFrame just för det här; raden nedan visar om valet var rätt.');
+if (F3 && F1.provRafPerMin < 60) {
+  rad('hopp', 'requestAnimationFrame fryser när sidan inte ritas',
+    `sonden fick bara ${n1(F1.provRafPerMin)} bildrutor/min redan i referensfasen — ` +
+    'fönstret ritades aldrig upp, så det fanns ingen uppritning att frysa. Kör om med fönstret överst.');
+  rad(F3.provTimerPerMin > 0 ? 'ok' : 'fel', 'setInterval fortsätter när sidan inte ritas (sond, 100 ms)',
+    `${n1(F3.provTimerPerMin)} utlösningar/min`);
+} else if (F3) {
+  const rafStopp = F3.provRafPerMin < F1.provRafPerMin * 0.2;
+  rad(rafStopp ? 'ok' : 'hopp', 'Webbläsaren fryser rAF när ramen tas ur uppritning',
+    rafStopp
+      ? `${n1(F1.provRafPerMin)} bildrutor/min → ${n1(F3.provRafPerMin)}/min`
+      : `nej: ${n1(F1.provRafPerMin)} → ${n1(F3.provRafPerMin)} bildrutor/min. ` +
+        'Skrivbords-Chrome fortsätter alltså driva rAF i en oritad iframe. Att rAF stannar när ' +
+        'TELEFONENS skärm släcks är dokumenterat men går inte att framkalla härifrån — ' +
+        'det är ett antagande i den här mätningen, inte ett mätvärde.');
+  rad(F3.provTimerPerMin > F1.provTimerPerMin * 0.5 ? 'ok' : 'fel',
+    'setInterval fortsätter när sidan inte ritas (sond, 100 ms)',
+    `${n1(F1.provTimerPerMin)} → ${n1(F3.provTimerPerMin)} utlösningar/min`);
+  rad(rafStopp ? 'ok' : 'hopp', 'Slutsats: timer-valet i dashcam.js och plate.js håller',
+    rafStopp
+      ? 'inspelning och skyltläsning överlever att sidan inte ritas — men kostar då också batteri'
+      : 'kunde varken bekräftas eller motbevisas här — men valet kostar oavsett, se nästa avsnitt');
+  rad('hopp', 'Appens egna rAF-loopar',
+    `${n1(F1.raf.perMin)} bildrutor/min i vila — kartrotationen och värmevakten kör bara rAF ` +
+    'medan de animerar respektive medan dashcamen är igång, så i vila finns inget att frysa');
+} else {
+  rad('hopp', 'fasen kördes inte', '');
+}
+if (F4) {
+  rad(F4.provTimerPerMin < 120 ? 'ok' : 'fel',
+    'webbläsaren klämmer ner snabba timers i dold flik (sond, 100 ms, nominellt 600/min)',
+    `${n1(F1.provTimerPerMin)} i referensfasen → ${n1(F4.provTimerPerMin)} dold`);
+  // Under en minut i minuten = Chromes "intensive throttling", som slår till
+  // efter ungefär fem minuter i bakgrunden och då gäller ALLA timers, inte
+  // bara snabba. Det är skillnaden mellan "appen sparar batteri i fickan" och
+  // "appen slutar fungera i fickan".
+  const intensiv = F4.provTimerPerMin <= 3;
+  rad(intensiv ? 'fel' : 'ok', 'Fällan: sover appen, eller slutar den fungera?',
+    intensiv
+      ? `sonden gick ner till ${n1(F4.provTimerPerMin)} utlösningar/min — ungefär en per minut. ` +
+        'Det är inte ett golv på en sekund, det är webbläsarens hårda bakgrundsstrypning, och den ' +
+        'gäller ALLA timers oavsett intervall. Allt som drivs av setInterval slutar i praktiken att ' +
+        'köra. Varningarna måste därför hänga på GPS-återanropen, inte på en timer.'
+      : `sonden låg kvar på ${n1(F4.provTimerPerMin)} utlösningar/min — bara ett sekundgolv, ` +
+        'appens 5–120-sekunderstimers påverkas inte och fortsätter kosta i full takt');
+}
+
+/* ---- Vad de tunga lägena kostar på huvudtråden ---- */
+G('Vad de tunga lägena kostar per minut — syntetisk mätning',
+  'Dashcam och skyltläsare kan inte startas på en dator utan kamera, så de mäts inte i drift. ' +
+  'Däremot går deras faktiska arbete att tidta: ritloopen ritar en videobild plus överlägg till en canvas, ' +
+  'och skyltläsaren kör <code>hittaPlat</code> ur <code>js/plate.js</code> — samma funktion som appen anropar. ' +
+  'Det som mäts är alltså RIKTIG kod med RIKTIGA bildstorlekar, men matad med en påhittad bild. ' +
+  'Siffrorna är huvudtrådskostnad. Kameran, videokodningen och lagringen ligger utanför och kostar mer.');
+
+{
+  const kalla = document.createElement('canvas');
+  kalla.width = 1280; kalla.height = 720;
+  const kx = kalla.getContext('2d');
+  const grad = kx.createLinearGradient(0, 0, 1280, 720);
+  grad.addColorStop(0, '#41505f'); grad.addColorStop(1, '#16202b');
+  kx.fillStyle = grad; kx.fillRect(0, 0, 1280, 720);
+  for (let i = 0; i < 400; i++) {
+    kx.fillStyle = `hsl(${(i * 37) % 360} 40% ${20 + (i % 40)}%)`;
+    kx.fillRect((i * 97) % 1280, (i * 53) % 720, 24, 14);
+  }
+
+  const mal = document.createElement('canvas');
+  mal.width = 1280; mal.height = 720;
+  const mx = mal.getContext('2d');
+
+  const ritaEn = () => {
+    mx.fillStyle = '#000'; mx.fillRect(0, 0, 1280, 720);
+    mx.drawImage(kalla, 0, 0, 1280, 720);
+    mx.fillStyle = 'rgba(0,0,0,.45)'; mx.fillRect(0, 660, 1280, 60);
+    mx.fillStyle = '#fff'; mx.font = '600 26px system-ui';
+    mx.fillText(new Date().toLocaleString('sv-SE') + '   ·   82 km/h', 18, 700);
+    mx.drawImage(kalla, 940, 20, 320, 180);   // bild-i-bild
+    // Tvinga fram ritningen. Utan avläsning köas canvasoperationerna och
+    // mätningen visar 0,01 ms per bildruta — en siffra som ser fantastisk ut
+    // och är ren lögn. Så här mäts det arbete som faktiskt utförs.
+    mx.getImageData(0, 0, 1, 1);
+  };
+
+  ritaEn();
+  let t0 = performance.now(), varv = 0;
+  while (performance.now() - t0 < 900) { ritaEn(); varv++; }
+  const msPerRuta = (performance.now() - t0) / varv;
+  const fps = 30;
+  rad(msPerRuta * fps * 60 > 12000 ? 'fel' : 'ok',
+    `Dashcam-ritloopen (1280×720 + överlägg + bild-i-bild) vid ${fps} fps`,
+    `${n2(msPerRuta)} ms/bildruta → ${Math.round(msPerRuta * fps * 60)} ms huvudtrådsarbete per minut ` +
+    `(${n1(msPerRuta * fps / 10)} % av en kärna) — på en telefon räkna med 3–5 gånger mer`);
+
+  try {
+    const plate = await import('./js/plate.js');
+    const sok = document.createElement('canvas');
+    sok.width = 1280; sok.height = 720;
+    const sx = sok.getContext('2d');
+    sx.drawImage(kalla, 0, 0);
+    // En skylt mitt i bilden, som i ocr-test.html.
+    const pb = 300, ph = Math.round(pb / 4.7);
+    const px = (1280 - pb) / 2, py = (720 - ph) / 2;
+    sx.fillStyle = '#f2f2ef'; sx.fillRect(px, py, pb, ph);
+    sx.fillStyle = '#003399'; sx.fillRect(px, py, ph * 0.42, ph);
+    sx.fillStyle = '#111'; sx.font = `700 ${Math.round(ph * 0.66)}px Arial`;
+    sx.textBaseline = 'middle'; sx.fillText('ABC123', px + ph * 0.58, py + ph * 0.55);
+    const roi = { x: (1280 - 1050) / 2, y: (720 - 223) / 2, w: 1050, h: 223 };
+
+    plate.hittaPlat(sok, roi);
+    t0 = performance.now(); varv = 0;
+    while (performance.now() - t0 < 700) { plate.hittaPlat(sok, roi); varv++; }
+    const msSok = (performance.now() - t0) / varv;
+    // plate.js:879 kör sökningen var 120:e ms, alltså drygt 8 gånger i sekunden.
+    const sokPerMin = 60000 / 120;
+    rad(msSok * sokPerMin > 6000 ? 'fel' : 'ok',
+      'Skyltläsarens sökning (<code>hittaPlat</code>) 8,3 ggr/s',
+      `${n2(msSok)} ms/sökning → ${Math.round(msSok * sokPerMin)} ms/min (${n1(msSok * sokPerMin / 600)} % av en kärna)`);
+
+    plate.forbehandla(sok, roi);
+    t0 = performance.now(); varv = 0;
+    while (performance.now() - t0 < 500) { plate.forbehandla(sok, roi); varv++; }
+    const msFor = (performance.now() - t0) / varv;
+    const ocrPerMin = 60000 / 700;   // plate.js, intervalMs 700
+    rad('ok', 'Skyltläsarens förbehandling före OCR, 1,4 ggr/s',
+      `${n2(msFor)} ms/bild → ${Math.round(msFor * ocrPerMin)} ms/min (själva OCR:en tillkommer, den mäts inte här)`);
+    rad('hopp', 'Skyltläsaren totalt på huvudtråden',
+      `${Math.round(msSok * sokPerMin + msFor * ocrPerMin)} ms/min på den här datorn, ` +
+      'utan kamera, utan OCR-motorn och utan videoavkodningen — på en telefon blir det mångdubbelt');
+  } catch (e) {
+    rad('hopp', 'plate.js kunde inte mätas', e.message);
+  }
+}
+
+/* ---- Batteri ---- */
+G('Batteri — det som faktiskt inte går att mäta härifrån',
+  'Battery Status API ger laddningsnivå i steg om en procent på en dator som ofta sitter i väggen. ' +
+  'Det säger ingenting om en telefon i en bilhållare med skärmen tänd och GPS på hög noggrannhet.');
+if (batt) {
+  const d = faser.map(f => f.batteriDelta).filter(x => x != null);
+  rad('hopp', 'Battery Status API finns',
+    `nivå ${Math.round(batt.level * 100)} %, laddar: ${batt.charging ? 'ja' : 'nej'}, ` +
+    `ändring under mätningen: ${d.length ? d.map(x => n2(x * 100) + ' %').join(' / ') : 'ingen'}`);
+} else {
+  rad('hopp', 'Battery Status API saknas i den här webbläsaren', 'verklig förbrukning kan inte mätas');
+}
+rad('hopp', 'Radio, GPS-mottagare, skärm och videokodning',
+  'ingen webb-API mäter dem — de kostar utan att synas på huvudtråden');
+
+/* ---- Summering ---- */
+const dyrast = F1.timers[0];
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} gröna, ${fel} röda, ${hopp} kan-inte-mätas` +
+  (dyrast ? ` — dyraste timern: ${dyrast.kalla} (${n1(dyrast.msPerMin)} ms/min)` : '');
+s.className = fel ? 'fel' : 'ok';
+
+window.__resultat = {
+  ok, fel, hopp, total,
+  bootOk: M.redo, bootfel: M.bootfel,
+  faser: Object.fromEntries(faser.map(f => [f.namn, f])),
+  ejUppritadKordes: !!F3,
+  verkligtDoldKordes: !!F4,
+  timers: timerRader.length,
+  timerLista: [...allaKallor.values()].map(r => ({
+    kalla: r.kalla, intervallMs: r.ms,
+    perMin: r.per, msArbetePerMin: r.arbete,
+  })),
+  natverk: [...nätKällor.values()],
+  bakgrund: {
+    watchPosition: gpsWatch.map(g => ({ kalla: g.kalla, opts: g.opts })),
+    gpsFixar: M.geoFix, gpsFel: M.geoFel,
+    wakeLock: M.wakeLock.map(w => ({ kalla: w.kalla, beviljad: w.ok })),
+    getUserMedia: M.media.map(m => m.kalla),
+    audioContext: M.audio.map(a => a.kalla),
+    tal: M.tal,
+  },
+  batteri: batt ? { niva: batt.level, laddar: batt.charging } : null,
+};
+</script>

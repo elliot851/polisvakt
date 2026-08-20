@@ -138,9 +138,37 @@ export class ReportStore extends EventTarget {
   start() {
     this.refresh();
     this.stop();
-    this.timer = setInterval(() => this.refresh(), this.cfg.pollMs);
-    // Hämta direkt när appen kommer i förgrunden igen
-    this._vis = () => { if (document.visibilityState === 'visible') this.refresh(); };
+
+    /*
+     * Pollningen går långsammare när ingen tittar.
+     *
+     * Rapporterna behövs för att kunna varna, och varningarna ska fungera med
+     * skärmen släckt — så pollningen får INTE stanna helt. Men var trettionde
+     * sekund i bakgrunden var mätt till 1,9 anrop i minuten dygnet runt, och
+     * en app som ligger öppen i en ficka hela dagen betalar för det i batteri
+     * utan att någon får något.
+     *
+     * Kompromissen: full takt när appen syns, en fjärdedel när den inte gör
+     * det, och en omedelbar hämtning så fort den kommer fram igen. Föraren
+     * märker aldrig fördröjningen, eftersom hen inte tittade.
+     */
+    const takt = () => (document.visibilityState === 'visible'
+      ? this.cfg.pollMs
+      : this.cfg.pollMs * 4);
+
+    const starta = ms => {
+      if (this.timer) clearInterval(this.timer);
+      this._pollMs = ms;
+      this.timer = setInterval(() => this.refresh(), ms);
+    };
+    starta(takt());
+
+    this._vis = () => {
+      const ny = takt();
+      if (ny !== this._pollMs) starta(ny);
+      // Hämta direkt när appen kommer i förgrunden igen
+      if (document.visibilityState === 'visible') this.refresh();
+    };
     document.addEventListener('visibilitychange', this._vis);
   }
 

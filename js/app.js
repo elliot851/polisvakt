@@ -234,9 +234,22 @@ async function boot() {
   }
   if (settings.keepAwake) requestWakeLock();
 
-  setInterval(renderHazards, 20000);
-  setInterval(maybeShowPaywall, 60000);
-  setInterval(() => { stats.recordAll(store.active()); renderStats(); }, 120000);
+  /*
+   * Omritningarna hoppas över när ingen tittar.
+   *
+   * renderHazards var den dyraste timern i mätningen — 16 till 35 millisekunder
+   * i minuten, mer än alla andra tillsammans. Den ritar nålar och listor som
+   * ingen ser i en dold flik, och när fliken kommer fram ritas allt ändå om
+   * direkt via showView. Att räkna om en osynlig karta är rent slöseri.
+   *
+   * VARNINGARNA rörs inte av det här. De körs ur GPS-flödet i wireGeo och
+   * fortsätter med skärmen släckt, vilket är hela poängen med appen.
+   */
+  const nardenSyns = fn => () => { if (document.visibilityState === 'visible') fn(); };
+
+  setInterval(nardenSyns(renderHazards), 20000);
+  setInterval(nardenSyns(maybeShowPaywall), 60000);
+  setInterval(nardenSyns(() => { stats.recordAll(store.active()); renderStats(); }), 120000);
   registerSW();
 
   // Säg till räddningsnätet i index.html att allt gick bra. Uteblir den här
@@ -3736,8 +3749,25 @@ function refreshLearnedList() {
 
 /* ================= Diverse ================= */
 
+/*
+ * Skärmlåset.
+ *
+ * Systemet släpper låset av sig själv så fort appen hamnar i bakgrunden, så
+ * det måste tas om när man kommer tillbaka. Den lyssnaren registreras EN gång.
+ *
+ * Tidigare låg addEventListener inuti requestWakeLock, som anropas varje gång
+ * inställningen rörs och varje gång fliken blir synlig igen. Lyssnarna
+ * staplades — sex stycken på tre minuter i mätningen — och varje ny lyssnare
+ * begärde låset en gång till vid varje flikbyte. En läcka som växer med hur
+ * mycket appen används är precis den sorten som inte syns förrän någon mäter.
+ */
+let wakeLyssnare = false;
+
 async function requestWakeLock() {
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { wakeLock = null; }
+
+  if (wakeLyssnare) return;
+  wakeLyssnare = true;
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'visible' && settings.keepAwake && !wakeLock) {
       try { wakeLock = await navigator.wakeLock.request('screen'); } catch {}
