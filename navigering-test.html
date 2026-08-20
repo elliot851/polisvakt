@@ -837,6 +837,329 @@ await T('omräknad rutt ger ett kort besked, inte hela resan igen', () => {
 });
 
 /* =================================================================== */
+G('Körfält — vilka filer leder rätt');
+//
+// OSRM ger `steps[].intersections[].lanes` med en `valid`-flagga per fil.
+// Datan finns alltså redan i svaret; det som testas här är tolkningen: vilken
+// korsning filerna hämtas ur, vilken fil som är bäst att ligga i, och — minst
+// lika viktigt — när anvisningen ska UTEBLI. En fil-rad som alltid ser likadan
+// ut slutar föraren titta på, och då är den värre än ingen alls.
+
+const { korfaltAnvisning, tolkaRiktning, valjKorfaltsKorsning } = nav;
+
+/** En fil: giltig eller inte, plus dess pilar i vägbanan. */
+const fil = (giltig, ...ind) => ({ valid: giltig, indications: ind });
+/** OSRM:s location är [lon, lat] — tvärtom mot resten av appen. */
+const loc = (ost, nord) => { const [lat, lon] = pt(ost, nord); return [lon, lat]; };
+const korsning = (lanes, ost = 2000, nord = 0) => ({ location: loc(ost, nord), lanes });
+
+/** En avfart åt höger vid 2000 m öst, med de filer man skickar in. */
+const avfartMed = (lanes, extra = {}) => ({
+  name: 'Avfart', exits: '132',
+  maneuver: { type: 'off ramp', modifier: 'slight right', location: loc(2000, 0) },
+  intersections: [korsning(lanes)],
+  ...extra,
+});
+
+await T('avfart där två av fyra filer leder rätt', () => {
+  const a = korfaltAnvisning(avfartMed([
+    fil(false, 'straight'),
+    fil(false, 'straight'),
+    fil(true, 'straight', 'slight right'),
+    fil(true, 'slight right'),
+  ]));
+  if (!a) return 'ingen anvisning alls';
+  mat('avfartFyraFiler', {
+    antal: a.antal, giltiga: a.giltiga, basta: a.bastaIndex,
+    grupp: a.grupp, filer: a.filer.map(f => f.riktningar.join('+') + (f.giltig ? '' : ' (spärrad)')),
+  });
+  const bra = a.antal === 4
+    && JSON.stringify(a.giltiga) === '[2,3]'
+    // Fil 3 är avfartsfil; fil 2 delas med genomfarten och kan blockeras.
+    && a.bastaIndex === 3
+    && a.filer[3].rekommenderad === true && a.filer[2].rekommenderad === false
+    && a.grupp.sida === 'höger' && a.grupp.antal === 2 && a.grupp.sammanhangande === true
+    && a.kalla === 'manover';
+  return bra || JSON.stringify({ giltiga: a.giltiga, basta: a.bastaIndex, grupp: a.grupp });
+});
+
+await T('bästa filen är inte "första giltiga"', () => {
+  const a = korfaltAnvisning(avfartMed([
+    fil(false, 'straight'),
+    fil(false, 'straight'),
+    fil(true, 'straight', 'slight right'),
+    fil(true, 'slight right'),
+  ]));
+  return (a.bastaIndex !== a.giltiga[0] && a.bastaIndex === 3)
+    || `valde ${a.bastaIndex}, giltiga ${a.giltiga}`;
+});
+
+await T('bästa filen väljs rätt när de giltiga inte ligger i kant', () => {
+  // Fyra filer, ytterfilerna spärrade åt var sitt håll. Varken "första
+  // giltiga" (1) eller "filen längst åt manöverhållet" (3) är svaret.
+  const a = korfaltAnvisning(avfartMed([
+    fil(false, 'straight'),
+    fil(true, 'slight right'),
+    fil(true, 'slight right'),
+    fil(false, 'right'),
+  ]));
+  mat('bastaMittIVagbanan', { giltiga: a.giltiga, basta: a.bastaIndex, sida: a.grupp.sida });
+  return (a.bastaIndex === 2 && a.grupp.sida === 'mitten' && a.grupp.antal === 2)
+    || JSON.stringify({ basta: a.bastaIndex, grupp: a.grupp });
+});
+
+await T('alla filer giltiga ger INGEN anvisning', () => {
+  const a = korfaltAnvisning(avfartMed([
+    fil(true, 'straight', 'slight right'),
+    fil(true, 'slight right'),
+  ]));
+  return a === null || `fick en anvisning ändå: ${JSON.stringify(a.giltiga)}`;
+});
+
+await T('korsning utan lanes ger ingen anvisning och ingen krasch', () => {
+  const utanFiler = { name: 'Vasagatan',
+    maneuver: { type: 'turn', modifier: 'right', location: loc(2000, 0) },
+    intersections: [{ location: loc(2000, 0), bearings: [0, 90, 180], entry: [true, true, false] }] };
+  const utanKorsningar = { name: 'Vasagatan', maneuver: { type: 'turn', modifier: 'right' } };
+  const bra = korfaltAnvisning(utanFiler) === null
+    && korfaltAnvisning(utanKorsningar) === null
+    && korfaltAnvisning({}) === null
+    && korfaltAnvisning(null) === null
+    && korfaltAnvisning({ maneuver: { type: 'turn' }, intersections: [{ lanes: [] }] }) === null;
+  return bra || 'något av tomfallen gav en anvisning';
+});
+
+await T('en fil med flera riktningar samtidigt', () => {
+  const a = korfaltAnvisning({
+    maneuver: { type: 'turn', modifier: 'right', location: loc(2000, 0) },
+    intersections: [korsning([
+      fil(false, 'left'),
+      fil(true, 'left', 'straight', 'right'),
+      fil(true, 'right'),
+    ])],
+  });
+  const delad = a.filer[1];
+  mat('deladFil', {
+    riktningar: delad.riktningar, vinklar: delad.vinklar,
+    symboler: delad.symboler, dedikerad: delad.dedikerad, huvud: delad.huvud,
+  });
+  const bra = JSON.stringify(delad.riktningar) === '["vänster","rakt","höger"]'
+    && JSON.stringify(delad.vinklar) === '[-90,0,90]'      // sorterade vänster→höger
+    && delad.dedikerad === false && delad.huvud === 'höger' && delad.ratt === true
+    // Den dedikerade högerfilen slår den trevägsdelade.
+    && a.bastaIndex === 2 && a.filer[2].dedikerad === true;
+  return bra || JSON.stringify({ delad, basta: a.bastaIndex });
+});
+
+await T('vänstermanöver väljer den vänstra filen', () => {
+  const a = korfaltAnvisning({
+    maneuver: { type: 'turn', modifier: 'left', location: loc(2000, 0) },
+    intersections: [korsning([
+      fil(true, 'left'), fil(true, 'left', 'straight'),
+      fil(false, 'straight'), fil(false, 'right'),
+    ])],
+  });
+  return (a.bastaIndex === 0 && a.grupp.sida === 'vänster' && a.grupp.antal === 2)
+    || JSON.stringify({ basta: a.bastaIndex, grupp: a.grupp });
+});
+
+await T('giltiga filer på båda sidor flaggas som osammanhängande', () => {
+  // Händer där vägen delar sig åt båda hållen. Gränssnittet får då INTE skriva
+  // "de två högra filerna" — blocket är bara halva sanningen.
+  const a = korfaltAnvisning({
+    maneuver: { type: 'turn', modifier: 'right', location: loc(2000, 0) },
+    intersections: [korsning([fil(true, 'left'), fil(false, 'straight'), fil(true, 'right')])],
+  });
+  return (a.grupp.sammanhangande === false && a.bastaIndex === 2 && a.giltiga.length === 2)
+    || JSON.stringify(a.grupp);
+});
+
+await T('ingen giltig fil alls ger ingen anvisning', () => {
+  const a = korfaltAnvisning(avfartMed([fil(false, 'straight'), fil(false, 'left')]));
+  return a === null || 'pekade ut en fil vi inte tror på';
+});
+
+await T('en enda fil är inget val', () => {
+  const a = korfaltAnvisning(avfartMed([fil(false, 'straight')]));
+  return a === null || 'gav anvisning för en enda fil';
+});
+
+await T('avgång och ankomst har inget filval', () => {
+  const lanes = [fil(true, 'straight'), fil(false, 'right')];
+  const bra = korfaltAnvisning({ maneuver: { type: 'depart' }, intersections: [korsning(lanes)] }) === null
+    && korfaltAnvisning({ maneuver: { type: 'arrive' }, intersections: [korsning(lanes)] }) === null;
+  return bra || 'gav filanvisning för depart/arrive';
+});
+
+await T('filer EFTER manövern läses aldrig', () => {
+  // intersections[1] är en korsning man kör igenom efter svängen. Dess filer
+  // handlar om nästa val, och att rita dem vore direkt vilseledande.
+  const a = korfaltAnvisning({
+    maneuver: { type: 'turn', modifier: 'right', location: loc(2000, 0) },
+    intersections: [
+      { location: loc(2000, 0), bearings: [0, 90], entry: [true, true] },
+      korsning([fil(true, 'straight'), fil(false, 'right')], 2000, -300),
+    ],
+  });
+  return a === null || 'tog filer från en korsning efter manövern';
+});
+
+await T('filer som delar sig sent hämtas ur steget före', () => {
+  const innan = { name: 'E18', maneuver: { type: 'depart' }, intersections: [
+    korsning([fil(true, 'straight')], 1000, 0),
+    korsning([fil(false, 'straight'), fil(true, 'slight right')], 1975, 0),   // 25 m före
+  ] };
+  const a = korfaltAnvisning(avfartMed([]), innan);   // manöverkorsningen tom
+  mat('sentDeladeFiler', a && { kalla: a.kalla, kallaAvstandM: a.kallaAvstandM, basta: a.bastaIndex });
+  return (a && a.kalla === 'infart' && a.bastaIndex === 1 && nara(a.kallaAvstandM, 25, 2))
+    || JSON.stringify(a);
+});
+
+await T('den skarpt uppmätta 95-metersdelningen ryms', () => {
+  // Uppmätt i provkörningen Västerås → Stockholm: filskyltningen inför
+  // påfarten mot Stockholm ligger 95 m före OSRM:s manöverpunkt. Med det
+  // gamla 40-metersfönstret tappades den, trots att det är samma vägdelning.
+  const innan = { maneuver: { type: 'depart' }, intersections: [
+    korsning([fil(false, 'left'), fil(true, 'straight')], 1905, 0),
+  ] };
+  const a = korfaltAnvisning(avfartMed([]), innan);
+  return (a && a.kalla === 'infart' && a.bastaIndex === 1 && nara(a.kallaAvstandM, 95, 3))
+    || JSON.stringify(a);
+});
+
+await T('en korsning för långt före manövern räknas inte', () => {
+  // Nästa lane-bärande korsning i samma provkörning som INTE hörde ihop med
+  // sin manöver låg 946 m bort. Gränsen ligger mellan de två fallen.
+  const pa = ost => ({ maneuver: { type: 'depart' },
+    intersections: [korsning([fil(false, 'straight'), fil(true, 'slight right')], ost, 0)] });
+  const bortom = [1875, 1800, 1054];          // 125 m, 200 m, 946 m före manövern
+  for (const ost of bortom) {
+    if (korfaltAnvisning(avfartMed([]), pa(ost)) !== null) {
+      return `tog filer från en korsning ${2000 - ost} m bort`;
+    }
+  }
+  return true;
+});
+
+await T('riktningarna översätts till kod, vinkel och pil', () => {
+  const par = [['straight', 'rakt', 0], ['slight right', 'svagt-höger', 45],
+    ['right', 'höger', 90], ['sharp left', 'skarpt-vänster', -135],
+    ['uturn', 'u-sväng', -180], ['merge to left', 'fila-vänster', -30],
+    ['none', 'ingen', 0]];
+  for (const [osrm, kod, vinkel] of par) {
+    const r = tolkaRiktning(osrm);
+    if (!r || r.kod !== kod || r.vinkel !== vinkel) return `${osrm} → ${JSON.stringify(r)}`;
+    if (!r.symbol) return `${osrm} saknar pil`;
+  }
+  // Understreck och versaler förekommer i andra motorer och äldre OSRM.
+  if (tolkaRiktning('Slight_Right')?.kod !== 'svagt-höger') return 'normerar inte "Slight_Right"';
+  if (tolkaRiktning('nåt-nytt') !== null) return 'hittade på en riktning';
+  mat('riktningskoder', par.map(([o, k, v]) => `${o} → ${k} ${v}°`));
+});
+
+await T('valid_indication pekar ut pilen som ska lysa', () => {
+  const a = korfaltAnvisning({
+    maneuver: { type: 'turn', modifier: 'right', location: loc(2000, 0) },
+    intersections: [korsning([
+      { valid: false, indications: ['straight'] },
+      { valid: true, indications: ['straight', 'right'], valid_indication: 'right' },
+    ])],
+  });
+  return a.filer[1].huvud === 'höger' || `fick "${a.filer[1].huvud}"`;
+});
+
+await T('Mapbox-stilens "active" duger när "valid" saknas', () => {
+  const a = korfaltAnvisning({
+    maneuver: { type: 'turn', modifier: 'right', location: loc(2000, 0) },
+    intersections: [korsning([
+      { active: false, indications: ['straight'] },
+      { active: true, indications: ['right'] },
+    ])],
+  });
+  return (a && a.bastaIndex === 1) || JSON.stringify(a);
+});
+
+await T('en omarkerad fil skyltar ingenting men spärrar ingenting', () => {
+  const a = korfaltAnvisning(avfartMed([
+    fil(false, 'straight'), fil(true, 'none'),
+  ]));
+  return (a && a.filer[1].riktningar[0] === 'ingen' && a.bastaIndex === 1)
+    || JSON.stringify(a);
+});
+
+/* ---------------- Kopplad till körningen ---------------- */
+
+/** Standardbanan, men med filskyltning i svängen: bara högerfilen duger. */
+const banaMedFiler = () => byggRutt(
+  [[0, 0], [2000, 0], [2000, -1000]],
+  [M.start('Vasagatan'),
+    { name: 'Drottninggatan',
+      maneuver: { type: 'turn', modifier: 'right', location: loc(2000, 0) },
+      intersections: [korsning([fil(false, 'left'), fil(false, 'straight'), fil(true, 'right')])] },
+    M.framme('Drottninggatan')]);
+
+await T('filanvisningen dyker upp först inom förvarningshorisonten', () => {
+  const { n, rutt } = nyNav(banaMedFiler());
+  const langt = n.utlosare(50).langtM;
+  const vid = s => {
+    const [lat, lon] = rutt.linje.pointAt(s);
+    return n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 50, ts: T0 + s * 72 });
+  };
+  const tidigt = vid(1000);          // 1000 m kvar till svängen
+  const intill = vid(1500);          // 500 m kvar
+  mat('korfaltHorisont', {
+    langtM: Math.round(langt),
+    vid1000m: tidigt.korfalt === null ? 'ingen' : 'anvisning',
+    vid1500m: intill.korfalt && { basta: intill.korfalt.bastaIndex, avstand: intill.korfalt.avstandM },
+  });
+  const bra = tidigt.korfalt === null && intill.korfalt
+    && intill.korfalt.bastaIndex === 2 && intill.korfalt.stegIndex === 1
+    && nara(intill.korfalt.avstandM, 500, 20);
+  return bra || JSON.stringify({ tidigt: tidigt.korfalt, intill: intill.korfalt });
+});
+
+await T('ingen filanvisning medan vi är av rutten', () => {
+  const { n, rutt } = nyNav(banaMedFiler());
+  kor(n, rutt.linje, { till: 1500 });
+  if (!n.tillstand(T0 + 200000).korfalt) return 'ingen anvisning ens på rutten';
+  let t = null;
+  for (let i = 0; i < 8; i++) {
+    const [lat, lon] = bredvid(rutt.linje, 1500 + i * 20, 300);
+    t = n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 50, ts: T0 + 200000 + i * 1000 }, T0 + 200000 + i * 1000);
+  }
+  return (t.lage === 'avvikande' && t.korfalt === null)
+    || `läge ${t.lage}, korfalt ${JSON.stringify(t.korfalt)}`;
+});
+
+await T('en rutt utan filuppgifter ger tyst null hela vägen', () => {
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { till: 2400 });
+  return rader.every(r => r.korfalt === null) || 'hittade på en filanvisning';
+});
+
+await T('filanvisningen läses ALDRIG upp som tal', () => {
+  // Kärnkravet. Röstkanalen är full: polisvarningar först, sedan svängar.
+  const medFiler = nyNav(banaMedFiler());
+  const utanFiler = nyNav();
+  const talMed = allaTal(kor(medFiler.n, medFiler.rutt.linje, { till: 2400 }));
+  const talUtan = allaTal(kor(utanFiler.n, utanFiler.rutt.linje, { till: 2400 }));
+  mat('korfaltTystnad', {
+    besked_med_filer: talMed.length, besked_utan_filer: talUtan.length,
+    prioriteter: [...new Set(talMed.map(y => y.prioritet))],
+  });
+  if (talMed.length !== talUtan.length) {
+    return `filerna skapade ${talMed.length - talUtan.length} extra besked`;
+  }
+  for (const y of talMed) {
+    if ('korfalt' in y) return `yttrandet "${y.text}" bär filanvisning`;
+    if (/\bfil(en|er|erna)?\b|högra fil|vänstra fil/i.test(y.text)) {
+      return `yttrandet nämner filer: "${y.text}"`;
+    }
+  }
+  return true;
+});
+
+/* =================================================================== */
 const total = ok + fel + hopp;
 const s = document.getElementById('summa');
 s.textContent = `${ok} av ${total} gick igenom` +

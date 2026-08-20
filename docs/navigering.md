@@ -711,7 +711,7 @@ totaltiden mot återstående sträcka hade svarat 106 — en och en halv minut f
 |---|---|---|
 | Trafik i realtid | Ja, från miljontals bilar | **Nej.** Se ovan. |
 | Omdirigering vid stockning | Ja | **Nej.** |
-| Körfältsanvisning ("lägg dig i vänster fil") | Ja | **Nej.** OSRM har `intersections[].lanes` i svaret men det är oanvänt här. Det är byggbart — se nedan. |
+| Körfältsanvisning ("lägg dig i vänster fil") | Ja | **Delvis.** Byggd, se `docs/korfalt.md`. Men OSM:s `turn:lanes` är tunt: på sträckan Västerås–Stockholm får 2 manövrar av 18 en filrad. Lova det inte som något man kan räkna med. |
 | Hastighetsbegränsning i rutan | Ja | Delvis, `js/speedlimit.js` är en separat väg |
 | 3D-vy och filbilder inför avfarter | Ja | **Nej.** Leaflet är en 2D-karta. |
 | Alternativa rutter att välja mellan | Ja | **Nej.** `alternatives=false`. Kör man en annan väg upptäcks det som en avvikelse och rutten räknas om. |

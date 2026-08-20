@@ -204,6 +204,26 @@ export const NAV_STANDARD = {
   giltigSnartMs: 15000,
   giltigLangtMs: 30000,
   giltigOvrigtMs: 60000,
+
+  /* ---- Körfält ---------------------------------------------------------
+   *
+   * Se avsnittet "Körfältsanvisning" längre ned. Ingenting av det blir tal.
+   *
+   * korfaltNaraM: hur nära manöverpunkten en korsning i föregående steg måste
+   * ligga för att dess filuppgifter ska räknas som samma val.
+   *
+   * Värdet är uppmätt, inte gissat. I provkörningen Västerås → Stockholm ligger
+   * filskyltningen inför påfarten mot Stockholm på en nod 95 meter före den nod
+   * OSRM valt som manöverpunkt — med 40 meters fönster tappades den, trots att
+   * det är samma vägdelning och samma beslut. Nästa lane-bärande korsning i
+   * samma provkörning som INTE hörde ihop med sin manöver låg 946 meter bort.
+   * 120 meter ligger med god marginal mellan de två och rymmer en svensk
+   * trafikplats där filerna delar sig sent.
+   *
+   * korfaltMinFiler: en enda fil är inget val.
+   */
+  korfaltNaraM: 120,
+  korfaltMinFiler: 2,
 };
 
 /* ===================================================================== */
@@ -525,6 +545,343 @@ export function beskrivManover(steg) {
     default:
       return ut('fortsätt' + forbi, 'fortsätt', '↑');
   }
+}
+
+/* ===================================================================== */
+/* Körfältsanvisning                                                     */
+/* ===================================================================== */
+//
+// ---------------------------------------------------------------------------
+// Det här är den enda delen av modulen som ALDRIG blir tal
+//
+// Röstkanalen är enkelspårig och den är redan full. Polisvarningar ligger på
+// prioritet 1 och 2, svängbeskrivningar på 0, och Speaker sorterar kön fallande.
+// Att lägga in "håll dig i de två högra filerna" som ett fjärde slags yttrande
+// gör tre saker, alla dåliga:
+//
+//   1. Meningen är lång. Tre till fyra sekunder i talsyntes, och under den tiden
+//      kan ingenting annat sägas. Det är precis den tid en fartkameravarning
+//      behöver för att komma fram i tid.
+//   2. Den handlar om SAMMA manöver som svängbeskrivningen redan sagt något om,
+//      bara en sekund tidigare. Den tränger alltså undan något viktigare för
+//      att upprepa något föraren just hört.
+//   3. Den går inte att verifiera med örat. "De två högra" betyder olika saker
+//      beroende på hur många filer man faktiskt ser framför sig, och den som är
+//      osäker tittar ändå upp på skylten.
+//
+// Filval är ögats uppgift. Föraren ser filerna och behöver matcha det hen ser
+// mot en bild. En pil-rad som ligger kvar på skärmen går att titta på tre gånger
+// under de tjugo sekunder man har på sig; en mening finns bara i ögonblicket den
+// sägs och är sedan borta.
+//
+// Därför returnerar allt här nere bara data. Ingen funktion i det här avsnittet
+// skapar ett yttrande, ingenting härifrån hamnar någonsin i `tal`, och
+// Navigering lägger resultatet på tillståndet under `korfalt` — vid sidan av
+// talet, aldrig i det.
+//
+// ---------------------------------------------------------------------------
+// Vilken korsning filerna hämtas ur
+//
+// Ett OSRM-steg bär `intersections`, en post per korsning man passerar under
+// steget. Manövern utförs vid steget BÖRJAN, och intersections[0] ligger per
+// definition på maneuver.location. Dess `lanes` beskriver filerna på infarten
+// till just den korsningen — alltså exakt det val föraren står inför.
+//
+// intersections[1] och framåt är korsningar man kör igenom EFTER manövern.
+// Deras filer handlar om nästa val, inte om det här. Att rita dem vore inte
+// bara oanvändbart utan aktivt vilseledande, så de läses aldrig.
+//
+// Undantaget är svenska trafikplatser där filerna delar sig sent. Där ligger
+// filskyltningen på en nod strax FÖRE den nod OSRM valt som manöverpunkt, och
+// då hamnar `lanes` på den sista korsningen i FÖREGÅENDE steg. Därför finns ett
+// andra försök: sista korsningen i steget innan, men bara om den ligger inom
+// korfaltNaraM meter från manöverpunkten. Ligger den längre bort är det en annan
+// korsning med ett annat val, och då är det bättre att inte visa något alls.
+// Sökningen bakåt avbryts vid första korsning som bär filer — de som ligger före
+// den ligger ännu längre bort.
+//
+// ---------------------------------------------------------------------------
+// När anvisningen uteblir
+//
+// En skärm som alltid visar samma sak slutar man titta på. Anvisningen finns
+// därför bara när den bär ett val:
+//
+//   * `lanes` saknas eller är tom          → null (mycket vanligt i OSM-Sverige)
+//   * färre än två filer                   → null (inget att välja mellan)
+//   * ALLA filer giltiga                   → null (alla leder rätt, kör på)
+//   * ingen fil giltig                     → null (datan är trasig; att peka på
+//                                             en fil vi inte tror på är värre
+//                                             än att peka på ingen)
+//   * manövern är depart eller arrive      → null (det finns inget filval i att
+//                                             starta bilen eller vara framme)
+//
+// Navigering lägger till ett sjätte villkor: anvisningen visas inte förrän
+// manövern är inom `langt`-horisonten. Det är samma fartskalade avstånd som
+// rösten använder för sin första förvarning, och det är per konstruktion den
+// punkt där ett filbyte först blir något man kan agera på.
+
+const RIKTNING = {
+  none: { kod: 'ingen', vinkel: 0, symbol: '↑' },
+  straight: { kod: 'rakt', vinkel: 0, symbol: '↑' },
+  'slight right': { kod: 'svagt-höger', vinkel: 45, symbol: '↗' },
+  right: { kod: 'höger', vinkel: 90, symbol: '↱' },
+  'sharp right': { kod: 'skarpt-höger', vinkel: 135, symbol: '⮡' },
+  'slight left': { kod: 'svagt-vänster', vinkel: -45, symbol: '↖' },
+  left: { kod: 'vänster', vinkel: -90, symbol: '↰' },
+  'sharp left': { kod: 'skarpt-vänster', vinkel: -135, symbol: '⮢' },
+  // U-svängen är vänsterhänt i högertrafik, därav minus. Vinkeln är det enda
+  // gränssnittet behöver för att rita pilen åt rätt håll.
+  uturn: { kod: 'u-sväng', vinkel: -180, symbol: '⮐' },
+  'merge to left': { kod: 'fila-vänster', vinkel: -30, symbol: '↖' },
+  'merge to right': { kod: 'fila-höger', vinkel: 30, symbol: '↗' },
+};
+
+/**
+ * En OSRM-riktning till något ritbart.
+ *
+ * Avsiktligt INTE svensk text. Gränssnittet äger presentationen; det här är
+ * en stabil kod, en vinkel i grader (0 = rakt fram, negativt = vänster) och en
+ * pil att falla tillbaka på. Vinkeln är det som gör en fil-rad ritbar utan att
+ * gränssnittet behöver känna till OSRM:s ordlista.
+ *
+ * OSRM skriver riktningarna med mellanslag ("slight right"). Andra motorer och
+ * äldre versioner använder understreck, och versaler förekommer. Allt normeras
+ * hit i stället för att bli `null` på ett formateringsfel.
+ *
+ * @param {string} indikation
+ * @returns {{kod:string, vinkel:number, symbol:string}|null}
+ */
+export function tolkaRiktning(indikation) {
+  const nyckel = String(indikation || '').toLowerCase().replace(/[_-]+/g, ' ').trim();
+  return RIKTNING[nyckel] ? { ...RIKTNING[nyckel] } : null;
+}
+
+/** Manöverns egen riktning, i samma skala som filernas. */
+function manoverRiktning(steg) {
+  const m = steg?.maneuver || {};
+  const r = tolkaRiktning(m.modifier);
+  if (r) return r;
+  // Manövrer utan modifierare (påfart, avfart, vägdelning rakt fram) räknas som
+  // rakt fram i den här skalan. Att gissa en sida vore att hitta på, och
+  // `valid` från OSRM avgör ändå vilka filer som duger — riktningen används
+  // bara för att rangordna dem sinsemellan.
+  return { kod: 'rakt', vinkel: 0, symbol: '↑' };
+}
+
+/**
+ * Hur väl svarar en fils skyltning mot manövern?
+ *
+ * 2 = filen är skyltad exakt för manövern. 1 = grannriktning, eller en fil utan
+ * egen skyltning. 0 = filen pekar åt fel håll.
+ *
+ * Grannmarginalen på 45° finns för att OSM och OSRM inte alltid är överens om
+ * skarpheten: en avfart som OSRM kallar `slight right` är i OSM ofta skyltad
+ * `right`, och att räkna den som fel fil vore att slänga rätt svar.
+ *
+ * `none` är en fil utan filpilar i vägbanan. Den säger ingenting, och att
+ * straffa den vore att låtsas veta mer än vi gör — `valid` från OSRM är ändå
+ * det som avgör om filen duger.
+ */
+function traffgrad(fil, manover) {
+  let bast = 0;
+  for (const r of fil.raw) {
+    const grad = r.kod === 'ingen' ? 1
+      : Math.abs(r.vinkel - manover.vinkel) === 0 ? 2
+        : Math.abs(r.vinkel - manover.vinkel) <= 45 ? 1 : 0;
+    if (grad > bast) bast = grad;
+  }
+  return bast;
+}
+
+/** Bär korsningen filuppgifter alls? */
+const harFiler = k => Array.isArray(k?.lanes) && k.lanes.length > 0;
+
+/**
+ * Välj den korsning vars filer handlar om manövern. Se resonemanget ovan.
+ *
+ * @param {object} steg   steget vars manöver vi närmar oss
+ * @param {object} innan  steget före (kan vara null)
+ * @param {number} narM   hur nära manöverpunkten en infartskorsning måste ligga
+ * @returns {{korsning:object, kalla:'manover'|'infart', avstandM:number}|null}
+ */
+export function valjKorfaltsKorsning(steg, innan = null, narM = NAV_STANDARD.korfaltNaraM) {
+  const egna = Array.isArray(steg?.intersections) ? steg.intersections : [];
+  if (harFiler(egna[0])) return { korsning: egna[0], kalla: 'manover', avstandM: 0 };
+
+  const plats = steg?.maneuver?.location;               // [lon, lat]
+  const fore = Array.isArray(innan?.intersections) ? innan.intersections : [];
+  for (let i = fore.length - 1; i >= 0; i--) {
+    if (!harFiler(fore[i])) continue;
+    const p = fore[i].location;
+    if (!Array.isArray(p) || !Array.isArray(plats)) return null;
+    const d = distance(p[1], p[0], plats[1], plats[0]);
+    // Första träffen bakåt är den närmaste. Duger inte den duger ingen.
+    return d <= narM ? { korsning: fore[i], kalla: 'infart', avstandM: Math.round(d) } : null;
+  }
+  return null;
+}
+
+/**
+ * Vilken fil är bäst att ligga i?
+ *
+ * "Första giltiga" är fel svar och det syns tydligast i en avfart. Är filerna
+ * [rakt] [rakt] [rakt, svagt höger] [svagt höger] och avfarten går åt höger, så
+ * är både fil 2 och fil 3 giltiga — men fil 2 delas med genomfartstrafiken. Där
+ * står man bakom någon som ska rakt fram, och man kan bli tvungen att byta fil
+ * i sista stund ändå. Fil 3 är avfartsfil och kan inte blockeras av någon som
+ * ska någon annanstans.
+ *
+ * Tre saker viktas, i den ordningen:
+ *
+ *   1. Skyltningen. En fil som är skyltad för just den här manövern slår en fil
+ *      som bara råkar vara godkänd.
+ *   2. Dedikering. En fil som BARA gör det vi ska göra slår en delad fil.
+ *      Varje extra riktning på samma fil är någon annan som kan stå i vägen.
+ *   3. Läget i vägbanan. Vid en högermanöver vinner den högsta giltiga filen,
+ *      vid en vänstermanöver den lägsta. Det är riktningen man ändå ska mot, och
+ *      att ligga längst ut på rätt sida betyder ett filbyte mindre kvar att göra.
+ *
+ * Vikterna är satta så att dedikering (12) väger tyngre än ett enskilt steg i
+ * sidled (3), men lättare än en riktig skyltningsträff (40). Det är rangordningen
+ * ovan uttryckt i tal, inte finkalibrering.
+ *
+ * Vid lika poäng och en rak manöver vinner den högra filen. Trafikförordningen
+ * 3 kap. 6 § — fordon förs på högra delen av vägen — och det är också det som
+ * håller en borta ur omkörningsfilen.
+ */
+function valjBastaFil(filer, manover) {
+  const d = manover.vinkel > 0 ? 1 : manover.vinkel < 0 ? -1 : 0;
+  let bast = null, bastPoang = -Infinity;
+  for (const f of filer) {
+    if (!f.giltig) continue;
+    const poang = 40 * f._traff
+      + (f.dedikerad ? 12 : 0)
+      - 4 * (f.riktningar.length - 1)
+      + 3 * d * f.index;
+    // >= gör att den högra filen vinner vid lika poäng när manövern är rak
+    // eller högerhänt; för en vänstermanöver har kanttermen redan gett den
+    // vänstra filen övertaget.
+    if (poang > bastPoang || (poang === bastPoang && d >= 0)) {
+      bastPoang = poang; bast = f;
+    }
+  }
+  return bast ? bast.index : null;
+}
+
+/**
+ * Körfältsanvisning för en manöver.
+ *
+ * Ren funktion. Inget tillstånd, ingen klocka, inget nät — samma steg in ger
+ * samma svar ut, alltid.
+ *
+ * @param {object} steg    OSRM-steget vars manöver vi närmar oss
+ * @param {object} [innan] steget före, för filer som delar sig sent
+ * @param {{korfaltNaraM?:number, korfaltMinFiler?:number}} [opts]
+ * @returns {{
+ *   antal:number,
+ *   filer:Array<{index:number, giltig:boolean, rekommenderad:boolean,
+ *                riktningar:string[], vinklar:number[], symboler:string[],
+ *                dedikerad:boolean, huvud:(string|null), ratt:boolean}>,
+ *   bastaIndex:number, giltiga:number[],
+ *   grupp:{fran:number, till:number, antal:number, sida:string, sammanhangande:boolean},
+ *   manover:{kod:string, vinkel:number, typ:string, modifier:string},
+ *   kalla:'manover'|'infart', korsningPunkt:([number,number]|null)
+ * }|null}  null när anvisningen inte bär något val — se listan ovan.
+ */
+export function korfaltAnvisning(steg, innan = null, opts = {}) {
+  const narM = Number.isFinite(opts.korfaltNaraM) ? opts.korfaltNaraM : NAV_STANDARD.korfaltNaraM;
+  const minFiler = Number.isFinite(opts.korfaltMinFiler)
+    ? opts.korfaltMinFiler : NAV_STANDARD.korfaltMinFiler;
+
+  const typ = steg?.maneuver?.type || '';
+  if (typ === 'depart' || typ === 'arrive') return null;
+
+  const vald = valjKorfaltsKorsning(steg, innan, narM);
+  if (!vald) return null;
+
+  const rader = vald.korsning.lanes;
+  if (rader.length < minFiler) return null;
+
+  const manover = manoverRiktning(steg);
+
+  const filer = rader.map((f, index) => {
+    // Riktningarna sorteras vänster→höger inom filen så att pilarna kan ritas
+    // rakt av. OSRM garanterar ingen ordning inom en fil.
+    const raw = (Array.isArray(f?.indications) ? f.indications : [])
+      .map(tolkaRiktning).filter(Boolean)
+      .sort((a, b) => a.vinkel - b.vinkel);
+    if (!raw.length) raw.push({ ...RIKTNING.none });
+    // OSRM skriver `valid`. Mapbox-kompatibla svar skriver `active`. Saknas
+    // båda kan vi inte veta, och då räknas filen som giltig — vilket via
+    // "alla giltiga"-regeln nedan leder till att ingen anvisning ges alls.
+    const giltig = typeof f?.valid === 'boolean' ? f.valid
+      : typeof f?.active === 'boolean' ? f.active : true;
+    const fil = {
+      index, giltig,
+      rekommenderad: false,
+      riktningar: raw.map(r => r.kod),
+      vinklar: raw.map(r => r.vinkel),
+      symboler: raw.map(r => r.symbol),
+      dedikerad: raw.length === 1,
+      huvud: null,
+      ratt: false,
+      raw,
+    };
+    fil._traff = traffgrad(fil, manover);
+    fil.ratt = fil._traff > 0;
+    // `valid_indication` finns i Mapbox-kompatibla svar och pekar ut vilken av
+    // filens pilar som ska lysa. Finns den inte väljs den som ligger närmast
+    // manövern — det är samma sak, uträknat i stället för avläst.
+    const utpekad = tolkaRiktning(f?.valid_indication);
+    if (giltig) {
+      fil.huvud = utpekad ? utpekad.kod
+        : raw.reduce((a, b) =>
+          Math.abs(b.vinkel - manover.vinkel) < Math.abs(a.vinkel - manover.vinkel) ? b : a).kod;
+    }
+    return fil;
+  });
+
+  // Alla filer leder rätt: anvisningen skulle bara upprepa "kör på".
+  if (filer.every(f => f.giltig)) return null;
+  const giltiga = filer.filter(f => f.giltig).map(f => f.index);
+  if (!giltiga.length) return null;
+
+  const bastaIndex = valjBastaFil(filer, manover);
+  if (bastaIndex == null) return null;
+  filer[bastaIndex].rekommenderad = true;
+
+  // Det sammanhängande blocket av giltiga filer runt den bästa. Det är det
+  // gränssnittet behöver för att kunna skriva "de två högra filerna" — vilken
+  // sida blocket ligger på och hur brett det är.
+  let fran = bastaIndex, till = bastaIndex;
+  while (fran > 0 && filer[fran - 1].giltig) fran--;
+  while (till < filer.length - 1 && filer[till + 1].giltig) till++;
+  const sida = fran === 0 ? 'vänster' : till === filer.length - 1 ? 'höger' : 'mitten';
+
+  const p = vald.korsning.location;
+  const m = steg?.maneuver || {};
+
+  return {
+    antal: filer.length,
+    filer: filer.map(({ raw, _traff, ...rent }) => rent),
+    bastaIndex,
+    giltiga,
+    grupp: {
+      fran, till, antal: till - fran + 1, sida,
+      // Ligger alla giltiga filer i ett enda block? Gör de inte det (en giltig
+      // fil längst till vänster OCH en längst till höger, vilket händer när
+      // vägen delar sig åt båda hållen) får gränssnittet inte skriva "de två
+      // högra filerna" — då är blocket bara en del av sanningen.
+      sammanhangande: giltiga.length === till - fran + 1,
+    },
+    manover: { kod: manover.kod, vinkel: manover.vinkel, typ, modifier: m.modifier || '' },
+    kalla: vald.kalla,
+    // Hur långt före manöverpunkten korsningen låg. 0 för 'manover'. Heter inte
+    // avstandM, för det namnet är upptaget av avståndet BILEN har kvar dit —
+    // två olika meter som är lätta att blanda ihop.
+    kallaAvstandM: vald.avstandM,
+    korsningPunkt: Array.isArray(p) && p.length >= 2 ? [p[1], p[0]] : null,
+  };
 }
 
 /**
@@ -1179,6 +1536,34 @@ export class Navigering {
   }
 
   /**
+   * Körfältsanvisningen för nästa manöver, eller null.
+   *
+   * Lägger till två saker utöver den rena funktionen: vetskapen om VAR bilen är,
+   * och därmed när anvisningen är värd att visa.
+   *
+   * Tidsgränsen är `langt`-horisonten, samma fartskalade avstånd som rösten
+   * använder för sin första förvarning. Före den är ett filbyte inte något man
+   * kan agera på — man vet inte ens vilken avfart det gäller — och en fil-rad
+   * som ligger uppe i tre kilometer är precis den sortens alltid-samma-skärm
+   * som föraren slutar titta på. Horisonten skalar med farten av sig själv:
+   * 500 m i 30 km/h, 1,7 km i 110.
+   *
+   * Under `avvikande` ges ingen anvisning alls. Vi vet inte var på rutten bilen
+   * är, och att peka ut en fil i en korsning föraren kanske redan passerat är
+   * sämre än att visa ingenting.
+   *
+   * Steget FÖRE manövern skickas med, för filer som delar sig sent.
+   */
+  #korfalt(j, nasta, utlosare) {
+    if (j == null || !nasta || this.lage !== 'navigerar') return null;
+    const avstand = Math.max(0, this.rutt.stegStart[j] - this.s);
+    if (avstand > utlosare.langtM) return null;
+    const a = korfaltAnvisning(nasta, this.rutt.steg[j - 1] || null, this.opts);
+    if (!a) return null;
+    return { ...a, stegIndex: j, avstandM: Math.round(avstand) };
+  }
+
+  /**
    * Hela tillståndet. Rent avläsande — anropa hur ofta som helst, till exempel
    * för att rita om gränssnittet i en annan takt än GPS:en tickar.
    */
@@ -1195,6 +1580,7 @@ export class Navigering {
     const nasta = j != null ? r.steg[j] : null;
     const kvarS = this.#kvarS();
     const manover = nasta ? beskrivManover(nasta) : null;
+    const utlosare = this.utlosare();
 
     return {
       lage: this.lage,
@@ -1214,8 +1600,12 @@ export class Navigering {
         punkt: r.linje.pointAt(r.stegStart[j]),
       } : null,
       efterfoljande: (j != null ? this.#kedja(j) : '') || null,
+      // Filanvisningen är DATA, inte tal. Den ligger med flit vid sidan av
+      // `tal` och inget yttrande bär den vidare — se avsnittet
+      // "Körfältsanvisning". null betyder "rita ingenting", inte "vänta".
+      korfalt: this.#korfalt(j, nasta, utlosare),
       fart: { gpsKmh: this.fartKmh, beslutKmh: this.#beslutsfart() },
-      utlosare: this.utlosare(),
+      utlosare,
       avvikFixar: this._avvik.antal,
       omberakningar: this._omberakningar,
       begarOmberakning: this.#taBegaran(),

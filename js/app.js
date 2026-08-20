@@ -1929,7 +1929,7 @@ window.polisvakt = {
   get plate() { return plate; },
   chatt, ljud, korvanor,
   // Belöningsbeskedet går att provköra utan att vänta på ett månadsskifte.
-  visaBelaning,
+  visaBelaning, renderKorfalt,
 };
 
 /* ================= Gränssnitt ================= */
@@ -3168,6 +3168,41 @@ function talaNav(yttranden, nu = Date.now()) {
   }
 }
 
+/**
+ * Körfältsraden.
+ *
+ * Pilarna roteras ur gradtalen modulen ger, så gränssnittet aldrig behöver
+ * känna igen OSRM:s engelska ordlista. Spärrade filer tonas ner i stället för
+ * att döljas — man behöver se hela vägbanan för att förstå vilken fil man
+ * ligger i, annars går det inte att räkna sig fram till rätt.
+ *
+ * Den bästa filen ramas in. Vi vet INTE vilken fil bilen faktiskt ligger i:
+ * GPS har omkring tio meters fel och en fil är tre och en halv meter bred.
+ * Därför säger raden aldrig "byt två filer åt höger" — den visar var man ska
+ * hamna och låter föraren avgöra hur.
+ */
+function renderKorfalt(k) {
+  const box = $('navFiler');
+  if (!box) return;
+  if (!k?.filer?.length) { box.hidden = true; box.innerHTML = ''; return; }
+
+  box.hidden = false;
+  box.innerHTML = '';
+  for (const f of k.filer) {
+    const d = document.createElement('div');
+    d.className = 'fil' + (f.giltig ? ' giltig' : ' sparrad') +
+                  (f.index === k.bastaIndex ? ' basta' : '');
+    for (let i = 0; i < f.symboler.length; i++) {
+      const s = document.createElement('span');
+      s.className = 'fil-pil';
+      s.textContent = '↑';
+      s.style.transform = `rotate(${f.vinklar[i]}deg)`;
+      d.appendChild(s);
+    }
+    box.appendChild(d);
+  }
+}
+
 function renderNav(t) {
   const kort = $('navManover');
   const bar = $('navAnkomst');
@@ -3176,10 +3211,13 @@ function renderNav(t) {
 
   if (!t || !nav.rutt) {
     kort.hidden = true;
+    renderKorfalt(null);
     if (bar) bar.hidden = true;
     if (varn) varn.hidden = true;
     return;
   }
+
+  renderKorfalt(t.korfalt);
 
   if (varn) {
     varn.hidden = !t.varning;

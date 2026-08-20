@@ -1414,3 +1414,27 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   font-size: 17px; color: #fff;
   text-shadow: 0 0 4px #06121f, 0 0 8px #06121f;
 }
+
+/* Körfältsanvisning. Spärrade filer tonas ner i stället för att döljas —
+   man behöver se hela vägbanan för att kunna räkna sig fram till rätt fil. */
+.nav-filer {
+  display: flex; gap: 4px; justify-content: center;
+  margin-top: 6px; padding: 7px 8px;
+  background: rgba(13, 18, 25, .96); backdrop-filter: blur(16px);
+  border: 1px solid var(--line, #26323f); border-radius: 12px;
+}
+.nav-filer .fil {
+  display: flex; align-items: center; justify-content: center; gap: 1px;
+  min-width: 34px; height: 34px; padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .04);
+}
+.nav-filer .fil-pil { font-size: 19px; line-height: 1; display: block; }
+.nav-filer .sparrad { opacity: .3; }
+.nav-filer .giltig  { color: #3d9bff; }
+/* Den bästa filen ramas in. Vi vet inte vilken fil bilen ligger i, så raden
+   visar var man ska hamna — inte hur många filer man ska byta. */
+.nav-filer .basta {
+  background: rgba(61, 155, 255, .16);
+  outline: 2px solid #3d9bff;
+}
