@@ -11,3 +11,9 @@
 NIGHT_LOG.md
 MANUELLT.md
 BLOCKERADE.md
+
+# Hemligheter till Facebook-mejlbryggan. Pollaren vägrar starta om den här
+# raden saknas — inloggningsuppgifter till en postlåda hör aldrig hemma i ett
+# publikt repo.
+tools/fbmejl.hemligheter.json
+fbmejl-prov/

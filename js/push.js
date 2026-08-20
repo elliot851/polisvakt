@@ -503,3 +503,36 @@ export async function testLocal(title = 'Polisvakt', body = 'Så här ser en på
     return true;
   } catch { return false; }
 }
+
+/**
+ * Notiser när någon skrivit i Facebook-gruppen.
+ *
+ * Av som standard, och det är ett medvetet val. En livlig grupp kan ge tiotals
+ * inlägg i timmen, och den som får för många notiser stänger av dem för hela
+ * appen — då tystnar körpåminnelsen med. Hellre att den som vill ha dem slår
+ * på dem själv.
+ *
+ * Servern har fyra spärrar ovanpå: en notis per omgång, minst tio minuter
+ * emellan, tyst mellan 23 och 06, och tolv per dygn.
+ *
+ * Tyst no-op när notiser inte är påslagna alls, så den går att anropa utan
+ * att anroparen kollar först.
+ */
+export async function sattGruppnotiser(pa) {
+  const st = load();
+  if (!st.endpoint || !st.device) return false;
+  try {
+    await rpc('fbmejl_satt_gruppnotiser', {
+      p_endpoint: st.endpoint, p_device: st.device, p_pa: !!pa,
+    });
+    save({ ...st, gruppnotiser: !!pa });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Vad telefonen tror att inställningen är. Servern äger sanningen. */
+export function harGruppnotiser() {
+  return !!load().gruppnotiser;
+}

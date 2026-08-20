@@ -3256,6 +3256,33 @@ function wireSettingsUI() {
   };
   renderNotify();
 
+  /* ---- Notiser från Facebook-gruppen ----
+   *
+   * Servern äger sanningen — reglaget speglar bara vad telefonen tror. Går
+   * anropet fel ställs kryssrutan tillbaka, för en kryssruta som ser påslagen
+   * ut medan servern säger nej är värre än en som är av: man slutar undra
+   * varför inga notiser kommer.
+   */
+  const gnBox = $('setGruppnotiser');
+  if (gnBox) {
+    gnBox.checked = Push.harGruppnotiser();
+    gnBox.onchange = async () => {
+      const vill = gnBox.checked;
+      const ok = await Push.sattGruppnotiser(vill);
+      if (!ok) {
+        gnBox.checked = !vill;
+        $('gruppnotisStatus').textContent =
+          Push.permission() === 'granted'
+            ? 'Kunde inte nå servern. Prova igen.'
+            : 'Tillåt notiser först — knappen ovanför.';
+        return;
+      }
+      $('gruppnotisStatus').textContent = vill
+        ? 'På. Du får en notis när det kommit nya inlägg.'
+        : 'Av.';
+    };
+  }
+
   /* ---- Rapportpoäng ---- */
   $('btnRepSave').onclick = async () => {
     reputation.setNickname($('repNick').value);
