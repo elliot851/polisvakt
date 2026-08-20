@@ -243,6 +243,25 @@
   </div>
   </div>
 
+  <!-- Mörkt körläge.
+       Efter en stund utan beröring under körning slocknar allt utom det som
+       betyder något: farten, gränsen, och varningen om det finns en.
+
+       Skärmen är den enskilt största batteriposten i hela appen — större än
+       all vår kod tillsammans — och på en OLED-skärm kostar svarta pixlar
+       nästan ingenting. Att sluta rita kartan medan den ändå inte syns tar
+       resten.
+
+       En varning kan ALDRIG gömmas här. Kommer det en visas den stort mitt
+       på den mörka skärmen. Ett läge som sparar batteri genom att dölja det
+       appen finns till för vore inte ett sparläge, det vore ett fel. -->
+  <div class="morkt-lage" id="morktLage" hidden>
+    <div class="ml-fart"><span id="mlFart">–</span><small>km/h</small></div>
+    <div class="ml-grans" id="mlGrans" hidden></div>
+    <div class="ml-varning" id="mlVarning" hidden></div>
+    <p class="ml-tips">Tryck för att väcka skärmen</p>
+  </div>
+
   <!-- Ny version finns. Ligger på kartan, inte begravd i inställningar. -->
   <div class="update-banner" id="updateBanner" hidden>
     <span class="ub-icon">↓</span>

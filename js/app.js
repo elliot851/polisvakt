@@ -84,6 +84,7 @@ const defaults = {
   ljudPa: true,
   ljudVolym: 0.75,
   chattLastAt: 0,          // när chatten senast lästes, för antalet olästa
+  morktLage: true,         // släck skärmen under körning när ingen rör den
   haptikPa: true,
   notiser: null,          // fylls av notiser.js vid behov
 };
@@ -227,6 +228,7 @@ async function boot() {
   // inloggad, sa startar pollningen innan wireAuth satt token gar forsta
   // hamtningen ivag med anonyma nyckeln och far 401.
   wireChatt();
+  wireMorktLage();
   if (!settings.disclaimerAccepted) {
     showDisclaimer();
   } else {
@@ -1552,11 +1554,23 @@ function showAlertBanner(alert) {
     (h.createdAt && !h.fixed ? ` · ${relativeTime(h.createdAt)}` : '');
   clearTimeout(showAlertBanner._t);
   showAlertBanner._t = setTimeout(hideAlertBanner, 14000);
+
+  /*
+   * Mörkläget speglar varningen direkt.
+   *
+   * Det här är den enda plats varje varning säkert passerar. Första försöket
+   * hängde mörkläget på en händelse från varningsmotorn i stället, och då
+   * syntes varningen inte alls på den mörka skärmen — provkörningen visade
+   * tom ruta. Ett sparläge som döljer det appen finns till för är inte ett
+   * sparläge, det är ett fel.
+   */
+  renderMorkt();
 }
 
 function hideAlertBanner() {
   $('alertBanner').hidden = true;
   currentAlert = null;
+  renderMorkt();
 }
 
 /* ================= Rapportering ================= */
@@ -1942,7 +1956,8 @@ window.polisvakt = {
   get plate() { return plate; },
   chatt, ljud, korvanor,
   // Belöningsbeskedet går att provköra utan att vänta på ett månadsskifte.
-  visaBelaning, renderKorfalt,
+  visaBelaning, renderKorfalt, remote,
+  get nav() { return nav; },
 };
 
 /* ================= Gränssnitt ================= */
@@ -3055,6 +3070,108 @@ function wireSettingsUI() {
 
 
 
+
+
+/* ================= Mörkt körläge ================= */
+/*
+ * Skärmen är den enskilt största batteriposten i appen. Den syns inte med en
+ * enda millisekund i någon profil — men en tänd telefonskärm drar mer än all
+ * kod vi skrivit tillsammans.
+ *
+ * Mörkläget slocknar allt utom farten, gränsen och en eventuell varning. På en
+ * OLED-skärm kostar svarta pixlar nästan ingenting, och medan kartan inte syns
+ * slutar vi rita den.
+ *
+ * Tre regler som inte får brytas:
+ *
+ *   1. En varning gömmer sig aldrig. Kommer det en visas den stort mitt på den
+ *      mörka skärmen. Ett sparläge som döljer det appen finns till för är
+ *      inget sparläge.
+ *   2. Det slår bara till när bilen rullar. Sitter man still och läser i
+ *      chatten ska skärmen inte svartna för att man inte rört den på en halv
+ *      minut.
+ *   3. Vad som helst väcker den. Tryck, sväng, knapptryck — allt. Ett läge man
+ *      inte hittar ur är en fälla, inte en funktion.
+ */
+
+const MORKT = {
+  efterMs: 25000,        // stillhet innan skärmen går ner
+  fartKmh: 25,           // under den här farten aktiveras det aldrig
+};
+
+let morktAktivt = false;
+let morktTimer = null;
+let morktRender = null;
+
+function morktMojligt() {
+  if (settings.morktLage === false) return false;
+  if (document.body.dataset.view !== 'map') return false;   // bara på kartan
+  const kmh = geo.position?.speedKmh ?? 0;
+  return kmh >= MORKT.fartKmh;
+}
+
+function tandSkarmen() {
+  if (morktAktivt) {
+    morktAktivt = false;
+    clearInterval(morktRender);
+    morktRender = null;
+    $('morktLage').hidden = true;
+    document.body.classList.remove('is-morkt');
+    map.invalidate?.();
+    renderHazards();
+  }
+  clearTimeout(morktTimer);
+  morktTimer = setTimeout(() => { if (morktMojligt()) slackSkarmen(); }, MORKT.efterMs);
+}
+
+function slackSkarmen() {
+  if (morktAktivt || !morktMojligt()) return;
+  morktAktivt = true;
+  $('morktLage').hidden = false;
+  document.body.classList.add('is-morkt');
+  renderMorkt();
+
+  /*
+   * Uppdatera en gång i sekunden medan skärmen är nere.
+   *
+   * Farten måste vara färsk — en siffra som står stilla är värre än ingen.
+   * Och det är den andra garantin för att en varning inte kan gömmas: även om
+   * någon i framtiden reser banderollen på ett sätt vi inte känner till här,
+   * plockas den upp inom en sekund.
+   *
+   * Kostnaden är några DOM-skrivningar i sekunden mot en karta som inte ritas
+   * alls. Det är en bra affär.
+   */
+  clearInterval(morktRender);
+  morktRender = setInterval(renderMorkt, 1000);
+}
+
+function renderMorkt() {
+  if (!morktAktivt) return;
+  const fix = geo.position;
+  $('mlFart').textContent = fix?.speedKmh != null ? Math.round(fix.speedKmh) : '–';
+
+  const grans = limits.current?.limit;
+  $('mlGrans').hidden = !grans;
+  if (grans) $('mlGrans').textContent = grans;
+
+  // Varningen ärvs från banderollen. Är den uppe syns den här, stort.
+  const banner = $('alertBanner');
+  const varning = !banner.hidden ? $('alertTitle').textContent : '';
+  $('mlVarning').hidden = !varning;
+  $('mlVarning').textContent = varning;
+}
+
+function wireMorktLage() {
+  if (!$('morktLage')) return;
+
+  // Allt som är ett livstecken väcker skärmen.
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) {
+    document.addEventListener(ev, tandSkarmen, { passive: true });
+  }
+
+  tandSkarmen();
+}
 
 /* ================= Månadens belöning ================= */
 /*

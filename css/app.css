@@ -1438,3 +1438,45 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   background: rgba(61, 155, 255, .16);
   outline: 2px solid #3d9bff;
 }
+
+/* ============ Mörkt körläge ============
+   Nästan helsvart. På OLED kostar svarta pixlar nästan ingenting, och
+   skärmen är appens största batteripost. */
+.morkt-lage {
+  position: fixed; inset: 0; z-index: 900;
+  background: #000;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 18px;
+  color: #6e7d8c;
+  -webkit-tap-highlight-color: transparent;
+}
+.morkt-lage[hidden] { display: none !important; }
+
+.ml-fart { text-align: center; line-height: 1; }
+.ml-fart span { font-size: 92px; font-weight: 700; font-variant-numeric: tabular-nums; color: #cfd9e3; }
+.ml-fart small { display: block; margin-top: 6px; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; }
+
+/* Hastighetsskylten behåller sin form även här — den känns igen utan att
+   läsas, och det är hela poängen med en skylt. */
+.ml-grans {
+  width: 74px; height: 74px; border-radius: 50%;
+  border: 5px solid #b8402f; background: #f2f2ef; color: #111;
+  display: flex; align-items: center; justify-content: center;
+  font: 700 30px/1 -apple-system, system-ui, sans-serif;
+}
+
+/* Varningen är det enda som får lysa här. */
+.ml-varning {
+  max-width: 86%; text-align: center;
+  padding: 14px 18px; border-radius: 14px;
+  background: rgba(255, 77, 79, .14); border: 1px solid #ff4d4f;
+  color: #ffd9d9; font-size: 21px; font-weight: 650;
+}
+
+.ml-tips { position: absolute; bottom: 34px; font-size: 12.5px; color: #3b4652; }
+
+/* Medan skärmen är nere ritas ingen karta. Det är den andra halvan av
+   besparingen — den första är att pixlarna är svarta. */
+body.is-morkt .pv-map,
+body.is-morkt .tabbar,
+body.is-morkt .topp { visibility: hidden; }
