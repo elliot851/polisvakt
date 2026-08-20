@@ -53,8 +53,17 @@
     supabaseUrl: 'https://livvehyqowmcafnisxho.supabase.co',
     supabaseKey: 'sb_publishable_6Oz7vhMd2b-kWB_DVftsmg_VwclVG5Q',
 
-    // Bara inlägg i den här gruppen skickas vidare. Siffrorna eller slug:en i
-    // /groups/<här>/. Tomt = alla grupper du besöker, vilket du sällan vill.
+    /*
+     * Bara inlägg i den här gruppen skickas vidare. Siffrorna eller slug:en
+     * i /groups/<här>/.
+     *
+     * Tomt betyder numera att skriptet vägrar starta. Förut betydde det
+     * "läs varje grupp du besöker", med en varning i konsolen — men en
+     * varning i konsolen är ingen spärr. Den som glömt fylla i fältet fick
+     * en brygga som vidarebefordrade inlägg ur varenda grupp kontot är med
+     * i, och det är precis det den aldrig får göra. Fel förval ska stoppa,
+     * inte varna.
+     */
     groupId: '',
 
     minConfidence: 0.65,
@@ -63,6 +72,27 @@
     // true = logga bara i konsolen, skriv ingenting. Börja alltid här.
     dryRun: true,
   };
+
+  /*
+   * Testkrok — enda ändringen som gjorts för att filen ska gå att mäta.
+   *
+   * fb-bryggan-test.html hämtar den här filen ordagrant och kör den i en
+   * förberedd miljö (låtsas-location, låtsas-document, låtsas-fetch) för att
+   * bevisa gruppfiltret, nykterhetsspärren och torrkörningen. Testet måste
+   * kunna byta grupp och läge per fall, och filen får ändå inte skrivas om
+   * till en modul: ägaren installerar den som den är i Tampermonkey.
+   *
+   * Kroken är död på Facebook. Skriptet körs med @grant none, alltså i
+   * sidans egen värld, där Facebooks kod kan sätta vilka globaler den vill —
+   * hade kroken gällt där kunde en sida på facebook.com peka om supabaseUrl
+   * eller öppna bryggan för fler grupper. Därför gäller den bara när
+   * skriptet inte körs på facebook.com, och @match släpper bara in det där.
+   */
+  const HOST = (typeof location !== 'undefined' && location.hostname) || '';
+  if (!/(^|\.)facebook\.com$/i.test(HOST) &&
+      typeof window !== 'undefined' && window.__pvBryggaConfig) {
+    Object.assign(CONFIG, window.__pvBryggaConfig);
+  }
 
   const VIEWBOX = [15.10, 59.30, 17.30, 60.30];   // Västmanland
   const TTL_MINUTES = { police: 45, control: 60, unmarked: 30 };
@@ -100,7 +130,49 @@
     'alkoholkontroll', 'alkotest', 'alkoholtest', 'blåsa', 'blåser', 'blås',
     'utandningsprov', 'promillekontroll', 'rattfylla', 'rattfyllerikontroll',
     'sållningsprov', 'drogkontroll', 'drogtest',
+    // Narkotikaorden saknades i BÅDA kopiorna, här och i js/parser.js. En
+    // granskning körde riktiga meningar genom kedjan: fem av nio
+    // drogkontroller blev polisrapporter på kartan, däribland "Polisen har
+    // narkotikakontroll på Vasagatan".
+    'narkotikakontroll', 'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
+    'drogsökhund', 'drogsokhund', 'drogrelaterad',
   ];
+
+  /*
+   * Stavningar som fångas var de än står. Se motiveringen i js/parser.js.
+   * "drog" saknas med flit — det är också imperfekt av "dra", och
+   * "polisen drog vidare" är en avblåsning, inte en kontroll.
+   */
+  const SOBRIETY_STAMMAR = [
+    'nykter', 'alkohol', 'alko', 'promille', 'rattfyll',
+    'utandnings', 'sållnings', 'sallnings',
+    'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
+  ];
+
+  /*
+   * FELET SOM TESTET HITTADE (fb-bryggan-test.html)
+   *
+   * js/parser.js fick de här två listorna när ett testsvep visade att
+   * isärskrivningar gick rakt igenom nykterhetsspärren. Kopian här nere
+   * uppdaterades aldrig. Alltså: "alkohol kontroll vid rondellen",
+   * "nykterhets kontroll" och "drog test" tolkades av bryggan som en helt
+   * vanlig trafikkontroll och skickades till kartan — precis det som aldrig
+   * får hända, och just via den väg som har högst täckning.
+   *
+   * Svenskan skrivs ihop, men folk särskriver ständigt. Ett Facebook-inlägg
+   * är dessutom skrivet i mobilen, i farten, med autokorrigering.
+   */
+  const SOBRIETY_PREFIX = [
+    'alkohol', 'alko', 'nykterhets', 'nykterhet', 'promille', 'rattfylleri',
+    'rattfylla', 'drog', 'droger', 'utandnings', 'sållnings', 'sallnings',
+    'narkotika', 'narko',
+  ];
+  const SOBRIETY_HEAD = ['kontroll', 'kontroller', 'test', 'prov', 'kollar', 'koll'];
+
+  /* Bindestreck skiljer ord, inte bara blanksteg. normalize() behåller
+     bindestreck för gatunamns skull, vilket gjorde att "drog-kontroll" blev
+     ETT ord och gick igenom både ordlistan och isärskrivningsregeln. */
+  const SKILJETECKEN = /[\s\-–—_/.]+/;
 
   const NOISE_PHRASES = ['någon som vet', 'vet någon', 'stämmer det', 'är det någon kvar',
                          'säljes', 'köpes', 'bortsprungen', 'efterlyst', 'grattis'];
@@ -132,8 +204,18 @@
 
   function isSobrietyCheck(text) {
     if (!text) return false;
-    const words = text.split(' ');
-    return SOBRIETY_WORDS.some(w => words.includes(w) || text.includes(w));
+    const words = text.split(SKILJETECKEN).filter(Boolean);
+    const hopskrivet = text.replace(/[\s\-–—_/.]+/g, '');
+    if (SOBRIETY_WORDS.some(w => words.includes(w) || text.includes(w) || hopskrivet.includes(w))) return true;
+    if (SOBRIETY_STAMMAR.some(s => words.some(w => w.startsWith(s)) || hopskrivet.includes(s))) return true;
+
+    // Isärskrivet: förled + huvudord som två ord bredvid varandra.
+    for (let i = 0; i < words.length - 1; i++) {
+      if (SOBRIETY_PREFIX.includes(words[i]) && SOBRIETY_HEAD.includes(words[i + 1])) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function findType(text, words) {
@@ -381,10 +463,37 @@
 
   let lastGeocode = 0;
 
+  /*
+   * FELET SOM TESTET HITTADE (fb-bryggan-test.html)
+   *
+   * Nominatim får både viewbox och bounded=1, men det är en spärr som ligger
+   * hos någon annan. Svarade servern ändå med en träff utanför Västmanland
+   * — eller låg en gammal, felaktig träff kvar i cachen från en tidigare
+   * version — gick koordinaten rakt vidare till kartan. Testet lät Nominatim
+   * svara "Sergels torg" på en Västeråsfråga, och varningen hamnade i
+   * Stockholm.
+   *
+   * En varning på fel plats är värre än ingen varning: den lär föraren att
+   * appen ljuger. Därför kontrolleras varje koordinat mot VIEWBOX här också,
+   * både färska svar och det som ligger i cachen.
+   */
+  const inomOmradet = (lat, lon) =>
+    Number.isFinite(lat) && Number.isFinite(lon) &&
+    lon >= VIEWBOX[0] && lon <= VIEWBOX[2] &&
+    lat >= VIEWBOX[1] && lat <= VIEWBOX[3];
+
   async function geocode(place) {
     const key = 'pv.fb.geo.' + normalize(place);
     const cached = localStorage.getItem(key);
-    if (cached) { try { return JSON.parse(cached); } catch {} }
+    if (cached) {
+      try {
+        const c = JSON.parse(cached);
+        if (!c) return null;                       // negativt svar, sparat med flit
+        if (inomOmradet(c.lat, c.lon)) return c;
+        localStorage.setItem(key, 'null');         // förgiftad rad, kasta den
+        return null;
+      } catch {}
+    }
 
     // Nominatim tillåter ett anrop i sekunden. Vi köar snällt.
     const wait = 1200 - (Date.now() - lastGeocode);
@@ -414,6 +523,11 @@
       lon: parseFloat(rows[0].lon),
       label: String(rows[0].name || place).trim().slice(0, 120),
     };
+    if (!inomOmradet(hit.lat, hit.lon)) {
+      localStorage.setItem(key, 'null');
+      console.warn(TAG, 'träff utanför Västmanland kastad:', place, hit.lat, hit.lon);
+      return null;
+    }
     localStorage.setItem(key, JSON.stringify(hit));
     return hit;
   }
@@ -449,13 +563,31 @@
   }
 
   let running = false;
+  let nämntFelGrupp = false;
   const tally = { created: 0, duplicates: 0, refused: 0, skipped: 0, failed: 0 };
 
   async function scan() {
     if (running) return;
+
+    // Bälte och hängslen: startspärren nedan hindrar redan att skriptet kommer
+    // hit utan grupp, men scan går också att kalla för hand från konsolen.
+    // Förut stod det `CONFIG.groupId && gid !== CONFIG.groupId`, vilket betydde
+    // att ett tomt fält släppte igenom varje grupp just här.
+    if (!CONFIG.groupId) return;
+
     const gid = currentGroupId();
     if (!gid) return;
-    if (CONFIG.groupId && gid !== CONFIG.groupId) return;
+    if (gid !== CONFIG.groupId) {
+      // Facebook byter mellan siffer-id och slug i adressfältet. Står det fel
+      // sak i CONFIG.groupId läser bryggan ingenting alls, och tystnaden ser
+      // likadan ut som "inga inlägg". En rad i konsolen, en gång.
+      if (!nämntFelGrupp) {
+        nämntFelGrupp = true;
+        console.log(TAG, 'du är i grupp ' + gid + ' men bryggan lyssnar på ' +
+          CONFIG.groupId + ' — inget läses här.');
+      }
+      return;
+    }
 
     running = true;
     try {
@@ -540,12 +672,16 @@
 
   /* ================= Igång ================= */
 
-  console.log(TAG, 'Facebook-bryggan är igång.' +
-    (CONFIG.dryRun ? ' Torrkörning: inget skickas.' : ' Skarpt läge.'));
   if (!CONFIG.groupId) {
-    console.warn(TAG, 'CONFIG.groupId är tom — skriptet läser varje grupp du öppnar. ' +
-      'Sätt gruppens id (siffrorna i /groups/…/) så slipper du överraskningar.');
+    console.error(TAG, 'CONFIG.groupId är tom — bryggan startar inte. ' +
+      'Öppna gruppen, kopiera det som står efter /groups/ i adressen, och ' +
+      'skriv in det i CONFIG.groupId. Utan spärren hade skriptet läst varje ' +
+      'grupp kontot är med i.');
+    return;      // ingen timer, ingen observatör — skriptet gör ingenting
   }
+
+  console.log(TAG, 'Facebook-bryggan är igång för grupp ' + CONFIG.groupId + '.' +
+    (CONFIG.dryRun ? ' Torrkörning: inget skickas.' : ' Skarpt läge.'));
 
   setTimeout(scan, 4000);
   setInterval(scan, CONFIG.scanIntervalMs);

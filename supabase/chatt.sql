@@ -169,7 +169,12 @@ declare
     'nykterhetskontroll', 'nykterhetskontroller', 'nykterhet', 'nykter',
     'alkoholkontroll', 'alkotest', 'alkoholtest', 'blåsa', 'blåser', 'blås',
     'utandningsprov', 'promillekontroll', 'rattfylla', 'rattfyllerikontroll',
-    'sållningsprov', 'drogkontroll', 'drogtest'
+    'sållningsprov', 'drogkontroll', 'drogtest',
+    -- Narkotikaorden saknades. En granskning körde riktiga meningar genom
+    -- kedjan och fem av nio drogkontroller blev polisrapporter. Håll synkad
+    -- med SOBRIETY_WORDS i js/parser.js.
+    'narkotikakontroll', 'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
+    'drogsökhund', 'drogsokhund', 'blåsning'
   ];
   /*
    * Svenskan skrivs ihop, men folk särskriver ständigt. "Alkohol kontroll
@@ -179,7 +184,8 @@ declare
    */
   v_forled text[] := array[
     'alkohol', 'alko', 'nykterhets', 'nykterhet', 'promille', 'rattfylleri',
-    'rattfylla', 'drog', 'droger', 'utandnings', 'sållnings', 'sallnings'
+    'rattfylla', 'drog', 'droger', 'utandnings', 'sållnings', 'sallnings',
+    'narkotika', 'narko'
   ];
   v_huvud text[] := array[
     'kontroll', 'kontroller', 'test', 'prov', 'kollar', 'koll'
@@ -197,9 +203,26 @@ begin
     end if;
   end loop;
 
-  v_ord := string_to_array(v_text, ' ');
+  /*
+   * Dela även på bindestreck, inte bara blanksteg.
+   *
+   * chatt_normalisera behåller bindestreck med flit (gatunamn), men det
+   * gjorde att "drog-kontroll" blev ETT ord: ordlistan matchade det inte,
+   * och isärskrivningsregeln nedan hittade inget att ställa bredvid. Ett
+   * enda bindestreck gick alltså igenom båda spärrarna samtidigt.
+   */
+  v_ord := regexp_split_to_array(v_text, '[ \-/._]+');
   if array_length(v_ord, 1) is null then
     return false;
+  end if;
+
+  -- Och samma text helt utan skiljetecken, så ordlistan ovan också ser
+  -- "drog-kontroll" som "drogkontroll".
+  if strpos(regexp_replace(v_text, '[ \-/._]+', '', 'g'), 'drogkontroll') > 0
+     or strpos(regexp_replace(v_text, '[ \-/._]+', '', 'g'), 'narkotikakontroll') > 0
+     or strpos(regexp_replace(v_text, '[ \-/._]+', '', 'g'), 'alkoholkontroll') > 0
+     or strpos(regexp_replace(v_text, '[ \-/._]+', '', 'g'), 'nykterhetskontroll') > 0 then
+    return true;
   end if;
   for v_i in 1 .. array_length(v_ord, 1) - 1 loop
     if v_ord[v_i] = any(v_forled) and v_ord[v_i + 1] = any(v_huvud) then

@@ -135,8 +135,11 @@ returns boolean
 language sql
 immutable
 set search_path = pg_catalog, pg_temp as $$
+  -- Håll synkad med fbmejl_ar_nykterhetskontroll och js/parser.js. Se den
+  -- längre motiveringen i supabase/fbmejl.sql — kort: narkotikaorden
+  -- saknades helt och bindestreck bröt de delade formerna.
   select lower(coalesce(p_text, '')) ~
-    '(nykter|alkohol|alkotest|promille|rattfyll|utandnings|sållnings|sallnings|drogkontroll|drogtest|drog ?kontroll|drog ?test|blåser|blåsa|blåste|blaser)';
+    '(nykter|alkohol|alkotest|promille|rattfyll|utandnings|sållnings|sallnings|narkotika|narko|droger|drogsök|drogsok|drogkontroll|drogtest|drog[ -]?kontroll|drog[ -]?test|drog[ -]?koll|blåser|blåsa|blåste|blaser|blåsning)';
 $$;
 
 -- ============================ TA EMOT ================================

@@ -45,6 +45,31 @@ const SOBRIETY_WORDS = [
   'alkoholkontroll', 'alkotest', 'alkoholtest', 'blåsa', 'blåser', 'blås',
   'utandningsprov', 'promillekontroll', 'rattfylla', 'rattfyllerikontroll',
   'sållningsprov', 'drogkontroll', 'drogtest',
+  // Narkotikaorden saknades helt. En granskning körde riktiga meningar genom
+  // parsern och fem av nio drogkontroller blev vanliga polisrapporter på
+  // kartan: "Polisen har narkotikakontroll på Vasagatan" bland dem. Regeln
+  // såg absolut ut i kommentaren ovan och var det inte i koden.
+  'narkotikakontroll', 'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
+  'drogsökhund', 'drogsokhund', 'drogrelaterad',
+];
+
+/*
+ * Stavningar som ska fångas var de än står i meningen.
+ *
+ * SOBRIETY_WORDS matchas med includes() och fångar därför ihopskrivet, men
+ * bara exakt de böjningar som råkar stå i listan. Att jaga böjningar är ett
+ * förlorat lopp — det var precis så "narkotikakontroll" kunde saknas medan
+ * "drogkontroll" fanns.
+ *
+ * Notera att "drog" INTE står här. Det är också imperfekt av "dra", och
+ * "polisen drog vidare" är en avblåsning, inte en kontroll. Det ordet fångas
+ * i stället av isärskrivningsregeln nedan ("drog kontroll"), där nästa ord
+ * avgör vilken betydelse det är.
+ */
+const SOBRIETY_STAMMAR = [
+  'nykter', 'alkohol', 'alko', 'promille', 'rattfyll',
+  'utandnings', 'sållnings', 'sallnings',
+  'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
 ];
 
 /**
@@ -63,16 +88,37 @@ const SOBRIETY_WORDS = [
 const SOBRIETY_PREFIX = [
   'alkohol', 'alko', 'nykterhets', 'nykterhet', 'promille', 'rattfylleri',
   'rattfylla', 'drog', 'droger', 'utandnings', 'sållnings', 'sallnings',
+  'narkotika', 'narko',
 ];
 const SOBRIETY_HEAD = ['kontroll', 'kontroller', 'test', 'prov', 'kollar', 'koll'];
+
+/*
+ * Bindestreck skiljer ord, inte bara blanksteg.
+ *
+ * normalize() i util.js behåller bindestreck med flit — gatunamn som
+ * "Stora Gatan-korsningen" ska hålla ihop. Men det gjorde att
+ * "drog-kontroll" blev ETT ord: ordlistan matchade det inte, och
+ * isärskrivningsregeln som letar efter två ord bredvid varandra hittade
+ * inget att ställa bredvid. Skrivsättet gick alltså rakt igenom båda
+ * spärrarna samtidigt.
+ *
+ * Nykterhetskontrollen får därför sin egen orduppdelning, som också delar på
+ * bindestreck, snedstreck, punkt och understreck. Det gäller bara den här
+ * kontrollen — resten av parsern ser texten som förut.
+ */
+const SKILJETECKEN = /[\s\-–—_/.]+/;
 
 /** Är det här en nykterhets- eller drogkontroll? Då rapporteras den inte. */
 export function isSobrietyCheck(raw) {
   const text = normalize(raw);
   if (!text) return false;
-  const words = text.split(' ');
+  const words = text.split(SKILJETECKEN).filter(Boolean);
+  // Samma text utan skiljetecken alls, så "drog-kontroll" också hittas av
+  // ordlistan och inte bara av regeln nedan.
+  const hopskrivet = text.replace(/[\s\-–—_/.]+/g, '');
 
-  if (SOBRIETY_WORDS.some(w => words.includes(w) || text.includes(w))) return true;
+  if (SOBRIETY_WORDS.some(w => words.includes(w) || text.includes(w) || hopskrivet.includes(w))) return true;
+  if (SOBRIETY_STAMMAR.some(s => words.some(w => w.startsWith(s)) || hopskrivet.includes(s))) return true;
 
   // Isärskrivet: förled + huvudord som två ord bredvid varandra.
   for (let i = 0; i < words.length - 1; i++) {

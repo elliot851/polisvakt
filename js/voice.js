@@ -251,6 +251,11 @@ const JOINABLE = new Set([
   'nykterhetskontroll', 'nykterhetskontroller', 'alkoholkontroll', 'alkoholtest',
   'alkotest', 'utandningsprov', 'promillekontroll', 'rattfyllerikontroll',
   'sållningsprov', 'drogkontroll', 'drogtest',
+  // Narkotikaorden saknades här av samma skäl som i parser.js — se
+  // SOBRIETY_WORDS där. Parsern fångar dem numera även isärskrivna, men
+  // ihopsättningen här gör att texten som visas för föraren blir densamma
+  // som den som bedömdes.
+  'narkotikakontroll', 'drogsökhund',
   // vanliga vägord
   'avfarten', 'påfarten', 'infarten', 'rondellen', 'korsningen', 'busshållplatsen',
 ]);
