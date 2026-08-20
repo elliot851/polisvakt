@@ -1,0 +1,853 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — navigering</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+</style>
+
+<h1>Polisvakt — navigering</h1>
+<p class="sub">
+  Svängbeskrivningarna i <code>js/navigering.js</code>, körda utan nät och utan karta.<br>
+  Hela poängen med modulen är att beslutet "vad ska sägas och när" går att
+  provköra på en syntetisk rutt med en påhittad klocka. Går något sönder här
+  hörs det i bilen som ett besked på fel plats.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+const nara = (a, b, tol) => Math.abs(a - b) <= tol;
+
+// Siffror som är värda att läsa av även när allt är grönt. Testerna fyller på
+// den här och den skrivs ut sist, så rapporten kan citera faktiska värden i
+// stället för "det gick igenom".
+const matt = {};
+const mat = (k, v) => { matt[k] = v; return v; };
+
+/* =================================================================== */
+const nav = await import('./js/navigering.js');
+const { Navigering, Ruttlinje, beskrivManover, tolkaOsrmRutt,
+        hamtaOsrmRutt, NavigeringsFel, NAV_PRIORITET, NAV_STANDARD } = nav;
+
+/* ---------------- Provbana ----------------------------------------- */
+//
+// En rak öst-västlig väg och en sväng söderut. Meter räknas i ett lokalt plan
+// runt Västerås, så en "leg" på 2000 m öst blir 2000 m i verkligheten också.
+
+const LAT0 = 59.6099, LON0 = 16.5448;
+const M_LAT = 111320;
+const M_LON = 111320 * Math.cos(LAT0 * Math.PI / 180);
+const pt = (ost, nord) => [LAT0 + nord / M_LAT, LON0 + ost / M_LON];
+
+/**
+ * Bygg en OSRM-liknande rutt av hörnpunkter i meter.
+ *
+ * Stegens distanser tas ur den uppmätta linjen och inte ur hörnavstånden, så
+ * att skalfaktorn i byggStegIndex blir exakt 1 och testerna mäter modulens
+ * logik i stället för avrundningen mellan två geodesier.
+ */
+function byggRutt(horn, manovrar, { punktSteg = 25, fartKmh = 50 } = {}) {
+  const punkter = [];
+  const hornIndex = [];
+  for (let i = 0; i < horn.length - 1; i++) {
+    const [ax, ay] = horn[i], [bx, by] = horn[i + 1];
+    const len = Math.hypot(bx - ax, by - ay);
+    const n = Math.max(1, Math.round(len / punktSteg));
+    hornIndex.push(punkter.length);
+    for (let k = 0; k < n; k++) {
+      const t = k / n;
+      punkter.push(pt(ax + (bx - ax) * t, ay + (by - ay) * t));
+    }
+  }
+  hornIndex.push(punkter.length);
+  punkter.push(pt(...horn[horn.length - 1]));
+
+  const linje = new Ruttlinje(punkter);
+  const mps = fartKmh / 3.6;
+  const steg = manovrar.map((m, i) => {
+    const start = linje.cum[hornIndex[i]];
+    const slut = i + 1 < hornIndex.length ? linje.cum[hornIndex[i + 1]] : linje.lengthM;
+    const d = Math.max(0, slut - start);
+    return { ...m, distance: d, duration: d / mps };
+  });
+  return {
+    punkter, steg, linje,
+    distanceM: linje.lengthM,
+    durationS: linje.lengthM / mps,
+    mal: { lat: punkter[punkter.length - 1][0], lon: punkter[punkter.length - 1][1],
+           label: 'Drottninggatan' },
+  };
+}
+
+const M = {
+  start: n => ({ name: n, maneuver: { type: 'depart' } }),
+  hoger: n => ({ name: n, maneuver: { type: 'turn', modifier: 'right' } }),
+  vanster: n => ({ name: n, maneuver: { type: 'turn', modifier: 'left' } }),
+  framme: n => ({ name: n, maneuver: { type: 'arrive', modifier: 'right' } }),
+};
+
+/** Standardbanan: 2 km rakt, höger, 1 km, framme. */
+const bana = () => byggRutt(
+  [[0, 0], [2000, 0], [2000, -1000]],
+  [M.start('Vasagatan'), M.hoger('Drottninggatan'), M.framme('Drottninggatan')]);
+
+const T0 = 1_700_000_000_000;   // fast "klockslag" — modulen läser aldrig Date
+
+function nyNav(rutt = bana(), opts = {}) {
+  const n = new Navigering(opts);
+  const start = n.satt(rutt, { nu: T0 });
+  return { n, rutt, start };
+}
+
+/**
+ * Kör bilen längs rutten och samla varje uppdatering.
+ * Fixarna kommer i 1 Hz, som en riktig telefon.
+ */
+function kor(n, linje, { fran = 0, till, fartKmh = 50, t0 = T0, hz = 1, noggrannhet = 8 } = {}) {
+  const mps = fartKmh / 3.6;
+  const slut = till ?? linje.lengthM;
+  const alla = [];
+  let t = t0, s = fran;
+  for (let i = 0; s <= slut + 1e-6 && i < 5000; i++) {
+    const [lat, lon] = linje.pointAt(Math.min(s, linje.lengthM));
+    alla.push({ s, ...n.uppdatera({ lat, lon, accuracy: noggrannhet, speedKmh: fartKmh, ts: t }, t) });
+    s += mps / hz;
+    t += 1000 / hz;
+  }
+  return alla;
+}
+
+const allaTal = rader => rader.flatMap(r => r.tal || []);
+const bredvid = (linje, s, nordM) => {
+  const [lat, lon] = linje.pointAt(s);
+  return [lat + nordM / M_LAT, lon];
+};
+
+/* =================================================================== */
+G('Svenska ur OSRM:s manövrar');
+
+await T('sväng höger in på en namngiven gata', () => {
+  const m = beskrivManover({ name: 'Drottninggatan', maneuver: { type: 'turn', modifier: 'right' } });
+  return m.fras === 'sväng höger in på Drottninggatan' || `fick "${m.fras}"`;
+});
+await T('"nu"-varianten släpper gatunamnet', () => {
+  const m = beskrivManover({ name: 'Sankt Olofsgatan', maneuver: { type: 'turn', modifier: 'left' } });
+  return m.kort === 'sväng vänster' || `fick "${m.kort}"`;
+});
+await T('vägdelning blir "håll vänster", inte "sväng vänster"', () => {
+  const m = beskrivManover({ ref: 'E18', maneuver: { type: 'fork', modifier: 'slight left' } });
+  return m.fras.startsWith('håll vänster') || `fick "${m.fras}"`;
+});
+await T('rondell med tredje avfarten', () => {
+  const m = beskrivManover({ name: 'Vasagatan', maneuver: { type: 'roundabout', modifier: 'right', exit: 3 } });
+  return m.fras === 'kör av vid tredje avfarten i rondellen in på Vasagatan'
+    || `fick "${m.fras}"`;
+});
+await T('rondell utan känd avfart gissar inte', () => {
+  const m = beskrivManover({ maneuver: { type: 'roundabout', modifier: 'right' } });
+  return (!m.fras.includes('avfarten') && m.fras.includes('rondellen')) || `fick "${m.fras}"`;
+});
+await T('avfart tar med avfartsnummer och skyltat mål', () => {
+  const m = beskrivManover({
+    name: '', ref: 'E18', exits: '132', destinations: 'E18: Stockholm, Enköping, Bålsta',
+    maneuver: { type: 'off ramp', modifier: 'slight right' },
+  });
+  const bra = m.fras.includes('ta avfarten till höger') && m.fras.includes('avfart 132')
+    && m.fras.includes('Stockholm och Enköping') && !m.fras.includes('Bålsta');
+  return bra || `fick "${m.fras}"`;
+});
+await T('merge blir "fila in", inte en ordagrann översättning', () => {
+  const m = beskrivManover({ ref: 'E18', maneuver: { type: 'merge', modifier: 'left' } });
+  return m.fras === 'fila in till vänster på E18' || `fick "${m.fras}"`;
+});
+await T('ankomst säger vilken sida målet ligger på', () => {
+  const m = beskrivManover({ maneuver: { type: 'arrive', modifier: 'left' } });
+  return m.fras.includes('vänster sida') || `fick "${m.fras}"`;
+});
+await T('okänd manövertyp kraschar inte utan blir "fortsätt"', () => {
+  const m = beskrivManover({ name: 'X', maneuver: { type: 'nåt-nytt-i-osrm' } });
+  return m.fras.startsWith('fortsätt') || `fick "${m.fras}"`;
+});
+await T('vägnummer används när gatunamn saknas', () => {
+  const m = beskrivManover({ name: '', ref: 'E18;E20', maneuver: { type: 'new name' } });
+  return m.fras === 'fortsätt på E18' || `fick "${m.fras}"`;
+});
+
+/* =================================================================== */
+G('Var på rutten är vi');
+
+await T('rätt steg för en position mitt på rutten', () => {
+  const { n, rutt } = nyNav();
+  const [lat, lon] = rutt.linje.pointAt(1000);
+  const t = n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 50, ts: T0 + 1000 });
+  const bra = t.stegIndex === 0 && t.nastaManover?.typ === 'turn'
+    && nara(t.nastaManover.avstandM, 1000, 15);
+  mat('stegMittPaRutten', { stegIndex: t.stegIndex, tillSvang: t.nastaManover?.avstandM });
+  return bra || `steg ${t.stegIndex}, nästa ${t.nastaManover?.typ} om ${t.nastaManover?.avstandM} m`;
+});
+
+await T('steget växlar när svängen passerats', () => {
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { till: 2400 });
+  const sist = rader[rader.length - 1];
+  return (sist.stegIndex === 1 && sist.nastaManover?.typ === 'arrive')
+    || `steg ${sist.stegIndex}, nästa ${sist.nastaManover?.typ}`;
+});
+
+await T('avståndet kvar minskar när man rör sig framåt', () => {
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { till: 1500 });
+  let forra = Infinity, fall = 0;
+  for (const r of rader) {
+    if (r.kvarM > forra + 1) return `kvarM gick upp: ${forra} -> ${r.kvarM}`;
+    if (r.kvarM < forra) fall++;
+    forra = r.kvarM;
+  }
+  mat('kvarM', { forst: rader[0].kvarM, sist: rader[rader.length - 1].kvarM, minskningar: fall });
+  return (fall >= rader.length - 2 && rader[rader.length - 1].kvarM < rader[0].kvarM - 1400)
+    || `bara ${fall} minskningar av ${rader.length}`;
+});
+
+await T('ett stort hopp bakåt på linjen avvisas', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  const fore = n.tillstand(T0 + 99000).s;
+  // Fyrahundra meter bakåt på samma väg, från en fix till nästa. Det är inte
+  // körning, det är en telefon som hittat fel satelliter.
+  const [lat, lon] = rutt.linje.pointAt(600);
+  const t = n.uppdatera({ lat, lon, accuracy: 12, speedKmh: 50, ts: T0 + 100000 }, T0 + 100000);
+  return t.s >= fore - 1 || `s backade från ${fore} till ${t.s}`;
+});
+
+await T('men en riktig U-sväng följs bakåt', () => {
+  // Skillnaden mot fallet ovan är takten. Kör man tillbaka samma väg flyttar
+  // sig positionen fjorton meter per fix, och då ska den följa med — annars
+  // fryser "kvar till målet" mitt i en vändning.
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  let t = null;
+  for (let k = 1; k <= 5; k++) {
+    const [lat, lon] = rutt.linje.pointAt(1000 - k * 14);
+    const ts = T0 + 100000 + k * 1000;
+    t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 50, ts }, ts);
+  }
+  return (t.s < 950 && t.lage === 'navigerar') || `s = ${t.s}, läge ${t.lage}`;
+});
+
+await T('restiden kvar summerar stegens egna varaktigheter', () => {
+  // Motorväg först, stadstrafik sist. En linjär skalning av totaltiden mot
+  // återstående sträcka skulle ge fel svar här, och det är hela poängen.
+  const r = byggRutt([[0, 0], [8000, 0], [8000, -2000]],
+    [M.start('E18'), M.hoger('Stora gatan'), M.framme('Stora gatan')]);
+  r.steg[0].duration = 8000 / (100 / 3.6);     // 288 s
+  r.steg[1].duration = 2000 / (30 / 3.6);      // 240 s
+  r.durationS = 528;
+  const n = new Navigering();
+  n.satt(r, { nu: T0 });
+  const [lat, lon] = r.linje.pointAt(8000);    // precis vid svängen
+  const t = n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 90, ts: T0 + 1000 });
+  const linjart = Math.round(528 * (2000 / 10000));   // 106 s — vad fel svar vore
+  mat('kvarS', { stegvis: t.kvarS, linjart, facit: 240 });
+  return nara(t.kvarS, 240, 6) || `fick ${t.kvarS} s (stegvis facit 240, linjärt hade gett ${linjart})`;
+});
+
+await T('ankomsttiden är nu plus restiden kvar', () => {
+  const { n, rutt } = nyNav();
+  const [lat, lon] = rutt.linje.pointAt(500);
+  const t = n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 50, ts: T0 + 40000 });
+  return t.ankomstTs === T0 + 40000 + t.kvarS * 1000 || `${t.ankomstTs} ≠ ${T0 + 40000} + ${t.kvarS}s`;
+});
+
+/* =================================================================== */
+G('Rätt tid att säga till — farten styr');
+
+await T('förvarningen kommer längre bort i 110 än i 50', () => {
+  const kollaVid = fartKmh => {
+    const { n, rutt } = nyNav();
+    const rader = kor(n, rutt.linje, { till: 1990, fartKmh });
+    const snart = allaTal(rader).find(y => y.fas === 'snart' && y.stegIndex === 1);
+    return snart ? snart.avstandM : null;
+  };
+  const lag = kollaVid(50), hog = kollaVid(110);
+  mat('snartAvstand', { kmh50: lag, kmh110: hog });
+  if (lag == null || hog == null) return `saknas: 50→${lag}, 110→${hog}`;
+  return hog > lag * 1.7 || `50 km/h gav ${lag} m, 110 km/h gav ${hog} m`;
+});
+
+await T('utlösningsavstånden skalar med farten', () => {
+  const { n } = nyNav();
+  const vid = kmh => n.utlosare(kmh);
+  const a = vid(50), b = vid(110);
+  mat('utlosare', {
+    kmh50: { langt: Math.round(a.langtM), snart: Math.round(a.snartM), nu: Math.round(a.nuM) },
+    kmh110: { langt: Math.round(b.langtM), snart: Math.round(b.snartM), nu: Math.round(b.nuM) },
+  });
+  return (b.snartM > a.snartM && b.nuM > a.nuM && b.langtM > a.langtM)
+    || `50: ${JSON.stringify(a)} / 110: ${JSON.stringify(b)}`;
+});
+
+await T('förvarningen räknas i sekunder, inte i meter', () => {
+  // 18 sekunder × farten, med golv och tak. Kontrollera mitt i intervallet
+  // där varken golv eller tak biter.
+  const { n } = nyNav();
+  const u = n.utlosare(70);
+  const forvantat = (70 / 3.6) * NAV_STANDARD.snartS;
+  return nara(u.snartM, forvantat, 1) || `fick ${Math.round(u.snartM)} m, väntade ${Math.round(forvantat)} m`;
+});
+
+await T('"nu" kommer sist och utan gatunamn', () => {
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { till: 1999, fartKmh: 50 });
+  const y = allaTal(rader).filter(x => x.stegIndex === 1);
+  const nuY = y.find(x => x.fas === 'nu');
+  mat('nuBesked', nuY ? { text: nuY.text, avstandM: nuY.avstandM } : null);
+  if (!nuY) return 'inget "nu"-besked';
+  const sist = y[y.length - 1] === nuY;
+  return (sist && nuY.text === 'Sväng höger nu.' && nuY.avstandM <= 60)
+    || `fick "${nuY.text}" på ${nuY.avstandM} m, sist=${sist}`;
+});
+
+await T('samma sväng annonseras aldrig två gånger i samma fas', () => {
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { fartKmh: 50 });
+  const rakna = {};
+  for (const y of allaTal(rader)) {
+    if (y.typ !== 'sväng') continue;
+    const k = `${y.stegIndex}:${y.fas}`;
+    rakna[k] = (rakna[k] || 0) + 1;
+  }
+  mat('faserPerSvang', rakna);
+  const dubbel = Object.entries(rakna).filter(([, v]) => v > 1);
+  return dubbel.length === 0 || `upprepade: ${JSON.stringify(dubbel)}`;
+});
+
+await T('två identiska fixar ger bara ett besked', () => {
+  const { n, rutt } = nyNav();
+  const [lat, lon] = rutt.linje.pointAt(1800);   // 200 m före svängen
+  const fix = { lat, lon, accuracy: 8, speedKmh: 50 };
+  const a = n.uppdatera({ ...fix, ts: T0 + 1000 }, T0 + 1000);
+  const b = n.uppdatera({ ...fix, ts: T0 + 2000 }, T0 + 2000);
+  return (a.tal.length >= 1 && b.tal.length === 0)
+    || `först ${a.tal.length} besked, sedan ${b.tal.length}`;
+});
+
+await T('korta kvarterssteg hoppar över förvarningen och säger bara "nu"', () => {
+  // Tätortsbana: hörn var 150:e meter. En förvarning på 250 m skulle hamna
+  // före föregående sväng, alltså ska den falla bort helt.
+  const r = byggRutt([[0, 0], [150, 0], [150, -150], [300, -150], [300, -300]],
+    [M.start('Kvartersgatan'), M.hoger('A-gatan'), M.vanster('B-gatan'),
+     M.hoger('C-gatan'), M.framme('C-gatan')]);
+  const n = new Navigering();
+  n.satt(r, { nu: T0 });
+  const rader = kor(n, r.linje, { fartKmh: 40 });
+  const y = allaTal(rader).filter(x => x.typ === 'sväng');
+  const faser = [...new Set(y.map(x => x.fas))];
+  mat('tatortFaser', faser);
+  return (!faser.includes('snart') && !faser.includes('langt') && faser.includes('nu'))
+    || `fick faserna ${JSON.stringify(faser)}`;
+});
+
+await T('två svängar tätt ihop sägs i samma mening', () => {
+  const r = byggRutt([[0, 0], [2000, 0], [2000, -100], [2400, -100]],
+    [M.start('Vasagatan'), M.hoger('Kort gata'), M.vanster('Långgatan'), M.framme('Långgatan')]);
+  const n = new Navigering();
+  n.satt(r, { nu: T0 });
+  const rader = kor(n, r.linje, { till: 1999, fartKmh: 50 });
+  const y = allaTal(rader).find(x => x.stegIndex === 1 && x.fas === 'snart');
+  mat('kedjeBesked', y?.text || null);
+  return (y && /sedan sväng vänster/.test(y.text)) || `fick "${y?.text}"`;
+});
+
+await T('namnbyten sägs aldrig — de kräver ingenting av föraren', () => {
+  // Precis det som hände på riktigt mellan Västerås och Stockholm: OSRM lade
+  // in "new name" varje gång vägen bytte namn, och rösten sa "Fortsätt nu"
+  // sju gånger på en resa.
+  const r = byggRutt([[0, 0], [1200, 0], [2400, 0], [3600, 0], [3600, -600]],
+    [M.start('Vasagatan'),
+     { name: 'Stora gatan', maneuver: { type: 'new name' } },
+     { name: 'Kopparbergsvägen', maneuver: { type: 'new name' } },
+     M.hoger('Drottninggatan'), M.framme('Drottninggatan')]);
+  const n = new Navigering();
+  n.satt(r, { nu: T0 });
+  const rader = kor(n, r.linje, { fartKmh: 70 });
+  const texter = allaTal(rader).filter(y => y.typ === 'sväng').map(y => y.text);
+  mat('namnbyten', texter);
+  return !texter.some(t => /Fortsätt/.test(t)) || `sa ${JSON.stringify(texter)}`;
+});
+
+await T('avståndet räknas förbi namnbytena hela vägen till svängen', () => {
+  const r = byggRutt([[0, 0], [1200, 0], [2400, 0], [3600, 0], [3600, -600]],
+    [M.start('Vasagatan'),
+     { name: 'Stora gatan', maneuver: { type: 'new name' } },
+     { name: 'Kopparbergsvägen', maneuver: { type: 'new name' } },
+     M.hoger('Drottninggatan'), M.framme('Drottninggatan')]);
+  const n = new Navigering();
+  n.satt(r, { nu: T0 });
+  const [lat, lon] = r.linje.pointAt(600);      // mitt på FÖRSTA namnavsnittet
+  const t = n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 70, ts: T0 + 1000 }, T0 + 1000);
+  mat('forbiNamnbyten', { typ: t.nastaManover?.typ, avstandM: t.nastaManover?.avstandM });
+  return (t.nastaManover?.typ === 'turn' && nara(t.nastaManover.avstandM, 3000, 30))
+    || `nästa ${t.nastaManover?.typ} om ${t.nastaManover?.avstandM} m (väntade turn om ~3000)`;
+});
+
+await T('"continue" med riktning är en riktig sväng och sägs', () => {
+  const m = beskrivManover({ name: 'X', maneuver: { type: 'continue', modifier: 'left' } });
+  const namnbyte = beskrivManover({ name: 'X', maneuver: { type: 'new name' } });
+  return (m.handling === true && namnbyte.handling === false)
+    || `continue:left handling=${m.handling}, new name handling=${namnbyte.handling}`;
+});
+
+await T('kö på motorvägen ger ändå tidig förvarning', () => {
+  // GPS säger 4 km/h, men OSRM:s egen tid för steget säger 100 km/h. Avfarten
+  // kommer att passera i full fart så fort kön släpper.
+  const r = byggRutt([[0, 0], [4000, 0], [4000, -1000]],
+    [M.start('E18'), M.hoger('Avfarten'), M.framme('Avfarten')], { fartKmh: 100 });
+  const n = new Navigering();
+  n.satt(r, { nu: T0 });
+  const [lat, lon] = r.linje.pointAt(1000);
+  const t = n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 4, ts: T0 + 1000 });
+  mat('koFart', { gpsKmh: 4, beslutKmh: Math.round(t.fart.beslutKmh), snartM: Math.round(t.utlosare.snartM) });
+  return (t.fart.beslutKmh >= 55 && t.utlosare.snartM >= 280)
+    || `beslutsfart ${Math.round(t.fart.beslutKmh)} km/h, snartM ${Math.round(t.utlosare.snartM)}`;
+});
+
+/* =================================================================== */
+G('Av rutten — tåligt mot en dålig fix');
+
+await T('EN enstaka dålig fix utlöser ingen omräkning', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  const [lat, lon] = bredvid(rutt.linje, 1000, 300);   // 300 m norrut, ur tomma intet
+  const t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 50, ts: T0 + 200000 }, T0 + 200000);
+  mat('enstakaDaligFix', { lage: t.lage, avvikFixar: t.avvikFixar, begar: t.begarOmberakning });
+  return (t.lage === 'navigerar' && !t.begarOmberakning)
+    || `läge ${t.lage}, begäran ${JSON.stringify(t.begarOmberakning)}`;
+});
+
+await T('tre dåliga fixar och sedan tillbaka på vägen — fortfarande tyst', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  let t = null;
+  for (let k = 0; k < 3; k++) {
+    const [lat, lon] = bredvid(rutt.linje, 1000, 200 + k * 40);
+    t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 50, ts: T0 + 200000 + k * 1000 },
+      T0 + 200000 + k * 1000);
+    if (t.lage !== 'navigerar') return `slog till redan vid fix ${k + 1}`;
+  }
+  const [lat, lon] = rutt.linje.pointAt(1100);
+  t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 50, ts: T0 + 204000 }, T0 + 204000);
+  return (t.lage === 'navigerar' && t.avvikFixar === 0)
+    || `läge ${t.lage}, räknare ${t.avvikFixar}`;
+});
+
+await T('en verklig avvikelse begär en ny rutt', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  let t = null, slogTillVidFix = null;
+  for (let k = 0; k < 8; k++) {
+    const [lat, lon] = bredvid(rutt.linje, 1000, 100 + k * 30);
+    const ts = T0 + 200000 + k * 1500;
+    t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 45, ts }, ts);
+    if (t.lage === 'avvikande' && slogTillVidFix === null) slogTillVidFix = k + 1;
+    if (t.begarOmberakning) {
+      mat('avvikelse', { slogTillVidFix, sekunder: k * 1.5, begar: t.begarOmberakning });
+      return true;
+    }
+  }
+  return `ingen begäran efter 8 fixar (läge ${t.lage}, räknare ${t.avvikFixar})`;
+});
+
+await T('avvikelsen säger till en gång, inte varje sekund', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  let antal = 0;
+  for (let k = 0; k < 12; k++) {
+    const [lat, lon] = bredvid(rutt.linje, 1000, 100 + k * 30);
+    const ts = T0 + 200000 + k * 1500;
+    const t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 45, ts }, ts);
+    antal += t.tal.filter(y => y.typ === 'omberakning').length;
+  }
+  mat('omberakningsbesked', antal);
+  return antal === 1 || `sa "räknar om" ${antal} gånger`;
+});
+
+await T('mycket osäkra fixar räknas varken upp eller ner', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  let t = null;
+  for (let k = 0; k < 10; k++) {
+    const [lat, lon] = bredvid(rutt.linje, 1000, 300 + k * 40);
+    const ts = T0 + 200000 + k * 1500;
+    t = n.uppdatera({ lat, lon, accuracy: 250, speedKmh: 45, ts }, ts);
+  }
+  return (t.lage === 'navigerar' && t.avvikFixar === 0)
+    || `läge ${t.lage} efter 10 fixar med 250 m osäkerhet`;
+});
+
+await T('omräkningar sker inte oftare än pausen tillåter', () => {
+  const { n, rutt } = nyNav({ ...bana() }, { omberakningPausMs: 15000 });
+  kor(n, rutt.linje, { till: 1000 });
+  let begaranden = 0;
+  for (let k = 0; k < 40; k++) {          // 40 sekunder rakt ut i terrängen
+    const [lat, lon] = bredvid(rutt.linje, 1000, 100 + k * 25);
+    const ts = T0 + 200000 + k * 1000;
+    const t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 60, ts }, ts);
+    if (t.begarOmberakning) begaranden++;
+  }
+  mat('begarandenPa40s', begaranden);
+  return (begaranden >= 1 && begaranden <= 3) || `${begaranden} begäranden på 40 s`;
+});
+
+await T('tillbaka på rutten av sig själv kräver ingen omräkning', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1000 });
+  for (let k = 0; k < 6; k++) {
+    const [lat, lon] = bredvid(rutt.linje, 1000, 100 + k * 30);
+    const ts = T0 + 200000 + k * 1500;
+    n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 45, ts }, ts);
+  }
+  const ts = T0 + 220000;
+  const [lat, lon] = rutt.linje.pointAt(1200);
+  const t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 45, ts }, ts);
+  return (t.lage === 'navigerar' && !t.begarOmberakning) || `läge ${t.lage}`;
+});
+
+await T('inga svängbeskrivningar medan vi är av rutten', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1700 });        // strax före svängen
+  let svangar = 0;
+  for (let k = 0; k < 8; k++) {
+    const [lat, lon] = bredvid(rutt.linje, 1700, 120 + k * 30);
+    const ts = T0 + 300000 + k * 1500;
+    const t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 45, ts }, ts);
+    svangar += t.tal.filter(y => y.typ === 'sväng').length;
+  }
+  return svangar === 0 || `sa ${svangar} svängbeskrivningar utanför rutten`;
+});
+
+await T('nödbromsen slår till efter för många misslyckade omräkningar', () => {
+  const { n, rutt } = nyNav(bana(), { maxOmberakningar: 2, omberakningPausMs: 1000 });
+  kor(n, rutt.linje, { till: 1000 });
+  let uppgivet = 0, begaranden = 0;
+  for (let k = 0; k < 60; k++) {
+    const [lat, lon] = bredvid(rutt.linje, 1000, 100 + k * 30);
+    const ts = T0 + 200000 + k * 1500;
+    const t = n.uppdatera({ lat, lon, accuracy: 10, speedKmh: 45, ts }, ts);
+    if (t.begarOmberakning) begaranden++;
+    uppgivet += t.tal.filter(y => y.typ === 'uppgivet').length;
+  }
+  mat('nodbroms', { begaranden, uppgivet });
+  return (begaranden === 2 && uppgivet === 1) || `${begaranden} begäranden, ${uppgivet} uppgivet-besked`;
+});
+
+/* =================================================================== */
+G('Framme');
+
+await T('ankomsten känns av och sägs en gång', () => {
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { fartKmh: 50 });
+  const ank = allaTal(rader).filter(y => y.typ === 'ankomst');
+  const sist = rader[rader.length - 1];
+  mat('ankomst', { lage: sist.lage, antalBesked: ank.length, text: ank[0]?.text });
+  return (sist.lage === 'framme' && sist.framme && ank.length === 1
+    && ank[0].text.includes('Drottninggatan'))
+    || `läge ${sist.lage}, ${ank.length} ankomstbesked`;
+});
+
+await T('"du är framme" sägs inte två gånger i hög fart', () => {
+  // Framme-tröskeln (60 m) och nu-fönstret (upp till 120 m) överlappar. Utan
+  // undantaget hör föraren "Du är framme." och sedan "Du är framme vid X."
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { fartKmh: 90 });
+  const framme = allaTal(rader).filter(y => /framme/i.test(y.text) && !/Om /.test(y.text));
+  mat('frammebesked', framme.map(y => `${y.typ}: ${y.text}`));
+  return framme.length === 1 || `${framme.length} besked: ${JSON.stringify(framme.map(y => y.text))}`;
+});
+
+await T('efter ankomst sägs ingenting mer', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje);
+  const [lat, lon] = rutt.linje.pointAt(rutt.linje.lengthM);
+  const t = n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 5, ts: T0 + 900000 }, T0 + 900000);
+  return (t.tal.length === 0 && t.lage === 'framme') || `${t.tal.length} besked efter framme`;
+});
+
+await T('framme räknas även när slutpunkten ligger vid vägen', () => {
+  // OSRM slutar på gatan; bilen står på parkeringen fyrtio meter bort och det
+  // är hundrafemtio meter kvar på linjen.
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: rutt.linje.lengthM - 160 });
+  const mal = rutt.mal;
+  const t = n.uppdatera({ lat: mal.lat + 35 / M_LAT, lon: mal.lon, accuracy: 8, speedKmh: 5,
+                          ts: T0 + 800000 }, T0 + 800000);
+  return t.lage === 'framme' || `läge ${t.lage}, ${t.kvarM} m kvar`;
+});
+
+/* =================================================================== */
+G('Polisvarningarna går alltid först');
+
+await T('varje yttrande har prioritet 0 och avbryter aldrig', () => {
+  const { n, rutt, start } = nyNav();
+  const rader = kor(n, rutt.linje);
+  const alla = [...start.tal, ...allaTal(rader)];
+  const fel = alla.filter(y => y.prioritet !== NAV_PRIORITET || y.avbryt !== false);
+  mat('yttrandenTotalt', alla.length);
+  return (alla.length > 3 && fel.length === 0)
+    || `${fel.length} av ${alla.length} yttranden hade fel prioritet`;
+});
+
+await T('navigeringens prioritet ligger under polisvarningarnas', () => {
+  // rutt.js skickar förvarning på 1 och nära-varning på 2. Speaker sorterar
+  // fallande, alltså måste navigeringen ligga strikt under 1.
+  return NAV_PRIORITET < 1 || `NAV_PRIORITET är ${NAV_PRIORITET}`;
+});
+
+await T('"nu" har kortast bäst-före, "långt" längst', () => {
+  const { n, rutt } = nyNav();
+  const rader = kor(n, rutt.linje, { fartKmh: 90 });
+  const y = allaTal(rader).filter(x => x.typ === 'sväng');
+  const liv = f => { const a = y.find(x => x.fas === f); return a ? a.giltigTillTs - a.skapadTs : null; };
+  const nuLiv = liv('nu'), snartLiv = liv('snart');
+  mat('bastFore', { nu: nuLiv, snart: snartLiv });
+  if (nuLiv == null || snartLiv == null) return `saknas: nu=${nuLiv}, snart=${snartLiv}`;
+  return nuLiv < snartLiv || `nu ${nuLiv} ms, snart ${snartLiv} ms`;
+});
+
+/* =================================================================== */
+G('Kontraktet: klockan, geometrin, felen');
+
+await T('uppdatera utan tid kastar hellre än att läsa klockan själv', () => {
+  const { n } = nyNav();
+  try {
+    n.uppdatera({ lat: LAT0, lon: LON0 });
+    return 'kastade inte';
+  } catch (e) { return e instanceof TypeError || `fel typ: ${e.name}`; }
+});
+
+await T('samma indata ger samma utdata oavsett när testet körs', () => {
+  const kor1 = () => {
+    const { n, rutt } = nyNav();
+    return allaTal(kor(n, rutt.linje)).map(y => `${y.fas}:${y.text}`).join('|');
+  };
+  const a = kor1(), b = kor1();
+  return a === b || 'två körningar gav olika resultat';
+});
+
+await T('främmande geometri återanvänds i stället för att byggas om', () => {
+  const r = bana();
+  let anrop = 0;
+  const spion = {
+    lengthM: r.linje.lengthM,
+    points: r.punkter,
+    nearest: (...a) => { anrop++; return r.linje.nearest(...a); },
+    nearestBetween: (...a) => { anrop++; return r.linje.nearestBetween(...a); },
+    pointAt: (...a) => r.linje.pointAt(...a),
+  };
+  const n = new Navigering();
+  n.satt({ ...r, geometri: spion }, { nu: T0 });
+  const [lat, lon] = r.linje.pointAt(500);
+  n.uppdatera({ lat, lon, accuracy: 8, speedKmh: 50, ts: T0 + 1000 }, T0 + 1000);
+  return anrop > 0 || 'den inskickade geometrin användes aldrig';
+});
+
+await T('geometri och steg från olika rutter ger en varning', () => {
+  const r = bana();
+  // Stegen påstår 9 km, linjen är 3 km. Det är vad som händer om någon hämtar
+  // geometrin i rutt.js och svängarna här, i två separata anrop.
+  const steg = r.steg.map(s => ({ ...s, distance: s.distance * 3 }));
+  const n = new Navigering();
+  n.satt({ ...r, steg }, { nu: T0 });
+  mat('samstammighetsvarning', n.varning);
+  return !!n.varning || 'ingen varning trots 3x avvikelse i längd';
+});
+
+await T('rutt utan vägbeskrivning avvisas i stället för att navigera blint', () => {
+  const r = bana();
+  try {
+    new Navigering().satt({ ...r, steg: [] }, { nu: T0 });
+    return 'accepterade en rutt utan steg';
+  } catch (e) { return e instanceof NavigeringsFel || `fel typ: ${e.name}`; }
+});
+
+await T('tolkaOsrmRutt plattar ut legs och vänder koordinatordningen', () => {
+  const r = tolkaOsrmRutt({
+    distance: 1234, duration: 99,
+    geometry: { coordinates: [[16.5, 59.6], [16.6, 59.7]] },
+    legs: [{ steps: [{ name: 'A' }, { name: 'B' }] }, { steps: [{ name: 'C' }] }],
+  });
+  return (r.punkter[0][0] === 59.6 && r.punkter[0][1] === 16.5 && r.steg.length === 3
+    && r.distanceM === 1234) || JSON.stringify(r).slice(0, 120);
+});
+
+await T('hämtningen byter server när den första svarar 503', async () => {
+  const rorda = [];
+  const svar = {
+    code: 'Ok',
+    routes: [{
+      distance: 100, duration: 10,
+      geometry: { coordinates: [[16.5, 59.6], [16.51, 59.6]] },
+      legs: [{ steps: [{ name: 'A', distance: 100, duration: 10, maneuver: { type: 'depart' } },
+                       { name: 'A', distance: 0, duration: 0, maneuver: { type: 'arrive' } }] }],
+    }],
+  };
+  const hamta = async url => {
+    rorda.push(new URL(url).host);
+    if (rorda.length === 1) return { ok: false, status: 503 };
+    return { ok: true, json: async () => svar };
+  };
+  const r = await hamtaOsrmRutt({ lat: 59.6, lon: 16.5 }, { lat: 59.7, lon: 16.6 }, { hamta });
+  mat('serverbyte', rorda);
+  return (rorda.length === 2 && rorda[0] !== rorda[1] && r.steg.length === 2)
+    || `rörde ${JSON.stringify(rorda)}`;
+});
+
+await T('hämtningen ber alltid om steps=true', async () => {
+  let url = '';
+  const hamta = async u => { url = u; return { ok: false, status: 500 }; };
+  try { await hamtaOsrmRutt({ lat: 59.6, lon: 16.5 }, { lat: 59.7, lon: 16.6 }, { hamta, forsok: 1 }); }
+  catch {}
+  return (url.includes('steps=true') && url.includes('overview=full')) || url;
+});
+
+await T('"ingen väg dit" försöker inte om mot nästa server', async () => {
+  let anrop = 0;
+  const hamta = async () => {
+    anrop++;
+    return { ok: true, json: async () => ({ code: 'NoRoute' }) };
+  };
+  try {
+    await hamtaOsrmRutt({ lat: 59.6, lon: 16.5 }, { lat: 40, lon: -70 }, { hamta });
+    return 'kastade inte';
+  } catch (e) {
+    return (e.kod === 'ingen-vag' && anrop === 1) || `kod ${e.kod} efter ${anrop} anrop`;
+  }
+});
+
+await T('nätverksfel blir ett NavigeringsFel med kod, inte ett råtthål', async () => {
+  const hamta = async () => { throw new Error('Failed to fetch'); };
+  try {
+    await hamtaOsrmRutt({ lat: 59.6, lon: 16.5 }, { lat: 59.7, lon: 16.6 }, { hamta, forsok: 2 });
+    return 'kastade inte';
+  } catch (e) {
+    return (e instanceof NavigeringsFel && e.kod === 'nat') || `${e.name} / ${e.kod}`;
+  }
+});
+
+/* =================================================================== */
+G('Gränssnittsdata');
+
+await T('startbeskedet innehåller sträcka och restid', () => {
+  const { start } = nyNav();
+  const resa = start.tal.find(y => y.typ === 'resa');
+  mat('startbesked', start.tal.map(y => y.text));
+  return (resa && /3,0 kilometer/.test(resa.text) && /minuter/.test(resa.text))
+    || `fick "${resa?.text}"`;
+});
+
+await T('avgången sägs bara när den bär ett gatunamn', () => {
+  const r = bana();
+  r.steg[0] = { name: '', maneuver: { type: 'depart' }, distance: r.steg[0].distance,
+                duration: r.steg[0].duration };
+  const n = new Navigering();
+  const s = n.satt(r, { nu: T0 });
+  return !s.tal.some(y => y.typ === 'start') || 'sa "kör iväg" utan gatunamn';
+});
+
+await T('publikRutt ger kartan både linjen och manöverpunkterna', () => {
+  const { n, rutt } = nyNav();
+  const p = n.publikRutt();
+  const svang = p.manovrar.find(m => m.typ === 'turn');
+  const bra = p.punkter.length === rutt.punkter.length && p.manovrar.length === 3
+    && Array.isArray(svang.punkt) && nara(svang.s, 2000, 15) && svang.symbol === '↱';
+  mat('manoverpunkter', p.manovrar.map(m => ({ typ: m.typ, s: Math.round(m.s), symbol: m.symbol })));
+  return bra || JSON.stringify(p.manovrar.map(m => [m.typ, Math.round(m.s)]));
+});
+
+await T('linjeDelad() delar rutten vid bilen', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1200 });
+  const { passerad, kvar } = n.linjeDelad();
+  const skarv = passerad[passerad.length - 1];
+  const bra = skarv[0] === kvar[0][0] && skarv[1] === kvar[0][1]
+    && passerad.length + kvar.length === rutt.punkter.length + 2
+    && new Ruttlinje(passerad).lengthM > 1150;
+  mat('linjeDelad', { passerade: passerad.length, kvar: kvar.length, totalt: rutt.punkter.length });
+  return bra || `${passerad.length} + ${kvar.length} av ${rutt.punkter.length}`;
+});
+
+await T('beskriv() ger en rad som går att visa direkt', () => {
+  const { n, rutt } = nyNav();
+  kor(n, rutt.linje, { till: 1200 });
+  const s = n.beskriv();
+  mat('beskrivning', s);
+  return (/Sväng höger om/.test(s) && /kvar/.test(s) && /min/.test(s)) || `fick "${s}"`;
+});
+
+await T('omräknad rutt ger ett kort besked, inte hela resan igen', () => {
+  const { n } = nyNav();
+  const r2 = bana();
+  const s = n.satt(r2, { nu: T0 + 300000, orsak: 'omberakning' });
+  return (s.tal.length === 1 && s.tal[0].typ === 'omberaknad' && /Ny rutt/.test(s.tal[0].text))
+    || JSON.stringify(s.tal.map(y => y.text));
+});
+
+/* =================================================================== */
+const total = ok + fel + hopp;
+const s = document.getElementById('summa');
+s.textContent = `${ok} av ${total} gick igenom` +
+  (fel ? ` — ${fel} MISSLYCKADES` : '') + (hopp ? ` — ${hopp} hoppade` : '');
+s.className = fel ? 'fel' : 'ok';
+
+const m = document.createElement('pre');
+m.className = 'info';
+m.style.cssText = 'margin-top:26px;padding-top:14px;border-top:1px solid #26323f';
+m.textContent = 'Uppmätt:\n' + JSON.stringify(matt, null, 2);
+ut.appendChild(m);
+
+window.__resultat = { ok, fel, hopp, total, matt };
+</script>

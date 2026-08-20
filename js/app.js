@@ -35,7 +35,7 @@ import { Varmevakt } from './varme.js';
 import * as Kvalitet from './kvalitet.js';
 import * as Betalning from './betalning.js';
 import { PlateReader, plateSupported, visaPlat, normaliseraPlat } from './plate.js';
-import { Chatt } from './chatt.js';
+import { Chatt, UTAN_OMRADE_TEXT } from './chatt.js';
 import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
 import * as Korvanor from './korvanor.js';
@@ -3038,7 +3038,25 @@ function wireSettingsUI() {
  * annars är den självklara vägen runt regeln.
  */
 
+/**
+ * Vem som ser det man skriver.
+ *
+ * Rutkoden i sig ("r238x33") säger ingenting för en människa, så den visas
+ * aldrig. Det som betyder något är räckvidden: skriver jag här, vilka når
+ * jag? Och när appen inte vet var man är ska det stå — annars undrar man
+ * varför ingen svarar.
+ */
+function renderChattRum() {
+  const el = $('chattRum');
+  if (!el) return;
+  el.textContent = chatt.rutkod
+    ? 'Förare i din trakt, ungefär tre mil runt dig.'
+    : 'Appen vet inte var du är än, så det du skriver når alla. Slå på ' +
+      'platstjänster så hittar du dem som kör i närheten.';
+}
+
 function renderChatt() {
+  renderChattRum();
   const ul = $('chattLista');
   if (!ul) return;
   const lista = chatt.meddelanden();
@@ -3053,7 +3071,13 @@ function renderChatt() {
 
     const huvud = document.createElement('div');
     huvud.className = 'chatt-huvud';
-    huvud.innerHTML = `<b>${escapeHtml(m.visningsnamn || 'Förare')}</b><span>${tid}</span>`;
+    // Meddelanden utan område kan komma från var som helst i landet. Det ska
+    // synas, annars läser man "polis vid rondellen" och letar efter en
+    // rondell som ligger sjuttio mil bort.
+    const omradeMark = m.utanOmrade
+      ? `<span class="chatt-utan-omrade" title="Avsändaren hade ingen position">${UTAN_OMRADE_TEXT}</span>`
+      : '';
+    huvud.innerHTML = `<b>${escapeHtml(m.visningsnamn || 'Förare')}</b>${omradeMark}<span>${tid}</span>`;
 
     const text = document.createElement('p');
     text.className = 'chatt-text';

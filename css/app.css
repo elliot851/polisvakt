@@ -1367,3 +1367,16 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
    nästa gång någon skriver display på en klass. Den här regeln stänger hela
    familjen. Den ligger sist i filen med flit. */
 [hidden] { display: none !important; }
+
+/* Markering på meddelanden vars avsändare saknade position. De kan komma
+   från vilken del av landet som helst, och det ska synas — annars letar man
+   efter en rondell som ligger sjuttio mil bort. */
+.chatt-utan-omrade {
+  font-size: 11px;
+  color: #ffb020;
+  border: 1px solid rgba(255, 176, 32, .35);
+  border-radius: 6px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
