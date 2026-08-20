@@ -898,6 +898,21 @@
      man in i inställningarna. Användaren kan inte veta vilket — så vi
      erbjuder båda istället för att bara konstatera att det inte gick. -->
 
+<!-- Månadens belöning.
+     Appen lovar att de tio som rapporterar mest får nästa månad gratis.
+     Servern delar ut den; det här är beskedet till den som vann. En belöning
+     ingen märker är ingen belöning. -->
+<div class="modal" id="modalBelaning" hidden>
+  <div class="modal-card">
+    <h2 id="belaningRubrik">Du vann</h2>
+    <p id="belaningText"></p>
+    <p class="hint" id="belaningDetalj"></p>
+    <div class="modal-actions">
+      <button class="btn-primary" id="belaningStang" type="button">Tack</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="modalMic" hidden>
   <div class="modal-card">
     <h2>Slå på mikrofonen?</h2>

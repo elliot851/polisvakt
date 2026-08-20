@@ -17,7 +17,7 @@ import { RemoteControl, ACTIONS, DEFAULT_BINDINGS } from './remote.js';
 import { Stats } from './stats.js';
 import { Reputation, REWARD_TOP_N } from './reputation.js';
 import { qrToSVG } from './qr.js';
-import { CONFIG, hasBackend, applyOverrides, setAccessToken, buildDate } from './config.js';
+import { CONFIG, hasBackend, applyOverrides, setAccessToken, buildDate, apiHeaders } from './config.js';
 import { Auth, validateUsername } from './auth.js';
 import { Tour, seen as tourSeen, reset as resetTour } from './tour.js';
 import { DrivingDetector, notificationsSupported } from './driving.js';
@@ -558,6 +558,7 @@ function afterDisclaimer() {
     if (!auth.decided) auth.continueAsGuest();
     if (Install.shouldAutoShow()) setTimeout(() => openInstallGuide(true), 900);
     if (settings.wakeWord && voiceInputSupported) listener.startWakeWord();
+    visaBelaning();
     return;
   }
 
@@ -569,6 +570,7 @@ function afterDisclaimer() {
   if (!tourSeen()) { startTour(); return; }
   if (Install.shouldAutoShow()) setTimeout(() => openInstallGuide(true), 900);
   if (settings.wakeWord && voiceInputSupported) listener.startWakeWord();
+  visaBelaning();
 }
 
 /* ================= Körning och bevakningsområde ================= */
@@ -1926,6 +1928,8 @@ window.polisvakt = {
   // Läsaren skapas först när läget väljs, så den måste hämtas vid anrop.
   get plate() { return plate; },
   chatt, ljud, korvanor,
+  // Belöningsbeskedet går att provköra utan att vänta på ett månadsskifte.
+  visaBelaning,
 };
 
 /* ================= Gränssnitt ================= */
@@ -3037,6 +3041,101 @@ function wireSettingsUI() {
 }
 
 
+
+
+/* ================= Månadens belöning ================= */
+/*
+ * Appen lovar på tre ställen att de tio som rapporterar mest får nästa månad
+ * gratis. Servern delar numera ut den. Det som saknades var att vinnaren fick
+ * veta det — en belöning ingen märker är ingen belöning, och ett löfte som
+ * uppfylls tyst räknas inte av den som väntat på det.
+ *
+ * Beskedet visas en gång och kvitteras sedan, så det inte ligger och blinkar
+ * i evighet.
+ */
+
+const MANADSNAMN = ['januari', 'februari', 'mars', 'april', 'maj', 'juni', 'juli',
+                    'augusti', 'september', 'oktober', 'november', 'december'];
+
+/** '2026-07' → 'juli'. */
+function manadOrd(kod) {
+  const m = Number(String(kod || '').slice(5, 7));
+  return MANADSNAMN[m - 1] || kod;
+}
+
+/** '2026-07' → 'augusti' — månaden man faktiskt fick gratis. */
+function manadenEfter(kod) {
+  const m = Number(String(kod || '').slice(5, 7));
+  return MANADSNAMN[m % 12] || '';
+}
+
+const ORDNINGSTAL = ['', 'första', 'andra', 'tredje', 'fjärde', 'femte',
+                     'sjätte', 'sjunde', 'åttonde', 'nionde', 'tionde'];
+
+async function hamtaBelaning() {
+  if (!hasBackend()) return null;
+  try {
+    const r = await fetch(`${CONFIG.supabaseUrl}/rest/v1/rpc/min_belaning`, {
+      method: 'POST',
+      headers: { ...apiHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_device: deviceId() }),
+    });
+    if (!r.ok) return null;
+    const rader = await r.json();
+    return (Array.isArray(rader) ? rader : []).find(x => x && !x.kvitterad) || null;
+  } catch (e) {
+    /*
+     * Ett nätfel här får aldrig störa något — beskedet kommer nästa gång.
+     * Men felet ska SYNAS i konsolen, inte försvinna.
+     *
+     * Första versionen svalde allt tyst, och det dolde en ren tabbe: jag
+     * använde apiHeaders utan att importera den. Anropet gick aldrig iväg,
+     * funktionen returnerade null, och allt såg lugnt ut. Ett catch som
+     * fångar programmeringsfel lika tyst som nätfel gör felsökning omöjlig.
+     */
+    console.warn('Kunde inte hämta månadsbelöningen:', e.message);
+    return null;
+  }
+}
+
+async function kvitteraBelaning(manad) {
+  try {
+    await fetch(`${CONFIG.supabaseUrl}/rest/v1/rpc/kvittera_belaning`, {
+      method: 'POST',
+      headers: { ...apiHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_manad: manad, p_device: deviceId() }),
+    });
+  } catch {}
+}
+
+async function visaBelaning() {
+  const rad = await hamtaBelaning();
+  const ruta = $('modalBelaning');
+  if (!rad || !ruta) return;
+
+  const plats = ORDNINGSTAL[rad.placering] || `${rad.placering}:e`;
+  $('belaningRubrik').textContent = `Du kom ${plats} i ${manadOrd(rad.manad)}.`;
+  $('belaningText').textContent =
+    `${versal(manadenEfter(rad.manad))} är gratis. Prenumerationen är redan ` +
+    `förlängd — du behöver inte göra något.`;
+
+  // Siffrorna som avgjorde. Utan dem är det bara ett påstående.
+  $('belaningDetalj').textContent =
+    `${rad.rapporter} rapporter, ${rad.poang} poäng. ` +
+    (rad.gratis_till
+      ? `Betald till ${new Date(rad.gratis_till).toLocaleDateString('sv-SE')}.`
+      : '');
+
+  ruta.hidden = false;
+  ljud.bekrafta();
+
+  $('belaningStang').onclick = async () => {
+    ruta.hidden = true;
+    await kvitteraBelaning(rad.manad);
+  };
+}
+
+const versal = s => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /* ================= Navigering ================= */
 /*
