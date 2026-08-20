@@ -3237,15 +3237,48 @@ function wireSettingsUI() {
   renderWinterStatus();
   wireGroups();
   renderDriveStatus();
-  const renderNotify = () => {
+  /*
+   * Varför notisläget räknas ut på ett ställe och inte två.
+   *
+   * Den här rutan sa förut "Den här webbläsaren stödjer inte notiser" på en
+   * iPhone som stödjer notiser alldeles utmärkt. Felet var inte upptäckten
+   * utan att den gjordes två gånger: push.js har capabilities() som skiljer
+   * på "för gammal iOS", "ligger inte på hemskärmen" och "fel webbläsare" —
+   * och den här rutan använde den inte, utan sin egen platta lista där allt
+   * som inte var granted/denied/default blev "stödjer inte".
+   *
+   * Det gjorde felet omöjligt att ta sig ur. På iPhone saknas Notification
+   * i en vanlig Safari-flik, så permission blev 'unsupported', texten blev
+   * "stödjer inte" och knappen doldes — samtidigt som reglaget nedanför
+   * hänvisade till just den dolda knappen. Två rader som pekade på varandra
+   * och en användare utan någonstans att trycka. Den riktiga åtgärden, lägg
+   * appen på hemskärmen, nämndes ingenstans trots att push.js kunde säga
+   * exakt det.
+   *
+   * Nu är capabilities() enda källan, och båda ställena läser samma svar.
+   */
+  const notisLage = () => {
     const p = driving.permission;
-    $('notifyStatus').textContent = {
-      granted: 'Notiser tillåtna. Appen kan påminna dig innan du brukar köra.',
-      denied: 'Notiser nekade. Tillåt dem i telefonens inställningar för appen.',
-      default: 'Inte tillfrågad än.',
-      unsupported: 'Den här webbläsaren stödjer inte notiser.',
-    }[p] || '';
-    $('btnNotify').hidden = p === 'granted' || p === 'unsupported';
+    if (p === 'granted') {
+      return { kanFraga: false, blockerad: false,
+        text: 'Notiser tillåtna. Appen kan påminna dig innan du brukar köra.' };
+    }
+    if (p === 'denied') {
+      return { kanFraga: false, blockerad: true,
+        text: 'Notiser nekade. Tillåt dem i telefonens inställningar för appen.' };
+    }
+    // Kvar: 'default' och 'unsupported'. Fråga push.js vad som gäller innan
+    // vi påstår något — 'unsupported' betyder nästan alltid något åtgärdbart.
+    const k = Push.capabilities();
+    if (!k.supported) return { kanFraga: false, blockerad: true, text: k.reason, fix: k.fix };
+    return { kanFraga: true, blockerad: true, text: 'Inte tillfrågad än.' };
+  };
+
+  const renderNotify = () => {
+    const l = notisLage();
+    $('notifyStatus').textContent = l.text;
+    $('btnNotify').hidden = !l.kanFraga;
+    renderGruppnotis();
   };
   $('btnNotify').onclick = async () => {
     const ok = await driving.requestPermission();
@@ -3263,25 +3296,52 @@ function wireSettingsUI() {
    * ut medan servern säger nej är värre än en som är av: man slutar undra
    * varför inga notiser kommer.
    */
+  /*
+   * Reglaget stängs av när notiser inte går att få, i stället för att stå
+   * påslagbart och tyst misslyckas. Ett reglage man kan dra men som far
+   * tillbaka lär användaren att appen är trasig; ett gråat reglage med en
+   * mening om varför lär hen vad som ska göras.
+   *
+   * Funktionsdeklaration, inte const: renderNotify() anropar den och körs
+   * längre upp i samma block.
+   */
+  function renderGruppnotis() {
+    const box = $('setGruppnotiser');
+    if (!box) return;
+    const l = notisLage();
+    box.disabled = l.blockerad;
+    if (l.blockerad) box.checked = false;
+    const status = $('gruppnotisStatus');
+    if (!status || status.dataset.egen === '1') return;
+    status.textContent = l.blockerad
+      ? (l.kanFraga ? 'Tillåt notiser först — knappen ovanför.' : l.text)
+      : (Push.harGruppnotiser() ? 'På. Du får en notis när det kommit nya inlägg.' : 'Av.');
+  }
+
   const gnBox = $('setGruppnotiser');
   if (gnBox) {
     gnBox.checked = Push.harGruppnotiser();
     gnBox.onchange = async () => {
       const vill = gnBox.checked;
+      const status = $('gruppnotisStatus');
       const ok = await Push.sattGruppnotiser(vill);
+      // Egen text vinner över den automatiska tills nästa omritning, annars
+      // skulle "Kunde inte nå servern" skrivas över direkt av "Av."
+      status.dataset.egen = '1';
       if (!ok) {
         gnBox.checked = !vill;
-        $('gruppnotisStatus').textContent =
+        status.textContent =
           Push.permission() === 'granted'
             ? 'Kunde inte nå servern. Prova igen.'
             : 'Tillåt notiser först — knappen ovanför.';
         return;
       }
-      $('gruppnotisStatus').textContent = vill
+      status.textContent = vill
         ? 'På. Du får en notis när det kommit nya inlägg.'
         : 'Av.';
     };
   }
+  renderGruppnotis();
 
   /* ---- Rapportpoäng ---- */
   $('btnRepSave').onclick = async () => {
