@@ -35,6 +35,16 @@
   <b>varje</b> anrop. Ingenting går till nätet, ingenting går till databasen —
   sista gruppen längst ner mäter det i stället för att lova det.
 </p>
+<p class="sub">
+  <b>DOM:en nedan är ombyggd efter en mätning mot den riktiga gruppsidan.</b>
+  Den förra versionen svepte in varje inlägg i <code>div[role="article"]</code>.
+  Det stämmer inte: på den riktiga sidan matchade den väljaren fyra element och
+  <b>alla fyra var kommentarer</b>. Inläggen bärs av
+  <code>[data-ad-rendering-role="story_message"]</code> (7 träffar), tidsstämpeln
+  är antingen teckenspann med slumpad CSS-order eller en SVG-sprite utan ett
+  enda tecken, och permalänken finns bara på 1 av 7 inlägg. Testflödet härmar
+  allt det — annars är grönt här värdelöst, vilket det bevisligen var.
+</p>
 <div id="summa">Kör…</div>
 <div id="ut"></div>
 
@@ -115,44 +125,166 @@ const PLATSER = [
 
 const INOM = (lat, lon) => lon >= 15.10 && lon <= 17.30 && lat >= 59.30 && lat <= 60.30;
 
-/* ---- Ett inlägg i flödet, byggt av riktiga DOM-noder ---------------- */
-function artikel(p) {
-  const a = document.createElement('div');
-  a.setAttribute('role', 'article');
+/* ---- Ett inlägg i flödet, byggt av riktiga DOM-noder ----------------
+ *
+ * DEN HÄR DELEN BYGGDES OM EFTER EN MÄTNING MOT DEN RIKTIGA GRUPPSIDAN.
+ *
+ * Den gamla versionen svepte in varje inlägg i div[role="article"] och
+ * lade texten i en meddelandenod direkt under den. Båda delarna var fel,
+ * och därför var de 74 gröna testerna gröna mot fel verklighet:
+ *
+ *   • På /groups/317968668373072/ matchade div[role="article"] fyra
+ *     element och alla fyra var KOMMENTARER. Inläggen har ingen article
+ *     alls. Bryggan läste alltså noll inlägg på riktigt.
+ *   • Meddelandet bärs av [data-ad-rendering-role="story_message"] (7
+ *     träffar), och ligger tre nivåer under en behållare som också bär
+ *     författarnamn, tidsstämpel och ibland permalänk. Behållaren låg på
+ *     djup 16, med [role="feed"] direkt ovanför.
+ *   • Behållarens innerText börjar med rader som bara säger "Facebook".
+ *   • Tidsstämpeln är aldrig vanlig text. Antingen teckenspann med slumpad
+ *     CSS-order och ett femtiotal lockbetestecken utanför den klippta
+ *     rutan, eller en SVG-sprite utan ett enda tecken.
+ *
+ * Allt det speglas nedan. Gör det inte det är grönt värdelöst igen.
+ */
 
-  if (p.id || (p.alder && !p.ravy)) {
-    const huvud = document.createElement('div');
-    const lank = document.createElement('a');
-    lank.setAttribute('href', p.id ? `/groups/${GRUPP}/posts/${p.id}/` : '#');
-    if (p.alder) lank.setAttribute('aria-label', p.alder);
-    lank.textContent = p.alder || 'Anna Andersson';
-    huvud.appendChild(lank);
-    a.appendChild(huvud);
+const LOCKBETESRADER = 3;        // på riktigt låg de åtta i rad
+
+function tidsAnkare(p, behallare) {
+  const a = document.createElement('a');
+  a.setAttribute('href', '?__cft__[0]=AZ' + (p.id || 'x'));
+  a.setAttribute('role', 'link');
+
+  if (p.tid === 'sprite') {
+    // Facebooks hårdaste läge: tiden ritas som en SVG-sprite. Noll tecken,
+    // ingen aria-label, ingen title. 5 av 7 riktiga inlägg låg så här, och
+    // det är läget nya inlägg hamnar i eftersom de renderas på klienten.
+    a.style.cssText = 'display:inline-block;width:17px;height:18px';
+    const s = document.createElement('span');
+    s.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
+    a.appendChild(s);
+
+  } else if (p.tid === 'spann') {
+    // Ett tecken per span, slumpad CSS-order, U+034F inklistrat i varje, och
+    // lockbetestecken som ligger utanför ankarets överflow:hidden-ruta.
+    // innerText ger skräp. Enda vägen in är geometrin.
+    const bredd = [...p.alder].length * 6;
+    a.style.cssText = 'display:inline-block;position:relative;overflow:hidden;' +
+      'width:' + bredd + 'px;height:18px;font:12px/18px monospace';
+    const rad = document.createElement('span');
+    rad.style.cssText = 'display:flex;width:1200px;height:18px';
+    const bitar = [...p.alder].map((ch, i) => ({ ch, order: i }));
+    for (let i = 0; i < 50; i++) bitar.push({ ch: 'qwertyuio9873'[i % 13], order: 40 + i });
+    // DOM-ordningen blandas med flit: koden får inte lita på den.
+    for (let i = bitar.length - 1; i > 0; i--) {
+      const j = (i * 7 + 3) % (i + 1);
+      [bitar[i], bitar[j]] = [bitar[j], bitar[i]];
+    }
+    for (const b of bitar) {
+      const s = document.createElement('span');
+      s.style.cssText = 'display:block;flex:0 0 6px;width:6px;height:18px;order:' + b.order;
+      // U+034F combining grapheme joiner, precis som Facebook klistrar in
+      s.textContent = b.ch + String.fromCharCode(0x034F);
+      rad.appendChild(s);
+    }
+    a.appendChild(rad);
+
+  } else {
+    a.textContent = p.alder;
   }
 
+  if (p.hovertid) {
+    // Hovring lägger upp ett [role="tooltip"] med hela datumet i klartext.
+    // Uppmätt på riktigt: "Onsdag 19 augusti 2026 kl. 16:59".
+    a.addEventListener('mouseover', () => {
+      if (behallare.querySelector('.pv-tips')) return;
+      const t = document.createElement('div');
+      t.className = 'pv-tips';
+      t.setAttribute('role', 'tooltip');
+      t.textContent = p.hovertid;
+      behallare.appendChild(t);
+    });
+    const bort = () => { for (const t of behallare.querySelectorAll('.pv-tips')) t.remove(); };
+    a.addEventListener('mouseout', bort);
+    a.addEventListener('mouseleave', bort);
+  }
+  return a;
+}
+
+function inlagg(rp, behallare) {
+  const p = Object.assign({ tid: 'text', alder: '5 min' }, rp);
+  const skal = document.createElement('div');
+
+  const huvud = document.createElement('div');
+  for (let i = 0; i < LOCKBETESRADER; i++) {
+    const d = document.createElement('div');
+    d.textContent = 'Facebook';               // Metas lockbete i innerText
+    huvud.appendChild(d);
+  }
+  const forfLank = document.createElement('a');
+  forfLank.setAttribute('href', `/groups/${GRUPP}/user/100055728692844/?__cft__[0]=AZ`);
+  forfLank.textContent = p.forfattare || 'Anna Andersson';
+  huvud.appendChild(forfLank);
+  const namn = document.createElement('div');
+  namn.setAttribute('data-ad-rendering-role', 'profile_name');
+  namn.textContent = p.forfattare || 'Anna Andersson';
+  huvud.appendChild(namn);
+  if (p.tid !== 'ingen') huvud.appendChild(tidsAnkare(p, behallare));
+  skal.appendChild(huvud);
+
+  // Meddelandet ligger tre nivåer under behållaren, som på riktigt.
+  const n1 = document.createElement('div');
+  const n2 = document.createElement('div');
+  const m = document.createElement('div');
+  m.setAttribute('data-ad-rendering-role', 'story_message');
+  if (!p.ravy) m.textContent = p.text;
+  n2.appendChild(m); n1.appendChild(n2); skal.appendChild(n1);
+
   if (p.ravy) {
-    // Meta har bytt attributnamn: ingen meddelandebehållare, bara rader.
-    for (const r of [p.forfattare || 'Anna Andersson', p.alder || '12 min',
+    // Meta har bytt attributnamn på texten: meddelandenoden finns men är
+    // tom. Då måste reservläsningen ta behållaren och rensa den.
+    for (const r of ['Facebook', p.forfattare || 'Anna Andersson', p.alder,
                      p.text, 'Gilla', 'Kommentera', 'Dela']) {
       const d = document.createElement('div');
       d.textContent = r;
-      a.appendChild(d);
+      skal.appendChild(d);
     }
-  } else {
-    const m = document.createElement('div');
-    m.setAttribute('data-ad-comet-preview', 'message');
-    m.textContent = p.text;
-    a.appendChild(m);
+  }
+
+  // Permalänken finns bara ibland — 1 av 7 på riktigt, och då för att
+  // kommentarerna var utfällda.
+  if (p.id && p.permalank !== false) {
+    const l = document.createElement('a');
+    l.setAttribute('href', `/groups/${GRUPP}/posts/${p.id}/?__cft__[0]=AZ`);
+    l.textContent = '3 kommentarer';
+    skal.appendChild(l);
   }
 
   if (p.kommentar) {
-    // Kommentarer är också div[role="article"], men ligger inuti inlägget.
+    // Kommentarer — och BARA kommentarer — är div[role="article"].
+    // Här får kommentaren dessutom en egen meddelandenod och egen
+    // tidsstämpel, hårdare än verkligheten, just för att bevisa att
+    // kommentarsfiltret bär.
     const k = document.createElement('div');
     k.setAttribute('role', 'article');
-    k.textContent = p.kommentar;
-    a.appendChild(k);
+    const kn = document.createElement('div');
+    kn.setAttribute('data-ad-rendering-role', 'profile_name');
+    kn.textContent = 'Arto Häkkinen';
+    k.appendChild(kn);
+    const km = document.createElement('div');
+    km.setAttribute('data-ad-rendering-role', 'story_message');
+    km.textContent = p.kommentar;
+    k.appendChild(km);
+    const ka = document.createElement('a');
+    ka.setAttribute('href', '?__cft__[0]=KOMMENTAR');
+    ka.textContent = '40 v';                  // ska aldrig bli inläggets tid
+    k.appendChild(ka);
+    const ks = document.createElement('div');
+    ks.textContent = 'Svara';
+    k.appendChild(ks);
+    skal.appendChild(k);
   }
-  return a;
+  return skal;
 }
 
 /* ---- Miljön skriptet får leva i ------------------------------------- */
@@ -160,17 +292,30 @@ function bygg({
   groupId = GRUPP,
   sokvag = '/groups/' + GRUPP + '/',
   dryRun = false,
+  hoverForTime = true,
   poster = [],
   cache = {},
   struntaIBounded = false,
   nominatimFel = false,
 } = {}) {
   const behallare = document.createElement('div');
-  // Måste renderas — innerText finns inte i en display:none-gren, och det är
-  // innerText hela läsningen bygger på. Alltså utanför skärmen, inte gömd.
+  // Måste renderas — innerText finns inte i en display:none-gren, och sedan
+  // tidsstämpeln visade sig vara geometriskt kodad krävs riktig layout också.
+  // Alltså utanför skärmen, inte gömd.
   behallare.style.cssText = 'position:fixed;left:-99999px;top:0;width:640px;';
-  for (const p of poster) behallare.appendChild(artikel(p));
+
+  const flode = document.createElement('div');
+  flode.setAttribute('role', 'feed');
+  // Skräp som ligger i flödet men utanför inläggen. Behållarregeln måste
+  // stanna vid [role="feed"] — gör den inte det sväljer ett ensamt inlägg
+  // hela flödet, och då dyker den här texten upp i rapporten.
+  const komponera = document.createElement('div');
+  komponera.textContent = 'Skriv något... Poliskontroll överallt vid Bäckby';
+  flode.appendChild(komponera);
+  behallare.appendChild(flode);
   document.body.appendChild(behallare);
+
+  for (const p of poster) flode.appendChild(inlagg(p, behallare));
 
   const lagring = new Map(Object.entries(cache));
   const skrivningar = [];
@@ -248,7 +393,7 @@ function bygg({
     pathname: sokvag,
     href: 'http://polisvakt-test.local' + sokvag,
   };
-  const fejkFonster = { __pvBryggaConfig: { groupId, dryRun } };
+  const fejkFonster = { __pvBryggaConfig: { groupId, dryRun, hoverForTime } };
 
   const kor = new Function(
     'window', 'document', 'location', 'localStorage', 'fetch', 'console',
@@ -259,6 +404,7 @@ function bygg({
   return {
     fonster: fejkFonster,
     handtag: fejkFonster.__polisvakt,
+    behallare,
     natverk, supabase, nominatim, konsol, lagring, skrivningar,
     timers, intervaller, observatorer,
     konsoltext: () => konsol.map(r => r.text).join('\n'),
@@ -297,6 +443,29 @@ await T('matchar bara facebook.com', () => {
 });
 await T('inga import/export — går att klistra in i Tampermonkey', () =>
   !/^\s*(import|export)\s/m.test(KALLA) || 'filen har blivit en modul');
+await T('inläggen förankras på meddelandeväljaren, inte på role="article"', () => {
+  // Mätt: div[role="article"] matchade 4 element på den riktiga gruppsidan
+  // och alla fyra var kommentarer. Itererar filen dem igen är den trasig.
+  if (/querySelectorAll\(\s*['"]div\[role="article"\]/.test(KALLA))
+    return 'filen itererar div[role="article"] igen';
+  if (!/data-ad-rendering-role="story_message"/.test(KALLA))
+    return 'story_message-väljaren saknas';
+  return /closest\(\s*['"]div\[role="article"\]/.test(KALLA)
+    || 'role="article" används inte längre ens som kommentarsfilter';
+});
+
+await T('den döda väljaren post_message är borttagen', () => {
+  // 0 träffar på den riktiga sidan. En död väljare som ligger kvar tvingar
+  // nästa mätning att utesluta den en gång till.
+  // Kommentarsrader får nämna den — mätvärdet ska stå kvar i filen så att
+  // nästa läsare slipper mäta om. Kod får den inte stå i.
+  const kvar = KALLA.split('\n')
+    .filter(r => /data-testid="post_message"/.test(r))
+    .map(r => r.trim())
+    .filter(r => !/^(\/\/|\*|\/\*)/.test(r));
+  return kvar.length === 0 || 'lever kvar: ' + JSON.stringify(kvar);
+});
+
 await T('testkroken kan inte användas på facebook.com', () => {
   // Skriptet körs med @grant none, alltså i sidans värld. Kunde Facebooks
   // egen kod sätta __pvBryggaConfig vore konfigurationen deras.
@@ -752,20 +921,69 @@ await T('negativ cache slår inte upp platsen igen', async () => {
 /* =================================================================== */
 G('Läsningen av flödet');
 
-await T('kommentarer inuti ett inlägg blir inte egna rapporter', async () => {
+await T('inläggen har INGEN role="article" — testflödet speglar den riktiga sidan', async () => {
+  const m = bygg({ groupId: GRUPP, poster: [POLIS] });
+  // Om testets DOM smyger tillbaka en article runt inlägget är hela svepet
+  // värdelöst igen. Enda articlen som får finnas är en kommentar.
+  const n = m.fonster.__polisvakt ? m.handtag.peek().length : -1;
+  const artiklar = m.behallare.querySelectorAll('div[role="article"]').length;
+  m.stang();
+  if (artiklar !== 0) return `${artiklar} role="article" runt inläggen`;
+  return n === 1 || `läste ${n} inlägg`;
+});
+
+await T('kommentarer blir inte egna rapporter (de ÄR role="article")', async () => {
   const m = await skanna({
     groupId: GRUPP,
     poster: [{ text: 'Polis står vid Erikslund', id: '960001',
                kommentar: 'Nykterhetskontroll vid Bäckby också' }],
   });
   const rapporter = m.supabase.map(a => a.kropp);
-  const peek = m.handtag.peek().length;
+  const lasta = m.handtag.peek();
   m.stang();
-  if (peek !== 1) return `läste ${peek} inlägg, väntade 1`;
+  if (lasta.length !== 1) return `läste ${lasta.length} inlägg, väntade 1: ` +
+    JSON.stringify(lasta.map(x => x.text.slice(0, 40)));
+  if (/Bäckby|Häkkinen|Svara/.test(lasta[0].text)) return 'kommentarstext läckte in: ' + lasta[0].text;
   return rapporter.length === 1 || `${rapporter.length} rapporter`;
 });
+anm('Kommentaren i testet har egen meddelandenod, eget profile_name och egen ' +
+    'tidsstämpel — hårdare än den riktiga sidan, där kommentarerna bara hade ' +
+    'role="article". Bär filtret här bär det där.');
 
-await T('reservläsningen tar bort författarnamn, tider och knappar', async () => {
+await T('kommentarens tidsstämpel blir aldrig inläggets', async () => {
+  const m = await skanna({
+    groupId: GRUPP,
+    poster: [{ text: 'Trafikkontroll vid Hälla', id: '960002', alder: '5 min',
+               kommentar: 'Stod där i fjol också' }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  const p = m.handtag.peek()[0];
+  m.stang();
+  if (!p) return 'inget inlägg lästes';
+  const alderMin = (Date.now() - p.postedAt) / 60000;
+  // Kommentaren säger "40 v". Tas den ligger inlägget långt utanför sin TTL.
+  if (alderMin > 60) return `läste ${Math.round(alderMin)} min — kommentarens tid`;
+  return !!r || 'inget skickades trots färskt inlägg';
+});
+
+await T('behållarregeln klättrar inte förbi [role="feed"]', async () => {
+  // Ett enda inlägg i flödet: utan feed-spärren skulle klättringen fortsätta
+  // uppåt och svälja komponeringsrutans text ("Poliskontroll överallt vid
+  // Bäckby"), som ligger i flödet men utanför inlägget.
+  const m = await skanna({
+    groupId: GRUPP,
+    poster: [{ text: 'Polis står vid Erikslund', id: '960007', alder: '4 min' }],
+  });
+  const p = m.handtag.peek()[0];
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  m.stang();
+  if (!p) return 'inget inlägg lästes';
+  if (/överallt|Skriv något/.test(p.text)) return 'svalde flödet: ' + p.text;
+  return (r && /Erikslund/i.test(r.label)) || 'fick ' + JSON.stringify(r && r.label);
+});
+
+await T('reservläsningen tar bort lockbeten, författarnamn, tider och knappar', async () => {
+  // Meddelandenoden finns men är tom — Meta har bytt attributnamn på texten.
   const m = await skanna({
     groupId: GRUPP,
     poster: [{ ravy: true, forfattare: 'Anna Andersson', alder: '9 min',
@@ -775,9 +993,12 @@ await T('reservläsningen tar bort författarnamn, tider och knappar', async () 
   const r = m.supabase[0] && m.supabase[0].kropp;
   m.stang();
   if (texter.length !== 1) return 'läste ' + JSON.stringify(texter);
-  if (/Anna|Gilla|Kommentera|9 min/.test(texter[0])) return 'skräp kvar: ' + texter[0];
+  if (/Facebook|Anna|Gilla|Kommentera|9 min/.test(texter[0])) return 'skräp kvar: ' + texter[0];
   return (r && r.type === 'control' && /Hälla/i.test(r.label)) || 'fick ' + JSON.stringify(r);
 });
+anm('"Facebook" på egen rad är inte påhittat: behållarens innerText på den riktiga ' +
+    'sidan började med åtta sådana rader i följd, från synliga men innehållslösa ' +
+    'spann. En reservläsning som inte kastar dem matar parsern med Metas skräp.');
 
 await T('gammalt inlägg blir ingen varning', async () => {
   const m = await skanna({
@@ -832,6 +1053,186 @@ await T('raden som skickas har rätt fält', async () => {
   if (!/on_conflict=external_id/.test(url)) fel.push('saknar on_conflict i URL');
   if (!r.id || String(r.id).length < 8) fel.push('id=' + r.id);
   return fel.length === 0 || fel.join(', ');
+});
+
+/* =================================================================== */
+G('Tidsstämpeln — den avgör om en varning är färsk');
+
+const tolka = (await med({ groupId: GRUPP }, m => m.handtag.tolkaTid));
+
+const tider = [
+  ['13 tim', 13 * 60, 'relativt, timmar'],
+  ['45 min', 45, 'relativt, minuter'],
+  ['6 d', 6 * 24 * 60, 'relativt, dygn'],
+  ['2 v', 14 * 24 * 60, 'relativt, veckor'],
+  ['1 tim', 60, 'en timme'],
+  ['Just nu', 0, 'just nu'],
+  ['Nyss', 0, 'nyss'],
+];
+for (const [text, minuter, varfor] of tider) {
+  await T(`tolkar "${text}" (${varfor})`, () => {
+    const t = tolka(text);
+    if (t == null) return 'gav null';
+    const fick = Math.round((Date.now() - t) / 60000);
+    return Math.abs(fick - minuter) <= 1 || `${fick} min, väntade ${minuter}`;
+  });
+}
+
+await T('tolkar hovringens absoluta datum ("Onsdag 19 augusti 2026 kl. 16:59")', () => {
+  const t = tolka('Onsdag 19 augusti 2026 kl. 16:59');
+  if (t == null) return 'gav null';
+  const d = new Date(t);
+  return (d.getFullYear() === 2026 && d.getMonth() === 7 && d.getDate() === 19 &&
+          d.getHours() === 16 && d.getMinutes() === 59) || 'fick ' + d.toString();
+});
+
+await T('datum utan årtal i framtiden räknas som förra året', () => {
+  const nasta = new Date(Date.now() + 40 * 86400000);
+  const namn = ['januari','februari','mars','april','maj','juni','juli','augusti',
+                'september','oktober','november','december'][nasta.getMonth()];
+  const t = tolka(`${nasta.getDate()} ${namn} kl. 12:00`);
+  if (t == null) return 'gav null';
+  return t < Date.now() || 'hamnade i framtiden: ' + new Date(t).toString();
+});
+
+await T('skräp ger null, inte ett påhittat datum', () => {
+  const skrap = ['', 'Gilla', 'Anna Andersson', '3 kommentarer', 'sepnodorSt0i5513h16mti',
+                 'Facebook', '12 delningar', '4 visningar'];
+  const fel = skrap.filter(s => tolka(s) != null);
+  return fel.length === 0 || 'tolkade ' + JSON.stringify(fel);
+});
+anm('"sepnodorSt0i5513h16mti…" är inte påhittat skräp: det är exakt vad innerText ' +
+    'gav på ett riktigt tidsstämpelankare. Facebook lägger ett tecken per span med ' +
+    'slumpad CSS-order och ett femtiotal lockbetestecken. En parser som tolkar den ' +
+    'strängen hittar på en ålder.');
+
+await T('teckenspann läses geometriskt, inte som text', async () => {
+  const m = await skanna({
+    groupId: GRUPP,
+    poster: [{ text: 'Trafikkontroll vid Hälla', id: '970001', tid: 'spann', alder: '12 min' }],
+  });
+  const p = m.handtag.peek()[0];
+  const rå = p && p.tidsAnkare ? (p.tidsAnkare.innerText || '').trim() : '';
+  const synlig = p && p.tidsAnkare ? m.handtag.synligText(p.tidsAnkare) : '';
+  m.stang();
+  if (!p) return 'inget inlägg lästes';
+  if (rå === '12 min') return 'testets DOM var för snäll — innerText gav rätt svar direkt';
+  if (synlig !== '12 min') return `synligText gav "${synlig}", innerText gav "${rå}"`;
+  const alder = Math.round((Date.now() - p.postedAt) / 60000);
+  return alder === 12 || `ålder ${alder} min`;
+});
+
+await T('SVG-sprite utan hovring: ingen tid går att läsa', async () => {
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    poster: [{ text: 'Polis står vid Erikslund', id: '970002', tid: 'sprite' }],
+  });
+  const p = m.handtag.peek()[0];
+  const n = m.supabase.length;
+  const s = m.handtag.stats();
+  const txt = m.konsoltext();
+  m.stang();
+  if (!p) return 'inget inlägg lästes alls';
+  if (p.postedAt != null) return 'hittade en tid som inte finns: ' + p.postedAt;
+  if (n !== 0) return `${n} rapporter skickades utan känd ålder`;
+  if (s.utanTid !== 1) return 'räknade utanTid=' + s.utanTid;
+  return /går inte att läsa/.test(txt) || 'inget sades i konsolen: ' + txt;
+});
+anm('DET HÄR ÄR FELET SOM MÄTNINGEN HITTADE. Förut översattes "ingen läsbar tid" till ' +
+    'Date.now(), alltså "skrivet just nu". På den riktiga sidan gick tiden inte att ' +
+    'läsa på 5 av 7 inlägg, och nya inlägg — precis de bryggan finns till för — ' +
+    'hamnar alltid i SVG-sprite-läget. Ett tre dygn gammalt laserinlägg blev en färsk ' +
+    'varning på kartan.');
+
+await T('SVG-sprite MED hovring: datumet kommer ur verktygstipset', async () => {
+  const nyss = new Date(Date.now() - 7 * 60000);
+  const namn = ['januari','februari','mars','april','maj','juni','juli','augusti',
+                'september','oktober','november','december'][nyss.getMonth()];
+  const tips = `Onsdag ${nyss.getDate()} ${namn} ${nyss.getFullYear()} kl. ` +
+    String(nyss.getHours()).padStart(2, '0') + ':' + String(nyss.getMinutes()).padStart(2, '0');
+  const m = await skanna({
+    groupId: GRUPP,
+    poster: [{ text: 'Trafikkontroll vid Hälla', id: '970003', tid: 'sprite', hovertid: tips }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  m.stang();
+  if (!r) return 'inget skickades trots att tipset fanns';
+  const alder = Math.round((Date.now() - r.created_at) / 60000);
+  return (alder >= 6 && alder <= 8) || `ålder ${alder} min, väntade 7`;
+});
+
+await T('verktygstipset städas bort — nästa inlägg ärver inte tiden', async () => {
+  const m = await skanna({
+    groupId: GRUPP,
+    poster: [
+      { text: 'Trafikkontroll vid Hälla', id: '970004', tid: 'sprite',
+        hovertid: 'Onsdag 19 augusti 2026 kl. 16:59' },
+      { text: 'Polis står vid Erikslund', id: '970005', tid: 'sprite' },
+    ],
+  });
+  const kvar = m.behallare.querySelectorAll('[role="tooltip"]').length;
+  const s = m.handtag.stats();
+  m.stang();
+  if (kvar !== 0) return `${kvar} verktygstips ligger kvar på skärmen`;
+  // Det andra inlägget har inget tips och får därför ingen tid alls.
+  return s.utanTid === 1 || 'räknade utanTid=' + s.utanTid;
+});
+
+await T('hoverForTime: false rör inte muspekaren alls', async () => {
+  let hovrat = 0;
+  const m = bygg({
+    groupId: GRUPP, hoverForTime: false,
+    poster: [{ text: 'Polis står vid Erikslund', id: '970006', tid: 'sprite' }],
+  });
+  for (const a of m.behallare.querySelectorAll('a')) {
+    a.addEventListener('mouseover', () => hovrat++);
+    a.addEventListener('pointerover', () => hovrat++);
+  }
+  await m.handtag.scanNow();
+  const n = m.supabase.length;
+  m.stang();
+  if (hovrat !== 0) return `${hovrat} hovringar trots avstängt läge`;
+  return n === 0 || `${n} rapporter`;
+});
+
+await T('oläsbar tid bockas inte av som klar — den får försöka igen', async () => {
+  const m = await skanna({
+    groupId: GRUPP, hoverForTime: false,
+    poster: [{ text: 'Polis står vid Erikslund', id: '970007', tid: 'sprite' }],
+  });
+  const seen = JSON.parse(m.lagring.get('pv.fb.seen.v2') || '{}');
+  const rad = seen['id:970007'];
+  m.stang();
+  return (rad && rad.tries === 1 && !rad.done) || 'minneslistan säger ' + JSON.stringify(rad);
+});
+
+await T('nykterhetsinlägg hovras aldrig — det kastas före tidsfrågan', async () => {
+  let hovrat = 0;
+  const m = bygg({
+    groupId: GRUPP,
+    poster: [{ text: 'Alkohol kontroll vid Erikslund', id: '970008', tid: 'sprite',
+               hovertid: 'Onsdag 19 augusti 2026 kl. 16:59' }],
+  });
+  for (const a of m.behallare.querySelectorAll('a')) a.addEventListener('mouseover', () => hovrat++);
+  await m.handtag.scanNow();
+  const s = m.handtag.stats(), n = m.natverk.length;
+  m.stang();
+  if (hovrat !== 0) return `${hovrat} hovringar på ett vägrat inlägg`;
+  return (s.refused === 1 && n === 0) || `refused=${s.refused}, ${n} nätanrop`;
+});
+
+await T('gammalt men läsbart datum ger fortfarande ingen varning', async () => {
+  // Tre dygn tillbaka, räknat från idag så testet inte ruttnar med kalendern.
+  const d = new Date(Date.now() - 3 * 86400000);
+  const namn = ['januari','februari','mars','april','maj','juni','juli','augusti',
+                'september','oktober','november','december'][d.getMonth()];
+  const tips = `Måndag ${d.getDate()} ${namn} ${d.getFullYear()} kl. 18:07`;
+  const m = await skanna({
+    groupId: GRUPP,
+    poster: [{ text: 'Trafikkontroll vid Hälla', id: '970009', tid: 'sprite', hovertid: tips }],
+  });
+  const n = m.supabase.length; m.stang();
+  return n === 0 || 'skickade en varning från ' + tips;
 });
 
 /* =================================================================== */

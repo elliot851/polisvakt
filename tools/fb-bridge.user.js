@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Polisvakt — Facebook-brygga
 // @namespace    polisvakt
-// @version      2.0
+// @version      2.1
 // @description  Läser nya inlägg i en Facebook-grupp du är medlem i och skickar polisvarningar vidare till Polisvakt.
 // @match        https://www.facebook.com/*
 // @match        https://m.facebook.com/*
@@ -31,6 +31,16 @@
  *   3. Det skriver till en delad databas som riktiga förare läser under
  *      körning. Kör i torrkörning tills du sett i konsolen att rätt saker
  *      plockas upp, och först då dryRun: false.
+ *   4. Fliken måste ligga i FÖRGRUNDEN, inte bara vara öppen. Facebook ritar
+ *      tidsstämpeln som en SVG-sprite på nya inlägg, och enda vägen till
+ *      åldern är att hovra den och läsa verktygstipset. Det kräver riktig
+ *      layout och otryckta timers. I en bakgrundsflik läser bryggan färre
+ *      inlägg — den hittar inte på tider, den hoppar över dem.
+ *
+ * Vill du se vad bryggan faktiskt får ut av flödet just nu:
+ *   __polisvakt.tider()   → text, id och ålder per inlägg ('OLÄSLIG' om
+ *                            tiden inte gick att läsa)
+ *   __polisvakt.peek()    → hela avläsningen
  *
  * Den hållbara vägen, om det här växer: be gruppens admin spegla inläggen
  * till en Telegram-kanal (Telegram har ett riktigt bot-API som får läsa) och
@@ -73,6 +83,19 @@
     minConfidence: 0.65,
     scanIntervalMs: 20000,
 
+    /*
+     * Facebook ritar tidsstämpeln som en SVG-sprite på inlägg som renderats
+     * på klienten — alltså på precis de nya inlägg bryggan finns till för.
+     * Där går tiden inte att läsa ur DOM:en alls. Enda vägen är att hovra
+     * tidsstämpeln, då lägger Facebook upp ett verktygstips med hela datumet.
+     *
+     * Slår du av det här läser bryggan bara de inlägg vars tid råkar stå som
+     * text. Resten hoppas över, eftersom ett inlägg utan läsbar ålder aldrig
+     * får skickas som färskt. Hovringen sker bara på inlägg som redan
+     * passerat parsern, ett i taget, och städas bort efteråt.
+     */
+    hoverForTime: true,
+
     // true = logga bara i konsolen, skriv ingenting. Börja alltid här.
     dryRun: true,
   };
@@ -103,6 +126,8 @@
   const DEDUP_WINDOW_MS = 3 * 60 * 60 * 1000;
   const MAX_TRIES = 3;                            // innan ett inlägg ges upp
   const TAG = '[Polisvakt]';
+  const HOVER_FORSOK = 12;                        // ~800 ms totalt på tipset
+  const HOVER_PAUS_MS = 70;
 
   /* ================= Parser (kopia av js/parser.js) ================= */
 
@@ -357,23 +382,47 @@
   /* ================= Läsning av flödet ================= */
 
   /*
-   * Att bara ta innerText på div[role="article"] var för trubbigt: varje
-   * kommentar är också en article, och texten kom med knappar, tidsstämplar
-   * och "Se mer" inbakat. Nu görs tre saker istället:
+   * MÄTT MOT DEN RIKTIGA GRUPPSIDAN, inte mot en påhittad DOM.
    *
-   *   1. Bara yttersta article räknas — kommentarerna ligger inuti den.
-   *   2. Texten hämtas ur Facebooks egen inläggsbehållare när den finns.
-   *      Attributnamnen byter Meta ibland, därför flera kandidater och en
-   *      textbaserad reserv.
-   *   3. Permalänken ger inläggets id, som blir stabil nyckel över omladdning.
+   * Den förra versionen itererade div[role="article"] och byggde allt på
+   * antagandet att ett inlägg är en article. Det stämmer inte. På
+   * /groups/317968668373072/ matchade div[role="article"] fyra element — och
+   * alla fyra var KOMMENTARER. Bryggan läste alltså noll inlägg och
+   * behandlade kommentarer som inlägg. Uppmätta antal på samma sida:
+   *
+   *   div[role="article"]                          4   (bara kommentarer)
+   *   [data-ad-rendering-role="story_message"]     7   (inläggen)
+   *   [data-ad-comet-preview="message"]            1
+   *   [data-ad-preview="message"]                  1
+   *   [data-testid="post_message"]                 0   (död väljare, borttagen)
+   *
+   * Alltså: meddelandeväljarna är förankringen. role="article" behålls bara
+   * som kommentarsfilter — ligger en meddelandenod inuti en article är den
+   * en kommentar, inte ett inlägg.
    */
 
   const MESSAGE_SELECTORS = [
+    '[data-ad-rendering-role="story_message"]',   // bär inläggen på riktigt
     '[data-ad-comet-preview="message"]',
     '[data-ad-preview="message"]',
-    '[data-ad-rendering-role="story_message"]',
-    '[data-testid="post_message"]',
+    // '[data-testid="post_message"]' är borta: 0 träffar på den riktiga
+    // sidan. Att låta en död väljare ligga kvar gör bara att nästa mätning
+    // måste utesluta den igen.
   ];
+  const MESSAGE_SEL = MESSAGE_SELECTORS.join(',');
+
+  // Facebooks egen roll på författarnamnet. Fanns på 7 av 7 riktiga inlägg.
+  const PROFILE_SEL = '[data-ad-rendering-role="profile_name"]';
+
+  /*
+   * Hårt tak för klättringen. På den riktiga sidan ligger [role="feed"]
+   * direkt ovanför inläggsbehållaren (uppmätt: meddelandet på djup 0,
+   * behållaren på djup 16, feeden på djup 17). Utan den spärren skulle det
+   * sista inlägget i flödet kunna klättra ända upp till <body> och dra med
+   * sig hela sidan in i ett enda "inlägg".
+   */
+  const FEED_SEL = '[role="feed"],[role="main"],[role="banner"],[role="navigation"],[role="complementary"]';
+  const MAX_KLATTRING = 25;
 
   // Rader som är knappar och metadata, inte inlägg. Både svenska och engelska
   // eftersom kontot kan stå på vilket språk som helst.
@@ -393,42 +442,108 @@
 
   const COUNT_LINE = /^\d+([\s,.]\d+)?\s*(kommentar|kommentarer|delning|delningar|visning|visningar|comments?|shares?|views?)/i;
 
-  function outermostArticles() {
-    const all = Array.from(document.querySelectorAll('div[role="article"]'));
-    // Kommentarer är också articles, men ligger inuti inläggets article.
-    return all.filter(a => !all.some(b => b !== a && b.contains(a)));
-  }
+  /** Är noden en kommentar? Kommentarer — och bara de — är role="article". */
+  const arKommentar = nod =>
+    !!(nod && typeof nod.closest === 'function' && nod.closest('div[role="article"]'));
 
-  function messageText(article) {
-    for (const sel of MESSAGE_SELECTORS) {
-      const node = article.querySelector(sel);
-      const t = node && node.innerText ? node.innerText.trim() : '';
-      if (t.length > 4) return t;
+  /*
+   * BEHÅLLARREGELN
+   *
+   * Klättra uppåt från meddelandenoden så länge grenen fortfarande handlar om
+   * ETT enda inlägg, och stanna vid flödet. Uppmätt på den riktiga sidan gav
+   * det samma djup (16) för alla sex vanliga inlägg, och behållaren innehöll
+   * då exakt ett författarnamn, tidsstämpelankaret och — när Facebook hade
+   * renderat den — permalänken.
+   *
+   * Att i stället stanna vid "närmaste förfader med författarlänk" ger djup 3.
+   * Det testades och är för snävt: den behållarens innerText börjar med
+   * raden "Facebook" (Metas egna lockbetesspann) och tidsstämpeln ligger inte
+   * i den.
+   */
+  /* Kommentarer ska inte räknas när vi mäter "handlar den här grenen om ett
+     enda inlägg?". Ett inlägg med utfällda kommentarer skulle annars se ut
+     som flera inlägg och klättringen stanna för lågt. */
+  const raknaEgna = (el, sel) =>
+    Array.from(el.querySelectorAll(sel)).filter(n => !arKommentar(n)).length;
+
+  function inlaggsBehallare(nod) {
+    let bast = nod;
+    let el = nod.parentElement;
+    for (let d = 0; el && d < MAX_KLATTRING; d++, el = el.parentElement) {
+      if (el.nodeType !== 1) break;
+      if (el === document.body) break;
+      if (typeof el.matches === 'function' && el.matches(FEED_SEL)) break;
+      if (raknaEgna(el, MESSAGE_SEL) > 1) break;   // två inlägg = för högt
+      if (raknaEgna(el, PROFILE_SEL) > 1) break;   // två författare = för högt
+      bast = el;
     }
-    return '';
+    return bast;
   }
 
-  function fallbackText(article) {
-    // Reserv när Meta bytt attributnamn: ta hela artikeln men rensa bort
-    // knappar, tider och räknare, och stanna vid första kommentarsraden.
-    const lines = (article.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
+  function meddelandeText(nod) {
+    const t = nod && nod.innerText ? nod.innerText.trim() : '';
+    return t.length > 4 ? t : '';
+  }
+
+  /*
+   * Rader som Meta strör in för att förgifta innerText. På den riktiga sidan
+   * börjar behållarens innerText med åtta rader "Facebook" i rad, från synliga
+   * spann som inte betyder något. De ska hoppas över, inte avbryta läsningen.
+   */
+  const LOCKBETE_RAD = /^(facebook|meta|sponsrad|sponsored)$/i;
+
+  function fallbackText(behallare) {
+    // Reserv när Meta bytt attributnamn på själva meddelandet: ta behållaren
+    // men rensa bort lockbeten, knappar, tider och räknare.
+    const namnNod = behallare.querySelector(PROFILE_SEL);
+    // Författarnamnet står 2–4 gånger i samma behållare på den riktiga sidan
+    // (profilbildens länk, namnlänken och profile_name). Att bara kasta
+    // första raden räckte inte.
+    const namn = namnNod && !arKommentar(namnNod)
+      ? (namnNod.innerText || '').trim().toLowerCase() : '';
+    const lines = (behallare.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
     const kept = [];
     for (const line of lines) {
+      if (LOCKBETE_RAD.test(line)) continue;
+      if (namn && line.toLowerCase() === namn) continue;
       if (CHROME_LINE.test(line)) break;          // knappraden = slut på inlägget
       if (TIME_LINE.test(line)) continue;
       if (COUNT_LINE.test(line)) continue;
       if (line.length < 3) continue;
+      if (kept.length && kept[kept.length - 1] === line) continue;
       kept.push(line);
       if (kept.length >= 6) break;
     }
-    // Första raden är nästan alltid författarens namn. Den bär ingen
-    // information för oss och kan innehålla ord som förvirrar parsern.
-    if (kept.length > 1) kept.shift();
+    // Vet vi inte vad författaren heter är första raden nästan alltid namnet.
+    if (!namn && kept.length > 1) kept.shift();
     return kept.join(' ').trim();
   }
 
-  function postIdOf(article) {
-    for (const a of article.querySelectorAll('a[href]')) {
+  /*
+   * INLÄGGS-ID — vad som faktiskt går att få ut, mätt.
+   *
+   * Permalänken finns bara ibland. På den riktiga sidan hade 1 av 7 inlägg en
+   * a[href*="/posts/<id>"], och då bara för att kommentarerna var utfällda och
+   * "se fler kommentarer"-länken bar permalänken. De övriga har enbart
+   * författarlänkar (/groups/<gid>/user/<uid>/) och ett naket a[href^="?__cft__"].
+   *
+   * Tre vägar prövades och stängdes:
+   *   1. __cft__-blobben är Metas krypterade spårningssträng. Den innehåller
+   *      inget läsbart inläggs-id.
+   *   2. Sidans inbäddade JSON: hela skriptnyttolasten (2,6 MB, 299 taggar)
+   *      innehöll 2 post_id och 4 creation_time för 7 synliga inlägg. Flödet
+   *      efterladdas med GraphQL och skrivs aldrig tillbaka till script-taggar.
+   *      Alltså ingen källa att lita på.
+   *   3. Hovring över tidsstämpeln skriver INTE om href till permalänken
+   *      (uppmätt: href oförändrad före och efter). Den ger däremot datumet,
+   *      se tidGenomHovring.
+   *
+   * Slutsats: id finns när det finns, annars är textnyckeln reserv. Det är
+   * mätt, inte gissat.
+   */
+  function postIdOf(behallare) {
+    for (const a of behallare.querySelectorAll('a[href]')) {
+      if (arKommentar(a)) continue;
       const href = a.getAttribute('href') || '';
       const m =
         /\/groups\/[^\/]+\/(?:posts|permalink)\/(\d+)/.exec(href) ||
@@ -438,29 +553,213 @@
     return null;
   }
 
-  /** Ungefärlig tid för inlägget, om vi kan läsa den ur en title-attribut. */
-  function postedAtOf(article) {
-    for (const el of article.querySelectorAll('a[aria-label], abbr[data-utime], [title]')) {
-      const utime = el.getAttribute('data-utime');
-      if (utime) return Number(utime) * 1000;
-      const raw = el.getAttribute('aria-label') || el.getAttribute('title') || '';
-      const rel = /^(\d+)\s*(min|minuter|tim|timmar|h)\b/i.exec(raw.trim());
-      if (rel) {
-        const n = Number(rel[1]);
-        return Date.now() - n * (/^m/i.test(rel[2]) ? 60000 : 3600000);
-      }
+  /* ---- Tidsstämpeln -------------------------------------------------- */
+
+  const TIDSANKARE_SEL =
+    'a[href^="?__cft__"],a[href*="/posts/"],a[href*="/permalink/"],a[href*="story_fbid="]';
+
+  function tidsAnkareI(behallare) {
+    const ut = [];
+    for (const a of behallare.querySelectorAll(TIDSANKARE_SEL)) {
+      if (arKommentar(a)) continue;               // kommentarens tid, inte inläggets
+      ut.push(a);
+    }
+    return ut;
+  }
+
+  /*
+   * Facebook renderar inte tidsstämpeln som text. Två lägen är uppmätta på
+   * samma sida, samma minut:
+   *
+   *   a) Teckenspann. Varje tecken ligger i ett eget <span> med slumpad
+   *      CSS-order, blandat med ett sextiotal lockbetestecken. innerText på
+   *      ankaret gav "sepnodorSt0i5513h16mti146tftt9..." — obrukbart. Sortering
+   *      på CSS-order gav också skräp. Det som fungerar är geometri: behåll
+   *      bara de tecken vars rektangel ligger INUTI ankarets egen rektangel och
+   *      läs dem i renderingsordning (y, sedan x). Det gav "13 tim".
+   *   b) SVG-sprite. Ankaret innehåller <span><svg><use>. Noll tecken, noll
+   *      text, ingen aria-label, ingen title. Där finns ingenting att läsa
+   *      synkront — 5 av 7 inlägg låg i det läget, och det är läget nya inlägg
+   *      hamnar i eftersom de renderas på klienten.
+   *
+   * Därför: läs geometriskt först, och först om det inte ger något, hovra.
+   */
+  /* U+034F (combining grapheme joiner), nollbredds- och riktningsmärken samt
+     BOM. Skrivna som escape-sekvenser med flit: de syns inte i en editor, och
+     en osynlig teckenklass är omöjlig att granska. */
+  const OSYNLIGA = /[\u034F\u200B-\u200F\u2060\uFEFF]/g;
+
+  function synligText(el) {
+    if (!el || typeof el.querySelectorAll !== 'function') return '';
+    const blad = Array.from(el.querySelectorAll('span'))
+      .filter(s => !s.children.length && (s.textContent || '').trim());
+    // Vanligt textankare utan teckenspann: innerText duger.
+    if (!blad.length) return (el.innerText || '').trim();
+
+    if (typeof el.getBoundingClientRect !== 'function') return '';
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return '';         // orenderat = inget att lita på
+
+    const bitar = [];
+    for (const s of blad) {
+      // U+034F och nollbreddstecken är ditlagda just för att förstöra en
+      // enkel textContent-läsning.
+      const t = (s.textContent || '').replace(OSYNLIGA, '');
+      if (!t) continue;
+      const q = s.getBoundingClientRect();
+      if (!q.width) continue;
+      // Mitten, inte kanten: lockbetestecknet direkt utanför den klippta rutan
+      // börjar exakt på ankarets högerkant och skulle annars glida med.
+      const cx = q.left + q.width / 2, cy = q.top + q.height / 2;
+      if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) continue;
+      bitar.push({ t, x: q.left, y: q.top });
+    }
+    if (!bitar.length) return '';
+    bitar.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    return bitar.map(b => b.t).join('').trim();
+  }
+
+  const MANADER = {
+    januari: 0, jan: 0, februari: 1, feb: 1, mars: 2, mar: 2, april: 3, apr: 3,
+    maj: 4, juni: 5, jun: 5, juli: 6, jul: 6, augusti: 7, aug: 7,
+    september: 8, sept: 8, sep: 8, oktober: 9, okt: 9, november: 10, nov: 10,
+    december: 11, dec: 11,
+  };
+
+  function tolkaAbsolutTid(l) {
+    // "Igår kl. 18:07", "Idag kl. 09:12"
+    const nara = /\b(i\s?går|igår|i\s?dag|idag|yesterday|today)\b[^\d]*(\d{1,2})[:.](\d{2})/.exec(l);
+    if (nara) {
+      const d = new Date();
+      if (/går|yesterday/.test(nara[1])) d.setDate(d.getDate() - 1);
+      d.setHours(Number(nara[2]), Number(nara[3]), 0, 0);
+      return d.getTime();
+    }
+    // "Onsdag 19 augusti 2026 kl. 16:59" — formatet hovringen ger.
+    const m = /(\d{1,2})\s+([a-zåäö]{3,9})\.?(?:\s+(\d{4}))?\s*(?:kl\.?\s*)?(\d{1,2})[:.](\d{2})/.exec(l);
+    if (!m) return null;
+    const man = MANADER[m[2]];
+    if (man === undefined) return null;
+    const ar = m[3] ? Number(m[3]) : new Date().getFullYear();
+    const d = new Date(ar, man, Number(m[1]), Number(m[4]), Number(m[5]), 0, 0);
+    let t = d.getTime();
+    if (!Number.isFinite(t)) return null;
+    // Utan årtal: "24 december kl. 18:00" läst i januari betyder förra året.
+    if (!m[3] && t > Date.now() + 86400000) { d.setFullYear(ar - 1); t = d.getTime(); }
+    return t;
+  }
+
+  /** @returns {number|null} millisekunder, eller null när tiden inte går att läsa. */
+  function tolkaTid(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s || s.length > 60) return null;
+    const l = s.toLowerCase();
+    if (/^(just nu|nyss|precis|now|just now)\b/.test(l)) return Date.now();
+    const rel = /^(\d{1,3})\s*(min|minut|minuter|m|tim|timmar|timme|h|t|d|dygn|dag|dagar|v|vecka|veckor)\b/.exec(l);
+    if (rel) {
+      const n = Number(rel[1]);
+      const e = rel[2];
+      const ms = /^(min|minut|minuter|m)$/.test(e) ? 60000
+        : /^(tim|timmar|timme|h|t)$/.test(e) ? 3600000
+        : /^(d|dygn|dag|dagar)$/.test(e) ? 86400000
+        : 604800000;
+      return Date.now() - n * ms;
+    }
+    return tolkaAbsolutTid(l);
+  }
+
+  /** Synkron avläsning. Ger null när Facebook ritat tiden som SVG-sprite. */
+  function postedAtOf(behallare) {
+    for (const a of tidsAnkareI(behallare)) {
+      const t = tolkaTid(synligText(a));
+      if (t) return t;
+    }
+    for (const el of behallare.querySelectorAll('[data-utime]')) {
+      const u = Number(el.getAttribute('data-utime'));
+      if (Number.isFinite(u) && u > 0) return u * 1000;
+    }
+    for (const el of behallare.querySelectorAll('[aria-label],[title]')) {
+      if (arKommentar(el)) continue;
+      const t = tolkaTid(el.getAttribute('aria-label') || el.getAttribute('title') || '');
+      if (t) return t;
     }
     return null;
   }
 
-  function collectPosts() {
-    const out = [];
-    for (const article of outermostArticles()) {
-      const text = (messageText(article) || fallbackText(article)).slice(0, 400);
-      if (text.length < 7) continue;
-      out.push({ text, id: postIdOf(article), postedAt: postedAtOf(article) });
+  /*
+   * Sista utvägen: hovra tidsstämpeln. Facebook lägger då upp en
+   * [role="tooltip"] med hela datumet i klartext — uppmätt "Onsdag 19 augusti
+   * 2026 kl. 16:59" respektive "Måndag 17 augusti 2026 kl. 18:07". Det är
+   * exaktare än den relativa texten och är enda vägen till tiden i
+   * SVG-sprite-läget, alltså för nya inlägg.
+   *
+   * Det är en muspekarhändelse, inte ett klick: ingenting publiceras, gillas
+   * eller ändras. Men det är en extra automationssignal mot Meta, och en
+   * verktygstips blinkar till på ägarens skärm. Därför en egen inställning,
+   * och därför hovras bara inlägg som redan passerat parsern — inte hela
+   * flödet.
+   */
+  const PEK = (typeof PointerEvent === 'function') ? PointerEvent : MouseEvent;
+  const paus = ms => new Promise(r => setTimeout(r, ms));
+
+  function tooltipTid() {
+    for (const t of document.querySelectorAll('[role="tooltip"]')) {
+      const v = tolkaTid((t.innerText || t.textContent || '').trim());
+      if (v) return v;
     }
-    return out;
+    return null;
+  }
+
+  async function tidGenomHovring(a) {
+    if (!a || typeof a.dispatchEvent !== 'function') return null;
+    const r = typeof a.getBoundingClientRect === 'function'
+      ? a.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+    const bas = { cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    const skicka = (Typ, namn, bubblar) => {
+      try { a.dispatchEvent(new Typ(namn, Object.assign({ bubbles: bubblar !== false }, bas))); }
+      catch { /* händelsetypen finns inte här — strunt samma */ }
+    };
+    skicka(PEK, 'pointerover');
+    skicka(MouseEvent, 'mouseover');
+    skicka(MouseEvent, 'mouseenter', false);
+    skicka(MouseEvent, 'mousemove');
+    try {
+      for (let i = 0; i < HOVER_FORSOK; i++) {
+        const t = tooltipTid();
+        if (t) return t;
+        await paus(HOVER_PAUS_MS);
+      }
+      return null;
+    } finally {
+      // Städa efter oss: verktygstipset ska inte bli kvar på ägarens skärm.
+      skicka(MouseEvent, 'mouseout');
+      skicka(MouseEvent, 'mouseleave', false);
+      skicka(PEK, 'pointerout');
+    }
+  }
+
+  function collectPosts() {
+    const alla = Array.from(document.querySelectorAll(MESSAGE_SEL));
+    // Yttersta meddelandenoden per inlägg, och aldrig en kommentar.
+    const yttersta = alla.filter(n => !alla.some(o => o !== n && o.contains(n)));
+    const ut = [];
+    const sedda = new Set();
+    for (const nod of yttersta) {
+      if (arKommentar(nod)) continue;
+      const behallare = inlaggsBehallare(nod);
+      if (sedda.has(behallare)) continue;
+      sedda.add(behallare);
+      const text = (meddelandeText(nod) || fallbackText(behallare)).slice(0, 400);
+      if (text.length < 7) continue;
+      ut.push({
+        text,
+        id: postIdOf(behallare),
+        postedAt: postedAtOf(behallare),
+        tidsAnkare: tidsAnkareI(behallare)[0] || null,
+        behallare,
+      });
+    }
+    return ut;
   }
 
   /* ================= Geokodning ================= */
@@ -568,7 +867,7 @@
 
   let running = false;
   let nämntFelGrupp = false;
-  const tally = { created: 0, duplicates: 0, refused: 0, skipped: 0, failed: 0 };
+  const tally = { created: 0, duplicates: 0, refused: 0, skipped: 0, failed: 0, utanTid: 0 };
 
   async function scan() {
     if (running) return;
@@ -612,8 +911,35 @@
           tally.skipped++; markDone(stable); continue;
         }
 
+        /*
+         * FELET SOM MÄTNINGEN MOT DEN RIKTIGA SIDAN HITTADE
+         *
+         * Förut stod det:
+         *   const createdAt = post.postedAt && post.postedAt < Date.now()
+         *     ? post.postedAt : Date.now();
+         *
+         * postedAt är null så fort tiden inte går att läsa — och på den
+         * riktiga sidan gick den inte att läsa på 5 av 7 inlägg, eftersom
+         * Facebook ritar tidsstämpeln som en SVG-sprite. Raden ovan
+         * översatte alltså "jag vet inte hur gammalt det här är" till "det
+         * är skrivet just nu". Ett tre dygn gammalt inlägg om en
+         * laserkontroll blev en färsk varning på kartan.
+         *
+         * Tidsstämpeln avgör om en varning är färsk. Kan den inte läsas
+         * skickas ingenting. Hellre tyst än fel.
+         */
+        let postedAt = post.postedAt;
+        if (postedAt == null && CONFIG.hoverForTime) {
+          postedAt = await tidGenomHovring(post.tidsAnkare);
+        }
+        if (postedAt == null) {
+          tally.utanTid++; markTry(stable);
+          console.log(TAG, 'ålder går inte att läsa — hoppas över:', post.text.slice(0, 80));
+          continue;
+        }
+
         const ttl = (TTL_MINUTES[parsed.type] || 45) * 60000;
-        const createdAt = post.postedAt && post.postedAt < Date.now() ? post.postedAt : Date.now();
+        const createdAt = postedAt < Date.now() ? postedAt : Date.now();
         const expiresAt = createdAt + ttl;
         if (expiresAt <= Date.now() + 60000) {
           // Inlägget är äldre än varningen skulle leva. Gammal varning är
@@ -704,6 +1030,17 @@
     stats: () => ({ ...tally, ihagkomna: Object.keys(seen).length }),
     peek: () => collectPosts(),
     parse: parseReportText,
+    // Felsökning av just tidsstämpeln — det som gick sönder tyst förut.
+    tider: () => collectPosts().map(p => ({
+      text: p.text.slice(0, 60),
+      id: p.id,
+      postedAt: p.postedAt,
+      alder: p.postedAt == null ? 'OLÄSLIG'
+        : Math.round((Date.now() - p.postedAt) / 60000) + ' min',
+      tidText: p.tidsAnkare ? synligText(p.tidsAnkare) : null,
+    })),
+    tolkaTid,
+    synligText,
     forget: () => { seen = {}; localStorage.removeItem(SEEN_KEY); console.log(TAG, 'minneslistan tömd'); },
   };
 })();
