@@ -87,6 +87,60 @@ await T('drogkontroll vägras', () => {
   const p = parser.parseReportText('Poliskontroll med drogtest på Vasagatan');
   return p?.intent === 'refused' || `fick ${JSON.stringify(p)}`;
 });
+
+/* De här nio kom från en granskning som körde riktiga meningar genom
+   parsern. FEM av dem blev polisrapporter på kartan, live. Två hål:
+   narkotikaorden fanns inte i någon ordlista, och normalize() behåller
+   bindestreck så "drog-kontroll" blev ETT ord som gick igenom både
+   ordlistan och isärskrivningsregeln samtidigt. */
+await T('narkotika och bindestreck vägras också', () => {
+  const ska = [
+    'Polisen har narkotikakontroll på Vasagatan',
+    'Narkotika kontroll vid Erikslund',
+    'Polis gör drog-kontroll vid Erikslund',
+    'Polis vid Erikslund med drogsökhund',
+    'Polis kollar droger vid Erikslund',
+    'Polisen blåsning vid Erikslund',
+    'Polis nykterhets-kontroll Hälla',
+    'polisen står med sållnings-prov vid rondellen',
+    'rattfylleri-kontroll city',
+  ];
+  const slapptes = ska.filter(t => !parser.isSobrietyCheck(t));
+  return slapptes.length === 0 || `släpptes igenom: ${slapptes.join(' · ')}`;
+});
+
+/* Motriktningen. Utan den kan spärren "lagas" genom att vägra allt, och
+   "polisen drog vidare" är en avblåsning — drog är också imperfekt av dra. */
+await T('riktiga polisrapporter tystas inte av nykterhetsspärren', () => {
+  const far = ['Polis vid Erikslund', 'Fartkontroll på E18', 'Civilbil vid rondellen',
+               'Polisen drog vidare från Hälla', 'polisen drog iväg mot city',
+               'Polis står vid Stora Gatan-korsningen', 'Trafikkontroll vid Hälla'];
+  const stoppade = far.filter(t => parser.isSobrietyCheck(t));
+  return stoppade.length === 0 || `felaktigt vägrade: ${stoppade.join(' · ')}`;
+});
+
+/* Service workern läste bara title/body medan databasen skickar titel/text.
+   En gruppnotis hade då visat "Polisvakt / Dags att köra?" — rätt tag, rätt
+   klickbeteende, fel text, och osynligt i varje logg. Samma felmönster som
+   när push-lyssnaren saknades helt: varje led grönt, noll effekt. */
+await T('service workern förstår svenska notisfält', async () => {
+  const src = await (await fetch('./sw.js?cb=' + Math.random())).text();
+  const lyssnare = {}, fangat = [];
+  const falskSelf = {
+    addEventListener: (n, f) => { lyssnare[n] = f; },
+    registration: { showNotification: (titel, o) => { fangat.push({ titel, body: o.body }); return Promise.resolve(); } },
+    clients: { matchAll: async () => [], openWindow() {}, claim: async () => {} },
+    skipWaiting() {},
+    caches: { open: async () => ({ put() {} }), keys: async () => [], match: async () => null, delete: async () => {} },
+  };
+  new Function('self', 'caches', 'fetch', 'Request', 'location', src)(
+    falskSelf, falskSelf.caches, async () => ({ ok: false }), function () {}, { origin: 'http://x' });
+  if (!lyssnare.push) return 'sw.js har ingen push-lyssnare';
+  lyssnare.push({ data: { json: () => ({ titel: 'Nytt i gruppen', text: '3 nya inlägg' }) }, waitUntil: p => p });
+  const f = fangat[0];
+  return (f?.titel === 'Nytt i gruppen' && f?.body === '3 nya inlägg')
+    || `visade "${f?.titel} / ${f?.body}"`;
+});
 await T('fartkamera vägras som användarrapport', () => {
   const p = parser.parseReportText('Fartkamera på E18');
   return p?.intent === 'refused' && p.reason === 'camera' || `fick ${JSON.stringify(p)}`;
@@ -569,12 +623,33 @@ await T('service workern lyssnar på push', async () => {
 });
 
 await T('push-notisen ritas inuti waitUntil', async () => {
-  // Utan waitUntil får service workern dödas innan notisen hunnit ritas.
-  const src = await (await fetch('./sw.js')).text();
-  const i = src.indexOf("addEventListener('push'");
-  const kropp = i >= 0 ? src.slice(i, i + 900) : '';
-  return /waitUntil[\s\S]{0,200}showNotification/.test(kropp)
-    || 'showNotification ligger utanför waitUntil';
+  /* Utan waitUntil får service workern dödas innan notisen hunnit ritas, och
+   * på en telefon med lite minne händer det ofta.
+   *
+   * Testet körde förut en textsökning i källkoden och krävde att waitUntil
+   * låg inom 200 tecken från showNotification, inom de första 900 tecknen av
+   * lyssnaren. Det blev rött av att någon skrev en kommentar — alltså mätte
+   * det formatering, inte beteende. Nu körs lyssnaren på riktigt och vi
+   * kontrollerar att löftet från showNotification är det som lämnas till
+   * waitUntil. */
+  const src = await (await fetch('./sw.js?cb=' + Math.random())).text();
+  const lyssnare = {};
+  let notisLofte = null, tillWaitUntil = null;
+  const falskSelf = {
+    addEventListener: (n, f) => { lyssnare[n] = f; },
+    registration: { showNotification: () => (notisLofte = Promise.resolve('ritad')) },
+    clients: { matchAll: async () => [], openWindow() {}, claim: async () => {} },
+    skipWaiting() {},
+    caches: { open: async () => ({ put() {} }), keys: async () => [], match: async () => null, delete: async () => {} },
+  };
+  new Function('self', 'caches', 'fetch', 'Request', 'location', src)(
+    falskSelf, falskSelf.caches, async () => ({ ok: false }), function () {}, { origin: 'http://x' });
+  if (!lyssnare.push) return 'sw.js har ingen push-lyssnare';
+  lyssnare.push({ data: { json: () => ({ titel: 'x', text: 'y' }) },
+                  waitUntil: p => { tillWaitUntil = p; } });
+  if (!notisLofte) return 'showNotification anropades aldrig';
+  return tillWaitUntil === notisLofte
+    || 'showNotification-löftet lämnas inte till waitUntil';
 });
 
 await T('poängräkningen frågar inte efter ett fält servern döljer', async () => {

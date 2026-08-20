@@ -9,7 +9,7 @@
 // lugnt. Föraren behöver aldrig göra något — och blir aldrig avbruten mitt i
 // en körning, eftersom omladdningen väntar tills bilen står still.
 
-const VERSION = '2026-08-20-62';
+const VERSION = '2026-08-20-63';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -123,6 +123,22 @@ self.addEventListener('message', e => {
 self.addEventListener('push', e => {
   let d = { title: 'Polisvakt', body: 'Dags att köra?', tag: 'polisvakt-reminder', url: './' };
   try { d = { ...d, ...(e.data?.json() ?? {}) }; } catch {}
+
+  /* Svenska fältnamn tas emot också.
+   *
+   * Databasen bygger sin notis med `titel` och `text`, som resten av
+   * projektet. Lyssnaren här läste bara `title` och `body`. Kom en
+   * gruppnotis in oöversatt spreadades den ovanpå förvalen utan att skriva
+   * över dem, och telefonen visade "Polisvakt / Dags att köra?" — med rätt
+   * tag och rätt klickbeteende, alltså en notis som ser fullt normal ut men
+   * säger fel sak. Ingenting i någon logg hade avslöjat det.
+   *
+   * Översättningen hör hemma i edge-funktionen, och görs där. Den här raden
+   * finns för att felet ska vara omöjligt att göra om: går något led fel
+   * visas ändå rätt text. Explicit undefined-koll, inte ||, så en tom
+   * sträng som någon medvetet skickat överlever. */
+  if (d.titel !== undefined) d.title = d.titel;
+  if (d.text !== undefined) d.body = d.text;
 
   // waitUntil, alltid. Utan den får service workern dödas innan notisen
   // hunnit ritas, och på en telefon med lite minne händer det ofta.
