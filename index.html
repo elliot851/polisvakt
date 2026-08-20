@@ -490,6 +490,14 @@
     <p class="hint" id="plLutStatus"></p>
     <p class="hint" id="plProvStatus"></p>
 
+    <!-- Listan låg begravd längst ner i inställningarna, efter Rapportpoäng,
+         Delning och Karta. Man hittar den inte mitt i en skanning, och det
+         är precis då man behöver den: läsaren säger "inte ditt fordon" och
+         nästa tanke är "hur lägger jag in det?". Genvägen hör hemma här. -->
+    <div class="dc-row">
+      <button class="btn-ghost" id="btnPlMinaFordon" type="button">Mina fordon</button>
+    </div>
+
     <div class="dc-row">
       <button class="btn-ghost" id="plStop" type="button">Stoppa</button>
     </div>
@@ -751,7 +759,7 @@
 
     <label class="row"><span>Pip vid träff</span><input type="checkbox" id="setPlPip" checked></label>
 
-    <h4 class="sub-head">Mina fordon</h4>
+    <h4 class="sub-head" id="minaFordonRubrik">Mina fordon</h4>
     <p class="hint">Egna registreringsnummer. Känner läsaren igen ett pipar appen.
       <b>Numren sparas aldrig som text.</b> De lagras som saltade hashar, bara i
       den här telefonen — därför visar listan namnet du gett fordonet, inte
@@ -1098,6 +1106,21 @@
       <button class="btn-primary" id="tourNext" type="button">Nästa</button>
     </div>
     <div class="tour-dots" id="tourDots"></div>
+  </div>
+</div>
+
+<!-- Larm när läsaren känner igen ett av dina egna fordon.
+     Ligger utanför alla vyer eftersom det ska kunna slå upp över kameran
+     oavsett var i den vyn man befinner sig. Knappen är stor med flit: den
+     ska gå att träffa utan att sikta, med en hand, i en bil. -->
+<div id="fordonslarm" class="fordonslarm" role="alertdialog" aria-live="assertive"
+     aria-labelledby="larmRubrik" hidden>
+  <div>
+    <div class="larm-ikon" aria-hidden="true">⚠️</div>
+    <p class="larm-rubrik" id="larmRubrik">FORDON IGENKÄNT</p>
+    <p class="larm-namn" id="larmNamn"></p>
+    <p class="larm-nr" id="larmNr"></p>
+    <button class="larm-tyst" id="btnLarmTyst" type="button">Tysta</button>
   </div>
 </div>
 

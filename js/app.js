@@ -2581,11 +2581,23 @@ function plateInst() {
     plate.addEventListener('traff', e => {
       const d = e.detail;
       if (d.egen === false) {
-        $('plProvStatus').textContent =
-          `Provläge — läste ${visaPlat(d.plat)} (${Math.round((d.sakerhet || 0) * 100)} %). Inte ditt fordon, inget sparat.`;
+        /*
+         * Säkerheten utelämnas när motorn rapporterar noll.
+         *
+         * Tesseract svarar ibland 0 % på en läsning som är helt korrekt —
+         * det är känt och hanteras redan i röstningen, där en giltig läsning
+         * alltid slår en ogiltig oavsett vad siffran säger. Men "läste
+         * NCH 94K (0 %)" i gränssnittet ser ut som ett misslyckande, och
+         * det var precis så det lästes vid provkörningen. Siffran tillför
+         * ingenting när den är noll, så då står den inte där.
+         */
+        const proc = Math.round((d.sakerhet || 0) * 100);
+        $('plProvStatus').textContent = proc > 0
+          ? `Provläge — läste ${visaPlat(d.plat)} (${proc} %). Inte ditt fordon, inget sparat.`
+          : `Provläge — läste ${visaPlat(d.plat)}. Inte ditt fordon, inget sparat.`;
         return;
       }
-      toast(`${visaPlat(d.plat)} — ${d.etikett}`, 3000);
+      larmaFordon(d);
     });
     // Visa vad kameran gav, aldrig vad vi bad om. "60 b/s" i gränssnittet på
     // en telefon som gav 30 är en lögn som är omöjlig att felsöka.
@@ -2620,6 +2632,76 @@ function plateSettings() {
     // Hör ihop med testläget, inte med produkten. Se traff-hanteraren.
     provlage: TESTLAGE_UTAN_INLOGGNING,
   };
+}
+
+/* ================= Fordonslarm =================
+ *
+ * Ett pip räcker inte. Man sitter i en bil, kanske med musik på, och tittar
+ * på vägen — inte på telefonen. Larmet måste därför gå fram genom två sinnen
+ * samtidigt: hela skärmen slår rött och pulsar, och en siren ljuder tills
+ * någon tystar den.
+ *
+ * Sirenen byggs som en enda oscillator vars frekvens svänger mellan två
+ * toner. Två växlande toner bär mycket längre genom motorljud än en jämn,
+ * eftersom örat fäster vid förändringen och inte vid tonhöjden — det är
+ * samma skäl som utryckningsfordon inte använder en enda ton.
+ *
+ * Larmet stängs av sig självt efter LARM_MAX_MS. En siren som ljuder tills
+ * någon rör telefonen är farligare än ingen siren alls: den lockar blicken
+ * från vägen just när den inte får vara där.
+ */
+const LARM_MAX_MS = 12000;
+let larmCtx = null, larmOsc = null, larmTimer = null;
+
+function larmaFordon(d) {
+  const rutan = $('fordonslarm');
+  if (!rutan) return;
+  $('larmNamn').textContent = d.etikett || 'Ditt fordon';
+  // Numret visas bara i larmögonblicket och lagras aldrig — se Fordonsregister.
+  $('larmNr').textContent = visaPlat(d.plat);
+  rutan.hidden = false;
+  startaSiren();
+  // Vibration bär genom en ficka när ljudet drunknar i motorljud. Saknas
+  // stödet (iOS) gör larmet ändå sitt jobb med ljud och färg.
+  try { navigator.vibrate?.([220, 120, 220, 120, 420]); } catch {}
+  clearTimeout(larmTimer);
+  larmTimer = setTimeout(slutaLarma, LARM_MAX_MS);
+}
+
+function slutaLarma() {
+  clearTimeout(larmTimer);
+  larmTimer = null;
+  const rutan = $('fordonslarm');
+  if (rutan) rutan.hidden = true;
+  // Numret ska inte ligga kvar i DOM:en efter larmet.
+  const nr = $('larmNr'); if (nr) nr.textContent = '';
+  stoppaSiren();
+}
+
+function startaSiren() {
+  stoppaSiren();
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sawtooth';                  // rikare övertoner hörs genom motorljud
+    const t = ac.currentTime;
+    // Svep mellan 700 och 1150 Hz, fram och tillbaka, tills vi stoppar.
+    o.frequency.setValueAtTime(700, t);
+    for (let i = 0; i < Math.ceil(LARM_MAX_MS / 500); i++) {
+      o.frequency.linearRampToValueAtTime(i % 2 ? 700 : 1150, t + 0.25 + i * 0.25);
+    }
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.04);
+    o.connect(g); g.connect(ac.destination);
+    o.start();
+    larmCtx = ac; larmOsc = o;
+  } catch { /* ljud blockerat — färgen och vibrationen bär larmet */ }
+}
+
+function stoppaSiren() {
+  try { larmOsc?.stop(); } catch {}
+  try { larmCtx?.close(); } catch {}
+  larmOsc = null; larmCtx = null;
 }
 
 /**
@@ -2748,6 +2830,26 @@ function wireModePicker() {
    * klickhanteraren, inte bakom ett await som hunnit släppa gestens
    * giltighet. Därför ligger aktiveraLutning() först.
    */
+  $('btnLarmTyst').onclick = () => slutaLarma();
+
+  /*
+   * Genvägen till fordonslistan.
+   *
+   * Läsaren stoppas på vägen. Inte för att spara batteri, utan för att den
+   * annars står och läser skyltar medan man skriver in nummer i en annan vy
+   * — kameran skulle vara igång utan att någon ser bilden, vilket är precis
+   * den sortens tyst bakgrundsläsning appen inte ska ägna sig åt.
+   */
+  $('btnPlMinaFordon').onclick = () => {
+    stoppaPlate();
+    showView('settings');
+    const rubrik = $('minaFordonRubrik');
+    rubrik?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Fokus på fältet, inte bara rullning: den som tryckt på knappen vill
+    // skriva ett nummer, och tangentbordet ska upp utan ett extra tryck.
+    setTimeout(() => $('plNytt')?.focus(), 420);
+  };
+
   $('btnPlLutning').onclick = async () => {
     const btn = $('btnPlLutning');
     btn.disabled = true;
@@ -2802,6 +2904,9 @@ function stoppaPlate() {
   // stängts av — det är hela skillnaden mot en logg.
   $('plProvStatus').textContent = '';
   $('plKamera').textContent = '';
+  // En siren som fortsätter ljuda efter att läsaren stängts av kan ingen
+  // förklara. Larmet hör till kameran och slutar med den.
+  slutaLarma();
   renderOlasta();
 }
 
@@ -3139,8 +3244,18 @@ function wireSettingsUI() {
       return;
     }
     $('plNyttNamn').value = '';
+    /*
+     * Antalet hashar stod förut i klartext här, och det var missvisande.
+     * "1 hash" läses som "ingen feltolerans", vilket är fel: de flesta
+     * felläsningar rättas redan av normaliseringen innan uppslaget sker —
+     * ett A på en sifferposition blir en fyra. Varianterna behövs bara för
+     * de förväxlingar formatet inte kan avgöra, som O mot D. Ett nummer
+     * utan sådana tecken får därför en enda hash och är ändå fullt skyddat.
+     * Siffran svarade alltså på en fråga ingen ställt, och gav fel svar på
+     * den man faktiskt hade.
+     */
     $('plEgnaStatus').textContent =
-      `Sparade ${r.etikett} som ${r.varianter} hash${r.varianter === 1 ? '' : 'ar'}. Numret är inte lagrat.`;
+      `Sparade ${r.etikett}. Numret lagras inte — bara en hash som appen kan känna igen det på.`;
     renderFordon();
   };
 
