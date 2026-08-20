@@ -624,6 +624,30 @@ function wireDriving() {
     senasteKorning = Date.now();
     writeJSON('pv.korvanor.v1', korvanor.toJSON());
     renderDriveStatus();
+
+    /*
+     * Berätta för servern, så påminnelsen blir sann.
+     *
+     * Två anrop som fanns färdiga i push.js men aldrig gjordes någonstans.
+     * Följden var att hela den serverdrivna påminnelsen byggde på vad som råkade
+     * laddas upp den allra första gången notiser slogs på:
+     *
+     *   syncSlots      Ändrade du arbetstider fick servern aldrig veta det.
+     *                  Påminnelsen kom på gamla tider för alltid.
+     *   markDroveToday Det här är det som får servern att hoppa över dagens
+     *                  lucka när du redan satt dig i bilen. Utan det plingar
+     *                  den 07:15 fast du körde 07:05 — och en påminnelse om
+     *                  något man redan gjort lär användaren att notiserna inte
+     *                  är värda att läsa. Sen stängs de av.
+     *
+     * Båda är tysta no-op när notiser inte är påslagna.
+     *
+     * Luckorna kommer från korvanor när den lärt sig tillräckligt, annars
+     * från den grova vanekartan.
+     */
+    const luckor = korvanor.slots;
+    Push.syncSlots(luckor?.length ? luckor : driving.habits);
+    Push.markDroveToday();
   });
   driving.addEventListener('stop', renderDriveStatus);
 
@@ -1644,7 +1668,16 @@ async function reportAt(type, { lat, lon, label, source = 'app', geokod } = {}) 
     // allt som osäkert, vilket i praktiken tystar appen. Fälten är billiga
     // att samla in i det ögonblick rapporten skapas och omöjliga att
     // rekonstruera efteråt.
-    const nufix = geo.position;
+    /*
+     * Vid kallstart finns ingen löpande fix — då kom positionen från
+     * currentPosition(), och dess noggrannhet är den enda vi har.
+     *
+     * Tidigare lästes bara geo.position, som är null just då. Rapporten gick
+     * iväg utan noggrannhet, och kvalitet.js antog 25 meter. Är den verkliga
+     * noggrannheten 80 lät appen säkrare än den var — i precis det ögonblick
+     * den har minst skäl till det, eftersom GPS:en nyss vaknat.
+     */
+    const nufix = geo.position || (egenPosition ? pos : null);
 
     /*
      * GPS-noggrannheten och farten beskriver FÖRAREN, inte punkten.

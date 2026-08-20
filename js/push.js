@@ -433,7 +433,21 @@ export async function syncSlots(habits, minCount = 3) {
   const st = load();
   if (!st.endpoint || !st.device) return false;
 
-  const slots = slotsFromHabits(habits, minCount);
+  /*
+   * Tar emot antingen den gamla vanekartan eller en färdig lucklista.
+   *
+   * Appen har numera två system som räknar fram när någon brukar köra:
+   * driving.js grova "dag-timme → antal", och korvanor.js som väger in spann,
+   * andel, nattspärr och avfärdade mönster. Båda kodar resultatet i samma
+   * 0–167-skala, och korvanor.js säger själv i en kommentar att den gör det
+   * med flit — men bron var aldrig byggd, så det var alltid den sämre
+   * uppsättningen som nådde servern.
+   *
+   * Att ta emot en färdig lista här är hela bron.
+   */
+  const slots = Array.isArray(habits)
+    ? [...new Set(habits)].filter(n => Number.isInteger(n) && n >= 0 && n < 168).sort((a, b) => a - b)
+    : slotsFromHabits(habits, minCount);
   if (JSON.stringify(slots) === JSON.stringify(st.slots ?? [])) return false;
 
   try {

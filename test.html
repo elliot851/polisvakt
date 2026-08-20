@@ -431,6 +431,43 @@ await T('en nominatim-punkt graderas försiktigare än en GPS-punkt', () => {
     || `gissad ${gissadPunkt.osakerhetM} m är inte osäkrare än mätt ${mattPunkt.osakerhetM} m`;
 });
 
+
+await T('appen berättar för servern när vanorna ändras', () => {
+  // syncSlots och markDroveToday fanns färdiga i push.js men anropades
+  // ingenstans. Servern körde därför för alltid på det som råkade laddas upp
+  // första gången notiser slogs på.
+  const saknas = [];
+  if (!/Push\.syncSlots\(/.test(appSrc)) saknas.push('syncSlots');
+  if (!/Push\.markDroveToday\(/.test(appSrc)) saknas.push('markDroveToday');
+  return !saknas.length || `anropas fortfarande inte: ${saknas.join(', ')}`;
+});
+
+await T('luckorna tas från den bättre av de två vanemotorerna', () => {
+  // korvanor.js väger in spann, andel och nattspärr. driving.js räknar bara
+  // dag-timme. Båda kodar i samma 0-167-skala, men det var alltid den grova
+  // som nådde servern.
+  return /korvanor\.slots/.test(appSrc)
+    || 'app.js skickar inte korvanor.slots till servern';
+});
+
+await T('syncSlots tar emot en färdig lucklista', async () => {
+  const p = await import('./js/push.js');
+  if (typeof p.slotsFromHabits !== 'function') return 'hopp';
+  // Bron: en array ska gå igenom orörd, inte tolkas som en vanekarta.
+  const src = await (await fetch('./js/push.js')).text();
+  return /Array\.isArray\(habits\)/.test(src)
+    || 'syncSlots accepterar bara den gamla vanekartan';
+});
+
+await T('kallstart tappar inte den uppmätta noggrannheten', () => {
+  // Vid kallstart är geo.position null och positionen kom från
+  // currentPosition(). Dess accuracy är den enda vi har.
+  const i = appSrc.indexOf('async function reportAt');
+  const kropp = i >= 0 ? appSrc.slice(i, i + 6000) : '';
+  return /const nufix = geo\.position \|\| \(egenPosition \? pos : null\)/.test(kropp)
+    || 'nufix läser bara geo.position, som är null vid kallstart';
+});
+
 /* ---- Genvägar från hemskärmen --------------------------------------- */
 G('Snabbrapport från hemskärmen');
 
