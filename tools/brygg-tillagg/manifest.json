@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Polisvakt — Facebook-brygga",
+  "name": "Polisvakt Facebook-brygga",
   "version": "2.2",
-  "description": "Läser nya inlägg i Här Står Polisen - Västerås och skickar polisvarningar till Polisvakt. Torrkörning som förval.",
+  "description": "Laser nya inlagg i Har Star Polisen - Vasteras och skickar polisvarningar till Polisvakt. Torrkorning som forval.",
   "content_scripts": [
     {
       "matches": ["https://www.facebook.com/groups/*"],
       "js": ["brygga.js"],
-      "run_at": "document_idle",
-      "world": "MAIN"
+      "run_at": "document_idle"
     }
   ],
   "host_permissions": [
