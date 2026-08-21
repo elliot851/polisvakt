@@ -4930,6 +4930,9 @@ function escapeHtml(s) {
 
 let swRegistration = null;
 let pendingUpdate = false;
+// Versionen service workern rapporterar. Enda källan som inte kan glida isär
+// från vad som faktiskt körs — se renderVersion.
+let swVersion = null;
 
 /**
  * Appen håller sig själv uppdaterad.
@@ -4969,8 +4972,9 @@ function registerSW() {
 
   navigator.serviceWorker.addEventListener('message', e => {
     if (e.data?.type === 'version') {
+      swVersion = e.data.version;
       const el = $('versionInfo');
-      if (el) el.textContent = `Version ${e.data.version}`;
+      if (el) el.textContent = `Version ${swVersion}`;
     }
     if (e.data?.type === 'updated') {
       pendingUpdate = true;
@@ -4980,6 +4984,47 @@ function registerSW() {
 
   navigator.serviceWorker.ready.then(reg => {
     reg.active?.postMessage({ type: 'version' });
+  });
+
+  /*
+   * Leta efter nya versioner medan appen är öppen, inte bara vid start.
+   *
+   * Webbläsaren frågar efter service worker-filen när sidan laddas, och
+   * sedan högst en gång per dygn. En app som ligger öppen på hemskärmen i
+   * en vecka — vilket är precis hur den här används — kunde alltså missa
+   * varenda utrullning tills någon råkade stänga och öppna den. Föraren
+   * hade en fix installerad hos oss och en gammal app i handen, utan att
+   * något sa emot.
+   *
+   * Två tillfällen räcker och kostar nästan ingenting:
+   *
+   *   var trettionde minut, men BARA när fliken syns. En bakgrundsflik ska
+   *   inte väcka radion; strypningen gör dessutom intervallet oförutsägbart
+   *   där, och en missad kontroll är helt harmlös.
+   *
+   *   när appen kommer i förgrunden igen. Det är då man tittar på den, och
+   *   det är då en omladdning stör minst.
+   *
+   * update() hämtar bara sw.js och jämför — några hundra byte. Finns inget
+   * nytt händer ingenting alls. Hittas något tar den befintliga kedjan vid:
+   * bannern visas, och omladdningen väntar tills bilen står still.
+   */
+  const LETA_INTERVALL_MS = 30 * 60 * 1000;
+  let sistaKollen = Date.now();
+
+  const letaEfterUppdatering = () => {
+    if (document.visibilityState !== 'visible') return;
+    sistaKollen = Date.now();
+    swRegistration?.update?.().catch(() => {});   // offline är inget fel
+  };
+
+  setInterval(letaEfterUppdatering, LETA_INTERVALL_MS);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    // Inte vid varje flikbyte — då skulle den fråga i onödan hela dagen.
+    if (Date.now() - sistaKollen < 5 * 60 * 1000) return;
+    letaEfterUppdatering();
   });
 }
 
@@ -5046,7 +5091,21 @@ function renderVersion(state = 'ok', note = '') {
   const mark = $('updateMark'), card = $('updateCard');
   if (!mark) return;
 
-  $('versionInfo').textContent = `Version ${CONFIG.version}`;
+  /*
+   * Versionen kommer från service workern, inte från CONFIG.
+   *
+   * CONFIG.version är en handskriven sträng i js/config.js som ska bumpas vid
+   * varje utrullning. Den glömdes bort i tolv utrullningar i rad: filen stod
+   * kvar på 2026-08-20-58 medan appen i själva verket körde -70. Rutan visade
+   * alltså ett nummer som inte fanns någonstans, och den som ville veta om en
+   * fix slagit igenom fick fel svar — vilket är precis det den här rutan
+   * finns för att förhindra.
+   *
+   * Service workern vet alltid sanningen: dess VERSION är samma sträng som
+   * cachenyckeln, så den KAN inte glida isär från vad som faktiskt körs.
+   * CONFIG.version står kvar som reserv för de sekunder innan svaret kommit.
+   */
+  $('versionInfo').textContent = `Version ${swVersion || CONFIG.version}`;
   const built = `Byggd ${buildDate()}`;
 
   const looks = {
@@ -5061,10 +5120,38 @@ function renderVersion(state = 'ok', note = '') {
   $('updateState').textContent = looks.text;
 }
 
+/*
+ * Läs versionen ur sw.js när service workern inte svarar.
+ *
+ * Reserven var CONFIG.version, en handskriven sträng som glömdes i tolv
+ * utrullningar. Uppmätt: filen sa -71, rutan sa -70. En reserv som ljuger är
+ * värre än ingen reserv, för den ser ut som ett svar.
+ *
+ * sw.js hämtas ändå av webbläsaren, filen är liten, och cache:'reload'
+ * går förbi HTTP-cachen så vi får serverns version och inte en gammal.
+ * Registreras inte service workern alls — vissa inbäddade webbläsare
+ * vägrar — är det här det enda sättet att veta vad som faktiskt ligger uppe.
+ */
+async function lasVersionUrFil() {
+  try {
+    const r = await fetch('./sw.js', { cache: 'reload' });
+    if (!r.ok) return null;
+    const m = (await r.text()).match(/VERSION\s*=\s*'([^']+)'/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
 function wireUpdates() {
   const btn = $('btnUpdate');
   if (!btn) return;
   renderVersion('ok');
+
+  // Fyll i sanningen så fort den finns, utan att hålla upp gränssnittet.
+  if (!swVersion) {
+    lasVersionUrFil().then(v => {
+      if (v && !swVersion) { swVersion = v; renderVersion('ok'); }
+    });
+  }
   btn.onclick = async () => {
     btn.disabled = true;
     renderVersion('checking');

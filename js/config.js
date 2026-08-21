@@ -28,7 +28,10 @@ export const CONFIG = {
 
   // Sätts vid varje bygge av package.ps1. Visas i appen så man ser att man
   // faktiskt kör den senaste versionen och inte en cachad gammal.
-  version: '2026-08-20-58',
+  // Visas inte langre i appen -- den fragar service workern, som inte kan
+  // glida isar fran vad som kors. Se renderVersion i js/app.js. Star kvar som
+  // reserv de forsta sekunderna och for felrapporter.
+  version: '2026-08-21-70',
   builtAt: '2026-08-19T18:20:00+02:00',
 };
 
