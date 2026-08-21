@@ -541,6 +541,220 @@ set search_path = pg_catalog, pg_temp as $$
   end;
 $$;
 
+-- ============================ NOTISER: MENINGEN ======================
+--
+-- Notisen ska bära samma mening som appen visar, inte fyra fakta bredvid
+-- varandra.
+--
+-- js/sammanfattning.js gör redan det jobbet på klienten: "Fartkontroll med
+-- laser vid Hälla — någon i Facebook-gruppen varnade för 2 minuter sedan."
+-- Fyra saker måste alltid vara med, och skälet står i den filen: VAD, VAR,
+-- NÄR och VARIFRÅN. Utan NÄR och VARIFRÅN är en varning inte något föraren
+-- kan handla på, och utan VARIFRÅN ser gruppens andrahandsuppgift ut som en
+-- officiell uppgift.
+--
+-- Varför meningen byggs HÄR och inte i klienten, trots att koden redan finns
+-- där: push-lyssnaren i sw.js får en färdig titel och en färdig brödtext och
+-- ritar dem. Den kan inte formulera något — en service worker som skulle
+-- importera sammanfattning.js hade dragit in parser.js, util.js och store.js
+-- i en modulkontext som sw.js inte kör i, och kedjan hade blivit längre och
+-- skörare på det enda ställe där den absolut inte får vara det. Servern
+-- skickar alltså den färdiga meningen, och de två ställena möts i formen:
+-- samma ord, samma ordning, samma åldersfraser.
+--
+-- Fördelningen mellan titel och brödtext följer meningens eget snitt:
+--
+--   rubrik  "Fartkontroll med laser vid Hälla"        -> notisens titel
+--   svans   "Någon i Facebook-gruppen varnade för
+--            2 minuter sedan. Kan ha flyttat på sig." -> notisens brödtext
+--   mening  rubrik + tankstreck + svans, gemen        -> loggen, revisionen
+--
+-- DET SOM ALDRIG FÅR HÄNDA: inläggets råtext på en låsskärm. Se avsnittet
+-- NOTISER: TEXTEN ovan. Regeln är intakt här. Platsen är geokodningens
+-- etikett, typen är en av fyra kända strängar, och det enda som härleds ur
+-- inläggstexten är fbmejl_utrustning() nedan — som bara kan svara med ett av
+-- tre fasta ord. Ingen teckensekvens ur ett Facebook-inlägg kan ta sig
+-- igenom den funktionen.
+
+-- Laser eller radar? Ett slutet svar, aldrig ett citat.
+--
+-- Samma tre fall som typText() i js/sammanfattning.js prövar, i samma
+-- ordning. Returvärdet är 'laser', 'radar', 'fart' eller null — ingenting
+-- annat kan komma ut, hur inlägget än ser ut.
+create or replace function public.fbmejl_utrustning(p_text text)
+returns text
+language plpgsql
+immutable
+set search_path = pg_catalog, pg_temp as $$
+declare v_t text;
+begin
+  -- Samma orduppdelning som klienten: allt som inte är en bokstav eller en
+  -- siffra skiljer ord. Då fångas "laser-kontroll" och "laserkontroll" lika.
+  v_t := ' ' || regexp_replace(lower(coalesce(p_text, '')), '[^0-9a-zåäöéèü]+', ' ', 'g');
+  if v_t ~ ' laser'  then return 'laser'; end if;
+  if v_t ~ ' radar'  then return 'radar'; end if;
+  if v_t ~ ' (fartkontroll|hastighetskontroll|fartkoll|fartkamera)' then return 'fart'; end if;
+  return null;
+end $$;
+
+-- Typen i klartext, med utrustningen inbakad när den är känd.
+--
+-- Bygger på fbmejl_typnamn() med flit: typordlistan ska finnas på ETT
+-- ställe. Den här funktionen lägger bara till de tre preciseringar som
+-- js/sammanfattning.js gör, och bara för trafikkontroller.
+create or replace function public.fbmejl_typtext(p_typ text, p_utrustning text default null)
+returns text
+language sql
+immutable
+set search_path = pg_catalog, pg_temp as $$
+  select case
+    when p_typ = 'control' and p_utrustning = 'laser' then 'Fartkontroll med laser'
+    when p_typ = 'control' and p_utrustning = 'radar' then 'Fartkontroll med radar'
+    when p_typ = 'control' and p_utrustning = 'fart'  then 'Fartkontroll'
+    else public.fbmejl_typnamn(p_typ)
+  end;
+$$;
+
+-- Platsfrasen, med ledande mellanslag när det finns en plats.
+--
+-- Tre utfall, ordagrant som platsFras() i js/sammanfattning.js, och det
+-- tredje är det som brukar glömmas: ingen plats alls. Då sägs det rakt ut.
+-- En mening som bara utelämnar platsen låter som om den hade en.
+--
+-- Två listor följer med från klienten:
+--   tomma etiketter   "-", "okänd", "null" — text som ser ut att vara en
+--                     plats men inte är det.
+--   inte en plats     etiketter som bara upprepar typen. "Polis vid Polis"
+--                     är ingen upplysning.
+-- Och prepositionslistan, som hindrar "vid på E18" och "vid vid Hälla".
+create or replace function public.fbmejl_platsfras(p_plats text)
+returns text
+language plpgsql
+immutable
+set search_path = pg_catalog, pg_temp as $$
+declare
+  v_etikett text;
+  v_norm    text;
+  v_forsta  text;
+begin
+  v_etikett := btrim(regexp_replace(coalesce(p_plats, ''), '[[:space:]]+', ' ', 'g'));
+
+  v_norm := lower(v_etikett);
+  v_norm := regexp_replace(v_norm, '[^0-9a-zåäöéèü_[:space:]-]+', ' ', 'g');
+  v_norm := btrim(regexp_replace(v_norm, '[[:space:]]+', ' ', 'g'));
+
+  if v_norm = any (array[
+       '', '-', 'okänd', 'okand', 'okänt', 'okant', 'null', 'undefined',
+       'plats okänd']) then
+    return ', plats okänd';
+  end if;
+
+  if v_norm = any (array[
+       'polis', 'polisen', 'poliser', 'polisbil', 'polisbilar', 'snut', 'snutar',
+       'kontroll', 'trafikkontroll', 'fartkontroll', 'hastighetskontroll',
+       'poliskontroll', 'civil', 'civilbil', 'civilpolis', 'kamera',
+       'fartkamera', 'varning']) then
+    return ', plats okänd';
+  end if;
+
+  v_forsta := split_part(v_norm, ' ', 1);
+  if v_forsta = any (array[
+       'vid', 'på', 'pa', 'i', 'utanför', 'utanfor', 'mot', 'längs', 'langs',
+       'nära', 'nara', 'runt', 'kring', 'mellan', 'efter', 'före', 'fore',
+       'under', 'över', 'over', 'norr', 'söder', 'soder', 'öster', 'oster',
+       'väster', 'vaster', 'strax']) then
+    return ' ' || v_etikett;
+  end if;
+
+  return ' vid ' || v_etikett;
+end $$;
+
+-- Hela meningen, i tre delar.
+--
+-- Åldersfraserna och aktualitetsförbehållen är ordagrant desamma som
+-- alderDelar() och aktualitet() i js/sammanfattning.js, inklusive gränserna:
+-- en minut, en timme, ett dygn. Livslängderna är samma tal som TTL_MINUTES i
+-- js/store.js — polis 45, kontroll 60, civil 30 — och det är de som gör att
+-- en civil polisbil låter gammal tidigare än en trafikkontroll. Den förra
+-- flyttar sig, den senare står kvar och bygger kö.
+--
+-- Tvåminuterstoleransen för framtida stämplar finns av samma skäl som i
+-- klienten: en klocka som går fel ska ge "vid en tidpunkt som inte går att
+-- lita på", inte "om 20 minuter".
+--
+-- @param p_created_at millisekunder sedan epoch, som i reports.created_at
+create or replace function public.fbmejl_mening(
+  p_typ        text,
+  p_utrustning text,
+  p_plats      text,
+  p_created_at bigint default null
+)
+returns jsonb
+language plpgsql
+stable
+set search_path = pg_catalog, pg_temp as $$
+declare
+  v_nu     bigint := (extract(epoch from now()) * 1000)::bigint;
+  v_ms     bigint;
+  v_min    bigint;
+  v_ttl    int;
+  v_okand  boolean := false;
+  v_nar    text;
+  v_akt    text := '';
+  v_rubrik text;
+  v_svans  text;
+begin
+  v_rubrik := public.fbmejl_typtext(p_typ, p_utrustning) || public.fbmejl_platsfras(p_plats);
+
+  if p_created_at is null or p_created_at <= 0 then
+    v_okand := true;
+    v_nar := 'vid okänd tidpunkt';
+  else
+    v_ms := v_nu - p_created_at;
+    if v_ms < -120000 then
+      v_okand := true;
+      v_nar := 'vid en tidpunkt som inte går att lita på';
+    else
+      v_min := greatest(0, v_ms / 60000);
+      if    v_min = 0     then v_nar := 'just nu';
+      elsif v_min = 1     then v_nar := 'för en minut sedan';
+      elsif v_min < 60    then v_nar := 'för ' || v_min || ' minuter sedan';
+      elsif v_min < 90    then v_nar := 'för ungefär en timme sedan';
+      elsif v_min < 1440  then v_nar := 'för ' || round(v_min / 60.0) || ' timmar sedan';
+      elsif v_min < 2880  then v_nar := 'för mer än ett dygn sedan';
+      else                     v_nar := 'för ' || round(v_min / 1440.0) || ' dagar sedan';
+      end if;
+    end if;
+  end if;
+
+  if not v_okand then
+    v_ttl := case p_typ
+               when 'police'   then 45
+               when 'control'  then 60
+               when 'unmarked' then 30
+               when 'camera'   then 525600
+               else 45
+             end;
+    if v_min >= v_ttl then
+      v_akt := ' Troligen inte kvar.';
+    elsif v_min::numeric / v_ttl >= 0.5 then
+      v_akt := ' Kan ha flyttat på sig.';
+    end if;
+  end if;
+
+  -- Versalen står här och inte i ett upper(): brödtexten börjar en mening,
+  -- den fullständiga meningen gör det inte. Två fasta strängar är säkrare än
+  -- en teckenoperation som beter sig olika beroende på databasens kollation.
+  v_svans := 'Någon i Facebook-gruppen varnade ' || v_nar || '.' || v_akt;
+
+  return jsonb_build_object(
+    'rubrik', v_rubrik,
+    'svans',  v_svans,
+    'mening', v_rubrik || ' — någon i Facebook-gruppen varnade ' || v_nar || '.' || v_akt,
+    'nar',    v_nar
+  );
+end $$;
+
 -- ============================ NOTISER: SLÅ PÅ ========================
 --
 -- Appens knapp. Samma mönster som mark_drove_today() i push.sql: den som
@@ -735,7 +949,9 @@ end $$;
 -- att veta att det står något. Därför byggs notisen uteslutande av rader som
 -- faktiskt blev rapporter, och p_nya innehåller bara dem.
 --
--- @param p_nya  jsonb-array av {typ, plats} för de rapporter som skapades
+-- @param p_nya  jsonb-array av {typ, plats, utrustning, created_at} för de
+--               rapporter som faktiskt skapades. Aldrig råtext — se
+--               avsnittet NOTISER: MENINGEN.
 --
 -- Anropet ut sker med pg_net, som är asynkront: net.http_post lägger sig i en
 -- kö och returnerar direkt. Det betyder att en trög eller nere edge-funktion
@@ -778,6 +994,7 @@ declare
   v_timme    int;
   v_dag      date;
   v_platser  text;
+  v_mening   jsonb;
   v_titel    text;
   v_text     text;
   v_totalt   int;
@@ -850,25 +1067,42 @@ begin
 
   v_totalt := v_antal + coalesce(v_lage.odelade, 0);
 
-  -- Platserna, utan dubbletter, högst tre. Fler får inte plats i en notis och
-  -- gör den svårare att läsa på en låsskärm i en bil.
-  select string_agg(p, ' · ') into v_platser from (
-    select distinct on (lower(x.plats)) left(x.plats, 40) as p
-      from jsonb_to_recordset(p_nya) as x(typ text, plats text)
-     where coalesce(x.plats, '') <> ''
-     order by lower(x.plats)
-     limit 3
-  ) d;
+  -- Rubrikerna, utan dubbletter, högst tre. Fler får inte plats i en notis
+  -- och gör den svårare att läsa på en låsskärm i en bil.
+  --
+  -- Förut stod bara platsnamnen här — "Erikslund · E18 · Hälla". Tre platser
+  -- utan att säga VAD som står där är tre frågor, inte tre besked. Nu står
+  -- typen med, byggd av fbmejl_mening() precis som den enskilda notisen.
+  select string_agg(q.r, ' · ' order by q.r) into v_platser
+    from (
+      select distinct on (lower(d.rubrik)) d.rubrik as r
+        from (
+          select public.fbmejl_mening(x.typ, x.utrustning, x.plats, x.created_at) ->> 'rubrik'
+                   as rubrik
+            from jsonb_to_recordset(p_nya)
+                 as x(typ text, plats text, utrustning text, created_at bigint)
+        ) d
+       where coalesce(d.rubrik, '') <> ''
+       order by lower(d.rubrik)
+       limit 3
+    ) q;
 
   if v_totalt = 1 then
-    -- En enda varning: säg vad och var direkt i titeln. Det är hela poängen.
-    select public.fbmejl_typnamn(x.typ) || coalesce(' vid ' || left(x.plats, 60), '')
-      into v_titel
-      from jsonb_to_recordset(p_nya) as x(typ text, plats text) limit 1;
-    v_text := 'Ny rapport från gruppen. Öppna Polisvakt för att se var på kartan.';
+    -- En enda varning: hela sammanfattningsmeningen, delad vid sitt eget
+    -- tankstreck. Titeln säger VAD och VAR, brödtexten NÄR och VARIFRÅN.
+    -- Det är samma mening som js/sammanfattning.js visar i appen — se
+    -- avsnittet NOTISER: MENINGEN ovan.
+    select public.fbmejl_mening(x.typ, x.utrustning, x.plats, x.created_at)
+      into v_mening
+      from jsonb_to_recordset(p_nya)
+           as x(typ text, plats text, utrustning text, created_at bigint)
+     limit 1;
+    v_titel := left(coalesce(v_mening->>'rubrik', 'Ny varning i gruppen'), 80);
+    v_text  := left(coalesce(v_mening->>'svans',
+                             'Någon i Facebook-gruppen varnade. Öppna Polisvakt för att se var.'), 240);
   else
     v_titel := v_totalt || ' nya varningar i gruppen';
-    v_text  := coalesce(v_platser, 'Öppna Polisvakt för att se var.');
+    v_text  := left(coalesce(v_platser, 'Öppna Polisvakt för att se var.'), 240);
   end if;
 
   -- Ut på nätet, om vägen dit finns. Saknas pg_net eller adressen loggas det
@@ -1236,6 +1470,55 @@ end $$;
 -- en tredje part). Den är därför också åtkomstskyddad hårt längre ner: bara
 -- service_role får anropa den. Ingen anon-nyckel i världen ska kunna lägga
 -- rapporter i gruppens namn.
+--
+-- ---------------------------------------------------------------------
+-- DEN ENDA VÄGEN IN. Gäller också bryggan.
+--
+-- Facebook-bryggan skrev tidigare rakt in i reports över PostgREST. Rapporten
+-- hamnade på kartan och telefonen var tyst, för allt som får en telefon att
+-- ringa sitter i fbmejl_notis_ut(), som bara anropas härifrån. Bryggan gick
+-- alltså förbi avdubblingen, nykterhetsnätet, takten och notisen på en gång.
+--
+-- Två utvägar övervägdes, och valet står här för att det inte ska behöva
+-- fattas om:
+--
+--   1. Anroparen anropar den HÄR funktionen i stället för att skriva rått.
+--      Hela den testade kedjan återanvänds, och det finns fortfarande bara
+--      en väg från "någon skrev i gruppen" till "en telefon ringer". Priset
+--      är att anroparen måste bära service_role-nyckeln. Det går för en
+--      daemon på ägarens egen maskin (nyckeln i en gitignorerad fil, precis
+--      som IMAP-lösenordet redan ligger), men INTE för ett userscript inne på
+--      facebook.com — en servernyckel i en sida Meta kontrollerar är samma
+--      sak som ingen nyckel alls.
+--
+--   2. En trigger på reports som anropar notisen. Lockande för att den fångar
+--      varje väg in automatiskt, men den faller på tre saker. Den ser en rad
+--      i taget: daemonen gör en HTTP-insert per inlägg, alltså en notis per
+--      rapport, och buntspärren finns just för att det aldrig får hända. Att
+--      bunta i stället kräver en kötabell och ett cron-jobb, alltså en ANDRA
+--      notisväg med egen timing som glider från den här. Och den skulle
+--      behöva köra nykterhetsnätet på rader appens egna knappar och rösten
+--      skapat — ett nät som är MEDVETET bredare än parsern och som därför
+--      skulle börja avvisa förares egna rapporter.
+--
+-- Alternativ 1 gäller. Kontraktet för en brygga är:
+--
+--   ETT anrop per svep, med alla nya rader i samma array. Inte ett anrop per
+--   rad. Buntspärren i fbmejl_notis_ut() ger EN notis per anrop, och fyra
+--   anrop i rad ger en notis plus tre rader i odelade — alltså tre varningar
+--   som inte hörs förrän tio minuter senare. Kedjan går inte sönder av det,
+--   men den blir sämre, och det syns ingenstans.
+--
+-- Raderna får se ut precis som en reports-rad: id, type, lat, lon, label,
+-- note, device_id, external_id, created_at, expires_at. source sätts här och
+-- går inte att skicka med. Skickar anroparen dessutom text_nyckel (och
+-- text_nyckel_grannar) fungerar den korsvisa avdubblingen mot mejlvägen och
+-- Telegram-spegeln, så att samma inlägg som kommer två vägar blir EN nål.
+-- Nyckeln räknas fram likadant överallt: se nycklarFor() i js/fbmejl.js.
+--
+-- Svaret bär 'skapade' — antalet rader som blev nya rapporter — och 'notis'
+-- med utfallet från fbmejl_notis_ut(). En brygga som loggar de två talen
+-- märker samma dag om notiskedjan slutar fungera. Det gjorde ingen förut.
 
 create or replace function public.fbmejl_ta_emot(p_rader jsonb)
 returns jsonb
@@ -1390,9 +1673,20 @@ begin
 
     if v_skrivna > 0 then
       v_skapade := v_skapade + 1;
+      -- Fyra fält, och bara fyra. Notisen ska bära sammanfattningsmeningen,
+      -- och den kräver NÄR (created_at) utöver VAD och VAR.
+      --
+      -- utrustning är den enda beröringen mellan inläggets råtext och
+      -- notisen, och den går genom fbmejl_utrustning() som bara kan svara
+      -- 'laser', 'radar', 'fart' eller null. RÅTEXTEN SJÄLV SKICKAS INTE MED
+      -- — se avsnittet NOTISER: TEXTEN. Skulle någon frestas lägga till
+      -- 'note' här är det den ändringen som gör låsskärmen till en kanal där
+      -- vem som helst i en Facebook-grupp skriver vad som helst.
       v_nya := v_nya || jsonb_build_array(jsonb_build_object(
-        'typ',   v_typ,
-        'plats', left(coalesce(nullif(v_rad->>'label', ''), ''), 60)
+        'typ',        v_typ,
+        'plats',      left(coalesce(nullif(v_rad->>'label', ''), ''), 60),
+        'utrustning', public.fbmejl_utrustning(v_note),
+        'created_at', (v_rad->>'created_at')::bigint
       ));
       insert into public.fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, rapport_id)
       values (v_nyckel, v_text_nyckel, v_msg_id, v_rad->>'inlaggs_id', 'rapport', v_id)
@@ -1600,6 +1894,16 @@ grant execute on function public.fbmejl_typnamn(text)                     to ano
 grant execute on function public.fbmejl_sanera(text)                      to anon, authenticated, service_role;
 grant execute on function public.fbmejl_normalisera_msgid(text)           to anon, authenticated, service_role;
 
+-- Meningsbyggarna är ren textbehandling utan en enda uppslagning mot en
+-- tabell. De tar det anroparen skickar in och lämnar tillbaka en sträng.
+-- Samma resonemang som för fbmejl_typnamn: de avslöjar ingenting, och de ska
+-- gå att prova i editorn och i fbmejl-test.html utan servernyckel — annars
+-- provas de inte, och då glider de från js/sammanfattning.js.
+grant execute on function public.fbmejl_utrustning(text)                  to anon, authenticated, service_role;
+grant execute on function public.fbmejl_typtext(text, text)               to anon, authenticated, service_role;
+grant execute on function public.fbmejl_platsfras(text)                   to anon, authenticated, service_role;
+grant execute on function public.fbmejl_mening(text, text, text, bigint)  to anon, authenticated, service_role;
+
 revoke execute on function public.fbmejl_gruppnotis_antal()               from public, anon, authenticated;
 grant  execute on function public.fbmejl_gruppnotis_antal()               to service_role;
 
@@ -1636,6 +1940,7 @@ grant execute on function public.fbmejl_ar_nykterhetskontroll(text)       to ano
 -- Vyerna innehåller ingen data — de är frågor — så en drop kostar ingenting.
 drop view if exists public.fbmejl_senaste;
 drop view if exists public.fbmejl_halsa;
+drop view if exists public.fbmejl_notiskedjan;
 
 create view public.fbmejl_senaste
 with (security_invoker = on) as
@@ -1745,6 +2050,57 @@ with (security_invoker = on) as
 
 revoke all on public.fbmejl_halsa from anon, authenticated;
 grant select on public.fbmejl_halsa to service_role;
+
+-- ============================ GICK RAPPORTEN FÖRBI? ==================
+--
+-- Den här vyn finns för ETT fel, och det felet har redan inträffat.
+--
+-- Facebook-bryggan (tools/fb-bridge.user.js och tools/brygg-daemon.ps1)
+-- skrev rakt in i reports över PostgREST. Rapporten hamnade på kartan, allt
+-- såg friskt ut, och telefonen var tyst — för notismaskineriet sitter i
+-- fbmejl_notis_ut(), som bara anropas från fbmejl_ta_emot(). Bryggan gick
+-- förbi hela stycket: avdubblingen, nykterhetsnätet, takten och notisen.
+--
+-- Ingen befintlig vy kunde svara på det. fbmejl_halsa räknar mejlkön, och
+-- kön var frisk — det var en helt annan väg in som var trasig.
+--
+-- Signalen är enkel och svår att luras av: varje rad som gått genom
+-- fbmejl_ta_emot() har ett minne i fbmejl_lasta med nyckel = external_id.
+-- En rapport från en Facebook-väg UTAN ett sådant minne har alltså kommit in
+-- vid sidan av notiskedjan.
+--
+--   forbi_notiskedjan > 0   någon skriver fortfarande direkt till reports.
+--                           Det är felet. Se docs/notiskedjan.md.
+--   genom_notiskedjan       rader som gick rätt väg. Att de fick en notis är
+--                           en annan fråga — den besvaras av fbmejl_halsa.
+--
+-- Vyn säger INTE att en notis nådde en telefon. Den säger bara att raden ens
+-- var i närheten av maskineriet. Det är ett lägre krav, och det är med flit:
+-- den ska kunna svara "nej" också när allt annat är trasigt.
+
+create view public.fbmejl_notiskedjan
+with (security_invoker = on) as
+  select
+    r.device_id                                            as vag,
+    count(*)                                               as rapporter_dygn,
+    count(*) filter (where l.nyckel is not null)           as genom_notiskedjan,
+    count(*) filter (where l.nyckel is null)               as forbi_notiskedjan,
+    max(to_char(to_timestamp(r.created_at / 1000.0) at time zone 'Europe/Stockholm',
+                'YYYY-MM-DD HH24:MI'))                     as senaste,
+    case
+      when count(*) filter (where l.nyckel is null) > 0
+        then 'SKRIVER FÖRBI — ingen notis går ut för de raderna'
+      else 'går genom fbmejl_ta_emot'
+    end                                                    as omdome
+  from public.reports r
+  left join public.fbmejl_lasta l on l.nyckel = r.external_id
+  where r.device_id in ('fb-mejl', 'fb-bridge', 'fb-daemon')
+    and r.created_at > (extract(epoch from now()) * 1000)::bigint - 24 * 3600 * 1000
+  group by r.device_id
+  order by r.device_id;
+
+revoke all on public.fbmejl_notiskedjan from anon, authenticated;
+grant select on public.fbmejl_notiskedjan to service_role;
 
 commit;
 
@@ -2061,10 +2417,44 @@ end $$;
 --      select public.fbmejl_satt_gruppnotiser('<din-endpoint>', '<ditt-device-id>', true);
 --      select public.fbmejl_har_gruppnotiser('<din-endpoint>', '<ditt-device-id>');
 --
+-- 9d. Meningen. Ska ge de fyra raderna nedan, ordagrant:
+--
+--      select public.fbmejl_mening('police', null, 'Erikslund',
+--               (extract(epoch from now())*1000)::bigint - 4*60000) ->> 'mening';
+--      -- Polis vid Erikslund — någon i Facebook-gruppen varnade för 4 minuter sedan.
+--
+--      select public.fbmejl_mening('control', public.fbmejl_utrustning('laserkontroll pa E18'),
+--               'E18', (extract(epoch from now())*1000)::bigint) ->> 'mening';
+--      -- Fartkontroll med laser vid E18 — någon i Facebook-gruppen varnade just nu.
+--
+--      select public.fbmejl_mening('unmarked', null, 'på Hälla',
+--               (extract(epoch from now())*1000)::bigint - 20*60000) ->> 'mening';
+--      -- Civil polisbil på Hälla — någon i Facebook-gruppen varnade för 20
+--      -- minuter sedan. Kan ha flyttat på sig.
+--
+--      select public.fbmejl_mening('police', null, '', null) ->> 'mening';
+--      -- Polis, plats okänd — någon i Facebook-gruppen varnade vid okänd tidpunkt.
+--
+--    Och att inget ur inläggstexten kan ta sig ut. Ska ge laser, radar, fart,
+--    och tre gånger null — aldrig något annat:
+--
+--      select public.fbmejl_utrustning('laser vid E18'),
+--             public.fbmejl_utrustning('radarkontroll'),
+--             public.fbmejl_utrustning('fartkontroll vid Hälla'),
+--             public.fbmejl_utrustning('polis vid Erikslund'),
+--             public.fbmejl_utrustning('<script>alert(1)</script>'),
+--             public.fbmejl_utrustning(null);
+--
 -- 10. Hälsan, när bryggan väl går:
 --
 --      select * from public.fbmejl_halsa;
 --      select * from public.fbmejl_senaste;
+--
+-- 11. Skriver någon fortfarande förbi notiskedjan? Kolumnen omdome ska säga
+--     "går genom fbmejl_ta_emot" för varje väg. Står det "SKRIVER FÖRBI" är
+--     bryggan inte omställd — se docs/notiskedjan.md:
+--
+--      select * from public.fbmejl_notiskedjan;
 --
 -- Gick en omgång fel och la ut skräp? Så här släcks den utan att historiken
 -- raderas — rapporterna försvinner ur appen inom en tömningscykel, men

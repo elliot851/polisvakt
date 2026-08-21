@@ -391,6 +391,12 @@
     // narkotikakontroll på Vasagatan".
     'narkotikakontroll', 'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
     'drogsökhund', 'drogsokhund', 'drogrelaterad',
+    // Blås-orden utan svenska tecken. "sallnings" fick sin ASCII-form när
+    // narkotikaorden lades till, men blås-orden glömdes — "blaser i
+    // vasteras" gick igenom medan "blåser i Västerås" stoppades. Samma
+    // mening, olika tangentbord. "blas" ensamt är för kort och för nära
+    // vanliga ord; böjningarna räcker. Se js/parser.js.
+    'blaser', 'blasa', 'blaste', 'blasning', 'blåsning',
   ];
 
   /*
@@ -622,10 +628,33 @@
    *     hade den andra gruppens varning tystats som en dubblett av den
    *     första, fast den gällde en annan stad.
    */
+  /*
+   * Nyckeln får inte bero på om Facebook hunnit rendera färdigt.
+   *
+   * story_message består av två blockelement. Innan layouten är klar ger
+   * innerText ingen radbrytning mellan dem, och orden växer ihop:
+   *
+   *   färdigrenderat:  "...sträckan\nBörjar nu"  ->  "...sträckan börjar nu"
+   *   halvrenderat:    "...sträckanBörjar nu"    ->  "...sträckanbörjar nu"
+   *
+   * Whitespace-normalisering räddar inte det — det finns inget blanksteg
+   * att kollapsa, det saknas helt. Två hashar för samma inlägg betyder två
+   * saker, och båda är dåliga: samma varning kan skickas två gånger, och
+   * värre, ett gammalt inlägg som råkar renderas om får en ny nyckel,
+   * registreras som osett och ser därmed nyfött ut. En dygnsgammal
+   * laservarning som ploppar upp som färsk är precis det fel som får en
+   * förare att sluta lita på appen.
+   *
+   * Därför tas ALLA blanksteg bort innan hashning. Två inlägg som skiljer
+   * sig enbart på mellanslag räknas då som samma, vilket är rätt: de är
+   * samma text för en läsare.
+   */
+  const texthash = t => hash(normalize(t).replace(/\s+/g, ''));
+
   function keysFor(post, grupp) {
     const g = (grupp && grupp.id) || '?';
     if (post.id) return { stable: `g:${g}|id:${post.id}`, externalId: 'fb:' + post.id };
-    const h = hash(normalize(post.text));
+    const h = texthash(post.text);
     const bucket = Math.floor(Date.now() / DEDUP_WINDOW_MS).toString(36);
     return { stable: `g:${g}|tx:${h}`, externalId: `fb:${g}:${h}:${bucket}` };
   }

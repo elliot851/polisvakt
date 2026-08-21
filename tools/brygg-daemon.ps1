@@ -3,8 +3,9 @@
 # VARFÖR DEN HÄR FILEN FINNS
 #
 # Bryggkoden i tools\fb-bridge.user.js är mätt mot den riktiga gruppsidan och
-# testad i 117 fall. Problemet har aldrig varit koden — det har varit att få
-# in den i sidan. Fyra vägar är uttömda och ska inte provas igen:
+# täckt av testsvepet i fb-bryggan-test.html. Problemet har aldrig varit koden
+# — det har varit att få in den i sidan. Fyra vägar är uttömda och ska inte
+# provas igen:
 #
 #   Tampermonkey            installationssidan ligger på chrome-extension://,
 #                           och Chrome blockerar all automation där.
@@ -53,14 +54,21 @@
 # ÅTERANVÄNDNING, INTE OMSKRIVNING
 #
 # Läsdelen skrivs inte om här. Daemonen läser tools\fb-bridge.user.js från
-# disk vid start och klipper ut stycket mellan "const VIEWBOX" och
-# "= Geokodning =". Det stycket är parsern, minneslistan, först-sedd-
-# mekaniken och hela flödesläsningen — ordagrant, samma bytes som testerna
-# körts mot. Allt efter det (geokodning, skrivning, skanningsloopen) lämnas
-# kvar i filen och görs i stället här.
+# disk vid start och klipper ut stycket mellan sektionsrubrikerna
+# "Konfiguration" och "Geokodning". Det stycket är parsern, minneslistan,
+# först-sedd-mekaniken och hela flödesläsningen — ordagrant, samma bytes som
+# testerna körts mot. Allt efter det (geokodning, skrivning, skanningsloopen)
+# lämnas kvar i filen och görs i stället här.
 #
-# Saknas någon av markörerna vägrar daemonen starta. En brygga som tyst läser
-# fel kod är värre än en som inte startar.
+# Saknas någon av rubrikerna vägrar daemonen starta, och den kontrollerar
+# dessutom att klippet innehåller de funktioner den ska anropa och INTE
+# innehåller nätverksadresser. En brygga som tyst läser fel kod är värre än en
+# som inte startar.
+#
+# Skalet runt klippet frågar efter formen på det den anropar i stället för att
+# anta den — bryggan skrevs om från 2.2 till 2.3 mitt under det här arbetet
+# och bytte både funktionssignaturer och kalibreringsflagga. Se
+# LasarSkalFot längre ned.
 #
 #
 # KÖR
@@ -594,11 +602,12 @@ function Hamta-Flikar {
 }
 
 <#
-  Anslutning + injektion.
+  Anslutning + förregistrering av läsaren.
 
-  Returnerar ett kontextobjekt, eller $null när bryggfönstret inte går att
-  nå. Daemonen faller aldrig på att Chrome saknas — den säger till och
-  försöker igen.
+  Returnerar antingen ett kontextobjekt (nycklarna ws/flikId/url/varld/ram)
+  eller @{ fel = '...' }. Den som anropar prövar med .ContainsKey('fel').
+  Daemonen faller aldrig på att Chrome saknas — den säger till och försöker
+  igen.
 #>
 function Anslut {
   param([int]$Port, [string]$GruppId)
@@ -609,8 +618,11 @@ function Anslut {
       '. Starta bryggfönstret med tools\starta-bryggan.ps1.' }
   }
 
+  # Slutgränsen (/, ?, # eller radslut) är inte pynt: utan den matchar
+  # gruppen 317968668373072 också en flik som står i 3179686683730721234.
   $mal = $flikar | Where-Object {
-    $_.type -eq 'page' -and $_.url -match ('facebook\.com/groups/' + [regex]::Escape($GruppId))
+    $_.type -eq 'page' -and
+    $_.url -match ('facebook\.com/groups/' + [regex]::Escape($GruppId) + '($|[/?#])')
   } | Select-Object -First 1
 
   if (-not $mal) {

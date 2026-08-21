@@ -51,6 +51,20 @@ const SOBRIETY_WORDS = [
   // såg absolut ut i kommentaren ovan och var det inte i koden.
   'narkotikakontroll', 'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
   'drogsökhund', 'drogsokhund', 'drogrelaterad',
+  /*
+   * Blås-orden utan svenska tecken.
+   *
+   * "sållnings" fick sin ASCII-form "sallnings" när narkotikaorden lades
+   * till, men blås-orden glömdes. Alltså gick "blaser i vasteras" igenom
+   * medan "blåser i Västerås" stoppades — samma mening, olika tangentbord.
+   * Folk skriver utan prickar på gamla telefoner, i bilen, och när
+   * autokorrigeringen står på engelska.
+   *
+   * "blas" ensamt står INTE här. Det är för kort och för nära vanliga ord
+   * ("blast", engelska "blase"), och en spärr som vägrar riktiga
+   * polisrapporter kostar också liv. Böjningarna räcker.
+   */
+  'blaser', 'blasa', 'blaste', 'blasning', 'blåsning',
 ];
 
 /*

@@ -50,7 +50,17 @@
 //   VAPID_KEYS      hela JSON-utskriften från generate-vapid-keys.ts
 //   VAPID_SUBJECT   mailto:din@adress.se
 //
+// DE TVÅ ÄR SANNOLIKT REDAN SATTA. Hemligheter i Supabase är gemensamma för
+// hela projektet, inte per funktion, och send-reminder använder samma två.
+// Sattes de när körpåminnelsen rullades ut gäller de här funktionen också, och
+// då ska INGA nya VAPID-nycklar genereras: en ny nyckel gör varje befintlig
+// prenumeration ogiltig, och då tystnar körpåminnelsen. Se docs/notiskedjan.md,
+// avsnittet om nycklarna, innan du rör dem.
+//
 // SUPABASE_URL och SUPABASE_SERVICE_ROLE_KEY injiceras av plattformen.
+//
+//   FBMEJL_ANROPSNYCKEL   VALFRI. Sätts bara om anropen från databasen får
+//                         401 — se TILLATNA_ANROPSNYCKLAR nedan.
 //
 // Anroparen legitimerar sig med service role-nyckeln i Authorization-huvudet.
 // Det är den nyckel fbmejl_notis_ut() plockar ur app.service_role_key. Se
@@ -65,6 +75,32 @@ const VAPID_SUBJECT = Deno.env.get('VAPID_SUBJECT') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE =
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY') ?? '';
+
+/**
+ * Vilka nycklar duger för att ANROPA funktionen?
+ *
+ * SERVICE_ROLE ovan används mot databasen och injiceras av plattformen. Att
+ * kräva exakt den strängen också i Authorization-huvudet är den självklara
+ * lösningen — och den har en fälla som kostar en hel felsökningskväll.
+ *
+ * Projektet har nya API-nycklar (js/config.js bär en sb_publishable-nyckel).
+ * Dashboarden visar då både den nya hemliga nyckeln och den gamla JWT:n, och
+ * plattformen injicerar EN av dem i SUPABASE_SERVICE_ROLE_KEY. Sätter man
+ * app.service_role_key i databasen till den andra svarar funktionen 401 på
+ * varje anrop. I fbmejl_notis_logg står det då 'fel' med "HTTP 401", och
+ * ingenting säger att de två nycklarna bara är olika utgåvor av samma
+ * behörighet.
+ *
+ * Därför: alla nycklar vi känner till duger, och en valfri egen hemlighet
+ * FBMEJL_ANROPSNYCKEL går att sätta om ingen av dem matchar det databasen
+ * har. Listan filtreras på längd så en tom miljövariabel aldrig kan bli en
+ * giltig tom nyckel — det vore ett öppet API.
+ */
+const TILLATNA_ANROPSNYCKLAR = [
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  Deno.env.get('SERVICE_ROLE_KEY') ?? '',
+  Deno.env.get('FBMEJL_ANROPSNYCKEL') ?? '',
+].filter((k) => k.length >= 20);
 
 /**
  * Livslängd på pushen hos pushtjänsten.
@@ -289,7 +325,24 @@ Deno.serve(async (req: Request): Promise<Response> => {
    * app.service_role_key. Bara den nyckeln duger.
    */
   const auth = req.headers.get('authorization') ?? '';
-  if (auth !== `Bearer ${SERVICE_ROLE}`) {
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!token || !TILLATNA_ANROPSNYCKLAR.some((k) => k === token)) {
+    // Diagnosen, utan att logga en hemlighet.
+    //
+    // Ett 401 utan förklaring ser exakt likadant ut oavsett om anroparen är
+    // en främling eller om ägaren råkat sätta app.service_role_key till fel
+    // utgåva av sin egen nyckel. Det ena kräver ingenting, det andra kräver
+    // en rättning — och skillnaden syns i FORMEN och LÄNGDEN, inte i
+    // innehållet. Nycklarnas tre första tecken skiljer 'eyJ' (JWT) från
+    // 'sb_' (ny hemlig nyckel), och det räcker för att se felet.
+    console.error(
+      'Nekat anrop. Fick nyckel av formen "' + (token.slice(0, 3) || 'ingen') +
+      '" med längd ' + token.length + '. Godtar ' + TILLATNA_ANROPSNYCKLAR.length +
+      ' nyckel/nycklar av formen ' +
+      TILLATNA_ANROPSNYCKLAR.map((k) => '"' + k.slice(0, 3) + '" (' + k.length + ')').join(', ') +
+      '. Stämmer längden men inte nyckeln är det en annan nyckel; skiljer formen är det fel ' +
+      'utgåva — se docs/notiskedjan.md.',
+    );
     return new Response('Nekad', { status: 401 });
   }
 
