@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Polisvakt — Facebook-brygga
 // @namespace    polisvakt
-// @version      2.2
-// @description  Läser nya inlägg i en Facebook-grupp du är medlem i och skickar polisvarningar vidare till Polisvakt.
+// @version      2.3
+// @description  Läser nya inlägg i de Facebook-grupper du är medlem i och skickar polisvarningar vidare till Polisvakt.
 // @match        https://www.facebook.com/*
 // @match        https://m.facebook.com/*
 // @match        https://mbasic.facebook.com/*
@@ -68,6 +68,23 @@
  *                            ('OLÄSLIG' om ingen väg gav en tid)
  *   __polisvakt.peek()    → hela avläsningen
  *   __polisvakt.forstSedda() → minneslistan över första observationer
+ *   __polisvakt.grupper()    → de anslutna grupperna
+ *   __polisvakt.aktivGrupp() → vilken av dem sidan visar just nu
+ *   __polisvakt.hittaGrupper() → grupperna kontot är med i (kör på
+ *                            facebook.com/groups/joins/)
+ *
+ * FLERA GRUPPER — nytt i 2.3
+ *
+ * Bryggan lyssnar på en LISTA av grupper, inte på en enda. Den som kör i
+ * Stockholm ansluter Stockholmsgruppen, den som kör i Västerås sin. Tre
+ * saker följer av det, och alla tre finns motiverade i koden:
+ *
+ *   • Varje grupp bär sin egen geografiska ruta. Utan den hade en
+ *     Stockholmsvarning geokodats mot Västmanland och antingen kastats
+ *     eller landat på fel gata med samma namn. Se CONFIG.groupIds.
+ *   • Varje grupp har egen bokföring: dedupnycklar, först-sedd och
+ *     kalibreringssvep. Samma mening i två grupper är två händelser.
+ *   • Tom lista betyder fortfarande att skriptet vägrar starta.
  *
  * Den hållbara vägen, om det här växer: be gruppens admin spegla inläggen
  * till en Telegram-kanal (Telegram har ett riktigt bot-API som får läsa) och
@@ -91,21 +108,61 @@
     supabaseKey: 'sb_publishable_6Oz7vhMd2b-kWB_DVftsmg_VwclVG5Q',
 
     /*
-     * Bara inlägg i den här gruppen skickas vidare. Siffrorna eller slug:en
-     * i /groups/<här>/.
+     * DE ANSLUTNA GRUPPERNA. Bara inlägg i de här skickas vidare.
      *
-     * Tomt betyder numera att skriptet vägrar starta. Förut betydde det
+     * Sedan 2.3 är det här en LISTA, inte ett fält. Skälet är att appen ska
+     * gå att köra på fler orter än Västerås: den som kör i Stockholm ansluter
+     * Stockholmsgruppen, den som kör i Göteborg sin. Varje grupp bär därför
+     * sitt eget område — utan det hade en Stockholmsvarning geokodats mot
+     * Västmanland och antingen kastats eller, värre, landat på fel gata med
+     * samma namn.
+     *
+     * Formen på en rad:
+     *
+     *   {
+     *     id:    '317968668373072',        // det som står efter /groups/
+     *     namn:  'Här Står Polisen - Västerås',
+     *     ort:   'Västerås',               // läggs till i geokodfrågan
+     *     omrade:'Västmanland',            // bara för att känna igen texten
+     *     ruta:  [15.10, 59.30, 17.30, 60.30],   // lonMin, latMin, lonMax, latMax
+     *   }
+     *
+     * ruta är gruppens geografiska avgränsning och är OBLIGATORISK så fort
+     * det finns fler än en rad, eller så fort raden skrivs som ett objekt.
+     * Se normaliseraGrupper() nedan för varför den regeln ser ut så.
+     *
+     * Tom lista betyder att skriptet vägrar starta. Förut betydde tomt fält
      * "läs varje grupp du besöker", med en varning i konsolen — men en
      * varning i konsolen är ingen spärr. Den som glömt fylla i fältet fick
      * en brygga som vidarebefordrade inlägg ur varenda grupp kontot är med
      * i, och det är precis det den aldrig får göra. Fel förval ska stoppa,
      * inte varna.
+     *
+     * Listan är enklast att låta appen skriva: Inställningar →
+     * Facebook-grupper → "Kopiera inställning till bryggan".
      */
     // "Här Står Polisen - Västerås", privat grupp, ~18 000 medlemmar.
     // Gruppen har inget eget namn i adressen, bara siffrorna — därför är
     // det den här formen som ska stå här, och samma form som Facebooks
     // notismejl kommer att bära.
-    groupId: '317968668373072',
+    groupIds: [
+      {
+        id: '317968668373072',
+        namn: 'Här Står Polisen - Västerås',
+        ort: 'Västerås',
+        omrade: 'Västmanland',
+        ruta: [15.10, 59.30, 17.30, 60.30],
+      },
+    ],
+
+    /*
+     * Bakåtkompatibilitet. Fram till 2.2 hette fältet groupId och tog en
+     * enda sträng. Står det något här och groupIds är tom används det, och
+     * gruppen får då Västmanland som område — det är exakt vad fältet
+     * betydde förut, och en tyst omtolkning till "hela Sverige" hade lagt
+     * varningar var som helst på kartan.
+     */
+    groupId: '',
 
     minConfidence: 0.65,
     scanIntervalMs: 20000,
@@ -172,7 +229,125 @@
     Object.assign(CONFIG, window.__pvBryggaConfig);
   }
 
-  const VIEWBOX = [15.10, 59.30, 17.30, 60.30];   // Västmanland
+  /* ================= De anslutna grupperna ================= */
+
+  /*
+   * Västmanland. Låg fram till 2.2 som en global VIEWBOX och var då hela
+   * bryggans geografi. Nu är den bara förvalet för den gamla groupId-formen,
+   * och siffrorna är oförändrade med flit: den som uppgraderar ska få exakt
+   * samma avgränsning som förut, inte en ny som "borde" vara likvärdig.
+   */
+  const VASTMANLAND = { ort: 'Västerås', omrade: 'Västmanland',
+                        ruta: [15.10, 59.30, 17.30, 60.30] };
+
+  /*
+   * Ord som står där ett grupp-id står i adressen, men som inte är grupper.
+   * /groups/feed/ är det farliga: det är DITT samlade gruppflöde, alltså
+   * inlägg ur varenda grupp kontot är med i. Läste bryggan där vore
+   * gruppfiltret meningslöst.
+   */
+  const FORBJUDNA_GRUPPORD = new Set([
+    'feed', 'discover', 'discovery', 'joins', 'create', 'search',
+    'your_groups', 'category', 'browse', 'invites', 'notifications',
+  ]);
+
+  /** Plockar ut grupp-id:t ur allt från ett naket id till en hel adress. */
+  function rensaGruppId(v) {
+    const s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+    const m = /\/groups\/([^/?#\s]+)/i.exec(s);
+    const bit = (m ? m[1] : s).trim();
+    if (!/^[\w.-]+$/.test(bit)) return '';
+    if (FORBJUDNA_GRUPPORD.has(bit.toLowerCase())) return '';
+    return bit;
+  }
+
+  const giltigRuta = r =>
+    Array.isArray(r) && r.length === 4 && r.every(n => Number.isFinite(n)) &&
+    r[0] < r[2] && r[1] < r[3];
+
+  /*
+   * Från vad som än står i konfigurationen till en lista bryggan kan lita på.
+   *
+   * VARFÖR ETT OMRÅDE ÄR OBLIGATORISKT — utom i exakt ett fall
+   *
+   * En grupp utan område måste få något, och varje tänkbart förval är fel:
+   * "Västmanland" lägger Stockholmsvarningar på Västeråskartan, "hela
+   * Sverige" släpper igenom en träff på Storgatan i vilken stad som helst.
+   * Alltså är rätt svar att vägra starta. Fel förval ska stoppa, inte varna.
+   *
+   * Undantaget är den gamla formen `groupId: '317968668373072'` — en naken
+   * sträng, ensam. Den betydde Västmanland fram till 2.2, och att tolka om
+   * den till något annat vid en uppgradering vore att ändra ägarens karta
+   * bakom ryggen på honom. En naken sträng som ENSAM rad får därför
+   * Västmanland; skrivs raden som ett objekt, eller finns det fler än en
+   * rad, krävs ruta.
+   *
+   * @returns {{grupper: Array, fel: string|null}}
+   */
+  function normaliseraGrupper(ratt) {
+    const rader = Array.isArray(ratt) ? ratt
+      : (ratt == null || ratt === '') ? []
+      : [ratt];
+
+    const ut = [];
+    const sedda = new Set();
+    for (const rad of rader) {
+      const bart = (typeof rad === 'string' || typeof rad === 'number');
+      const kalla = bart ? { id: rad } : (rad && typeof rad === 'object' ? rad : null);
+      if (!kalla) continue;
+
+      const id = rensaGruppId(kalla.id);
+      if (!id) continue;
+      if (sedda.has(id)) continue;          // samma grupp två gånger = en grupp
+      sedda.add(id);
+
+      ut.push({
+        id,
+        bart,
+        namn: String(kalla.namn || '').trim() || id,
+        ort: String(kalla.ort || '').trim(),
+        omrade: String(kalla.omrade || '').trim(),
+        ruta: giltigRuta(kalla.ruta) ? kalla.ruta.map(Number) : null,
+      });
+    }
+
+    if (!ut.length) return { grupper: [], fel: null };
+
+    for (const g of ut) {
+      if (g.ruta) continue;
+      if (ut.length === 1 && g.bart) {      // gamla formen, oförändrad betydelse
+        g.ruta = VASTMANLAND.ruta.slice();
+        g.ort = g.ort || VASTMANLAND.ort;
+        g.omrade = g.omrade || VASTMANLAND.omrade;
+        continue;
+      }
+      return { grupper: [], fel:
+        'gruppen ' + g.id + ' saknar område (ruta). Varje grupp måste säga var ' +
+        'den ligger, annars hamnar en varning från en annan stad på din karta. ' +
+        'Bryggan startar inte.' };
+    }
+
+    for (const g of ut) {
+      // Orden används bara för att slippa skriva "Vasagatan, Västerås,
+      // Västerås". Saknas de blir frågan bara lite längre, aldrig fel.
+      g.orter = [g.ort, g.omrade].filter(Boolean).map(s => s.toLowerCase());
+      delete g.bart;
+    }
+    return { grupper: ut, fel: null };
+  }
+
+  /*
+   * groupIds vinner när den är ifylld, annars gäller det gamla groupId.
+   * Ingen sammanslagning: två fält som båda gäller är två sanningar, och
+   * den dagen de säger olika saker vet ingen vilken som styr.
+   */
+  const RATT = (CONFIG.groupIds != null && CONFIG.groupIds !== '' &&
+                !(Array.isArray(CONFIG.groupIds) && !CONFIG.groupIds.length))
+    ? CONFIG.groupIds : CONFIG.groupId;
+  const { grupper: GRUPPER, fel: GRUPPFEL } = normaliseraGrupper(RATT);
+  const gruppMedId = id => GRUPPER.find(g => g.id === id) || null;
+
   const TTL_MINUTES = { police: 45, control: 60, unmarked: 30 };
   const DEDUP_WINDOW_MS = 3 * 60 * 60 * 1000;
   const MAX_TRIES = 3;                            // innan ett inlägg ges upp
@@ -423,11 +598,36 @@
     return (h >>> 0).toString(36);
   }
 
-  function keysFor(post) {
-    if (post.id) return { stable: 'id:' + post.id, externalId: 'fb:' + post.id };
+  /*
+   * NYCKLARNA BÄR GRUPPEN — men inte båda på samma sätt, och skillnaden är
+   * mätt snarare än smaksak.
+   *
+   * stable är bryggans EGNA nycklar: hanteringslistan och först-sedd. Där
+   * måste gruppen med. "Polis vid Storgatan" i Stockholmsgruppen och samma
+   * mening i Västeråsgruppen är två olika händelser, och utan gruppen i
+   * nyckeln hade den andra räknats som redan hanterad och tystnat.
+   *
+   * externalId är databasens dedupnyckel, och där skiljer sig de två fallen:
+   *
+   *   • Med inläggs-id: fb:<inläggets id>. Facebooks inläggs-id är globalt
+   *     unikt — samma id kan inte förekomma i två grupper. Att klistra på
+   *     gruppen hade inte tagit bort någon kollision, men det hade gett
+   *     varenda redan skickad rapport en ny nyckel vid uppgraderingen, och
+   *     då dyker de upp EN GÅNG TILL på kartan för de förare som kör just nu.
+   *     Formen är därför oförändrad med flit.
+   *
+   *   • Utan inläggs-id: fb:<grupp>:<texthash>:<tidsfack>. Här är kollisionen
+   *     verklig. Hashen räknas på texten och ingenting annat, så "Polis vid
+   *     Storgatan" ger samma hash i alla grupper — utan gruppen i nyckeln
+   *     hade den andra gruppens varning tystats som en dubblett av den
+   *     första, fast den gällde en annan stad.
+   */
+  function keysFor(post, grupp) {
+    const g = (grupp && grupp.id) || '?';
+    if (post.id) return { stable: `g:${g}|id:${post.id}`, externalId: 'fb:' + post.id };
     const h = hash(normalize(post.text));
     const bucket = Math.floor(Date.now() / DEDUP_WINDOW_MS).toString(36);
-    return { stable: 'tx:' + h, externalId: `fb:${h}:${bucket}` };
+    return { stable: `g:${g}|tx:${h}`, externalId: `fb:${g}:${h}:${bucket}` };
   }
 
   /* ---- Först sedd: bryggans egen observation ---------------------------
@@ -518,8 +718,17 @@
    * sitt f och sitt k, så ett inlägg bryggan tidsbestämde i går är
    * tidsbestämt även efter omladdningen. Det är hela vinsten med att lägga
    * listan på disk i stället för i minnet.
+   *
+   * EN FLAGGA PER GRUPP, INTE EN FÖR HELA FLIKEN.
+   *
+   * Facebook byter sida utan att ladda om. Går ägaren från Västeråsgruppen
+   * till Stockholmsgruppen är fliken densamma, och med en enda flagga vore
+   * Stockholmsgruppens FÖRSTA svep redan "kalibrerat" — varenda inlägg som
+   * råkade ligga i flödet, hur gammalt det än var, hade fått en observerad
+   * ålder och blivit en färsk varning. Det är exakt det fel
+   * kalibreringssvepet finns för att stoppa, bara med en ny väg in.
    */
-  let kalibrerat = false;
+  const kalibrerade = new Set();
 
   /*
    * ANDRA SÄTTET ATT SE GAMMALT SOM NYTT: flödet växer nedåt.
@@ -541,9 +750,9 @@
    * inlägg LÄNGRE NER i flödet. Regeln faller åt rätt håll — känner bryggan
    * inte igen något alls blir svaret "vet inte", och då skickas ingenting.
    */
-  function registreraSedda(poster) {
+  function registreraSedda(poster, grupp) {
     const nu = Date.now();
-    const nycklar = poster.map(p => keysFor(p).stable);
+    const nycklar = poster.map(p => keysFor(p, grupp).stable);
     const kant = nycklar.map(k => !!(forstSedd[k] && Number.isFinite(forstSedd[k].f)));
 
     // Bakifrån: finns det ett redan känt inlägg nedanför position i?
@@ -554,16 +763,17 @@
       if (kant[i]) sett = true;
     }
 
+    const arKalibrerad = kalibrerade.has(grupp.id);
     let nyRad = false;
     for (let i = 0; i < poster.length; i++) {
       const rad = forstSedd[nycklar[i]];
       if (rad && Number.isFinite(rad.f)) { rad.s = nu; continue; }
-      const genuintNytt = kalibrerat && kantNedanfor[i];
+      const genuintNytt = arKalibrerad && kantNedanfor[i];
       forstSedd[nycklar[i]] = { f: nu, s: nu, k: genuintNytt ? 0 : 1 };
       nyRad = true;
     }
 
-    kalibrerat = true;
+    kalibrerade.add(grupp.id);
     // Skriv när något nytt tillkommit, annars sällan: s uppdateras varje
     // svep och det vore 4 320 skrivningar per dygn för ingen nytta.
     if (nyRad || nu - forstSeddSkrivet > FORSTSEDD_SKRIVPAUS) sparaForstSedd();
@@ -976,22 +1186,35 @@
    * Stockholm.
    *
    * En varning på fel plats är värre än ingen varning: den lär föraren att
-   * appen ljuger. Därför kontrolleras varje koordinat mot VIEWBOX här också,
-   * både färska svar och det som ligger i cachen.
+   * appen ljuger. Därför kontrolleras varje koordinat mot gruppens egen ruta
+   * här också, både färska svar och det som ligger i cachen.
+   *
+   * Sedan 2.3 är det gruppens ruta och inte en global. Det är samma spärr
+   * som förut för Västeråsgruppen, men den gör nu ett andra jobb: den hindrar
+   * en Stockholmsvarning från att hamna på Västeråskartan även när båda
+   * grupperna är anslutna i samma flik.
    */
-  const inomOmradet = (lat, lon) =>
-    Number.isFinite(lat) && Number.isFinite(lon) &&
-    lon >= VIEWBOX[0] && lon <= VIEWBOX[2] &&
-    lat >= VIEWBOX[1] && lat <= VIEWBOX[3];
+  const inomOmradet = (lat, lon, ruta) =>
+    Number.isFinite(lat) && Number.isFinite(lon) && giltigRuta(ruta) &&
+    lon >= ruta[0] && lon <= ruta[2] &&
+    lat >= ruta[1] && lat <= ruta[3];
 
-  async function geocode(place) {
-    const key = 'pv.fb.geo.' + normalize(place);
+  /*
+   * CACHENYCKELN BÄR GRUPPEN, och det är inte kosmetik.
+   *
+   * "Storgatan" finns i varenda svensk stad. Slog Västeråsgruppen upp den
+   * först och Stockholmsgruppen sedan läste ur samma cache, fick Stockholm
+   * Västerås koordinat — en varning på fel plats, alltså precis det fel som
+   * lär föraren att appen ljuger. Nyckeln är därför per grupp.
+   */
+  async function geocode(place, grupp) {
+    const key = 'pv.fb.geo.' + grupp.id + '.' + normalize(place);
     const cached = localStorage.getItem(key);
     if (cached) {
       try {
         const c = JSON.parse(cached);
         if (!c) return null;                       // negativt svar, sparat med flit
-        if (inomOmradet(c.lat, c.lon)) return c;
+        if (inomOmradet(c.lat, c.lon, grupp.ruta)) return c;
         localStorage.setItem(key, 'null');         // förgiftad rad, kasta den
         return null;
       } catch {}
@@ -1002,12 +1225,19 @@
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     lastGeocode = Date.now();
 
+    // Nämner texten redan orten eller landskapet blir "Vasagatan, Västerås,
+    // Västerås" bara sämre att slå upp. Annars hjälper suffixet Nominatim
+    // att välja rätt av tjugo gator med samma namn.
+    const lagt = normalize(place);
+    const harOrt = grupp.orter.some(o => o && lagt.includes(o));
+    const fraga = (harOrt || !grupp.ort) ? place : place + ', ' + grupp.ort;
+
     const u = new URL('https://nominatim.openstreetmap.org/search');
-    u.searchParams.set('q', /västerås|västmanland/i.test(place) ? place : place + ', Västerås');
+    u.searchParams.set('q', fraga);
     u.searchParams.set('format', 'jsonv2');
     u.searchParams.set('limit', '1');
     u.searchParams.set('countrycodes', 'se');
-    u.searchParams.set('viewbox', VIEWBOX.join(','));
+    u.searchParams.set('viewbox', grupp.ruta.join(','));
     u.searchParams.set('bounded', '1');
     u.searchParams.set('accept-language', 'sv');
 
@@ -1025,9 +1255,10 @@
       lon: parseFloat(rows[0].lon),
       label: String(rows[0].name || place).trim().slice(0, 120),
     };
-    if (!inomOmradet(hit.lat, hit.lon)) {
+    if (!inomOmradet(hit.lat, hit.lon, grupp.ruta)) {
       localStorage.setItem(key, 'null');
-      console.warn(TAG, 'träff utanför Västmanland kastad:', place, hit.lat, hit.lon);
+      console.warn(TAG, 'träff utanför ' + (grupp.omrade || grupp.ort || grupp.id) +
+        ' kastad:', place, hit.lat, hit.lon);
       return null;
     }
     localStorage.setItem(key, JSON.stringify(hit));
@@ -1064,8 +1295,76 @@
     return m ? m[1] : null;
   }
 
+  /*
+   * SLUG ELLER SIFFROR — fällan som blir värre ju fler grupper man ansluter.
+   *
+   * Facebook byter mellan gruppens siffer-id och dess slug i adressfältet.
+   * Står det ena i konfigurationen och det andra i adressen läser bryggan
+   * ingenting, och tystnaden ser exakt ut som ett tomt flöde. Med en enda
+   * grupp märker man det till slut. Med fem, anslutna via appens lista där
+   * upptäckten ger den form Facebook råkar visa, är det nästan garanterat
+   * att minst en av dem tystnar.
+   *
+   * Gruppens siffer-id går att läsa ur sidan även när adressen bär sluggen.
+   * MÄTT PÅ EN RIKTIG GRUPPSIDA, /groups/norti.se/, länkarnas former:
+   *
+   *   /groups/291829374617173/user/…        48 st   ← sidans EGEN grupp
+   *   /groups/291829374617173/members/       2 st
+   *   /groups/291829374617173/yourposts/     2 st
+   *   /groups/1009040832459849/              1 st   ← ANNAN grupp, sidomenyn
+   *   /groups/317968668373072/               1 st   ← ANNAN grupp, sidomenyn
+   *
+   * De två sista raderna är hela skälet till att regexen nedan är smal. Den
+   * sista är dessutom Västeråsgruppen — alltså den anslutna gruppen, länkad
+   * från en sida som tillhör en HELT ANNAN grupp. En bred sökning efter
+   * "något siffer-id i DOM:en" hade matchat den och fått bryggan att läsa
+   * biljettgruppens inlägg som om de kom från polisgruppen. Det är läckan
+   * mätningen letade efter, och den är verklig.
+   *
+   * Bara /user/, /posts/ och /permalink/ räknas därför: de länkarna finns
+   * bara inuti gruppens eget innehåll. Sidomenyns länkar går till roten och
+   * matchar inte. Hittas mer än ett id är sidan inte en gruppsida, och då
+   * svarar funktionen "vet inte" — vilket betyder tystnad.
+   */
+  const EGET_GRUPPID = /\/groups\/(\d{6,})\/(?:user|posts|permalink)\//;
+
+  function sifferIdIDom() {
+    const funna = new Set();
+    for (const a of document.querySelectorAll('a[href*="/groups/"]')) {
+      const m = EGET_GRUPPID.exec(a.getAttribute('href') || '');
+      if (!m) continue;
+      funna.add(m[1]);
+      if (funna.size > 1) return null;      // flera grupper i DOM:en = inte en gruppsida
+    }
+    return funna.size === 1 ? [...funna][0] : null;
+  }
+
+  /**
+   * Vilken ansluten grupp tittar vi på just nu? null när svaret inte är säkert.
+   *
+   * Uppslaget kan bara peka ut grupper som redan står i listan. Det kan
+   * alltså aldrig öppna bryggan för en grupp ägaren inte anslutit — det kan
+   * bara känna igen en ansluten grupp under ett annat namn.
+   */
+  function aktivGrupp() {
+    const seg = currentGroupId();
+    if (!seg) return null;
+    if (FORBJUDNA_GRUPPORD.has(seg.toLowerCase())) return null;
+
+    const direkt = gruppMedId(seg);
+    if (direkt) return direkt;
+
+    // Siffror i adressen är redan den entydiga formen. Matchar de ingen
+    // ansluten grupp är svaret nej, och att då börja leta i DOM:en vore att
+    // leta efter en ursäkt att läsa.
+    if (/^\d+$/.test(seg)) return null;
+
+    const nr = sifferIdIDom();
+    return nr ? gruppMedId(nr) : null;
+  }
+
   let running = false;
-  let nämntFelGrupp = false;
+  const nämndaFelGrupper = new Set();
   const tally = { created: 0, duplicates: 0, refused: 0, skipped: 0, failed: 0,
                   utanTid: 0, observerade: 0 };
 
@@ -1073,21 +1372,20 @@
     if (running) return;
 
     // Bälte och hängslen: startspärren nedan hindrar redan att skriptet kommer
-    // hit utan grupp, men scan går också att kalla för hand från konsolen.
+    // hit utan grupper, men scan går också att kalla för hand från konsolen.
     // Förut stod det `CONFIG.groupId && gid !== CONFIG.groupId`, vilket betydde
     // att ett tomt fält släppte igenom varje grupp just här.
-    if (!CONFIG.groupId) return;
+    if (!GRUPPER.length) return;
 
-    const gid = currentGroupId();
-    if (!gid) return;
-    if (gid !== CONFIG.groupId) {
-      // Facebook byter mellan siffer-id och slug i adressfältet. Står det fel
-      // sak i CONFIG.groupId läser bryggan ingenting alls, och tystnaden ser
-      // likadan ut som "inga inlägg". En rad i konsolen, en gång.
-      if (!nämntFelGrupp) {
-        nämntFelGrupp = true;
+    const grupp = aktivGrupp();
+    if (!grupp) {
+      // Tystnaden ser likadan ut som "inga inlägg". En rad i konsolen per
+      // grupp, en gång, så att ägaren märker att han står i fel grupp.
+      const gid = currentGroupId();
+      if (gid && !FORBJUDNA_GRUPPORD.has(gid.toLowerCase()) && !nämndaFelGrupper.has(gid)) {
+        nämndaFelGrupper.add(gid);
         console.log(TAG, 'du är i grupp ' + gid + ' men bryggan lyssnar på ' +
-          CONFIG.groupId + ' — inget läses här.');
+          GRUPPER.map(g => g.id).join(', ') + ' — inget läses här.');
       }
       return;
     }
@@ -1103,10 +1401,10 @@
        * besvaras för alla, annars ser ett inlägg som en gång var
        * ointressant nyfött ut nästa gång det passerar.
        */
-      registreraSedda(poster);
+      registreraSedda(poster, grupp);
 
       for (const post of poster) {
-        const { stable, externalId } = keysFor(post);
+        const { stable, externalId } = keysFor(post, grupp);
         if (isHandled(stable)) continue;
 
         const parsed = parseReportText(post.text);
@@ -1180,7 +1478,7 @@
 
         let hit;
         try {
-          hit = await geocode(parsed.place);
+          hit = await geocode(parsed.place, grupp);
         } catch (e) {
           tally.failed++; markTry(stable);
           console.warn(TAG, 'geokodning misslyckades:', parsed.place, e.message);
@@ -1236,15 +1534,23 @@
 
   /* ================= Igång ================= */
 
-  if (!CONFIG.groupId) {
-    console.error(TAG, 'CONFIG.groupId är tom — bryggan startar inte. ' +
-      'Öppna gruppen, kopiera det som står efter /groups/ i adressen, och ' +
-      'skriv in det i CONFIG.groupId. Utan spärren hade skriptet läst varje ' +
-      'grupp kontot är med i.');
+  if (GRUPPFEL) {
+    console.error(TAG, GRUPPFEL);
     return;      // ingen timer, ingen observatör — skriptet gör ingenting
   }
 
-  console.log(TAG, 'Facebook-bryggan är igång för grupp ' + CONFIG.groupId + '.' +
+  if (!GRUPPER.length) {
+    console.error(TAG, 'CONFIG.groupIds är tom — bryggan startar inte. ' +
+      'Öppna gruppen, kopiera det som står efter /groups/ i adressen, och ' +
+      'lägg in det i CONFIG.groupIds. Enklast är Inställningar → ' +
+      'Facebook-grupper i appen, som skriver hela listan åt dig. Utan ' +
+      'spärren hade skriptet läst varje grupp kontot är med i.');
+    return;      // ingen timer, ingen observatör — skriptet gör ingenting
+  }
+
+  console.log(TAG, 'Facebook-bryggan är igång för grupp' +
+    (GRUPPER.length > 1 ? 'erna ' : ' ') +
+    GRUPPER.map(g => g.id + ' (' + g.namn + ')').join(', ') + '.' +
     (CONFIG.dryRun ? ' Torrkörning: inget skickas.' : ' Skarpt läge.') +
     (CONFIG.firstSeenAge
       ? ' Första svepet är ett kalibreringssvep — inget skickas på egen observation ' +
@@ -1262,16 +1568,74 @@
     moTimer = setTimeout(scan, 3000);
   }).observe(document.body, { childList: true, subtree: true });
 
+  /*
+   * UPPTÄCK GRUPPERNA KONTOT ÄR MED I.
+   *
+   * MÄTT, inte gissat. På /groups/joins/ ("Dina grupper") ligger varje grupp
+   * som en länk till /groups/<id>/ med namnet som text. Ett svep gav tio
+   * grupper med rena namn, bland dem "Här Står Polisen - Västerås" på
+   * 317968668373072. Skrollning laddade inte fler — listan står där direkt.
+   *
+   * Två saker att veta:
+   *
+   *   1. /groups/feed/ duger INTE. Där ligger bara de grupper som råkar ha
+   *      ett inlägg i flödet just nu — uppmätt en enda av tio.
+   *   2. Facebook skriver ibland sluggen i länken i stället för siffrorna
+   *      ("norti.se"). Det är samma grupp, men bryggan känner inte igen den
+   *      formen mot en konfiguration som bär siffrorna. Öppna gruppen och
+   *      kör hittaGrupper() igen där, så plockas siffer-id:t ur sidan.
+   *
+   * Funktionen läser bara DOM:en. Inga anrop, ingenting sparas, ingenting
+   * skickas.
+   */
+  function hittaGrupper() {
+    const mall = new Map();
+    for (const a of document.querySelectorAll('a[href*="/groups/"]')) {
+      const href = (a.getAttribute('href') || '').split('?')[0].replace(/^https?:\/\/[^/]+/, '');
+      const m = /^\/groups\/([^/?#]+)\/?$/.exec(href);
+      if (!m) continue;
+      const id = m[1];
+      if (FORBJUDNA_GRUPPORD.has(id.toLowerCase())) continue;
+      if (!mall.has(id)) mall.set(id, []);
+      const t = (a.innerText || '').replace(/\s+/g, ' ').trim();
+      if (t) mall.get(id).push(t);
+    }
+
+    // Samma grupp länkas flera gånger: en gång med hela kortets text
+    // ("Namnet Senast aktiv för en dag sedan") och en gång med bara namnet.
+    // Kortast vinner — det är namnet, utan Facebooks påhäng.
+    const ut = [];
+    for (const [id, texter] of mall) {
+      const rena = texter
+        .filter(t => !/^(visa grupp|visa alla|gå med|bjud in|see group|join|view all)$/i.test(t))
+        .sort((a, b) => a.length - b.length);
+      ut.push({
+        id,
+        namn: (rena[0] || '').slice(0, 80) || id,
+        ansluten: !!gruppMedId(id),
+      });
+    }
+    if (!ut.length) {
+      console.log(TAG, 'inga grupper hittades här. Öppna facebook.com/groups/joins/ ' +
+        'och kör __polisvakt.hittaGrupper() igen.');
+    }
+    return ut;
+  }
+
   // Handtag för felsökning i konsolen.
   window.__polisvakt = {
     scanNow: scan,
+    grupper: () => GRUPPER.map(g => ({ ...g })),
+    aktivGrupp: () => { const g = aktivGrupp(); return g ? { ...g } : null; },
+    hittaGrupper,
     stats: () => ({ ...tally, ihagkomna: Object.keys(seen).length,
-                    forstSedda: Object.keys(forstSedd).length, kalibrerat }),
+                    forstSedda: Object.keys(forstSedd).length,
+                    kalibrerade: [...kalibrerade] }),
     peek: () => collectPosts(),
     parse: parseReportText,
     // Felsökning av just tidsstämpeln — det som gick sönder tyst förut.
     tider: () => collectPosts().map(p => {
-      const nyckel = keysFor(p).stable;
+      const nyckel = keysFor(p, aktivGrupp()).stable;
       const obs = observeradTid(nyckel);
       const t = p.postedAt != null ? p.postedAt : obs;
       return {
@@ -1289,7 +1653,7 @@
     synligText,
     forget: () => {
       seen = {}; localStorage.removeItem(SEEN_KEY);
-      forstSedd = {}; kalibrerat = false; localStorage.removeItem(FORSTSEDD_KEY);
+      forstSedd = {}; kalibrerade.clear(); localStorage.removeItem(FORSTSEDD_KEY);
       console.log(TAG, 'minneslistan tömd — nästa svep blir ett nytt kalibreringssvep');
     },
   };

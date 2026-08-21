@@ -624,6 +624,64 @@
       minuter emellan, tyst mellan 23 och 06, och max tolv per dygn.
       Nykterhetskontroller ger aldrig någon notis alls.</p>
     <p class="hint" id="gruppnotisStatus"></p>
+
+    <!-- Visa hur ett gruppinlägg ser ut, utan att röra den delade databasen.
+         Rapporten läggs bara i den här telefonen, försvinner vid omladdning,
+         och skickas aldrig vidare till någon annan förare. Den finns för att
+         man ska kunna se VAR varningen dyker upp innan man litar på kedjan. -->
+    <h4 class="sub-head">Se hur det ser ut</h4>
+    <p class="hint">Lägger en påhittad varning i din egen app, som om någon
+      just skrivit den i gruppen. Den syns bara hos dig, skickas aldrig vidare,
+      och försvinner när du laddar om.</p>
+    <div class="row-inline">
+      <input id="demoText" type="text" autocomplete="off"
+             placeholder="Polis vid Nacka" value="Polis vid Nacka">
+    </div>
+    <div class="row-inline">
+      <button class="btn-ghost small" id="btnDemoInlagg" type="button">Visa exempel i appen</button>
+    </div>
+    <p class="hint" id="demoStatus"></p>
+  </section>
+
+  <!-- Bryggan läser bara de grupper som står här. Tom lista = bryggan
+       startar inte alls; det är med flit, se tools/fb-bridge.user.js. -->
+  <section class="card">
+    <h3>Facebook-grupper</h3>
+    <p class="hint">Bryggan läser polisvarningar ur de grupper du är med i. Kör du i
+      Stockholm ansluter du Stockholmsgruppen, kör du i Västerås din. Varje grupp får
+      ett område, så att en varning från en annan stad aldrig hamnar på din karta.</p>
+
+    <div class="group-list" id="fbGruppLista"></div>
+    <p class="hint" id="fbGruppTom">Ingen grupp ansluten. Bryggan läser ingenting förrän du lägger till en.</p>
+
+    <h4 class="sub-head">Lägg till en grupp</h4>
+    <div class="row-inline">
+      <input id="fbGruppUrl" type="text" autocomplete="off" inputmode="url"
+             placeholder="Adress till gruppen, t.ex. facebook.com/groups/317968668373072/">
+    </div>
+    <div class="row-inline">
+      <input id="fbGruppNamn" type="text" autocomplete="off" placeholder="Namn (valfritt)">
+    </div>
+    <label class="row"><span>Område</span>
+      <select id="fbGruppRegion"></select>
+    </label>
+    <div class="row-inline">
+      <button class="btn-ghost small" id="btnFbGruppLagg" type="button">Lägg till</button>
+      <button class="btn-ghost small" id="btnFbGruppUpptack" type="button">Hitta mina grupper</button>
+    </div>
+    <p class="hint">Vet du inte gruppens id? "Hitta mina grupper" kopierar en liten
+      kodsnutt. Öppna <b>facebook.com/groups/joins/</b>, tryck F12 och klistra in den i
+      Console, så får du en rad per grupp med id och namn. Appen kan inte läsa
+      Facebook-fliken själv — den ligger på en annan adress, och Meta stängde
+      möjligheten att fråga efter grupper 2024.</p>
+
+    <h4 class="sub-head">Till bryggan</h4>
+    <p class="hint">Bryggan är ett användarskript i Tampermonkey och läser inte appens
+      inställningar. Kopiera raden nedan och ersätt den som börjar med
+      <code>groupIds:</code> i skriptet.</p>
+    <textarea id="fbGruppKonfig" class="kod-ruta" rows="5" readonly spellcheck="false"></textarea>
+    <button class="btn-ghost small" id="btnFbGruppKopiera" type="button">Kopiera inställning till bryggan</button>
+    <p class="hint" id="fbGruppStatus"></p>
   </section>
 
   <section class="card">

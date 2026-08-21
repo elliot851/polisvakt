@@ -108,6 +108,14 @@ const GRUPP = '1234567890';
 const SLUG = 'varningar.vasteras';
 
 /*
+ * Nyckeln bryggan bokför ett inlägg under, i hanteringslistan och i
+ * först-sedd. Sedan 2.3 bär den gruppen: samma mening i två grupper är två
+ * händelser, och utan gruppen i nyckeln hade den andra räknats som redan
+ * hanterad och tystnat.
+ */
+const NYK = (id, grupp = GRUPP) => `g:${grupp}|id:${id}`;
+
+/*
  * Låtsas-Nominatim. Söker fuzzy precis som den riktiga: hittar den ett känt
  * namn någonstans i frågan svarar den på det. Koordinaterna är äkta.
  * bounded=1 respekteras — utom när ett testfall uttryckligen vill se vad som
@@ -121,9 +129,21 @@ const PLATSER = [
   ['bäckby',       { lat: 59.6039, lon: 16.4838, namn: 'Bäckby' }],
   ['avenyn',       { lat: 57.7011, lon: 11.9746, namn: 'Avenyn' }],         // Göteborg, utanför
   ['hälla',        { lat: 59.6238, lon: 16.6113, namn: 'Hälla' }],
+  // Samma gatunamn i två städer — det vanligaste sättet en flergruppsbrygga
+  // kan hamna fel. Frågan bär ortsnamnet, så den längre raden matchar först.
+  ['storgatan, stockholm', { lat: 59.3350, lon: 18.0600, namn: 'Storgatan' }],
+  ['storgatan',            { lat: 59.6100, lon: 16.5400, namn: 'Storgatan' }],
 ].sort((a, b) => b[0].length - a[0].length);
 
-const INOM = (lat, lon) => lon >= 15.10 && lon <= 17.30 && lat >= 59.30 && lat <= 60.30;
+/*
+ * bounded=1 mäts mot den viewbox frågan faktiskt bar, inte mot en fast ruta.
+ * Fram till 2.3 fanns bara en ruta i hela bryggan och skillnaden var ingen;
+ * nu har varje grupp sin egen, och en hårdkodad Västmanlandsruta här hade
+ * gjort varje Stockholmstest grönt av fel skäl.
+ */
+const INOM = (lat, lon, ruta) =>
+  ruta.length === 4 && ruta.every(Number.isFinite) &&
+  lon >= ruta[0] && lon <= ruta[2] && lat >= ruta[1] && lat <= ruta[3];
 
 /* ---- Ett inlägg i flödet, byggt av riktiga DOM-noder ----------------
  *
@@ -213,6 +233,11 @@ function tidsAnkare(p, behallare) {
 
 function inlagg(rp, behallare) {
   const p = Object.assign({ tid: 'text', alder: '5 min' }, rp);
+  // Vilken grupps sida ligger inlägget på? Författar- och permalänkarna bär
+  // gruppens siffer-id på riktigt, och sedan 2.3 läser bryggan dem för att
+  // känna igen en ansluten grupp vars adress visar sluggen. Alltså måste
+  // testet kunna bygga inlägg som tillhör olika grupper.
+  const gid = p.grupp || GRUPP;
   const skal = document.createElement('div');
 
   const huvud = document.createElement('div');
@@ -222,7 +247,7 @@ function inlagg(rp, behallare) {
     huvud.appendChild(d);
   }
   const forfLank = document.createElement('a');
-  forfLank.setAttribute('href', `/groups/${GRUPP}/user/100055728692844/?__cft__[0]=AZ`);
+  forfLank.setAttribute('href', `/groups/${gid}/user/100055728692844/?__cft__[0]=AZ`);
   forfLank.textContent = p.forfattare || 'Anna Andersson';
   huvud.appendChild(forfLank);
   const namn = document.createElement('div');
@@ -255,7 +280,7 @@ function inlagg(rp, behallare) {
   // kommentarerna var utfällda.
   if (p.id && p.permalank !== false) {
     const l = document.createElement('a');
-    l.setAttribute('href', `/groups/${GRUPP}/posts/${p.id}/?__cft__[0]=AZ`);
+    l.setAttribute('href', `/groups/${gid}/posts/${p.id}/?__cft__[0]=AZ`);
     l.textContent = '3 kommentarer';
     skal.appendChild(l);
   }
@@ -290,6 +315,17 @@ function inlagg(rp, behallare) {
 /* ---- Miljön skriptet får leva i ------------------------------------- */
 function bygg({
   groupId = GRUPP,
+  /*
+   * Sedan 2.3 är groupIds bryggans riktiga fält och groupId bara den gamla
+   * formen. Förvalet här är tomt med flit: då faller varje befintligt
+   * testfall tillbaka på groupId, alltså exakt den väg ägaren redan kör,
+   * och de fallen fortsätter mäta det de mätte. Nya fall skickar groupIds.
+   *
+   * Tomt är dessutom nödvändigt, inte bara snyggt: filen har numera en
+   * ifylld groupIds-lista med Västeråsgruppen. Skrev testet inte över den
+   * hade "tom grupplista"-fallen kört mot den listan i stället för mot inget.
+   */
+  groupIds = '',
   sokvag = '/groups/' + GRUPP + '/',
   dryRun = false,
   // Hovringen är AV i bryggans förval sedan 2.2. Testharnessen slår på den
@@ -301,6 +337,8 @@ function bygg({
   cache = {},
   struntaIBounded = false,
   nominatimFel = false,
+  // Vilken grupp DOM:en tillhör, när det inte är samma som adressen.
+  domGrupp = null,
 } = {}) {
   const behallare = document.createElement('div');
   // Måste renderas — innerText finns inte i en display:none-gren, och sedan
@@ -319,7 +357,8 @@ function bygg({
   behallare.appendChild(flode);
   document.body.appendChild(behallare);
 
-  for (const p of poster) flode.appendChild(inlagg(p, behallare));
+  const medGrupp = p => (domGrupp && !p.grupp) ? { ...p, grupp: domGrupp } : p;
+  for (const p of poster) flode.appendChild(inlagg(medGrupp(p), behallare));
 
   const lagring = new Map(Object.entries(cache));
   const skrivningar = [];
@@ -347,10 +386,11 @@ function bygg({
       const p = new URL(url).searchParams;
       const fraga = (p.get('q') || '').toLowerCase().replace(/,\s*västerås\s*$/, '').trim();
       const bounded = p.get('bounded') === '1';
+      const ruta = (p.get('viewbox') || '').split(',').map(Number);
       const traff = PLATSER.find(([namn]) => fraga.includes(namn));
       if (!traff) return svar([]);
       const t = traff[1];
-      if (bounded && !INOM(t.lat, t.lon) && !struntaIBounded) return svar([]);
+      if (bounded && !INOM(t.lat, t.lon, ruta) && !struntaIBounded) return svar([]);
       return svar([{ lat: String(t.lat), lon: String(t.lon), name: t.namn }]);
     }
     if (url.includes('supabase')) {
@@ -397,7 +437,8 @@ function bygg({
     pathname: sokvag,
     href: 'http://polisvakt-test.local' + sokvag,
   };
-  const fejkFonster = { __pvBryggaConfig: { groupId, dryRun, hoverForTime, firstSeenAge } };
+  const fejkFonster = { __pvBryggaConfig:
+    { groupId, groupIds, dryRun, hoverForTime, firstSeenAge } };
 
   const kor = new Function(
     'window', 'document', 'location', 'localStorage', 'fetch', 'console',
@@ -417,10 +458,25 @@ function bygg({
     // skrollning och färdigrendering lägger gamla inlägg NEDERST. Bryggan
     // skiljer på de två, alltså måste testet kunna göra båda.
     laggTill(p, overst = true) {
-      const nod = inlagg(p, behallare);
+      const nod = inlagg(medGrupp(p), behallare);
       if (overst) flode.insertBefore(nod, komponera.nextSibling);
       else flode.appendChild(nod);
       return nod;
+    },
+
+    /*
+     * Facebook byter sida UTAN att ladda om. Går ägaren från Västeråsgruppen
+     * till Stockholmsgruppen är det samma flik, samma skript och samma
+     * minne — bara adressen och flödet byts. Utan de två nedan går den
+     * övergången inte att mäta, och det är just där ett kalibreringssvep per
+     * grupp behövs.
+     */
+    navigera(nySokvag) {
+      fejkLage.pathname = nySokvag;
+      fejkLage.href = 'http://polisvakt-test.local' + nySokvag;
+    },
+    rensaFlodet() {
+      for (const n of [...flode.children]) if (n !== komponera) n.remove();
     },
     natverk, supabase, nominatim, konsol, lagring, skrivningar,
     timers, intervaller, observatorer,
@@ -548,18 +604,461 @@ await T('gruppfeeden /groups/feed läses inte', async () => {
   return n === 0 || `${n} nätanrop`;
 });
 
-await T('siffer-id i konfigurationen men slug i adressen: tyst, inget skickas', async () => {
+await T('siffer-id i konfigurationen men slug i adressen: gruppen känns igen ändå', async () => {
+  // Sidans författarlänkar bär GRUPP, alltså är det GRUPP:s inlägg vi ser,
+  // hur adressen än är skriven.
   const m = await skanna({ groupId: GRUPP, sokvag: `/groups/${SLUG}/`, poster: [POLIS] });
-  const n = m.natverk.length, txt = m.konsoltext(); m.stang();
-  if (n !== 0) return `${n} nätanrop`;
-  return /lyssnar på/.test(txt) || 'inget varnades i konsolen — då ser det ut som tomt flöde';
+  const n = m.supabase.length; m.stang();
+  return n === 1 || `skickade ${n}`;
 });
-anm('Fällan ovan är verklig: Facebook byter mellan siffer-id och slug i adressfältet. ' +
-    'Filtret gör rätt (skickar inget), men bryggan blir helt tyst. Raden i konsolen är ' +
-    'enda sättet ägaren märker det — den lades till i den här omgången.');
+anm('Raden ovan bytte innebörd i 2.3, och bytet är mätt. Fram till dess var svaret ' +
+    '"tyst, inget skickas": Facebook byter mellan siffer-id och slug i adressfältet, och ' +
+    'stod fel form i konfigurationen läste bryggan ingenting — en tystnad som ser exakt ' +
+    'ut som ett tomt flöde. Med en grupp märker man det till slut. Med fem, anslutna via ' +
+    'appens lista, är det nästan givet att minst en tystnar. Bryggan läser därför gruppens ' +
+    'siffer-id ur sidans egna författarlänkar. Uppslaget kan bara peka ut grupper som ' +
+    'REDAN står i listan, så det kan aldrig öppna bryggan för en ny grupp.');
+
+await T('slug i adressen vars sida tillhör en EJ ansluten grupp: inget skickas', async () => {
+  // Samma väg som raden ovan, men sidan tillhör grupp 5550001. Uppslaget
+  // hittar ett id — det är bara inte ett anslutet id.
+  const m = await skanna({
+    groupId: GRUPP, sokvag: '/groups/nagon.annan.slug/',
+    domGrupp: '5550001', poster: [POLIS],
+  });
+  const n = m.natverk.length; m.stang();
+  return n === 0 || `${n} nätanrop från en grupp som inte är ansluten`;
+});
+
+await T('sidomenyns länk till en ansluten grupp öppnar inte en främmande grupp', async () => {
+  /*
+   * MÄTT PÅ RIKTIGT, och det här är läckan mätningen letade efter.
+   * På /groups/norti.se/ — en grupp som inte är ansluten — låg länkarna så:
+   *
+   *   /groups/291829374617173/user/…     48 st   sidans EGEN grupp
+   *   /groups/1009040832459849/           1 st   annan grupp, sidomenyn
+   *   /groups/317968668373072/            1 st   POLISGRUPPEN, sidomenyn
+   *
+   * En bred sökning efter "något siffer-id i DOM:en" hade hittat
+   * polisgruppen i sidomenyn och läst biljettgruppens inlägg som om de kom
+   * därifrån. Bara /user/, /posts/ och /permalink/ räknas därför.
+   */
+  const m = bygg({
+    groupId: GRUPP, sokvag: '/groups/norti.se/',
+    domGrupp: '291829374617173', poster: [POLIS],
+  });
+  const meny = document.createElement('a');
+  meny.setAttribute('href', `/groups/${GRUPP}/`);        // rotlänk, som sidomenyn
+  meny.textContent = 'Här Står Polisen - Västerås';
+  m.behallare.appendChild(meny);
+  await m.handtag.scanNow();
+  const n = m.natverk.length; m.stang();
+  return n === 0 || `${n} nätanrop — sidomenyns länk öppnade en främmande grupp`;
+});
 
 /* =================================================================== */
-G('Tom groupId stoppar allt');
+G('Flera grupper samtidigt');
+
+/*
+ * Ägarens ord: "viktigt att andra som kör appen kan connecta till flera
+ * olika grupper på facebook. T.ex någon som kör i Stockholm ska kunna
+ * connecta sthlm gruppen etc."
+ *
+ * Två grupper i listan, med varsitt område. Sidan visar EN i taget — så
+ * fungerar Facebook — och bryggan byter grupp när adressen byter.
+ */
+const STHLM = '7770001';
+const VASTERAS_GRUPP = {
+  id: GRUPP, namn: 'Här Står Polisen - Västerås',
+  ort: 'Västerås', omrade: 'Västmanland',
+  ruta: [15.10, 59.30, 17.30, 60.30],
+};
+const STHLM_GRUPP = {
+  id: STHLM, namn: 'Här står polisen - Stockholm',
+  ort: 'Stockholm', omrade: 'Stockholms län',
+  ruta: [17.20, 58.80, 19.30, 60.20],
+};
+const TVA = [VASTERAS_GRUPP, STHLM_GRUPP];
+
+await T('båda grupperna står i listan', async () => {
+  const m = bygg({ groupIds: TVA, poster: [] });
+  const ids = m.handtag.grupper().map(g => g.id); m.stang();
+  return (ids.length === 2 && ids.includes(GRUPP) && ids.includes(STHLM))
+    || 'fick ' + JSON.stringify(ids);
+});
+
+await T('inlägg i grupp A skickas när adressen är grupp A', async () => {
+  const m = await skanna({ groupIds: TVA, sokvag: `/groups/${GRUPP}/`, poster: [POLIS] });
+  const n = m.supabase.length; m.stang();
+  return n === 1 || `skickade ${n}`;
+});
+
+await T('inlägg i grupp B skickas när adressen är grupp B', async () => {
+  const m = await skanna({
+    groupIds: TVA, sokvag: `/groups/${STHLM}/`, domGrupp: STHLM,
+    poster: [{ text: 'Poliskontroll vid Sergels torg', id: '960001' }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp; m.stang();
+  if (!r) return 'ingen rapport från Stockholmsgruppen';
+  return (Math.abs(r.lat - 59.3326) < 0.001 && Math.abs(r.lon - 18.0649) < 0.001)
+    || `${r.lat},${r.lon}`;
+});
+
+await T('grupp B nås även via sin slug', async () => {
+  // Adressen bär Stockholmsgruppens slug, sidans författarlänkar bär dess
+  // siffer-id. Med flera anslutna grupper måste uppslaget hitta RÄTT en.
+  const m = await skanna({
+    groupIds: TVA, sokvag: '/groups/polisen.sthlm/', domGrupp: STHLM,
+    poster: [{ text: 'Poliskontroll vid Sergels torg', id: '960008' }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp; m.stang();
+  if (!r) return 'ingen rapport';
+  return (Math.abs(r.lon - 18.0649) < 0.001) || `hamnade på ${r.lat},${r.lon}`;
+});
+
+await T('identisk text i två grupper ger TVÅ rapporter, inte en', async () => {
+  /*
+   * Det farliga fallet, och skälet till att dedupnyckeln måste bära
+   * gruppen. Texten är densamma och inlägget saknar id, alltså räknas
+   * nyckeln på texten — och hashen vet ingenting om vilken grupp den kom
+   * ifrån. Utan gruppen i nyckeln hade den andra gruppens varning tystats
+   * som en dubblett av den första, fast den gällde en annan stad.
+   */
+  const text = 'Polis står vid Storgatan';        // finns i båda städerna
+  const m = bygg({ groupIds: TVA, sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP,
+                   poster: [{ text }] });
+  await m.handtag.scanNow();
+  const efterA = m.supabase.length;
+
+  m.rensaFlodet();
+  m.navigera(`/groups/${STHLM}/`);
+  m.laggTill({ text, grupp: STHLM });
+  await m.handtag.scanNow();
+  const totalt = m.supabase.length;
+  const ids = m.supabase.map(a => a.kropp.external_id);
+  m.stang();
+
+  if (efterA !== 1) return `grupp A gav ${efterA} rapporter`;
+  if (totalt !== 2) return `totalt ${totalt} rapporter — den andra tystades som dubblett`;
+  return ids[0] !== ids[1] || 'båda fick samma external_id: ' + ids[0];
+});
+
+await T('samma text i SAMMA grupp ger fortfarande bara en rapport', async () => {
+  // Motprovet. Gruppen i nyckeln får inte råka slå sönder den vanliga dedupen.
+  const m = bygg({ groupIds: TVA, sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP,
+                   poster: [{ text: 'Polis står vid Storgatan' }] });
+  await m.handtag.scanNow();
+  await m.handtag.scanNow();
+  const n = m.supabase.length; m.stang();
+  return n === 1 || `${n} rapporter`;
+});
+
+await T('en Stockholmskoordinat hamnar inte på Västeråskartan', async () => {
+  /*
+   * Kärnan i "region spelar roll". Inlägget står i VÄSTERÅSGRUPPEN men
+   * pekar ut Sergels torg. Nominatim struntar i bounded=1 och svarar med
+   * Stockholmskoordinaten ändå — precis det fallet som en gång tog sig hela
+   * vägen till kartan. Gruppens egen ruta måste kasta den.
+   */
+  const m = await skanna({
+    groupIds: TVA, sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP,
+    poster: [{ text: 'Poliskontroll vid Sergels torg', id: '960002' }],
+    struntaIBounded: true,
+  });
+  const n = m.supabase.length, txt = m.konsoltext(); m.stang();
+  if (n !== 0) return 'Stockholm hamnade på Västeråskartan: ' +
+    JSON.stringify(m.supabase.map(a => [a.kropp.lat, a.kropp.lon]));
+  return /utanför Västmanland/.test(txt) || 'kastades utan att säga varför: ' + txt;
+});
+
+await T('och en Västeråskoordinat hamnar inte på Stockholmskartan', async () => {
+  const m = await skanna({
+    groupIds: TVA, sokvag: `/groups/${STHLM}/`, domGrupp: STHLM,
+    poster: [{ text: 'Poliskontroll vid Erikslund', id: '960003' }],
+    struntaIBounded: true,
+  });
+  const n = m.supabase.length, txt = m.konsoltext(); m.stang();
+  if (n !== 0) return 'Västerås hamnade på Stockholmskartan: ' +
+    JSON.stringify(m.supabase.map(a => [a.kropp.lat, a.kropp.lon]));
+  return /utanför Stockholms län/.test(txt) || 'kastades utan att säga varför: ' + txt;
+});
+
+await T('varje grupp får sin egen ruta och sin egen ort i uppslaget', async () => {
+  const m = await skanna({
+    groupIds: TVA, sokvag: `/groups/${STHLM}/`, domGrupp: STHLM,
+    poster: [{ text: 'Poliskontroll vid Sergels torg', id: '960004' }],
+  });
+  const url = m.nominatim[0] && new URL(m.nominatim[0].url); m.stang();
+  if (!url) return 'inget uppslag gjordes';
+  const q = url.searchParams;
+  if (q.get('viewbox') !== '17.2,58.8,19.3,60.2') return 'viewbox=' + q.get('viewbox');
+  return /,\s*Stockholm$/.test(q.get('q') || '') || 'q=' + q.get('q');
+});
+
+await T('geo-cachen är egen per grupp — Storgatan är inte samma gata', async () => {
+  /*
+   * "Storgatan" finns i varenda svensk stad. Delade grupperna cache hade
+   * Stockholm fått Västerås koordinat, alltså en varning på fel plats.
+   */
+  const m = bygg({ groupIds: TVA, sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP,
+                   poster: [{ text: 'Polis vid Storgatan', id: '960005' }] });
+  await m.handtag.scanNow();
+  const efterA = m.nominatim.length;
+
+  m.rensaFlodet();
+  m.navigera(`/groups/${STHLM}/`);
+  m.laggTill({ text: 'Polis vid Storgatan', id: '960006', grupp: STHLM });
+  await m.handtag.scanNow();
+  const totalt = m.nominatim.length;
+  const nycklar = [...m.lagring.keys()].filter(k => k.startsWith('pv.fb.geo.'));
+  const lat = m.supabase.map(a => a.kropp.lat);
+  m.stang();
+
+  if (efterA !== 1) return `grupp A gjorde ${efterA} uppslag`;
+  if (totalt !== 2) return `grupp B återanvände grupp A:s cache (${totalt} uppslag totalt)`;
+  if (nycklar.length !== 2) return 'cachenycklar: ' + JSON.stringify(nycklar);
+  // Två olika Storgatan, två olika koordinater.
+  return (lat.length === 2 && Math.abs(lat[0] - lat[1]) > 0.2)
+    || 'koordinater: ' + JSON.stringify(lat);
+});
+
+await T('kalibreringssvepet räknas per grupp, inte per flik', async () => {
+  /*
+   * Facebook byter sida utan att ladda om. Med en enda kalibreringsflagga
+   * vore Stockholmsgruppens FÖRSTA svep redan "kalibrerat", och varje
+   * inlägg som råkade ligga i flödet — hur gammalt som helst — hade fått
+   * en observerad ålder och blivit en färsk varning på kartan.
+   *
+   * Inläggen nedan saknar läsbar tid (SVG-sprite) och hovringen är av, så
+   * det ENDA som kan ge dem en ålder är den egna observationen. Blir det
+   * en rapport har kalibreringen läckt mellan grupperna.
+   */
+  const utanTid = { text: 'Polis står vid Erikslund', id: '960007',
+                    tid: 'sprite', alder: '' };
+  const m = bygg({ groupIds: TVA, hoverForTime: false, firstSeenAge: true,
+                   sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP, poster: [POLIS] });
+  await m.handtag.scanNow();            // grupp A kalibreras här
+  await m.handtag.scanNow();            // och är kalibrerad nu
+
+  m.rensaFlodet();
+  m.navigera(`/groups/${STHLM}/`);
+  m.laggTill({ ...utanTid, grupp: STHLM });
+  const fore = m.supabase.length;
+  await m.handtag.scanNow();            // grupp B:s FÖRSTA svep
+  const nya = m.supabase.length - fore;
+  const kal = m.handtag.stats().kalibrerade;
+  m.stang();
+
+  if (nya !== 0) return `grupp B:s kalibreringssvep gav ${nya} rapporter`;
+  return (kal.length === 2 && kal.includes(GRUPP) && kal.includes(STHLM))
+    || 'kalibrerade: ' + JSON.stringify(kal);
+});
+
+await T('en grupp som inte är ansluten läses inte, med två i listan', async () => {
+  const m = await skanna({
+    groupIds: TVA, sokvag: '/groups/5550002/', domGrupp: '5550002', poster: [POLIS],
+  });
+  const n = m.natverk.length, txt = m.konsoltext(); m.stang();
+  if (n !== 0) return `${n} nätanrop från en grupp som inte är ansluten`;
+  return /lyssnar på/.test(txt) || 'ingen rad i konsolen om fel grupp';
+});
+
+await T('konsolraden räknar upp båda grupperna vid start', async () => {
+  const m = bygg({ groupIds: TVA, poster: [] });
+  const txt = m.konsoltext(); m.stang();
+  return (txt.includes(GRUPP) && txt.includes(STHLM) && /igång för grupp/.test(txt))
+    || 'fick: ' + txt;
+});
+
+await T('samma grupp två gånger i listan blir en grupp', async () => {
+  const m = bygg({ groupIds: [VASTERAS_GRUPP, { ...VASTERAS_GRUPP }], poster: [] });
+  const n = m.handtag.grupper().length; m.stang();
+  return n === 1 || `${n} grupper`;
+});
+
+/* =================================================================== */
+G('Område per grupp är obligatoriskt');
+
+await T('två grupper där en saknar ruta: bryggan startar inte', async () => {
+  // Fel förval ska stoppa, inte varna. Varje tänkbart förval är fel:
+  // Västmanland lägger Stockholmsvarningar på fel karta, "hela Sverige"
+  // släpper igenom Storgatan i vilken stad som helst.
+  const m = bygg({ groupIds: [VASTERAS_GRUPP, { id: STHLM, namn: 'Stockholm' }],
+                   poster: [POLIS] });
+  const h = m.fonster.__polisvakt;
+  const t = m.timers.length, i = m.intervaller.length, n = m.natverk.length;
+  const r = m.konsol.find(x => x.niva === 'error');
+  m.stang();
+  if (h !== undefined) return 'handtaget skapades ändå';
+  if (t || i) return `${t} timers, ${i} intervaller`;
+  if (n) return `${n} nätanrop`;
+  return (r && /omr[åa]de|ruta/i.test(r.text) && r.text.includes(STHLM))
+    || 'fick: ' + (r ? r.text : 'ingen error-rad');
+});
+
+await T('två nakna strängar utan område: bryggan startar inte', async () => {
+  const m = bygg({ groupIds: [GRUPP, STHLM], poster: [POLIS] });
+  const h = m.fonster.__polisvakt, n = m.natverk.length; m.stang();
+  return (h === undefined && n === 0) || 'startade ändå';
+});
+
+await T('EN naken sträng betyder fortfarande Västmanland', async () => {
+  // Bakåtkompatibilitet. Formen betydde Västmanland fram till 2.2, och att
+  // tolka om den vid en uppgradering vore att ändra ägarens karta bakom
+  // ryggen på honom.
+  const m = await skanna({ groupIds: GRUPP, poster: [POLIS] });
+  const url = m.nominatim[0] && new URL(m.nominatim[0].url);
+  const n = m.supabase.length; m.stang();
+  if (n !== 1) return `skickade ${n}`;
+  return (url && url.searchParams.get('viewbox') === '15.1,59.3,17.3,60.3')
+    || 'viewbox=' + (url && url.searchParams.get('viewbox'));
+});
+
+await T('ett OBJEKT utan ruta får inte Västmanland gratis, ens ensamt', async () => {
+  // Den som skriver ett objekt har börjat konfigurera på riktigt. Då är en
+  // saknad ruta ett förbiseende, inte en gammal form som ska hedras.
+  const m = bygg({ groupIds: [{ id: STHLM, namn: 'Stockholm' }], poster: [POLIS] });
+  const h = m.fonster.__polisvakt; m.stang();
+  return h === undefined || 'startade med ett gissat område';
+});
+
+await T('en trasig ruta räknas som ingen ruta', async () => {
+  const trasiga = [
+    [15.1, 59.3, 17.3],                 // för kort
+    [17.3, 59.3, 15.1, 60.3],           // lonMin > lonMax
+    [15.1, 60.3, 17.3, 59.3],           // latMin > latMax
+    ['15.1', '59.3', '17.3', '60.3'],   // strängar
+  ];
+  for (const ruta of trasiga) {
+    const m = bygg({ groupIds: [{ ...STHLM_GRUPP, ruta }], poster: [POLIS] });
+    const h = m.fonster.__polisvakt; m.stang();
+    if (h !== undefined) return 'startade med ' + JSON.stringify(ruta);
+  }
+  return true;
+});
+
+await T('groupIds vinner över det gamla groupId', async () => {
+  const m = bygg({ groupId: '111222333', groupIds: [STHLM_GRUPP], poster: [] });
+  const ids = m.handtag.grupper().map(g => g.id); m.stang();
+  return (ids.length === 1 && ids[0] === STHLM) || 'fick ' + JSON.stringify(ids);
+});
+
+await T('en hel adress i listan blir bara id:t', async () => {
+  const m = bygg({
+    groupIds: [{ ...STHLM_GRUPP, id: 'https://www.facebook.com/groups/' + STHLM + '/?ref=x' }],
+    poster: [],
+  });
+  const ids = m.handtag.grupper().map(g => g.id); m.stang();
+  return (ids.length === 1 && ids[0] === STHLM) || 'fick ' + JSON.stringify(ids);
+});
+
+await T('/groups/feed/ går inte att ansluta som grupp', async () => {
+  // Gruppflödet är samlingen av ALLA dina grupper. Gick det att ansluta
+  // vore gruppfiltret meningslöst.
+  for (const ord of ['feed', 'discover', 'joins', 'FEED']) {
+    const m = bygg({ groupIds: [{ ...STHLM_GRUPP, id: ord }], poster: [POLIS] });
+    const h = m.fonster.__polisvakt; m.stang();
+    if (h !== undefined) return `"${ord}" accepterades som grupp`;
+  }
+  return true;
+});
+
+/* =================================================================== */
+G('Upptäck grupperna kontot är med i');
+
+/*
+ * MÄTT PÅ RIKTIGT innan funktionen skrevs, på det inloggade kontot:
+ *
+ *   /groups/feed/    37 grupplänkar, men bara EN enda riktig grupp — de
+ *                    övriga var navigationen. Duger inte.
+ *   /groups/joins/   tio grupper med rena namn, bland dem "Här Står Polisen
+ *                    - Västerås" på 317968668373072. Skrollning laddade
+ *                    inte fler; listan står där direkt.
+ *
+ * Varje grupp länkas tre gånger: hela kortet ("Namnet Senast aktiv för en
+ * dag sedan"), namnet självt, och en knapp. Kortast av dem är namnet.
+ */
+function joinsSida(rader) {
+  const sida = document.createElement('div');
+  sida.style.cssText = 'position:fixed;left:-99999px;top:0;width:640px;';
+  for (const r of rader) {
+    for (const t of [r.namn + ' Senast aktiv för en dag sedan', r.namn, 'Visa grupp']) {
+      const a = document.createElement('a');
+      a.setAttribute('href', '/groups/' + r.id + '/?ref=joins');
+      a.textContent = t;
+      sida.appendChild(a);
+    }
+  }
+  // Navigationen, som ligger på samma sida och inte är grupper.
+  for (const [href, t] of [['/groups/feed/', 'Ditt flöde'],
+                           ['/groups/discover/', 'Upptäck'],
+                           ['/groups/joins/', 'Dina grupper']]) {
+    const a = document.createElement('a');
+    a.setAttribute('href', href);
+    a.textContent = t;
+    sida.appendChild(a);
+  }
+  document.body.appendChild(sida);
+  return sida;
+}
+
+await T('läser id och namn ur Dina grupper', async () => {
+  const m = bygg({ groupIds: TVA, sokvag: '/groups/joins/', poster: [] });
+  const sida = joinsSida([
+    { id: GRUPP, namn: 'Här Står Polisen - Västerås' },
+    { id: '291829374617173', namn: 'E-biljetter - Köp & Sälj' },
+    { id: 'norti.se', namn: 'Norti biljetter' },
+  ]);
+  m.behallare.appendChild(sida);
+  const funna = m.handtag.hittaGrupper();
+  m.stang();
+  const karta = Object.fromEntries(funna.map(g => [g.id, g.namn]));
+  if (funna.length !== 3) return `hittade ${funna.length}: ` + JSON.stringify(karta);
+  if (karta[GRUPP] !== 'Här Står Polisen - Västerås') return 'namn: ' + karta[GRUPP];
+  return karta['norti.se'] === 'Norti biljetter' || 'slug-namn: ' + karta['norti.se'];
+});
+
+await T('navigationen räknas inte som grupper', async () => {
+  const m = bygg({ groupIds: TVA, sokvag: '/groups/joins/', poster: [] });
+  m.behallare.appendChild(joinsSida([{ id: GRUPP, namn: 'Polisen' }]));
+  const ids = m.handtag.hittaGrupper().map(g => g.id); m.stang();
+  const skrap = ids.filter(i => ['feed', 'discover', 'joins'].includes(i));
+  return skrap.length === 0 || 'tog med ' + JSON.stringify(skrap);
+});
+
+await T('säger vilka som redan är anslutna', async () => {
+  const m = bygg({ groupIds: TVA, sokvag: '/groups/joins/', poster: [] });
+  m.behallare.appendChild(joinsSida([
+    { id: GRUPP, namn: 'Polisen Västerås' },
+    { id: '8880001', namn: 'Någon annan grupp' },
+  ]));
+  const funna = m.handtag.hittaGrupper(); m.stang();
+  const a = funna.find(g => g.id === GRUPP);
+  const b = funna.find(g => g.id === '8880001');
+  return (a && a.ansluten === true && b && b.ansluten === false)
+    || JSON.stringify(funna);
+});
+
+await T('upptäckten rör inte nätet och skriver ingenting', async () => {
+  const m = bygg({ groupIds: TVA, sokvag: '/groups/joins/', poster: [] });
+  m.behallare.appendChild(joinsSida([{ id: GRUPP, namn: 'Polisen' }]));
+  const foreN = m.natverk.length, foreS = m.skrivningar.length;
+  m.handtag.hittaGrupper();
+  const n = m.natverk.length - foreN, s = m.skrivningar.length - foreS;
+  m.stang();
+  return (n === 0 && s === 0) || `${n} anrop, ${s} skrivningar`;
+});
+
+await T('gruppflödet läses fortfarande inte, ens med upptäckten inne', async () => {
+  // hittaGrupper() får finnas på /groups/joins/ utan att svepet börjar läsa
+  // där. Det är två olika saker, och bara den ena är tillåten.
+  const m = await skanna({ groupIds: TVA, sokvag: '/groups/joins/', poster: [POLIS] });
+  const n = m.natverk.length; m.stang();
+  return n === 0 || `${n} nätanrop från /groups/joins/`;
+});
+
+/* =================================================================== */
+G('Tom grupplista stoppar allt');
 
 await T('inget handtag skapas', async () => {
   const m = bygg({ groupId: '', poster: [POLIS] });
@@ -786,10 +1285,23 @@ await T('external_id med id är fb:<inläggets id>', async () => {
   return id === 'fb:900001' || 'fick ' + id;
 });
 
-await T('external_id utan id är fb:<hash>:<tidsfack>', async () => {
+await T('external_id utan id är fb:<grupp>:<hash>:<tidsfack>', async () => {
+  // Gruppen kom med i 2.3. Hashen räknas bara på texten, så "Polis vid
+  // Storgatan" ger samma hash i alla grupper — utan gruppen i nyckeln hade
+  // Stockholmsvarningen tystats som en dubblett av Västeråsvarningen.
   const m = await skanna({ groupId: GRUPP, poster: [{ text: 'Polis står vid Erikslund' }] });
   const id = m.supabase[0] && m.supabase[0].kropp.external_id; m.stang();
-  return /^fb:[0-9a-z]+:[0-9a-z]+$/.test(id) || 'fick ' + id;
+  return new RegExp('^fb:' + GRUPP + ':[0-9a-z]+:[0-9a-z]+$').test(id) || 'fick ' + id;
+});
+
+await T('external_id MED id är fortfarande fb:<inläggets id>, utan grupp', async () => {
+  // Inläggs-id är globalt unikt hos Facebook, så gruppen tar inte bort någon
+  // kollision där. Den hade däremot gett varje redan skickad rapport en ny
+  // nyckel vid uppgraderingen, och då dyker de upp en gång till på kartan
+  // för de förare som kör just nu.
+  const m = await skanna({ groupId: GRUPP, poster: [POLIS] });
+  const id = m.supabase[0] && m.supabase[0].kropp.external_id; m.stang();
+  return id === 'fb:900001' || 'fick ' + id;
 });
 
 await T('external_id kan inte bli tomt, null eller odefinierat', async () => {
@@ -838,7 +1350,7 @@ await T('misslyckad skrivning ger nytt försök, inte tystnad', async () => {
   const m = await skanna({ groupId: GRUPP, poster: [POLIS], nominatimFel: true });
   const forsta = m.supabase.length;
   const seen = JSON.parse(m.lagring.get('pv.fb.seen.v2') || '{}');
-  const post = seen['id:900001'];
+  const post = seen[`g:${GRUPP}|id:900001`];      // nyckeln bär gruppen sedan 2.3
   m.stang();
   if (forsta !== 0) return 'skickade trots trasig geokodning';
   return (post && post.tries === 1 && !post.done)
@@ -906,10 +1418,10 @@ await T('förgiftad geo-cache utanför området används inte', async () => {
   const m = await skanna({
     groupId: GRUPP,
     poster: [POLIS],
-    cache: { 'pv.fb.geo.erikslund': JSON.stringify({ lat: 59.3326, lon: 18.0649, label: 'Sergels torg' }) },
+    cache: { [`pv.fb.geo.${GRUPP}.erikslund`]: JSON.stringify({ lat: 59.3326, lon: 18.0649, label: 'Sergels torg' }) },
   });
   const n = m.supabase.length;
-  const kvar = m.lagring.get('pv.fb.geo.erikslund');
+  const kvar = m.lagring.get(`pv.fb.geo.${GRUPP}.erikslund`);
   m.stang();
   if (n !== 0) return 'använde den förgiftade raden: ' +
     JSON.stringify(m.supabase.map(a => [a.kropp.lat, a.kropp.lon]));
@@ -920,7 +1432,7 @@ await T('giltig cache används utan nytt uppslag', async () => {
   const m = await skanna({
     groupId: GRUPP,
     poster: [POLIS],
-    cache: { 'pv.fb.geo.erikslund': JSON.stringify({ lat: 59.6094, lon: 16.4879, label: 'Erikslund' }) },
+    cache: { [`pv.fb.geo.${GRUPP}.erikslund`]: JSON.stringify({ lat: 59.6094, lon: 16.4879, label: 'Erikslund' }) },
   });
   const uppslag = m.nominatim.length, n = m.supabase.length; m.stang();
   return (uppslag === 0 && n === 1) || `${uppslag} uppslag, ${n} rapporter`;
@@ -929,7 +1441,7 @@ await T('giltig cache används utan nytt uppslag', async () => {
 await T('negativ cache slår inte upp platsen igen', async () => {
   const m = await skanna({
     groupId: GRUPP, poster: [POLIS],
-    cache: { 'pv.fb.geo.erikslund': 'null' },
+    cache: { [`pv.fb.geo.${GRUPP}.erikslund`]: 'null' },
   });
   const uppslag = m.nominatim.length, n = m.supabase.length; m.stang();
   return (uppslag === 0 && n === 0) || `${uppslag} uppslag, ${n} rapporter`;
@@ -1218,7 +1730,7 @@ await T('oläsbar tid bockas inte av som klar — den får försöka igen', asyn
     poster: [{ text: 'Polis står vid Erikslund', id: '970007', tid: 'sprite' }],
   });
   const seen = JSON.parse(m.lagring.get('pv.fb.seen.v2') || '{}');
-  const rad = seen['id:970007'];
+  const rad = seen[NYK('970007')];
   m.stang();
   return (rad && rad.tries === 1 && !rad.done) || 'minneslistan säger ' + JSON.stringify(rad);
 });
@@ -1342,7 +1854,7 @@ await T('samma sak utan permalänk — texthashen bär nyckeln', async () => {
   const nycklar = Object.keys(fsLast(m));
   m.stang();
   if (!r) return 'inget skickades';
-  return nycklar.some(k => k.startsWith('tx:')) || 'fick nycklarna ' + JSON.stringify(nycklar);
+  return nycklar.some(k => k.includes('|tx:')) || 'fick nycklarna ' + JSON.stringify(nycklar);
 });
 
 await T('inlägg som laddas in NEDANFÖR vid skrollning räknas inte som nytt', async () => {
@@ -1355,7 +1867,7 @@ await T('inlägg som laddas in NEDANFÖR vid skrollning räknas inte som nytt', 
   m.laggTill({ text: 'Polis står vid Erikslund', id: '980017', tid: 'sprite' }, false);
   await m.handtag.scanNow();
   const n = m.supabase.length;
-  const rad = fsLast(m)['id:980017'];
+  const rad = fsLast(m)[NYK('980017')];
   const s = m.handtag.stats();
   m.stang();
   if (n !== 0) return `${n} varningar från ett inlägg som skrollades fram`;
@@ -1402,7 +1914,7 @@ await T('ett inlägg sett för 40 minuter sedan behåller sin ålder över omlad
   const sett = Date.now() - 40 * 60000;
   const m = await skanna({
     groupId: GRUPP, hoverForTime: false,
-    cache: fsCache({ 'id:980007': { f: sett, s: sett, k: 0 } }),
+    cache: fsCache({ [NYK('980007')]: { f: sett, s: sett, k: 0 } }),
     poster: [{ text: 'Polis står vid Erikslund', id: '980007', tid: 'sprite' }],
   });
   const r = m.supabase[0] && m.supabase[0].kropp;
@@ -1418,7 +1930,7 @@ await T('en observation äldre än varningens livslängd ger ingen varning', asy
   const sett = Date.now() - 120 * 60000;
   const m = await skanna({
     groupId: GRUPP, hoverForTime: false,
-    cache: fsCache({ 'id:980008': { f: sett, s: sett, k: 0 } }),
+    cache: fsCache({ [NYK('980008')]: { f: sett, s: sett, k: 0 } }),
     poster: [{ text: 'Polis står vid Erikslund', id: '980008', tid: 'sprite' }],
   });
   const n = m.supabase.length; m.stang();
@@ -1432,7 +1944,7 @@ await T('Facebooks egen tid vinner över observationen', async () => {
   const sett = Date.now() - 2 * 60000;
   const m = await skanna({
     groupId: GRUPP, hoverForTime: false,
-    cache: fsCache({ 'id:980009': { f: sett, s: sett, k: 0 } }),
+    cache: fsCache({ [NYK('980009')]: { f: sett, s: sett, k: 0 } }),
     poster: [{ text: 'Polis står vid Erikslund', id: '980009', tid: 'spann', alder: '30 min' }],
   });
   const r = m.supabase[0] && m.supabase[0].kropp;
@@ -1449,7 +1961,7 @@ await T('hovringen är sista utvägen — den rörs inte när observationen räc
   let hovrat = 0;
   const m = bygg({
     groupId: GRUPP, hoverForTime: true,          // påslagen, och används ändå inte
-    cache: fsCache({ 'id:980010': { f: sett, s: sett, k: 0 } }),
+    cache: fsCache({ [NYK('980010')]: { f: sett, s: sett, k: 0 } }),
     poster: [{ text: 'Polis står vid Erikslund', id: '980010', tid: 'sprite',
                hovertid: 'Onsdag 19 augusti 2026 kl. 16:59' }],
   });
@@ -1485,7 +1997,7 @@ await T('minneslistan växer inte obegränsat', async () => {
   // localStorage spräcks — och då slutar ALLT skrivande fungera, tyst.
   const nu = Date.now();
   const fyllning = {};
-  for (let i = 0; i < 800; i++) fyllning['id:9' + i] = { f: nu - i * 1000, s: nu - i * 1000, k: 0 };
+  for (let i = 0; i < 800; i++) fyllning[NYK('9') + i] = { f: nu - i * 1000, s: nu - i * 1000, k: 0 };
   const m = await skanna({
     groupId: GRUPP, hoverForTime: false, cache: fsCache(fyllning),
     poster: [{ text: 'Polis står vid Erikslund', id: '980012', tid: 'sprite' }],
@@ -1496,8 +2008,8 @@ await T('minneslistan växer inte obegränsat', async () => {
   if (antal > 500) return `${antal} rader kvar, taket är 500`;
   if (antal < 400) return `bara ${antal} rader kvar — gallringen tog för mycket`;
   // De nyaste ska överleva, inte de äldsta.
-  if (!lista['id:980012']) return 'det nyaste inlägget gallrades bort';
-  return !lista['id:9799'] || 'den äldsta raden överlevde gallringen';
+  if (!lista[NYK('980012')]) return 'det nyaste inlägget gallrades bort';
+  return !lista[NYK('9799')] || 'den äldsta raden överlevde gallringen';
 });
 
 await T('rader äldre än ett dygn gallras bort', async () => {
@@ -1505,15 +2017,15 @@ await T('rader äldre än ett dygn gallras bort', async () => {
   const m = await skanna({
     groupId: GRUPP, hoverForTime: false,
     cache: fsCache({
-      'id:970100': { f: nu - 25 * 3600000, s: nu - 25 * 3600000, k: 0 },
-      'id:970101': { f: nu - 2 * 3600000, s: nu - 2 * 3600000, k: 0 },
+      [NYK('970100')]: { f: nu - 25 * 3600000, s: nu - 25 * 3600000, k: 0 },
+      [NYK('970101')]: { f: nu - 2 * 3600000, s: nu - 2 * 3600000, k: 0 },
     }),
     poster: [{ text: 'Polis står vid Erikslund', id: '980013', tid: 'sprite' }],
   });
   const lista = fsLast(m);
   m.stang();
-  if (lista['id:970100']) return 'ett dygn gammal rad ligger kvar';
-  return !!lista['id:970101'] || 'gallringen tog även den färska raden';
+  if (lista[NYK('970100')]) return 'ett dygn gammal rad ligger kvar';
+  return !!lista[NYK('970101')] || 'gallringen tog även den färska raden';
 });
 
 await T('ett inlägg som fortfarande syns gallras inte trots gammal första observation', async () => {
@@ -1524,14 +2036,14 @@ await T('ett inlägg som fortfarande syns gallras inte trots gammal första obse
   const nu = Date.now();
   const m = await skanna({
     groupId: GRUPP, hoverForTime: false,
-    cache: fsCache({ 'id:980014': { f: nu - 30 * 3600000, s: nu - 60000, k: 0 } }),
+    cache: fsCache({ [NYK('980014')]: { f: nu - 30 * 3600000, s: nu - 60000, k: 0 } }),
     poster: [{ text: 'Polis står vid Erikslund', id: '980014', tid: 'sprite' }],
   });
   const lista = fsLast(m);
   const n = m.supabase.length;
   m.stang();
-  if (!lista['id:980014']) return 'raden gallrades bort trots att inlägget syns';
-  if (lista['id:980014'].f !== nu - 30 * 3600000) return 'första observationen skrevs över';
+  if (!lista[NYK('980014')]) return 'raden gallrades bort trots att inlägget syns';
+  if (lista[NYK('980014')].f !== nu - 30 * 3600000) return 'första observationen skrevs över';
   return n === 0 || `${n} varningar från ett 30 timmar gammalt inlägg`;
 });
 
@@ -1547,7 +2059,7 @@ await T('torrkörningen sparar först-sedd men rör inte hanteringslistan', asyn
   const lista = fsLast(m);
   m.stang();
   if (seenNycklar.length) return 'torrkörningen skrev hanteringslistan: ' + JSON.stringify(seenNycklar);
-  return !!lista['id:980015'] || 'först-sedd sparades inte i torrkörning';
+  return !!lista[NYK('980015')] || 'först-sedd sparades inte i torrkörning';
 });
 
 await T('nyckeln krockar inte med hanteringslistans prefix', () =>
@@ -1565,7 +2077,7 @@ await T('trasig minneslista kraschar inte bryggan', async () => {
   const s = m.handtag.stats();
   m.stang();
   if (!s) return 'bryggan startade inte';
-  return !!lista['id:980016'] || 'listan byggdes inte om efter skräpet';
+  return !!lista[NYK('980016')] || 'listan byggdes inte om efter skräpet';
 });
 
 /* =================================================================== */

@@ -1332,6 +1332,228 @@ await T('etiketten som bara upprepar typen räknas inte som plats', () => {
 });
 
 /* =================================================================== */
+G('Facebook-grupper — flera orter, varsitt område');
+
+/*
+ * Logiken bor i js/app.js, och app.js går inte att importera i ett test:
+ * modulen kopplar upp sig mot DOM:en, startar GPS och ritar kartan så fort
+ * den laddas. Stycket mellan markörerna är därför skrivet utan beroenden,
+ * och hämtas här som text och körs för sig. Samma grepp som
+ * fb-bryggan-test.html använder på användarskriptet.
+ *
+ * Går skärningen fel blir det ett rött testfall, inte tyst grönt — se
+ * första raden nedan.
+ */
+const appKalla = await fetch('./js/app.js').then(r => r.text());
+const START = '/* ==PV-FB-GRUPPER-START==';
+const SLUT = '/* ==PV-FB-GRUPPER-SLUT== */';
+let fbg = null;
+{
+  const i = appKalla.indexOf(START), j = appKalla.indexOf(SLUT);
+  if (i >= 0 && j > i) {
+    const bit = appKalla.slice(i, j);
+    fbg = new Function(bit + '\nreturn { FB_REGIONER, FB_FORBJUDNA, fbGruppIdUrUrl, ' +
+      'fbRegion, inomFbRegion, normaliseraFbGrupper, fbBryggKonfig };')();
+  }
+}
+
+await T('stycket går att skära ut ur app.js', () =>
+  (fbg && Array.isArray(fbg.FB_REGIONER)) || 'markörerna hittades inte i js/app.js');
+
+await T('Västmanland har exakt samma ruta som bryggan kör med', () => {
+  const v = fbg.fbRegion('vastmanland');
+  return (v && v.ruta.join(',') === '15.1,59.3,17.3,60.3') || 'fick ' + JSON.stringify(v && v.ruta);
+});
+
+await T('varje område har en giltig ruta och en ort', () => {
+  for (const r of fbg.FB_REGIONER) {
+    if (!r.nyckel || !r.namn || !r.ort) return 'ofullständig rad: ' + JSON.stringify(r);
+    const [lonMin, latMin, lonMax, latMax] = r.ruta;
+    if (!(lonMin < lonMax && latMin < latMax)) return r.nyckel + ': vänd ruta';
+    // Sverige, med marginal. En ruta utanför är ett slarvfel i tabellen.
+    if (lonMin < 10 || lonMax > 25 || latMin < 55 || latMax > 70)
+      return r.nyckel + ': ligger utanför Sverige';
+  }
+  return true;
+});
+
+await T('nycklarna är unika', () => {
+  const n = fbg.FB_REGIONER.map(r => r.nyckel);
+  return new Set(n).size === n.length || 'dubbletter bland ' + n.join(', ');
+});
+
+await T('en Stockholmskoordinat ligger inte i Västmanlands ruta', () => {
+  // Sergels torg. Det här är hela poängen med att varje grupp bär ett område.
+  const vm = fbg.fbRegion('vastmanland').ruta;
+  return !fbg.inomFbRegion(59.3326, 18.0649, vm) || 'Sergels torg räknades som Västmanland';
+});
+
+await T('en Västeråskoordinat ligger inte i Stockholms ruta', () => {
+  const sthlm = fbg.fbRegion('stockholm').ruta;
+  return !fbg.inomFbRegion(59.6094, 16.4879, sthlm) || 'Erikslund räknades som Stockholm';
+});
+
+await T('var och en hittar hem i sin egen ruta', () => {
+  const par = [
+    ['vastmanland', 59.6094, 16.4879],   // Erikslund, Västerås
+    ['stockholm', 59.3326, 18.0649],     // Sergels torg
+    ['vastragotaland', 57.7011, 11.9746],// Avenyn, Göteborg
+    ['skane', 55.6050, 13.0038],         // Malmö
+    ['norrbotten', 65.5848, 22.1567],    // Luleå
+  ];
+  for (const [nyckel, lat, lon] of par) {
+    if (!fbg.inomFbRegion(lat, lon, fbg.fbRegion(nyckel).ruta))
+      return nyckel + ' hittade inte sin egen stad';
+  }
+  return true;
+});
+
+await T('grupp-id plockas ur en hel adress', () => {
+  const fall = [
+    ['https://www.facebook.com/groups/317968668373072/?ref=bookmarks', '317968668373072'],
+    ['facebook.com/groups/317968668373072', '317968668373072'],
+    ['/groups/varningar.vasteras/', 'varningar.vasteras'],
+    ['317968668373072', '317968668373072'],
+    ['  317968668373072  ', '317968668373072'],
+    ['https://m.facebook.com/groups/norti.se/posts/123/', 'norti.se'],
+  ];
+  for (const [in_, ut] of fall) {
+    const r = fbg.fbGruppIdUrUrl(in_);
+    if (r !== ut) return `${in_} → ${r}, väntade ${ut}`;
+  }
+  return true;
+});
+
+await T('skräp ger inget id i stället för ett påhittat', () => {
+  for (const skrap of ['', '   ', null, undefined, 'https://example.com/', 'hej hopp',
+                       'facebook.com/marketplace/', {}, [], 'a b c', '?', '#/']) {
+    const r = fbg.fbGruppIdUrUrl(skrap);
+    if (r !== '') return JSON.stringify(skrap) + ' → ' + JSON.stringify(r);
+  }
+  return true;
+});
+
+await T('ett ensamt kort ord tas som en slug — och det är rätt svar', () => {
+  /*
+   * "42.5" ser ut som skräp, och blir ändå ett id. Det är avsiktligt: en
+   * grupps slug är precis en sådan sträng — den riktiga gruppen norti.se
+   * heter så. Bokstäver, siffror, punkt och bindestreck går inte att skilja
+   * från en giltig slug utan att samtidigt kasta riktiga grupper.
+   *
+   * Det kostar ingenting att ha fel här. Ett id som inte finns matchar ingen
+   * sida, bryggan läser ingenting, och ägaren ser gruppen ligga tyst i
+   * listan med sitt id utskrivet. Att gissa BORT en riktig grupp hade
+   * däremot kostat varningar.
+   */
+  return fbg.fbGruppIdUrUrl('42.5') === '42.5' || 'kastade en giltig slug-form';
+});
+
+await T('gruppflödet går inte att lägga till som grupp', () => {
+  // /groups/feed/ är samlingen av ALLA dina grupper. Kunde den anslutas vore
+  // gruppfiltret meningslöst.
+  for (const ord of ['feed', 'FEED', 'discover', 'joins',
+                     'https://www.facebook.com/groups/feed/']) {
+    if (fbg.fbGruppIdUrUrl(ord) !== '') return `"${ord}" accepterades`;
+  }
+  return true;
+});
+
+await T('en grupp utan giltigt område kastas ur listan', () => {
+  const rader = fbg.normaliseraFbGrupper([
+    { id: '111111111', namn: 'Med område', region: 'stockholm' },
+    { id: '222222222', namn: 'Utan område' },
+    { id: '333333333', namn: 'Påhittat område', region: 'atlantis' },
+    { id: '444444444', namn: 'Vänd ruta', ruta: [17.3, 59.3, 15.1, 60.3] },
+  ]);
+  const ids = rader.map(g => g.id);
+  return (ids.length === 1 && ids[0] === '111111111') || 'fick ' + JSON.stringify(ids);
+});
+
+await T('samma grupp två gånger blir en', () => {
+  const rader = fbg.normaliseraFbGrupper([
+    { id: '317968668373072', namn: 'Först', region: 'vastmanland' },
+    { id: 'https://www.facebook.com/groups/317968668373072/', namn: 'Igen', region: 'stockholm' },
+  ]);
+  return (rader.length === 1 && rader[0].namn === 'Först') || JSON.stringify(rader);
+});
+
+await T('området fyller i ort och namn åt gruppen', () => {
+  const [g] = fbg.normaliseraFbGrupper([{ id: '555555555', region: 'stockholm' }]);
+  if (!g) return 'raden kastades';
+  return (g.ort === 'Stockholm' && g.omrade === 'Stockholms län' &&
+          g.ruta.join(',') === '17.2,58.8,19.3,60.2') || JSON.stringify(g);
+});
+
+await T('utan namn används id:t, aldrig tomt', () => {
+  const [g] = fbg.normaliseraFbGrupper([{ id: '666666666', namn: '   ', region: 'skane' }]);
+  return (g && g.namn === '666666666') || JSON.stringify(g);
+});
+
+await T('bryggkonfigurationen bär id, namn, ort och ruta för varje grupp', () => {
+  const txt = fbg.fbBryggKonfig([
+    { id: '317968668373072', namn: 'Här Står Polisen - Västerås', region: 'vastmanland' },
+    { id: '7770001', namn: 'Polisen Stockholm', region: 'stockholm' },
+  ]);
+  if (!/^groupIds:\s*\[/.test(txt)) return 'saknar groupIds: ' + txt;
+  for (const bit of ['317968668373072', '7770001', 'Västerås', 'Stockholm',
+                     '15.10, 59.30, 17.30, 60.30', '17.20, 58.80, 19.30, 60.20']) {
+    if (!txt.includes(bit)) return 'saknar ' + bit + ' i:\n' + txt;
+  }
+  return true;
+});
+
+await T('en tom lista ger en tom bryggkonfiguration, inte en påhittad grupp', () => {
+  const txt = fbg.fbBryggKonfig([]);
+  return !/\bid:/.test(txt) || 'fick en grupp ur ingenting: ' + txt;
+});
+
+await T('konfigurationen är giltig JS i den form bryggan läser', () => {
+  /*
+   * Rundtur. Texten appen lägger i urklipp klistras in mitt i ett
+   * objektlitteral i användarskriptet, så den måste både gå att tolka och
+   * ha exakt de fält bryggans normaliseraGrupper() kräver — id och ruta,
+   * annars vägrar bryggan starta med fler än en grupp.
+   *
+   * Testet fanns inte förut, och det är just en sådan skarv som brukar gå
+   * sönder tyst: appen ser rätt ut, bryggan startar inte, och ingen av dem
+   * säger varför.
+   */
+  const txt = fbg.fbBryggKonfig([
+    { id: '317968668373072', namn: 'Här Står Polisen - Västerås', region: 'vastmanland' },
+    { id: '7770001', namn: 'Polisen Stockholm', region: 'stockholm' },
+  ]);
+  let obj;
+  try { obj = new Function('return {' + txt + '}')(); }
+  catch (e) { return 'går inte att tolka: ' + e.message + '\n' + txt; }
+
+  const g = obj.groupIds;
+  if (!Array.isArray(g) || g.length !== 2) return 'fick ' + JSON.stringify(obj);
+  for (const rad of g) {
+    if (!rad.id || typeof rad.id !== 'string') return 'rad utan id: ' + JSON.stringify(rad);
+    if (!Array.isArray(rad.ruta) || rad.ruta.length !== 4 ||
+        !rad.ruta.every(Number.isFinite)) return 'trasig ruta: ' + JSON.stringify(rad);
+    if (!(rad.ruta[0] < rad.ruta[2] && rad.ruta[1] < rad.ruta[3]))
+      return 'vänd ruta: ' + JSON.stringify(rad);
+    if (!rad.ort) return 'rad utan ort: ' + JSON.stringify(rad);
+  }
+  // Och de två rutorna får inte vara samma, annars har regionvalet inte gjort något.
+  return g[0].ruta.join() !== g[1].ruta.join() || 'båda grupperna fick samma ruta';
+});
+
+await T('citattecken i ett gruppnamn spränger inte konfigurationen', () => {
+  // Namnet skrivs av användaren. En apostrof eller ett citattecken där ska
+  // inte göra användarskriptet osyntaktiskt.
+  const txt = fbg.fbBryggKonfig([
+    { id: '317968668373072', namn: 'Polisen "Västerås" \\ o\'boy', region: 'vastmanland' },
+  ]);
+  let obj;
+  try { obj = new Function('return {' + txt + '}')(); }
+  catch (e) { return 'går inte att tolka: ' + e.message + '\n' + txt; }
+  return obj.groupIds[0].namn === 'Polisen "Västerås" \\ o\'boy'
+    || 'namnet blev ' + JSON.stringify(obj.groupIds[0].namn);
+});
+
+/* =================================================================== */
 const total = ok + fel + hopp;
 const s = document.getElementById('summa');
 s.textContent = `${ok} av ${total} gick igenom` +

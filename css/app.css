@@ -193,6 +193,23 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .group-row span { flex: 1; min-width: 0; font-weight: 600; }
 .btn-ghost.small.danger { color: var(--danger); }
 
+/* Facebook-grupper: namnet i fetstil, område och id som underrad. Id:t står
+   med för att det är det enda som måste stämma överens med bryggan — den som
+   felsöker en tyst grupp ska se det utan att gräva. */
+.fb-group-row span { font-weight: 600; overflow-wrap: anywhere; }
+.fb-group-row small {
+  display: block; margin-top: 2px;
+  font-weight: 400; font-size: 12.5px; color: var(--fg-dim);
+}
+
+.kod-ruta {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 8px;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; color: var(--fg-dim);
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre; overflow-x: auto; resize: vertical;
+}
+
 /* ---------- Varningsbanner ---------- */
 
 .alert-banner {

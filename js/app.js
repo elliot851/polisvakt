@@ -29,6 +29,7 @@ import { WinterService } from './vinter.js';
 import { Groups } from './groups.js';
 import * as Behorigheter from './behorigheter.js';
 import * as Push from './push.js';
+import { larma } from './larm.js';
 import * as Facebook from './facebook.js';
 import { Vakthund } from './vakthund.js';
 import { Varmevakt } from './varme.js';
@@ -87,6 +88,23 @@ const defaults = {
   morktLage: true,         // släck skärmen under körning när ingen rör den
   haptikPa: true,
   notiser: null,          // fylls av notiser.js vid behov
+
+  /*
+   * Facebook-grupper bryggan ska läsa. En rad per grupp, med eget område —
+   * en förare i Västerås ska inte få varningar från Stockholm. Se
+   * "Facebook-grupper" längre ner.
+   *
+   * Förvalet är gruppen bryggan redan kör mot, så att den som uppgraderar
+   * ser sin nuvarande inställning i stället för en tom lista.
+   */
+  fbGrupper: [{
+    id: '317968668373072',
+    namn: 'Här Står Polisen - Västerås',
+    region: 'vastmanland',
+    ort: 'Västerås',
+    omrade: 'Västmanland',
+    ruta: [15.10, 59.30, 17.30, 60.30],
+  }],
 };
 
 const IMPACT_LEVELS = {
@@ -1091,6 +1109,331 @@ function wireGroups() {
   // Grupper kräver inloggning. Hämta först när vi vet att någon är inloggad,
   // annars svarar servern 401 och användaren får ett fel utan orsak.
   if (auth.session?.access_token) groups.refresh().catch(() => {});
+}
+
+/* ================= Facebook-grupper ================= */
+
+/*
+ * Ägarens ord: "viktigt att andra som kör appen kan connecta till flera
+ * olika grupper på facebook. T.ex någon som kör i Stockholm ska kunna
+ * connecta sthlm gruppen etc."
+ *
+ * Det här är styrpanelen. Själva läsningen sker i tools/fb-bridge.user.js,
+ * som körs på facebook.com och inte kan importera något härifrån. Appen äger
+ * listan, bryggan läser den — och överföringen sker genom att ägaren
+ * kopierar en rad och klistrar in den i användarskriptet. Det är inte
+ * elegant, men det är den enda vägen: appen ligger på polisvakt.pages.dev
+ * och kommer aldrig åt en flik på facebook.com.
+ *
+ * VARFÖR VARJE GRUPP MÅSTE BÄRA ETT OMRÅDE
+ *
+ * En Facebook-grupp handlar om en trakt. Utan att veta vilken kan bryggan
+ * inte slå upp "Storgatan" — den gatan finns i varenda svensk stad, och en
+ * varning på fel plats är värre än ingen varning alls: föraren bromsar i
+ * onödan och slutar lita på appen efter två sådana.
+ *
+ * VARFÖR EN RUTA OCH INTE rutkod() FRÅN chatt.js
+ *
+ * Appen har redan en geografisk indelning, och den var första kandidaten:
+ * chatt.js delar landet i rutor på 0,25° × 0,5° och beskriver en trakt med
+ * en kod som "r238x33" (Västerås). Den är utmärkt till sitt syfte — den
+ * säger "trakten" utan att avslöja "platsen", vilket är hela poängen när
+ * ett chattmeddelande ska hitta rätt läsare utan att bli en rörelselogg.
+ *
+ * Men den passar inte här, och det är mätt snarare än tyckt. Ett
+ * Facebook-grupps upptagningsområde är ungefär ett län. Uttryckt i
+ * chattrutor blir Västmanland antingen för litet eller för stort:
+ *
+ *   • Den egna rutan plus de åtta grannarna (samma 3×3 som chatten
+ *     använder för "nära mig") ger lon 16,0–17,5 och lat 59,25–60,00.
+ *     Det klipper bort Köping, Arboga och Fagersta — alla ligger väster
+ *     om longitud 16,0 och alla ligger i gruppens område i verkligheten.
+ *   • 5×5 rutor ger lon 15,5–18,0, och longitud 18,0 ligger mitt i
+ *     Stockholm. Då är vi tillbaka i felet vi försöker undvika.
+ *
+ * Rutnätet kan alltså inte uttrycka den avgränsning bryggan redan kör med
+ * ([15,10 59,30 17,30 60,30]), och att krympa ägarens verkliga täckning för
+ * att få återanvända en funktion vore en försämring utklädd till snygg kod.
+ *
+ * Alltså: en rektangel per grupp, samma form som bryggans ruta redan har.
+ * Ägaren väljer den ur en lista över län — han ska inte behöva veta vad en
+ * longitud är. Rutkoden lever kvar där den hör hemma, i chatten.
+ */
+
+/* ==PV-FB-GRUPPER-START==
+ * Allt mellan markörerna är rena funktioner utan beroenden. test.html hämtar
+ * app.js som text, skär ut det här stycket och kör det för sig — annars
+ * hade testet behövt starta hela appen, med DOM och allt, för att mäta en
+ * tabell med koordinater. Lägg ingenting härinne som rör DOM:en, settings
+ * eller någon import.
+ */
+
+/**
+ * Färdiga områden att välja mellan. Rutan är [lonMin, latMin, lonMax, latMax]
+ * — samma ordning som Nominatims viewbox, så den kan skickas rakt in.
+ *
+ * Rutorna är grova med flit. De ska svara på "kan den här varningen höra
+ * hemma i den här gruppen?", inte rita en länsgräns. En ruta som är lite för
+ * stor kostar ingenting; en som är för liten tappar varningar i utkanten,
+ * och det är den dyrare av de två.
+ *
+ * Västmanland står först och siffrorna är oförändrade sedan bryggans 2.2.
+ * Den som uppgraderar ska få exakt samma avgränsning som förut.
+ */
+const FB_REGIONER = [
+  { nyckel: 'vastmanland',    namn: 'Västmanland',        ort: 'Västerås',     ruta: [15.10, 59.30, 17.30, 60.30] },
+  { nyckel: 'stockholm',      namn: 'Stockholms län',     ort: 'Stockholm',    ruta: [17.20, 58.80, 19.30, 60.20] },
+  { nyckel: 'uppsala',        namn: 'Uppsala län',        ort: 'Uppsala',      ruta: [16.60, 59.60, 18.60, 60.70] },
+  { nyckel: 'sodermanland',   namn: 'Södermanland',       ort: 'Eskilstuna',   ruta: [15.60, 58.60, 17.90, 59.60] },
+  { nyckel: 'ostergotland',   namn: 'Östergötland',       ort: 'Linköping',    ruta: [14.50, 57.80, 17.20, 59.00] },
+  { nyckel: 'orebro',         namn: 'Örebro län',         ort: 'Örebro',       ruta: [14.10, 58.70, 15.90, 60.10] },
+  { nyckel: 'vastragotaland', namn: 'Västra Götaland',    ort: 'Göteborg',     ruta: [11.00, 57.00, 14.60, 59.20] },
+  { nyckel: 'skane',          namn: 'Skåne',              ort: 'Malmö',        ruta: [12.40, 55.30, 14.60, 56.60] },
+  { nyckel: 'halland',        namn: 'Halland',            ort: 'Halmstad',     ruta: [11.90, 56.35, 13.60, 57.60] },
+  { nyckel: 'jonkoping',      namn: 'Jönköpings län',     ort: 'Jönköping',    ruta: [13.10, 56.90, 15.90, 58.20] },
+  { nyckel: 'kronoberg',      namn: 'Kronoberg',          ort: 'Växjö',        ruta: [13.30, 56.30, 15.90, 57.30] },
+  { nyckel: 'kalmar',         namn: 'Kalmar län',         ort: 'Kalmar',       ruta: [15.20, 56.10, 17.20, 58.20] },
+  { nyckel: 'blekinge',       namn: 'Blekinge',           ort: 'Karlskrona',   ruta: [14.30, 55.90, 16.20, 56.60] },
+  { nyckel: 'gotland',        namn: 'Gotland',            ort: 'Visby',        ruta: [17.90, 56.80, 19.40, 58.00] },
+  { nyckel: 'varmland',       namn: 'Värmland',           ort: 'Karlstad',     ruta: [11.60, 58.70, 14.60, 61.10] },
+  { nyckel: 'dalarna',        namn: 'Dalarna',            ort: 'Falun',        ruta: [12.10, 59.80, 16.70, 62.30] },
+  { nyckel: 'gavleborg',      namn: 'Gävleborg',          ort: 'Gävle',        ruta: [14.50, 60.20, 17.60, 62.30] },
+  { nyckel: 'vasternorrland', namn: 'Västernorrland',     ort: 'Sundsvall',    ruta: [15.00, 62.00, 19.10, 64.00] },
+  { nyckel: 'jamtland',       namn: 'Jämtland',           ort: 'Östersund',    ruta: [11.90, 61.50, 16.30, 65.10] },
+  { nyckel: 'vasterbotten',   namn: 'Västerbotten',       ort: 'Umeå',         ruta: [14.40, 63.40, 21.60, 66.30] },
+  { nyckel: 'norrbotten',     namn: 'Norrbotten',         ort: 'Luleå',        ruta: [15.30, 65.00, 24.20, 69.10] },
+];
+
+/** Ord som står där ett grupp-id står i adressen, men inte är grupper. */
+const FB_FORBJUDNA = [
+  'feed', 'discover', 'discovery', 'joins', 'create', 'search',
+  'your_groups', 'category', 'browse', 'invites', 'notifications',
+];
+
+/**
+ * Grupp-id:t ur allt från ett naket id till en hel adress med spårparametrar.
+ * Tom sträng när det inte går att få ut något användbart.
+ *
+ * Ägaren ska kunna kopiera adressfältet rakt av. Att kräva att han själv
+ * skalar bort https://www.facebook.com och ?ref=bookmarks är att be om fel.
+ */
+function fbGruppIdUrUrl(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  const m = /\/groups\/([^/?#\s]+)/i.exec(s);
+  const bit = (m ? m[1] : s).trim();
+  if (!/^[\w.-]+$/.test(bit)) return '';
+  if (FB_FORBJUDNA.includes(bit.toLowerCase())) return '';
+  return bit;
+}
+
+/** Området med den nyckeln, eller null. */
+function fbRegion(nyckel) {
+  return FB_REGIONER.find(r => r.nyckel === nyckel) || null;
+}
+
+const fbGiltigRuta = r =>
+  Array.isArray(r) && r.length === 4 && r.every(n => Number.isFinite(n)) &&
+  r[0] < r[2] && r[1] < r[3];
+
+/** Ligger koordinaten i rutan? */
+function inomFbRegion(lat, lon, ruta) {
+  return Number.isFinite(lat) && Number.isFinite(lon) && fbGiltigRuta(ruta) &&
+    lon >= ruta[0] && lon <= ruta[2] && lat >= ruta[1] && lat <= ruta[3];
+}
+
+/**
+ * Städar listan som ligger i settings. Kastar rader utan id eller utan
+ * giltigt område, och tar bort dubbletter.
+ *
+ * Samma hårda regel som i bryggan: en grupp utan område får inte finnas.
+ * Här kastas den i stället för att stoppa appen — appen gör hundra andra
+ * saker, och en trasig rad i en lista ska inte släcka kartan. Bryggan, som
+ * bara har den här uppgiften, vägrar starta i stället.
+ */
+function normaliseraFbGrupper(lista) {
+  const ut = [];
+  const sedda = [];
+  for (const rad of (Array.isArray(lista) ? lista : [])) {
+    if (!rad || typeof rad !== 'object') continue;
+    const id = fbGruppIdUrUrl(rad.id);
+    if (!id || sedda.includes(id)) continue;
+
+    const region = fbRegion(rad.region);
+    const ruta = fbGiltigRuta(rad.ruta) ? rad.ruta.map(Number) : (region ? region.ruta.slice() : null);
+    if (!ruta) continue;
+
+    sedda.push(id);
+    ut.push({
+      id,
+      namn: String(rad.namn || '').trim().slice(0, 80) || id,
+      region: region ? region.nyckel : '',
+      ort: String(rad.ort || (region ? region.ort : '')).trim(),
+      omrade: String(rad.omrade || (region ? region.namn : '')).trim(),
+      ruta,
+    });
+  }
+  return ut;
+}
+
+/** Raden ägaren klistrar in i användarskriptet. */
+function fbBryggKonfig(grupper) {
+  const rader = normaliseraFbGrupper(grupper).map(g =>
+    '      { id: ' + JSON.stringify(g.id) +
+    ', namn: ' + JSON.stringify(g.namn) +
+    ', ort: ' + JSON.stringify(g.ort) +
+    ', omrade: ' + JSON.stringify(g.omrade) +
+    ', ruta: [' + g.ruta.map(n => n.toFixed(2)).join(', ') + '] },');
+  return 'groupIds: [\n' + rader.join('\n') + '\n    ],';
+}
+
+/* ==PV-FB-GRUPPER-SLUT== */
+
+/*
+ * Kodsnutten ägaren kör i Facebook-fliken för att få fram sina grupper.
+ *
+ * VARFÖR EN SNUTT OCH INTE EN KNAPP I APPEN
+ *
+ * Appen ligger på ett annat ursprung än facebook.com. Den kan inte läsa en
+ * Facebook-flik, och Meta stängde Groups API för att läsa grupper 2024 — det
+ * finns alltså ingen väg alls från appen till listan. Det är inte en
+ * begränsning som går att koda sig runt.
+ *
+ * Däremot GÅR det att läsa listan från insidan, och det är mätt:
+ * facebook.com/groups/joins/ ("Dina grupper") bär varje grupp som en länk
+ * till /groups/<id>/ med namnet som text. Ett svep på ett riktigt konto gav
+ * tio grupper med rena namn. facebook.com/groups/feed/ duger däremot inte —
+ * där låg bara den enda grupp som råkade ha ett inlägg i flödet just då.
+ *
+ * Har ägaren redan bryggan installerad finns samma sak som
+ * __polisvakt.hittaGrupper(). Snutten nedan är för första gången, innan det
+ * finns någon grupp att starta bryggan med.
+ */
+const FB_UPPTACK_SNUTT = [
+  '(() => {',
+  '  const m = new Map();',
+  '  for (const a of document.querySelectorAll(\'a[href*="/groups/"]\')) {',
+  '    const h = (a.getAttribute("href") || "").split("?")[0].replace(/^https?:\\/\\/[^/]+/, "");',
+  '    const t = /^\\/groups\\/([^/?#]+)\\/?$/.exec(h);',
+  '    if (!t) continue;',
+  '    const id = t[1];',
+  '    if (["feed","discover","joins","create","search"].includes(id)) continue;',
+  '    if (!m.has(id)) m.set(id, []);',
+  '    const s = (a.innerText || "").replace(/\\s+/g, " ").trim();',
+  '    if (s) m.get(id).push(s);',
+  '  }',
+  '  const rader = [...m].map(([id, t]) => id + "  " + (t.sort((a, b) => a.length - b.length)[0] || ""));',
+  '  console.log(rader.join("\\n") || "Inga grupper här — öppna facebook.com/groups/joins/");',
+  '  return rader;',
+  '})()',
+].join('\n');
+
+function wireFbGrupper() {
+  const list = $('fbGruppLista');
+  if (!list) return;
+
+  const sel = $('fbGruppRegion');
+  const status = t => { const e = $('fbGruppStatus'); if (e) e.textContent = t || ''; };
+
+  for (const r of FB_REGIONER) sel.add(new Option(r.namn, r.nyckel));
+  sel.value = 'vastmanland';
+
+  const las = () => normaliseraFbGrupper(settings.fbGrupper);
+  const skriv = rader => { settings.fbGrupper = rader; saveSettings(); render(); };
+
+  function render() {
+    const rader = las();
+    list.innerHTML = '';
+    $('fbGruppTom').hidden = rader.length > 0;
+
+    for (const g of rader) {
+      const div = document.createElement('div');
+      div.className = 'group-row fb-group-row';
+
+      const txt = document.createElement('span');
+      txt.textContent = g.namn;
+      const under = document.createElement('small');
+      // Id:t står med. Det är det ENDA som måste stämma överens med bryggan,
+      // och den som felsöker en tyst grupp behöver se det utan att gräva.
+      under.textContent = (g.omrade || 'Utan område') + ' · ' + g.id;
+      txt.appendChild(document.createElement('br'));
+      txt.appendChild(under);
+      div.appendChild(txt);
+
+      const bort = document.createElement('button');
+      bort.className = 'btn-ghost small danger';
+      bort.textContent = 'Ta bort';
+      bort.onclick = () => {
+        skriv(las().filter(x => x.id !== g.id));
+        status(`${g.namn} är borttagen. Kopiera om inställningen till bryggan.`);
+      };
+      div.appendChild(bort);
+      list.appendChild(div);
+    }
+
+    const k = $('fbGruppKonfig');
+    if (k) k.value = rader.length ? fbBryggKonfig(rader) : '';
+  }
+
+  $('btnFbGruppLagg').addEventListener('click', () => {
+    const id = fbGruppIdUrUrl($('fbGruppUrl').value);
+    if (!id) {
+      status('Hittade inget grupp-id. Klistra in adressen till gruppen, ' +
+        'till exempel facebook.com/groups/317968668373072/.');
+      return;
+    }
+    const rader = las();
+    if (rader.some(g => g.id === id)) { status('Den gruppen är redan ansluten.'); return; }
+
+    const region = fbRegion(sel.value) || FB_REGIONER[0];
+    const namn = String($('fbGruppNamn').value || '').trim().slice(0, 80) || id;
+    rader.push({ id, namn, region: region.nyckel, ort: region.ort,
+                 omrade: region.namn, ruta: region.ruta.slice() });
+    skriv(rader);
+    $('fbGruppUrl').value = '';
+    $('fbGruppNamn').value = '';
+    status(`${namn} tillagd i ${region.namn}. Kopiera inställningen till bryggan ` +
+      'så börjar den läsa gruppen.');
+  });
+
+  $('btnFbGruppKopiera').addEventListener('click', async () => {
+    const rader = las();
+    if (!rader.length) { status('Listan är tom — bryggan startar inte utan minst en grupp.'); return; }
+    const ok = await kopiera(fbBryggKonfig(rader));
+    status(ok
+      ? 'Kopierat. Öppna användarskriptet i Tampermonkey och ersätt raden som ' +
+        'börjar med groupIds:.'
+      : 'Kunde inte kopiera automatiskt — markera texten i rutan och kopiera för hand.');
+  });
+
+  $('btnFbGruppUpptack').addEventListener('click', async () => {
+    const ok = await kopiera(FB_UPPTACK_SNUTT);
+    status(ok
+      ? 'Kopierat. Öppna facebook.com/groups/joins/, tryck F12 → Console, klistra ' +
+        'in och tryck Enter. Du får en rad per grupp: id först, sedan namnet.'
+      : 'Kunde inte kopiera automatiskt — markera texten i rutan och kopiera för hand.');
+    const k = $('fbGruppKonfig');
+    if (k) k.value = FB_UPPTACK_SNUTT;
+  });
+
+  render();
+}
+
+/** Skriver till urklipp. Faller tillbaka på det gamla sättet i äldre webbläsare. */
+async function kopiera(text) {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
 }
 
 function wireCoverage() {
@@ -2709,72 +3052,41 @@ function plateSettings() {
 
 /* ================= Fordonslarm =================
  *
- * Ett pip räcker inte. Man sitter i en bil, kanske med musik på, och tittar
- * på vägen — inte på telefonen. Larmet måste därför gå fram genom två sinnen
- * samtidigt: hela skärmen slår rött och pulsar, och en siren ljuder tills
- * någon tystar den.
+ * Själva larmet bor i js/larm.js. Här ligger bara kopplingen till DOM:en.
  *
- * Sirenen byggs som en enda oscillator vars frekvens svänger mellan två
- * toner. Två växlande toner bär mycket längre genom motorljud än en jämn,
- * eftersom örat fäster vid förändringen och inte vid tonhöjden — det är
- * samma skäl som utryckningsfordon inte använder en enda ton.
- *
- * Larmet stängs av sig självt efter LARM_MAX_MS. En siren som ljuder tills
- * någon rör telefonen är farligare än ingen siren alls: den lockar blicken
- * från vägen just när den inte får vara där.
+ * Den gamla versionen skrek: en sågtandsvåg som svepte mellan 700 och 1150 Hz
+ * på halv volym i tolv sekunder. Den hördes, men den var byggd som en
+ * utryckningssiren — och en förare som får panik av sin egen app tittar på
+ * telefonen i stället för på vägen. Fel utfall för något som ska göra
+ * körningen säkrare. Nu: två mjuka sinustoner i ren kvint, en femtedel av
+ * volymen, och en röst som säger vad som hänt. Motiveringen står i larm.js.
  */
-const LARM_MAX_MS = 12000;
-let larmCtx = null, larmOsc = null, larmTimer = null;
+let avbrytLarm = null;
 
 function larmaFordon(d) {
   const rutan = $('fordonslarm');
   if (!rutan) return;
-  $('larmNamn').textContent = d.etikett || 'Ditt fordon';
-  // Numret visas bara i larmögonblicket och lagras aldrig — se Fordonsregister.
-  $('larmNr').textContent = visaPlat(d.plat);
-  rutan.hidden = false;
-  startaSiren();
-  // Vibration bär genom en ficka när ljudet drunknar i motorljud. Saknas
-  // stödet (iOS) gör larmet ändå sitt jobb med ljud och färg.
-  try { navigator.vibrate?.([220, 120, 220, 120, 420]); } catch {}
-  clearTimeout(larmTimer);
-  larmTimer = setTimeout(slutaLarma, LARM_MAX_MS);
+  avbrytLarm?.();
+  avbrytLarm = larma(d, {
+    visa: t => {
+      $('larmNamn').textContent = t.etikett || 'Ditt fordon';
+      // Numret visas bara i larmögonblicket och lagras aldrig — se
+      // Fordonsregister. Rösten säger det aldrig högt.
+      $('larmNr').textContent = visaPlat(t.plat);
+      rutan.hidden = false;
+    },
+    dolj: () => {
+      rutan.hidden = true;
+      // Numret ska inte ligga kvar i DOM:en efter larmet.
+      const nr = $('larmNr'); if (nr) nr.textContent = '';
+    },
+    speaker,
+  });
 }
 
 function slutaLarma() {
-  clearTimeout(larmTimer);
-  larmTimer = null;
-  const rutan = $('fordonslarm');
-  if (rutan) rutan.hidden = true;
-  // Numret ska inte ligga kvar i DOM:en efter larmet.
-  const nr = $('larmNr'); if (nr) nr.textContent = '';
-  stoppaSiren();
-}
-
-function startaSiren() {
-  stoppaSiren();
-  try {
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'sawtooth';                  // rikare övertoner hörs genom motorljud
-    const t = ac.currentTime;
-    // Svep mellan 700 och 1150 Hz, fram och tillbaka, tills vi stoppar.
-    o.frequency.setValueAtTime(700, t);
-    for (let i = 0; i < Math.ceil(LARM_MAX_MS / 500); i++) {
-      o.frequency.linearRampToValueAtTime(i % 2 ? 700 : 1150, t + 0.25 + i * 0.25);
-    }
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.5, t + 0.04);
-    o.connect(g); g.connect(ac.destination);
-    o.start();
-    larmCtx = ac; larmOsc = o;
-  } catch { /* ljud blockerat — färgen och vibrationen bär larmet */ }
-}
-
-function stoppaSiren() {
-  try { larmOsc?.stop(); } catch {}
-  try { larmCtx?.close(); } catch {}
-  larmOsc = null; larmCtx = null;
+  avbrytLarm?.();
+  avbrytLarm = null;
 }
 
 /**
@@ -2904,6 +3216,61 @@ function wireModePicker() {
    * giltighet. Därför ligger aktiveraLutning() först.
    */
   $('btnLarmTyst').onclick = () => slutaLarma();
+
+  /*
+   * Exempelinlägg — visar kedjan utan att röra den delade databasen.
+   *
+   * Frestelsen var att skriva en rad i produktionsdatabasen så den syns på
+   * telefonen. Det hade varit fel: en påhittad polisvarning i en delad
+   * säkerhetstjänst är en falsk varning för alla andra som kör just då, även
+   * om den ligger utanför länet. Rapporten läggs därför bara i den här
+   * telefonens minne, markerad som demo, med kort livslängd.
+   *
+   * Den går medvetet genom SAMMA väg som en riktig gruppvarning: samma
+   * source, samma sammanfattning, samma kartnål, samma röst. Ser det rätt ut
+   * här ser det rätt ut på riktigt.
+   */
+  const demoKnapp = $('btnDemoInlagg');
+  if (demoKnapp) demoKnapp.onclick = () => {
+    const text = ($('demoText').value || 'Polis vid Nacka').trim();
+    const tolkning = parseReportText(text);
+    if (tolkning?.intent === 'refused') {
+      $('demoStatus').textContent =
+        'Den texten vägras av appen och skulle aldrig bli en varning. Det är meningen.';
+      return;
+    }
+    if (tolkning?.intent !== 'report') {
+      $('demoStatus').textContent = 'Appen hittar ingen varning i den texten. Prova "Polis vid Erikslund".';
+      return;
+    }
+    const fix = geo.position;
+    if (!fix) { $('demoStatus').textContent = 'Väntar på GPS — exemplet placeras vid din position.'; return; }
+
+    const nu = Date.now();
+    const demo = {
+      id: 'demo-' + nu,
+      external_id: 'demo:' + nu,
+      type: tolkning.type,
+      // Parsern gemenar texten för att kunna matcha ord mot ord, så platsen
+      // kommer tillbaka som "nacka". I en riktig rapport sätts etiketten av
+      // geokodaren och är korrekt skriven; här måste vi göra det själva,
+      // annars står det "Polis vid nacka" i exemplet och det ser slarvigt ut.
+      label: (tolkning.place || 'Demo').replace(/(^|[\s-])([a-zåäö])/g, (_, f, b) => f + b.toUpperCase()),
+      // Ett par hundra meter bort, så nålen syns bredvid dig och inte under.
+      lat: fix.lat + 0.0025, lon: fix.lon + 0.0035,
+      createdAt: nu - 2 * 60000,
+      expiresAt: nu + 15 * 60000,
+      source: 'facebook',
+      note: text,
+      confirms: 1, denials: 0, fixed: false,
+      demo: true,
+    };
+    store.reports.set(demo.id, demo);
+    renderHazards();
+    speaker.say(sammanfattaTal(demo), { priority: 1 });
+    $('demoStatus').textContent =
+      'Lagt i din app: ' + sammanfattaKort(demo) + ' Syns på kartan och i listan nedanför. Försvinner vid omladdning.';
+  };
 
   /*
    * Genvägen till fordonslistan.
@@ -3505,6 +3872,7 @@ function wireSettingsUI() {
   bind('setWinter', 'winterOn', v => !!v, renderWinterStatus);
   renderWinterStatus();
   wireGroups();
+  wireFbGrupper();
   renderDriveStatus();
   /*
    * Varför notisläget räknas ut på ett ställe och inte två.
