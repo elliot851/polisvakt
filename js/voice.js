@@ -222,13 +222,27 @@ export class Speaker {
    * kommer skarpt i 90 km/h. Testar hela kedjan: pling, ducking, uppläsning.
    */
   demo(kind = 'police') {
+    /*
+     * Meningarna är skrivna för att låta som en RIKTIG varning, inte som en
+     * demo. Samma ordföljd, samma avståndsform, samma klockriktning och
+     * samma åldersfras som alerts.js bygger skarpt. Ett prov som låter
+     * annorlunda än verkligheten lär föraren fel sak, och då är provet värre
+     * än inget prov.
+     *
+     * Fartkameran saknar ålder och klockriktning med flit: den står
+     * permanent och rapporteras inte av någon. Civilbilen saknar ålder i
+     * den korta formen men får sin livslängd påmind — en civilbil som stått
+     * i tjugo minuter är oftast borta, och det är den viktigaste skillnaden
+     * mot en vanlig polisbil.
+     */
     const samples = {
-      police:  'Varning. Polis vid Dillos, om 1,2 kilometer klockan 12, rapporterat för 4 minuter sedan.',
-      camera:  'Fartkamera om 600 meter, 80.',
-      control: 'Varning. Trafikkontroll vid Erikslund, om 900 meter klockan 11.',
-      speed:   'Du kör 92. Här är det 70.',
-      report:  'Tack. Polis vid Hammarby är rapporterad.',
-      hotspot: 'Här brukar det stå polis vid den här tiden.',
+      police:   'Varning. Polis vid Dillos, om 1,2 kilometer klockan 12, rapporterat för 4 minuter sedan.',
+      camera:   'Fartkamera om 600 meter, 80.',
+      control:  'Varning. Trafikkontroll vid Erikslund, om 900 meter klockan 11.',
+      unmarked: 'Varning. Civil polisbil vid Hälla, om 700 meter klockan 1, rapporterat för 6 minuter sedan.',
+      speed:    'Du kör 92. Här är det 70.',
+      report:   'Tack. Polis vid Hammarby är rapporterad.',
+      hotspot:  'Här brukar det stå polis vid den här tiden.',
     };
     const text = samples[kind] || samples.police;
     const wasMuted = this.muteUntil;

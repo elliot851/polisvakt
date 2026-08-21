@@ -3232,7 +3232,7 @@ function wireModePicker() {
    */
   const demoKnapp = $('btnDemoInlagg');
   if (demoKnapp) demoKnapp.onclick = () => {
-    const text = ($('demoText').value || 'Polis vid Nacka').trim();
+    const text = ($('fbDemoText').value || 'Polis vid Nacka').trim();
     const tolkning = parseReportText(text);
     if (tolkning?.intent === 'refused') {
       $('demoStatus').textContent =
@@ -4900,12 +4900,32 @@ function lockZoom() {
 function wireDemos() {
   document.querySelectorAll('[data-demo]').forEach(btn => {
     btn.onclick = () => {
-      const text = speaker.demo(btn.dataset.demo);
+      const slag = btn.dataset.demo;
+      const text = speaker.demo(slag);
       $('demoText').textContent = '"' + text + '"';
-      if (btn.dataset.demo === 'police' || btn.dataset.demo === 'control') {
+
+      /*
+       * Visa bannern för ALLA faror, inte bara polis och kontroll.
+       *
+       * Provet fanns för att man ska höra OCH se hur en varning ser ut innan
+       * man sitter i 90. Fartkameran och civilbilen fick förut bara ljudet,
+       * vilket gjorde provet till en halv sanning: den som tryckt på alla
+       * knappar trodde sig ha sett allt.
+       *
+       * Avstånden matchar de uppspelade meningarna, annars säger rösten en
+       * sak och rutan en annan.
+       */
+      const avstand = { police: 1200, control: 900, unmarked: 700, camera: 600 }[slag];
+      if (avstand) {
         showAlertBanner({
-          id: 'demo', distance: 1200, at: Date.now(),
-          hazard: { type: btn.dataset.demo, label: 'Provkörning', createdAt: Date.now() - 240000 },
+          id: 'demo', distance: avstand, at: Date.now(),
+          hazard: {
+            type: slag,
+            label: 'Provkörning',
+            // Den fasta kameran rapporteras inte av någon och har ingen ålder.
+            createdAt: slag === 'camera' ? null : Date.now() - 240000,
+            fixed: slag === 'camera',
+          },
         });
       }
     };
