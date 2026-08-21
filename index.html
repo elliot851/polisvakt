@@ -615,11 +615,15 @@
     <button class="btn-ghost small" id="btnNotify" type="button">Tillåt notiser</button>
     <p class="hint" id="notifyStatus"></p>
 
-    <!-- Av som standard med flit. Den som får för många notiser stänger av
-         dem för hela appen, och då tystnar körpåminnelsen med. -->
+    <!-- PÅ som standard sedan 21 aug 2026.
+         Var förut av, av oro för att den som får för många notiser stänger
+         av dem för hela appen och därmed tystar körpåminnelsen med. Det
+         motivet står kvar, men en varning som ingen ser är värdelös, och
+         serverns takt håller antalet nere: en notis per omgång, tio minuter
+         emellan, tyst 23–06, högst tolv per dygn. -->
     <h4 class="sub-head">Facebook-gruppen</h4>
     <label class="row"><span>Notis när någon skrivit i gruppen</span>
-      <input type="checkbox" id="setGruppnotiser"></label>
+      <input type="checkbox" id="setGruppnotiser" checked></label>
     <p class="hint">Servern håller igen: högst en notis per omgång, minst tio
       minuter emellan, tyst mellan 23 och 06, och max tolv per dygn.
       Nykterhetskontroller ger aldrig någon notis alls.</p>

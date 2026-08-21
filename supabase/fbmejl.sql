@@ -392,7 +392,13 @@ begin
     return;
   end if;
   alter table public.push_subscriptions
-    add column if not exists gruppnotiser boolean not null default false;
+    -- PA som forval sedan 21 aug 2026. Var forut av, av oro for att den som
+    -- far for manga notiser stanger av dem for hela appen och darmed tystar
+    -- korpaminnelsen med. Agaren vagde det mot att en varning ingen ser ar
+    -- vardelos och valde pa. Det haller sa lange takten haller: en notis per
+    -- omgang, tio minuter emellan, tyst 23-06, hogst tolv per dygn.
+    -- Se supabase/migrationer/2026-08-21-gruppnotiser-pa-som-forval.sql.
+    add column if not exists gruppnotiser boolean not null default true;
   raise notice 'push_subscriptions.gruppnotiser finns (default false — se docs/fbmejl.md).';
 end $$;
 

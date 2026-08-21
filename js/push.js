@@ -560,7 +560,21 @@ export async function sattGruppnotiser(pa) {
  * spelar roll; den här finns för att kunna rita något direkt vid start.
  */
 export function harGruppnotiser() {
-  return !!load().gruppnotiser;
+  const st = load();
+  /*
+   * Påslaget som förval, för att spegla servern.
+   *
+   * Kolumnen `gruppnotiser` har `default true` sedan 21 aug 2026. Har den
+   * här telefonen aldrig rört reglaget finns inget sparat värde, och då ska
+   * cachen visa samma sak som servern kommer att svara — annars står rutan
+   * "Av" i några sekunder innan `hamtaGruppnotiser()` hinner rätta den, och
+   * en användare som råkar titta just då tror att den är avstängd och slår
+   * på något som redan är på.
+   *
+   * Har telefonen ett sparat värde vinner det alltid, även när det är false:
+   * ett förval styr den som inte valt, inte den som valt.
+   */
+  return st.gruppnotiser === undefined ? true : !!st.gruppnotiser;
 }
 
 /**
