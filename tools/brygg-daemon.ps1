@@ -90,9 +90,24 @@
 
 [CmdletBinding()]
 param(
-  # Bara den här gruppen läses. Kontrolleras tre gånger: i sidan, i svepets
-  # svar och innan något skickas.
-  [string]$GruppId = '317968668373072',
+  # ETT FILTER, INTE SANNINGEN. Läs det här innan du sätter flaggan.
+  #
+  # Vilka grupper som läses står i CONFIG.groupIds i tools\fb-bridge.user.js,
+  # och ingen annanstans. Daemonen plockar ut listan därifrån vid start (se
+  # Plocka-Grupper) tillsammans med varje grupps ruta och ort.
+  #
+  # Fram till 2.4 var den här parametern sanningen: daemonen injicerade ett
+  # naket groupId i sidan, och bryggkoden gav då VARJE grupp Västmanlands
+  # ruta. Pekade man daemonen på Stockholmsgruppen slogs "Sveavägen" upp som
+  # "Sveavägen, Västerås", Nominatim svarade tomt, och raden loggades
+  # HOPPAS-ÖVER orsak=okänd-plats. Ingenting såg trasigt ut. Det var den
+  # enskilda spärr som gjorde en andra grupp meningslös, och den är borta.
+  #
+  # Tomt (förvalet) = läs alla grupper som står i bryggfilen.
+  # Angivet = läs BARA de av dem som räknas upp här. Ett id som inte finns i
+  # bryggfilen är ett fel och stoppar starten — annars hade en felstavning
+  # gett en daemon som läser ingenting och inte säger varför.
+  [string[]]$GruppId = @(),
 
   [int]$Felsokningsport = 9222,
 
@@ -137,6 +152,12 @@ param(
   # skickar ingenting, kräver ingen nyckel. Bevisar att larmet går EN gång per
   # tillståndsövergång och aldrig i repris.
   [switch]$ProvaVakthund,
+
+  # Kör provet på grupplistan och avsluta. Rör inte Chrome, skickar ingenting,
+  # kräver ingen nyckel. Bevisar tre saker: att listan i bryggfilen läses
+  # likadant som bryggkoden själv läser den, att varje grupp får SIN ruta, och
+  # att en Stockholmskoordinat aldrig kan hamna på Västeråskartan.
+  [switch]$ProvaGrupper,
 
   # Skicka veckans livstecken NU i stället för att vänta till söndag 18:00.
   # Den ENDA kontrollen som går hela vägen genom VAPID-signeringen och ut till
@@ -253,7 +274,7 @@ function Logga {
 # startproben ska gå att köra när som helst, också mitt under en skarp
 # körning, för det är då man behöver dem. Ingen av dem sveper.
 $script:Mutex = $null
-if (-not $Sjalvtest -and -not $BaraProb -and -not $ProvaVakthund) {
+if (-not $Sjalvtest -and -not $BaraProb -and -not $ProvaVakthund -and -not $ProvaGrupper) {
   $nyskapad = $false
   try {
     $script:Mutex = New-Object System.Threading.Mutex($true, 'Global\Polisvakt-Brygga', [ref]$nyskapad)
@@ -397,6 +418,11 @@ $script:HemligFil = Join-Path $PSScriptRoot 'fbmejl.hemligheter.json'
 $script:ServiceRoleKey = $null
 $script:NyckelKalla = 'ingen'
 
+# Nyckeln som edge-funktionen fbmejl-push godtar. Är den tom används
+# ServiceRoleKey, vilket är rätt på projekt där en enda nyckel öppnar båda
+# dörrarna och fel — men inte farligt — på projekt där den inte gör det.
+$script:EdgeKey = $null
+
 if (Test-Path $script:NyckelFil) {
   try {
     $sparad = Import-Clixml -Path $script:NyckelFil
@@ -417,6 +443,29 @@ if (Test-Path $script:NyckelFil) {
     } elseif ($sec) {
       $script:ServiceRoleKey = ([string]$sec).Trim()
       $script:NyckelKalla = 'nycklar.xml'
+    }
+
+    # EDGE-NYCKELN — en andra sträng, för en annan dörr.
+    #
+    # Se kommentaren i tools\satt-nyckel.ps1: de nya API-nycklarna gör att
+    # PostgREST och edge-funktionen godtar OLIKA utgåvor. Saknas fältet är
+    # filen skriven av en äldre version av skriptet, och då faller allt
+    # tillbaka på ServiceRoleKey precis som förut — sämre, men inte trasigt.
+    $edge = $null
+    if ($sparad -is [hashtable]) {
+      if ($sparad.ContainsKey('edge')) { $edge = $sparad['edge'] }
+    } elseif ($sparad -and ($sparad.PSObject.Properties.Name -contains 'edge')) {
+      $edge = $sparad.edge
+    }
+    if ($edge -is [System.Security.SecureString]) {
+      $b2 = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($edge)
+      try {
+        $script:EdgeKey = ([System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($b2)).Trim()
+      } finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b2)
+      }
+    } elseif ($edge) {
+      $script:EdgeKey = ([string]$edge).Trim()
     }
   } catch {
     # DPAPI vägrar när filen kommer från ett annat konto eller en annan
@@ -449,19 +498,317 @@ if (-not $script:ServiceRoleKey -and $env:PV_SUPABASE_SERVICE_KEY) {
   $script:NyckelKalla = 'PV_SUPABASE_SERVICE_KEY'
 }
 
-# ---- Området och livslängderna, ur samma fil ------------------------------
-# Förvalet är Västmanland, samma siffror som bryggan alltid haft. Det är bara
-# ett golv: vid första svepet hämtar daemonen gruppens verkliga ruta ur
-# sidans egen grupptabell (se Uppdatera-Omrade). Två kopior av samma
-# geografi driver isär, och en varning på fel plats är värre än ingen.
-$script:Viewbox = @(15.10, 59.30, 17.30, 60.30)
-$script:Orter = @('västerås')
-$script:OmradeFranSidan = $false
-$mv = [regex]::Match($script:BryggKalla, '(?:const VIEWBOX = |ruta:\s*)\[([-\d., ]+)\]')
-if ($mv.Success) {
-  $rutan = @($mv.Groups[1].Value -split ',' | ForEach-Object { [double]($_.Trim()) })
-  if ($rutan.Count -eq 4) { $script:Viewbox = $rutan }
+# =====================================================================
+#  GRUPPLISTAN — EN enda, och den står i bryggfilen
+# =====================================================================
+#
+# DET HÄR ÄR RÄTTELSEN SOM GÖR EN ANDRA GRUPP MENINGSFULL.
+#
+# Förut hade daemonen en egen uppfattning om geografin: en förvalsruta
+# (Västmanland) plus en regex som plockade den FÖRSTA "ruta:" den hittade i
+# bryggfilen — vilket råkade vara en rad i ett kommentarsexempel. Och i sidan
+# injicerade den `groupId: '<id>'` som en NAKEN STRÄNG, vilket får bryggans
+# normaliseraGrupper() att ta bakåtkompatibilitetsgrenen: Västmanlands ruta
+# och orten Västerås, oavsett vilket id som stod där.
+#
+# Följden, om man pekade daemonen på Stockholmsgruppen: "Sveavägen" slogs upp
+# som "Sveavägen, Västerås" mot viewbox 15.10,59.30,17.30,60.30 med bounded=1.
+# Nominatim svarar tomt. Raden loggas HOPPAS-ÖVER orsak=okänd-plats. Ingen rad
+# i loggen säger att något är fel — det ser ut som en lugn kväll i Stockholm.
+#
+# Nu finns geografin på ETT ställe: CONFIG.groupIds i tools\fb-bridge.user.js.
+# Både användarskriptet (Tampermonkey-vägen) och daemonen läser den listan,
+# och appens inställningssida är en redigerare som skriver exakt den texten.
+#
+# Reglerna nedan är med flit desamma som normaliseraGrupper() i bryggan:
+#   * en grupp utan giltig ruta stoppar starten
+#   * utom en ENSAM naken sträng, som betyder Västmanland (formen från 2.2)
+#   * dubbletter på id räknas som en grupp
+#   * /groups/feed/ och släktingarna är inte grupper
+# Skiljer de sig åt läser de två programmen olika listor, och då är vi
+# tillbaka i det fel den här filen just slutade göra. Provet -ProvaGrupper
+# mäter dem mot varandra.
+
+# Samma ruta och samma ord som VASTMANLAND i bryggkoden. Används bara för den
+# gamla nakna formen.
+$script:VASTMANLAND = @{ ort = 'Västerås'; omrade = 'Västmanland'
+                         ruta = @(15.10, 59.30, 17.30, 60.30) }
+
+$script:FORBJUDNA_GRUPPORD = @(
+  'feed', 'discover', 'discovery', 'joins', 'create', 'search',
+  'your_groups', 'category', 'browse', 'invites', 'notifications'
+)
+
+<#
+  Bort med JavaScript-kommentarerna innan något tolkas.
+
+  Inte pedanteri: bryggfilen har numera Stockholmsgrupperna liggande
+  FÄRDIGSKRIVNA men utkommenterade i groupIds, så att ägaren kopplar in dem
+  genom att ta bort kommentarstecknen. En tolkare som inte förstår
+  kommentarer hade läst dem som anslutna grupper och öppnat flikar mot
+  grupper ägaren inte gått med i.
+
+  Strängar respekteras — annars hade supabaseUrl: 'https://…' klippts mitt i.
+#>
+function Rensa-JsKommentarer {
+  param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+  $ut = New-Object System.Text.StringBuilder
+  $n = $Text.Length
+  $i = 0
+  $strang = [char]0
+  while ($i -lt $n) {
+    $c = $Text[$i]
+    if ($strang -ne [char]0) {
+      [void]$ut.Append($c)
+      if ($c -eq '\' -and ($i + 1) -lt $n) { [void]$ut.Append($Text[$i + 1]); $i += 2; continue }
+      if ($c -eq $strang) { $strang = [char]0 }
+      $i++
+      continue
+    }
+    if ($c -eq "'" -or $c -eq '"') { $strang = $c; [void]$ut.Append($c); $i++; continue }
+    if ($c -eq '/' -and ($i + 1) -lt $n) {
+      $nasta = $Text[$i + 1]
+      if ($nasta -eq '/') {
+        while ($i -lt $n -and $Text[$i] -ne "`n") { $i++ }
+        continue
+      }
+      if ($nasta -eq '*') {
+        $i += 2
+        while (($i + 1) -lt $n -and -not ($Text[$i] -eq '*' -and $Text[$i + 1] -eq '/')) { $i++ }
+        $i += 2
+        continue
+      }
+    }
+    [void]$ut.Append($c)
+    $i++
+  }
+  return $ut.ToString()
 }
+
+<#
+  Innehållet mellan hakparenteserna i `groupIds: [ … ]`.
+
+  Klamrarna räknas, strängar hoppas över. En regex på '\[(.*?)\]' hade
+  slutat vid den första rutans hakparentes.
+  Returnerar $null när fältet inte finns alls.
+#>
+function Plocka-Grupplista {
+  param([Parameter(Mandatory = $true)][string]$Ren)
+  $m = [regex]::Match($Ren, 'groupIds\s*:\s*\[')
+  if (-not $m.Success) { return $null }
+  $start = $m.Index + $m.Length
+  $i = $start
+  $djup = 1
+  $strang = [char]0
+  while ($i -lt $Ren.Length) {
+    $c = $Ren[$i]
+    if ($strang -ne [char]0) {
+      if ($c -eq '\') { $i += 2; continue }
+      if ($c -eq $strang) { $strang = [char]0 }
+      $i++
+      continue
+    }
+    if ($c -eq "'" -or $c -eq '"') { $strang = $c; $i++; continue }
+    if ($c -eq '[' -or $c -eq '{') { $djup++ }
+    elseif ($c -eq ']' -or $c -eq '}') {
+      $djup--
+      if ($djup -eq 0) { break }
+    }
+    $i++
+  }
+  if ($djup -ne 0) { throw 'groupIds i bryggkoden saknar avslutande hakparentes. Daemonen startar inte.' }
+  return $Ren.Substring($start, $i - $start)
+}
+
+# Ett strängfält ur en rad. Tål både 'enkla' och "dubbla" citattecken —
+# appens "Kopiera inställning till bryggan" skriver med JSON.stringify och
+# alltså dubbla, medan filen är handskriven med enkla.
+function Plocka-JsFalt {
+  param([string]$Rad, [string]$Falt)
+  $m = [regex]::Match($Rad, ($Falt + '\s*:\s*(?:''((?:[^''\\]|\\.)*)''|"((?:[^"\\]|\\.)*)")'))
+  if (-not $m.Success) { return '' }
+  $v = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+  # Bara de tecken JSON.stringify faktiskt kan lägga in i ett gruppnamn.
+  return ($v -replace '\\(["''\\/])', '$1')
+}
+
+# Samma som rensaGruppId() i bryggan: från ett naket id eller en hel adress
+# till bara id:t, eller tom sträng när det inte går.
+function Rensa-GruppId {
+  param([string]$Varde)
+  $s = ([string]$Varde).Trim()
+  if (-not $s) { return '' }
+  $m = [regex]::Match($s, '/groups/([^/?#\s]+)', 'IgnoreCase')
+  $bit = if ($m.Success) { $m.Groups[1].Value.Trim() } else { $s }
+  if ($bit -notmatch '^[\w.-]+$') { return '' }
+  if ($script:FORBJUDNA_GRUPPORD -contains $bit.ToLowerInvariant()) { return '' }
+  return $bit
+}
+
+function Giltig-Ruta {
+  param($Ruta)
+  $r = @($Ruta)
+  if ($r.Count -ne 4) { return $false }
+  $t = @()
+  foreach ($v in $r) {
+    $d = $v -as [double]
+    if ($null -eq $d -or [double]::IsNaN($d) -or [double]::IsInfinity($d)) { return $false }
+    $t += $d
+  }
+  # lonMin < lonMax och latMin < latMax. En vänd ruta träffar ingenting alls,
+  # och en brygga som tyst aldrig geokodar är svårare att felsöka än en som
+  # vägrar starta.
+  return ($t[0] -lt $t[2] -and $t[1] -lt $t[3])
+}
+
+<#
+  Hela grupplistan ur bryggkodens källkod.
+
+  Kastar med bryggans egen formulering när en grupp saknar område. Att vägra
+  starta är rätt svar: varje tänkbart förval är fel. "Västmanland" lägger
+  Stockholmsvarningar på Västeråskartan, "hela Sverige" släpper igenom en
+  träff på Storgatan i vilken stad som helst.
+#>
+function Plocka-Grupper {
+  param([Parameter(Mandatory = $true)][string]$Kalla)
+
+  $ren = Rensa-JsKommentarer -Text $Kalla
+  $inre = Plocka-Grupplista -Ren $ren
+
+  $rader = @()
+  if ($inre) {
+    # Objektraderna först, sedan det som blir kvar när de plockats bort —
+    # där ligger den gamla formen, alltså nakna strängar i listan.
+    foreach ($m in [regex]::Matches($inre, '\{[^{}]*\}')) {
+      $rader += ,@{ text = $m.Value; bart = $false }
+    }
+    $kvar = [regex]::Replace($inre, '\{[^{}]*\}', ' ')
+    foreach ($m in [regex]::Matches($kvar, '''([^'']*)''|"([^"]*)"')) {
+      $v = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+      $rader += ,@{ text = $v; bart = $true }
+    }
+  }
+
+  # Tom eller saknad lista: den gamla groupId-formen gäller. Samma
+  # företrädesordning som RATT i bryggkoden — ingen sammanslagning.
+  if ($rader.Count -eq 0) {
+    $g = [regex]::Match($ren, 'groupId\s*:\s*(?:''([^'']*)''|"([^"]*)")')
+    if ($g.Success) {
+      $v = if ($g.Groups[1].Success) { $g.Groups[1].Value } else { $g.Groups[2].Value }
+      if ($v.Trim()) { $rader += ,@{ text = $v; bart = $true } }
+    }
+  }
+
+  $ut = @()
+  $sedda = @()
+  foreach ($rad in $rader) {
+    if ($rad.bart) {
+      $id = Rensa-GruppId $rad.text
+      if (-not $id) { continue }
+      if ($sedda -contains $id) { continue }
+      $sedda += $id
+      $ut += ,@{ id = $id; bart = $true; namn = $id; ort = ''; omrade = ''
+                 ruta = $null; notis = $true }
+      continue
+    }
+
+    $t = $rad.text
+    $id = Rensa-GruppId (Plocka-JsFalt -Rad $t -Falt 'id')
+    if (-not $id) { continue }
+    if ($sedda -contains $id) { continue }
+    $sedda += $id
+
+    $ruta = $null
+    $mr = [regex]::Match($t, 'ruta\s*:\s*\[([^\]]*)\]')
+    if ($mr.Success) {
+      $tal = @()
+      foreach ($bit in ($mr.Groups[1].Value -split ',')) {
+        $bit = $bit.Trim()
+        if (-not $bit) { continue }
+        $d = 0.0
+        if ([double]::TryParse($bit, [System.Globalization.NumberStyles]::Float,
+                               [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
+          $tal += $d
+        }
+      }
+      if (Giltig-Ruta $tal) { $ruta = $tal }
+    }
+
+    $namn = Plocka-JsFalt -Rad $t -Falt 'namn'
+    # notis saknas på varje rad som skrevs före 2.4, och de raderna ska bete
+    # sig precis som förut. Saknad nyckel = true. Samma förval som bryggan.
+    $notis = $true
+    $mn = [regex]::Match($t, 'notis\s*:\s*(true|false)')
+    if ($mn.Success -and $mn.Groups[1].Value -eq 'false') { $notis = $false }
+
+    $ut += ,@{
+      id     = $id
+      bart   = $false
+      namn   = $(if ($namn) { $namn } else { $id })
+      ort    = (Plocka-JsFalt -Rad $t -Falt 'ort')
+      omrade = (Plocka-JsFalt -Rad $t -Falt 'omrade')
+      ruta   = $ruta
+      notis  = $notis
+    }
+  }
+
+  if ($ut.Count -eq 0) {
+    throw ('Bryggkoden har ingen ansluten grupp (CONFIG.groupIds är tom). Daemonen startar inte. ' +
+           'Lägg till minst en grupp i ' + (Split-Path -Leaf $Bryggfil) + ', eller låt appen skriva ' +
+           'raden: Inställningar -> Facebook-grupper -> "Kopiera inställning till bryggan".')
+  }
+
+  foreach ($g in $ut) {
+    if ($g.ruta) { continue }
+    if ($ut.Count -eq 1 -and $g.bart) {
+      $g.ruta = @($script:VASTMANLAND.ruta)
+      if (-not $g.ort) { $g.ort = $script:VASTMANLAND.ort }
+      if (-not $g.omrade) { $g.omrade = $script:VASTMANLAND.omrade }
+      continue
+    }
+    throw ('gruppen ' + $g.id + ' saknar område (ruta). Varje grupp måste säga var den ligger, ' +
+           'annars hamnar en varning från en annan stad på din karta. Bryggan startar inte.')
+  }
+
+  foreach ($g in $ut) {
+    $orter = @()
+    foreach ($o in @($g.ort, $g.omrade)) { if ($o) { $orter += $o.ToLowerInvariant() } }
+    $g.orter = $orter
+    $g.Remove('bart')
+  }
+  # ROLLAS UT AV PIPELINEN, MED FLIT — och därför måste VARJE anropare skriva
+  # @(Plocka-Grupper ...).
+  #
+  # PowerShell rullar ut en returnerad lista. Med en enda grupp får den som
+  # anropar då själva hashtabellen, och .Count blir antalet NYCKLAR i den —
+  # sju — i stället för en. Med `return ,@($ut)` blir felet det omvända: två
+  # grupper kommer fram som EN rad som är en lista, och .id svarar "111 222".
+  # Båda formerna räknar alltså fel, tyst, i var sitt fall.
+  #
+  # Den form som är rätt i BÅDA fallen är den enkla: rulla ut, och låt
+  # anroparen samla ihop med @(). Provet -ProvaGrupper mäter båda fallen.
+  return $ut
+}
+
+$script:AllaGrupper = @(Plocka-Grupper -Kalla $script:BryggKalla)
+
+# ---- -GruppId filtrerar, den bestämmer ingenting --------------------------
+$script:Grupper = @($script:AllaGrupper)
+if ($GruppId -and @($GruppId).Count -gt 0) {
+  $onskade = @($GruppId | ForEach-Object { Rensa-GruppId $_ } | Where-Object { $_ })
+  $kanda = @($script:AllaGrupper | ForEach-Object { $_.id })
+  $okanda = @($onskade | Where-Object { $kanda -notcontains $_ })
+  if ($okanda.Count -gt 0) {
+    throw ('-GruppId ' + ($okanda -join ', ') + ' finns inte i grupplistan i ' +
+           (Split-Path -Leaf $Bryggfil) + '. Kända grupper: ' + ($kanda -join ', ') + '. ' +
+           'Flaggan är ett filter, inte ett sätt att lägga till en grupp — lägg till den i ' +
+           'bryggfilen först.')
+  }
+  $script:Grupper = @($script:AllaGrupper | Where-Object { $onskade -contains $_.id })
+}
+$script:GruppMedId = @{}
+foreach ($g in $script:Grupper) { $script:GruppMedId[$g.id] = $g }
+
 $script:Livslangd = @{ police = 45; control = 60; unmarked = 30 }
 $ml = [regex]::Match($script:BryggKalla, 'const TTL_MINUTES = \{([^}]+)\}')
 if ($ml.Success) {
@@ -774,6 +1121,33 @@ function Hamta-Flikar {
 }
 
 <#
+  Öppna en flik på en grupp i det bryggfönster som redan kör.
+
+  Chrome bytte /json/new från GET till PUT någonstans i 90-serien och svarar
+  405 på den gamla formen. Båda provas, PUT först, så att filen inte hänger
+  på vilken Chrome-version maskinen råkar ha.
+
+  Adressen byggs av ett id som redan passerat Rensa-GruppId, och funktionen
+  kan inte öppna något annat än en gruppsida på facebook.com.
+#>
+function Oppna-Flik {
+  param([int]$Port, [string]$GruppId)
+  if ($GruppId -notmatch '^[\w.-]{1,64}$') { return $false }
+  $mal = 'https://www.facebook.com/groups/' + $GruppId + '/'
+  $url = ('http://127.0.0.1:' + $Port + '/json/new?' + [uri]::EscapeDataString($mal))
+  foreach ($metod in @('PUT', 'GET')) {
+    try {
+      $svar = Invoke-RestMethod -Uri $url -Method $metod -TimeoutSec 10
+      if ($svar) {
+        Logga 'FLIK' ('öppnade en flik på grupp ' + $GruppId + ' i bryggfönstret.') DarkCyan
+        return $true
+      }
+    } catch { }
+  }
+  return $false
+}
+
+<#
   Anslutning + förregistrering av läsaren.
 
   Returnerar antingen ett kontextobjekt (nycklarna ws/flikId/url/varld/ram)
@@ -782,7 +1156,9 @@ function Hamta-Flikar {
   igen.
 #>
 function Anslut {
-  param([int]$Port, [string]$GruppId)
+  param([int]$Port, [Parameter(Mandatory = $true)]$Grupp)
+
+  $gid = [string]$Grupp.id
 
   try { $flikar = Hamta-Flikar -Port $Port }
   catch {
@@ -794,14 +1170,27 @@ function Anslut {
   # gruppen 317968668373072 också en flik som står i 3179686683730721234.
   $mal = $flikar | Where-Object {
     $_.type -eq 'page' -and
-    $_.url -match ('facebook\.com/groups/' + [regex]::Escape($GruppId) + '($|[/?#])')
+    $_.url -match ('facebook\.com/groups/' + [regex]::Escape($gid) + '($|[/?#])')
   } | Select-Object -First 1
 
   if (-not $mal) {
-    $fb = $flikar | Where-Object { $_.type -eq 'page' -and $_.url -match 'facebook\.com' } | Select-Object -First 1
-    if ($fb) {
-      return @{ fel = 'Chrome är igång men ingen flik står på grupp ' + $GruppId +
-        '. Öppnad flik: ' + $fb.url }
+    # EN FLIK PER GRUPP, I SAMMA FÖNSTER.
+    #
+    # Sedan flera grupper läses räcker det inte att öppna bryggfönstret vid
+    # start: en grupp kan sakna sin flik för att ägaren stängde den, eller för
+    # att gruppen lades till i bryggfilen efter att fönstret öppnades. Att
+    # starta om hela Chrome för det vore att slå ut den grupp som fungerar.
+    # /json/new öppnar en flik i det fönster som redan kör, med samma profil
+    # och samma inloggade session.
+    #
+    # Bara adresser som byggs av ett id ur bryggfilen kan hamna här.
+    $fb = @($flikar | Where-Object { $_.type -eq 'page' -and $_.url -match 'facebook\.com' })
+    if ($fb.Count -gt 0) {
+      if (Oppna-Flik -Port $Port -GruppId $gid) {
+        return @{ fel = 'öppnade en ny flik för ' + $Grupp.namn + ' — ansluter vid nästa försök.' }
+      }
+      return @{ fel = 'Chrome är igång men ingen flik står på grupp ' + $gid +
+        ' (' + $Grupp.namn + '), och en ny flik gick inte att öppna.' }
     }
     return @{ fel = 'Chrome är igång men ingen Facebook-flik är öppen.' }
   }
@@ -819,6 +1208,7 @@ function Anslut {
     ws        = $ws
     flikId    = $mal.id
     url       = $mal.url
+    grupp     = $Grupp     # gruppen den här fliken är låst vid
     varld     = $null      # executionContextId för den isolerade världen
     ram       = $null      # frameId för toppramen
   }
@@ -829,7 +1219,7 @@ function Anslut {
   # det — nu är läsaren på plats redan innan flödet renderats.
   try {
     Cdp-Kommando -Ws $ws -Metod 'Page.addScriptToEvaluateOnNewDocument' -Param @{
-      source    = (Bygg-Lasarkod)
+      source    = (Bygg-Lasarkod -Grupp $Grupp)
       worldName = 'polisvakt'
     } | Out-Null
   } catch {
@@ -926,14 +1316,25 @@ $script:LasarSkalHuvud = @'
 
   /* Bryggans CONFIG, bantad till det läsdelen faktiskt använder.
 
-     groupId behövs sedan 2.3: läsdelen bygger då en grupptabell (GRUPPER)
-     ur den, och tabellen bär gruppens geografiska ruta. Daemonen hämtar
-     rutan därifrån i stället för att ha en egen kopia som kan driva isär.
+     groupIds är en RIKTIG grupplista med ruta och ort, hämtad ordagrant ur
+     CONFIG.groupIds i tools/fb-bridge.user.js. Fram till 2.4 stod här
+     `groupId: '<id>'` — en naken sträng — och då tog bryggans
+     normaliseraGrupper() bakåtkompatibilitetsgrenen och gav gruppen
+     Västmanlands ruta och orten Västerås, vilket id som än stod där. En
+     Stockholmsgrupp geokodades alltså mot Västmanland och tystnade som
+     "okänd-plats". Det var den enskilda spärr som gjorde en andra grupp
+     meningslös.
+
+     Listan innehåller BARA den grupp den här fliken står i. Fliken är låst
+     vid en grupp, och en lista med båda hade betytt att en felnavigerad flik
+     börjat läsa den andra gruppen med rätt ruta i stället för att säga
+     ifrån.
 
      dryRun styr bara minneslistan i sidan. Sidan skriver ändå aldrig
      någonstans — skrivkoden ligger inte i klippet. */
   var CONFIG = {
-    groupId: '__PVGRUPP__',
+    groupIds: __PVGRUPPER__,
+    groupId: '',
     dryRun: true,
     firstSeenAge: true,
     hoverForTime: false,
@@ -1050,6 +1451,42 @@ $script:LasarSkalFot = @'
           } catch (e) { return 'okand'; }
         })(),
 
+        /* MEDLEMSKAPET — den andra tysta blindheten.
+
+           En INLOGGAD session på en grupp man inte gått med i ser frisk ut
+           hela vägen: porten svarar, fliken finns, världen injiceras, svepet
+           returnerar, sidlage blir 'inloggad'. Är gruppen privat lämnar
+           Facebook inte ut ett enda inlägg, så collectPosts() ger noll. Det
+           är exakt likadant som en lugn kväll, och det var ägarens läge när
+           det här skrevs: han är inte medlem i någon Stockholmsgrupp.
+
+           'ejmedlem' sägs bara på ett POSITIVT tecken — knappen "Gå med i
+           grupp" finns på sidan. Facebook byter markup ofta, och en vakthund
+           som skriker på gissningar blir avstängd inom en vecka. Hittas
+           varken den knappen eller något medlemstecken heter svaret 'okand'
+           och tiger; tomhetsvakten i daemonen fångar fallet ändå, bara
+           långsammare. */
+        medlemskap: (function () {
+          try {
+            var text = function (n) {
+              return ((n.getAttribute('aria-label') || '') + ' ' + (n.textContent || ''))
+                .toLowerCase();
+            };
+            var knappar = document.querySelectorAll('[role="button"], a[role="link"], button');
+            var gaMed = false;
+            var medlem = false;
+            for (var i = 0; i < knappar.length && i < 400; i++) {
+              var t = text(knappar[i]);
+              if (/\bg[åa] med i grupp/.test(t) || /\bjoin group\b/.test(t)) { gaMed = true; }
+              if (/\bskriv n[åa]got\b/.test(t) || /\bwrite something\b/.test(t) ||
+                  /\bbjud in\b/.test(t) || /\binvite\b/.test(t)) { medlem = true; }
+            }
+            if (gaMed && !medlem) { return 'ejmedlem'; }
+            if (medlem) { return 'medlem'; }
+            return 'okand';
+          } catch (e) { return 'okand'; }
+        })(),
+
         nu: Date.now(),
         /* Läses FÖRE registrera(): det är registreringen som gör svepet
            kalibrerat, och daemonen vill veta hur det såg ut när svepet
@@ -1151,25 +1588,48 @@ $script:LasarSkalFot = @'
 })();
 '@
 
-$script:LasarKod = $null
-$script:LasarVersion = $null
+# En kod och en version PER GRUPP. Koden skiljer sig bara på CONFIG-raden,
+# men den skillnaden är hela poängen: två flikar ska bära var sin grupptabell
+# och var sin ruta. Cachen är därför nycklad på grupp, inte en global sträng.
+$script:LasarKod = @{}
+$script:LasarVersion = @{}
 
 function Bygg-Lasarkod {
-  if ($script:LasarKod) { return $script:LasarKod }
-  $ra = $script:LasarSkalHuvud + "`n" + $script:Lasdel + "`n" + $script:LasarSkalFot
-  # Grupp-id:t går in i CONFIG. Parametern är redan filtrerad av mönstret
-  # nedan, men den hamnar i en JS-sträng och kontrolleras därför en gång till.
-  if ($GruppId -notmatch '^[\w.-]{1,64}$') {
-    throw "GruppId '$GruppId' ser inte ut som ett grupp-id. Daemonen startar inte."
+  param([Parameter(Mandatory = $true)]$Grupp)
+
+  $gid = [string]$Grupp.id
+  if ($script:LasarKod.ContainsKey($gid)) { return $script:LasarKod[$gid] }
+
+  # Id:t hamnar både i en JS-sträng och i en URL. Det är redan filtrerat av
+  # Rensa-GruppId, men en kontroll till kostar ingenting på en rad som kör i
+  # ägarens inloggade Facebook-session.
+  if ($gid -notmatch '^[\w.-]{1,64}$') {
+    throw "Grupp-id '$gid' ser inte ut som ett grupp-id. Daemonen startar inte."
   }
-  $ra = $ra.Replace('__PVGRUPP__', $GruppId)
+
+  $ra = $script:LasarSkalHuvud + "`n" + $script:Lasdel + "`n" + $script:LasarSkalFot
+
+  # ConvertTo-Json i Windows PowerShell escapar allt utanför ASCII till
+  # \uXXXX, så "Här Står Polisen - Västerås" går in i sidan utan att en enda
+  # byte kan tolkas fel av teckenkodningen på vägen. JSON är dessutom ett
+  # giltigt JS-literal, så det går rakt in i CONFIG.
+  $tabell = @(@{
+    id     = $gid
+    namn   = [string]$Grupp.namn
+    ort    = [string]$Grupp.ort
+    omrade = [string]$Grupp.omrade
+    ruta   = @($Grupp.ruta | ForEach-Object { [double]$_ })
+  })
+  $ra = $ra.Replace('__PVGRUPPER__', (ConvertTo-Json $tabell -Depth 5 -Compress))
+
   $md5 = [System.Security.Cryptography.MD5]::Create()
   try {
     $summa = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ra))
   } finally { $md5.Dispose() }
-  $script:LasarVersion = (($summa | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12)
-  $script:LasarKod = $ra.Replace('__PVVERSION__', $script:LasarVersion)
-  return $script:LasarKod
+  $version = (($summa | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12)
+  $script:LasarVersion[$gid] = $version
+  $script:LasarKod[$gid] = $ra.Replace('__PVVERSION__', $version)
+  return $script:LasarKod[$gid]
 }
 
 <#
@@ -1183,8 +1643,10 @@ function Gor-Svep {
 
   if (-not $Kontext.varld) { Skaffa-Varld -Kontext $Kontext | Out-Null }
 
-  Bygg-Lasarkod | Out-Null      # sätter $script:LasarVersion
-  $fraga = "(window.__pvLas && window.__pvLas.version === '" + $script:LasarVersion + "') ? 'ja' : 'nej'"
+  $grupp = $Kontext.grupp
+  Bygg-Lasarkod -Grupp $grupp | Out-Null      # fyller $script:LasarVersion
+  $fraga = "(window.__pvLas && window.__pvLas.version === '" +
+    $script:LasarVersion[[string]$grupp.id] + "') ? 'ja' : 'nej'"
 
   $finns = $null
   try {
@@ -1198,8 +1660,8 @@ function Gor-Svep {
   }
 
   if ($finns -ne 'ja') {
-    $svar = Evaluera -Kontext $Kontext -Uttryck (Bygg-Lasarkod) -TimeoutMs 40000
-    Logga 'INJEKTION' ('läsaren injicerad i isolerad värld (' + $svar + ')') DarkCyan
+    $svar = Evaluera -Kontext $Kontext -Uttryck (Bygg-Lasarkod -Grupp $grupp) -TimeoutMs 40000
+    Logga 'INJEKTION' ('[' + $grupp.namn + '] läsaren injicerad i isolerad värld (' + $svar + ')') DarkCyan
   }
 
   $json = Evaluera -Kontext $Kontext -Uttryck 'JSON.stringify(window.__pvLas.svep())' -TimeoutMs 40000
@@ -1229,59 +1691,79 @@ function Spara-Geo {
 }
 
 <#
-  Ta gruppens geografi från sidan, en gång.
+  Kontrollera att sidan och daemonen är överens om gruppens geografi.
 
-  Bryggkoden är källan: den vet vilken ruta gruppen hör till och vad orten
-  heter. Daemonen har bara ett förval att falla tillbaka på, och om sidans
-  ruta skiljer sig från förvalet ska det synas i loggen — det betyder att
-  gruppen flyttat eller att någon lagt till en ny.
+  Båda läser numera CONFIG.groupIds i bryggfilen — daemonen med
+  Plocka-Grupper, sidan med bryggkodens egen normaliseraGrupper(). Att de
+  ändå jämförs är hela poängen med att bara ha en sanning: skiljer de sig åt
+  har den ena tolkaren en bugg, och då ska det STÅ i loggen, inte tyst
+  avgöras av vilken kopia som råkar användas.
+
+  Säger sidan något annat än daemonen vinner INGEN av dem — gruppen läses
+  inte det svepet. Att gissa vilken som har rätt är att gissa vilken stad
+  varningen ska hamna i.
 #>
-function Uppdatera-Omrade {
-  param($Omrade)
-  if ($script:OmradeFranSidan) { return }
-  if (-not $Omrade) { return }
+function Kolla-Omrade {
+  param($Grupp, $Omrade)
+  if (-not $Omrade) { return $true }
   $ruta = @($Omrade.ruta)
-  if ($ruta.Count -ne 4) { return }
+  if ($ruta.Count -ne 4) { return $true }
 
-  $script:OmradeFranSidan = $true
-  $gammal = ($script:Viewbox -join ',')
-  $script:Viewbox = @($ruta | ForEach-Object { [double]$_ })
-  if ($Omrade.orter) { $script:Orter = @($Omrade.orter) }
-
-  $ny = ($script:Viewbox -join ',')
-  $namn = ''
-  if ($Omrade.namn) { $namn = ' "' + $Omrade.namn + '"' }
-  if ($ny -ne $gammal) {
-    Logga 'OMRÅDE' ('gruppen' + $namn + ' ligger i [' + $ny + '] enligt bryggkoden — daemonens förval [' +
-      $gammal + '] ersatt.') DarkCyan
-  } else {
-    Logga 'OMRÅDE' ('gruppen' + $namn + ' [' + $ny + '] orter=' + ($script:Orter -join '/')) DarkGray
+  $sidan = (@($ruta | ForEach-Object { [double]$_ }) -join ',')
+  $min = (@($Grupp.ruta | ForEach-Object { [double]$_ }) -join ',')
+  if ($sidan -eq $min) {
+    if (-not $Grupp.ContainsKey('omradeLoggat')) {
+      $Grupp['omradeLoggat'] = $true
+      Logga 'OMRÅDE' ('[' + $Grupp.namn + '] [' + $min + '] orter=' + ($Grupp.orter -join '/')) DarkGray
+    }
+    return $true
   }
+
+  Logga 'STOPP' ('[' + $Grupp.namn + '] sidan säger [' + $sidan + '] men bryggfilen säger [' + $min +
+    ']. Två tolkningar av samma lista — inget läses förrän de är överens.') Red
+  return $false
 }
 
 function Inom-Omradet {
-  param([double]$Lat, [double]$Lon)
-  return ($Lon -ge $script:Viewbox[0] -and $Lon -le $script:Viewbox[2] -and
-          $Lat -ge $script:Viewbox[1] -and $Lat -le $script:Viewbox[3])
+  param([double]$Lat, [double]$Lon, $Grupp)
+  $r = @($Grupp.ruta)
+  return ($Lon -ge [double]$r[0] -and $Lon -le [double]$r[2] -and
+          $Lat -ge [double]$r[1] -and $Lat -le [double]$r[3])
 }
 
 <#
   Nominatim får både viewbox och bounded=1 — men det är en spärr som ligger
-  hos någon annan. Svarar servern ändå med en träff utanför Västmanland, eller
-  ligger en gammal felaktig träff kvar i cachen, går koordinaten annars rakt
-  vidare till kartan. En varning på fel plats är värre än ingen varning: den
-  lär föraren att appen ljuger. Därför kontrolleras varje koordinat här också.
+  hos någon annan. Svarar servern ändå med en träff utanför GRUPPENS område,
+  eller ligger en gammal felaktig träff kvar i cachen, går koordinaten annars
+  rakt vidare till kartan. En varning på fel plats är värre än ingen varning:
+  den lär föraren att appen ljuger. Därför kontrolleras varje koordinat här
+  också — mot den ruta gruppen bär, inte mot en global.
 #>
 function Geokoda {
-  param([string]$Plats)
+  param([string]$Plats, [Parameter(Mandatory = $true)]$Grupp)
 
-  $nyckel = Normalisera-Text $Plats
-  if (-not $nyckel) { return $null }
+  $ren = Normalisera-Text $Plats
+  if (-not $ren) { return $null }
+
+  <#
+    CACHENYCKELN BÄR GRUPPEN, och det är inte kosmetiskt.
+
+    Cachefilen låg fram till 2.4 på enbart platsnamnet. Den innehöll redan
+    raden "vasagatan" -> 59.6113,16.5452, alltså Västerås. Stockholms
+    Vasagatan hade då antingen fått Västeråskoordinaten rakt av — en varning
+    på fel gata i fel stad, det värsta utfall den här appen har — eller tyst
+    kastats av områdeskontrollen, vilket ser ut som en lugn kväll.
+
+    Bryggan rättade precis samma fel på sin sida (pv.fb.geo.<gruppid>.<plats>).
+    Gamla nycklar utan grupp träffas aldrig mer; de ligger kvar tills TTL
+    städar bort dem, och kostar en uppslagning per plats och grupp en gång.
+  #>
+  $nyckel = [string]$Grupp.id + '|' + $ren
 
   if ($script:Geo.ContainsKey($nyckel)) {
     $c = $script:Geo[$nyckel]
     if (-not $c) { return $null }                       # negativt svar, sparat med flit
-    if (Inom-Omradet -Lat $c.lat -Lon $c.lon) { return $c }
+    if (Inom-Omradet -Lat $c.lat -Lon $c.lon -Grupp $Grupp) { return $c }
     $script:Geo[$nyckel] = $null                        # förgiftad rad, kasta den
     Spara-Geo
     return $null
@@ -1295,20 +1777,22 @@ function Geokoda {
   # Lägg till orten om den inte redan står i frasen, så vi slipper fråga
   # Nominatim om "Vasagatan" i hela Sverige. Orten kommer från gruppens egen
   # rad i bryggkodens tabell — inte från en kopia här.
+  $orter = @($Grupp.orter)
   $fraga = $Plats
   $ortRedanMed = $false
-  foreach ($ort in $script:Orter) {
+  foreach ($ort in $orter) {
     if (-not $ort) { continue }
-    if ($nyckel -match [regex]::Escape($ort.ToLowerInvariant())) { $ortRedanMed = $true; break }
+    if ($ren -match [regex]::Escape($ort.ToLowerInvariant())) { $ortRedanMed = $true; break }
   }
-  if (-not $ortRedanMed -and $script:Orter.Count -gt 0 -and $script:Orter[0]) {
-    $fraga = $Plats + ', ' + $script:Orter[0]
+  if (-not $ortRedanMed -and $orter.Count -gt 0 -and $orter[0]) {
+    $fraga = $Plats + ', ' + $orter[0]
   }
 
+  $ruta = (@($Grupp.ruta | ForEach-Object { [double]$_ }) -join ',')
   $url = 'https://nominatim.openstreetmap.org/search' +
     '?q=' + [uri]::EscapeDataString($fraga) +
     '&format=jsonv2&limit=1&countrycodes=se&accept-language=sv&bounded=1' +
-    '&viewbox=' + [uri]::EscapeDataString(($script:Viewbox -join ','))
+    '&viewbox=' + [uri]::EscapeDataString($ruta)
 
   $svar = Invoke-RestMethod -Uri $url -TimeoutSec 20 -Headers @{
     'User-Agent' = 'Polisvakt-brygg-daemon/1.0 (polisvakt.pages.dev)'
@@ -1331,10 +1815,12 @@ function Geokoda {
   if (-not $traff.label) { $traff.label = $Plats }
   if ($traff.label.Length -gt 120) { $traff.label = $traff.label.Substring(0, 120) }
 
-  if (-not (Inom-Omradet -Lat $traff.lat -Lon $traff.lon)) {
+  if (-not (Inom-Omradet -Lat $traff.lat -Lon $traff.lon -Grupp $Grupp)) {
     $script:Geo[$nyckel] = $null
     Spara-Geo
-    Logga 'GEO-KASTAD' ('träff utanför Västmanland: ' + $Plats + ' -> ' + $traff.lat + ',' + $traff.lon) DarkYellow
+    Logga 'GEO-KASTAD' ('[' + $Grupp.namn + '] träff utanför ' +
+      $(if ($Grupp.omrade) { $Grupp.omrade } else { 'gruppens område' }) + ': ' + $Plats +
+      ' -> ' + $traff.lat + ',' + $traff.lon) DarkYellow
     return $null
   }
 
@@ -1403,12 +1889,24 @@ function Test-NykterhetPaServern {
 }
 
 function Skicka-Omgang {
-  param([object[]]$Rader)
+  param([object[]]$Rader, [switch]$UtanNotis)
   if (-not $Skarpt) { throw 'Skicka-Omgang anropad i torrkörning. Det är ett fel i daemonen.' }
   if (-not $Rader -or $Rader.Count -eq 0) { return $null }
 
   # ---- Vägen med nyckel: hela kedjan, inklusive notisen -----------------
-  if ($script:ServiceRoleKey) {
+  #
+  # -UtanNotis tvingar ner raderna på anon-vägen längre ned även när nyckeln
+  # finns. Det används för grupper som står med notis: false i bryggfilen,
+  # alltså grupper i en annan stad än den man själv kör i.
+  #
+  # Skälet står i bryggfilen och är värt att upprepa här, för det är den enda
+  # rad i daemonen som kan skada någon: fbmejl_push_mottagare i
+  # supabase\fbmejl.sql väljer VARJE prenumerant med gruppnotiser påslagna,
+  # utan en enda geografisk kolumn. En andra stads rapporter genom
+  # fbmejl_ta_emot betyder alltså Sergels torg på låsskärmen hos folk i
+  # Västerås. Anon-vägen skriver till reports, syns på kartan och i appens
+  # röst — som filtrerar på avstånd — och utlöser ingen push.
+  if ($script:ServiceRoleKey -and -not $UtanNotis) {
     $url = $script:SupabaseUrl + '/rest/v1/rpc/fbmejl_ta_emot'
     $kropp = @{ p_rader = @($Rader) } | ConvertTo-Json -Depth 8 -Compress
 
@@ -1474,7 +1972,12 @@ function Skicka-Omgang {
   }
   return [pscustomobject]@{
     skrivna = $skapade; dubbletter = $dubbletter; vagrade = $vagrade
-    notis = $false; utanNyckel = $true
+    notis = $false
+    # Skillnaden mellan "nyckeln fattas" och "gruppen ska inte pusha" måste
+    # synas i loggen. Utan den skriver daemonen "kör satt-nyckel.ps1" på en
+    # grupp där allt är precis som det ska.
+    utanNyckel = (-not $script:ServiceRoleKey)
+    avsiktligt = [bool]$UtanNotis
   }
 }
 
@@ -1511,6 +2014,16 @@ function Skicka-Omgang {
 
 $script:DriftUrl = $script:SupabaseUrl + '/functions/v1/fbmejl-push'
 
+# Nyckeln som ska med när DriftUrl ringas direkt.
+#
+# Bara de två anropen mot edge-funktionen använder den här. Allt mot PostgREST
+# fortsätter använda ServiceRoleKey — blandar man ihop dem får man 401 åt båda
+# hållen, och båda ser ut som "fel nyckel" fast det är fel DÖRR.
+function Edge-Nyckel {
+  if ($script:EdgeKey) { return $script:EdgeKey }
+  return $script:ServiceRoleKey
+}
+
 $script:DriftRaknare = 0
 
 function Skicka-Driftnotis {
@@ -1539,7 +2052,7 @@ function Skicka-Driftnotis {
     } | ConvertTo-Json -Compress
     $svar = Invoke-RestMethod -Uri $script:DriftUrl -Method Post -TimeoutSec 25 `
       -ContentType 'application/json' -Body $kropp -Headers @{
-        'Authorization' = 'Bearer ' + $script:ServiceRoleKey
+        'Authorization' = 'Bearer ' + (Edge-Nyckel)
       }
     $ant = '?'
     try { if ($null -ne $svar.mottagare) { $ant = [string]$svar.mottagare } } catch { }
@@ -1634,9 +2147,12 @@ function Skicka-Puls {
 # världen injiceras, svepet returnerar. Loggen skriver "SVEP inlägg=0" var
 # tjugonde sekund tills någon råkar titta.
 #
-# Två utlösare, och de är olika snabba med flit:
+# Tre utlösare, och de är olika snabba med flit:
 #
 #   KONSTATERAT UTLOGGAD   larmar direkt. Sidan har sagt det själv.
+#   ALDRIG LÄST NÅGOT      larmar efter fem minuter, EN gång, per grupp. Se
+#                          nedan — det här är fallet "ansluten grupp som inte
+#                          går att läsa", och det är nytt i 2.4.
 #   SEX DAGTIMMAR TOMT     larmar långsamt. Ett tomt flöde kan vara en
 #                          söndagsförmiddag, och en vakthund som skriker på
 #                          en lugn dag blir avstängd.
@@ -1646,65 +2162,218 @@ function Skicka-Puls {
 #
 # EN notis per tillståndsövergång, aldrig i repris. Och en "läser igen" när
 # det löser sig, för en varning utan avslut lär man sig att ignorera.
+#
+#
+# VARFÖR SESSIONEN ÄR GLOBAL OCH TOMHETEN ÄR PER GRUPP
+#
+# Alla flikar delar ETT Chrome-fönster, EN profil och EN Facebook-session.
+# Är den utloggad är varenda grupp blind samtidigt, av samma orsak. En
+# tillståndsmaskin per grupp hade då gett tre identiska notiser om samma sak,
+# och tre notiser om samma sak är hur man lär någon att svepa bort dem.
+#
+# Tomheten är tvärtom gruppens egen. En Stockholmsflik som inte ger något får
+# INTE kunna döljas av att Västeråsfliken går som vanligt — det var precis
+# felet i den gamla globala mätaren: $VaktTomSekunder nollställdes så fort
+# NÅGON grupp gav inlägg.
+#
+#
+# ETT TYST FEL HÄR SER UT SOM EN LUGN KVÄLL I STOCKHOLM
+#
+# Det farligaste fallet är inte att något kraschar. Det är en grupp som är
+# konfigurerad, ansluten, inloggad — och tom, för alltid, för att ägaren inte
+# är medlem i den. Facebook lämnar inte ut ett enda inlägg ur en privat grupp
+# till en icke-medlem. Varje led rapporterar framgång.
+#
+# Därför har varje grupp ett läge 'ny' innan den läst sitt första inlägg, och
+# 'ny' larmar EFTER FEM MINUTER — inte efter sex timmar. Skillnaden mot
+# sextimmarsregeln är att en grupp som ALDRIG gett något inte är en lugn
+# kväll; det är en grupp som inte fungerar. Fem minuter är valt för att en
+# tung gruppsida ska hinna rendera färdigt och för att ägaren ska hinna se
+# raden medan han fortfarande minns att han just la till gruppen.
+#
+# Sagt EN gång per grupp och körning. Inte tyst, inte i repris.
 
+$script:VAKT_NY_SEKUNDER  = 300          # innan en grupp som aldrig läst larmar
+$script:VAKT_TOM_SEKUNDER = 6 * 3600     # innan en grupp som fungerat larmar
+
+$script:SessionLage    = 'ok'            # ok | utloggad
+$script:SenasteSidlage = $null
+
+# Bakåtkompatibla speglar av den gamla globala vakten. -ProvaVakthund och
+# äldre loggverktyg läser dem; de sätts av gruppvakten nedan så att "någon
+# grupp är blind" fortfarande går att fråga efter på ett ställe.
 $script:VaktLage        = 'ok'
 $script:VaktTomSekunder = 0
-$script:VaktSedan       = Get-Date
-$script:SenasteSidlage  = $null
 
-function Kolla-Vakthund {
-  param($Svepresultat, [int]$Inlagg)
-  try {
-    $nu = Get-Date
-    $timme = $nu.Hour
-    $dagtid = ($timme -ge 7 -and $timme -lt 22)
+$script:Vakt = @{}       # gruppid -> tillstånd
 
-    $sidlage = 'okand'
-    if ($Svepresultat -and (@($Svepresultat.PSObject.Properties.Name) -contains 'sidlage') -and $Svepresultat.sidlage) {
-      $sidlage = [string]$Svepresultat.sidlage
+function Vakt-For {
+  param($Grupp)
+  $gid = [string]$Grupp.id
+  if (-not $script:Vakt.ContainsKey($gid)) {
+    $script:Vakt[$gid] = @{
+      lage        = 'ny'        # ny | ok | blind
+      tomSekunder = 0
+      harLast     = $false
+      sagt        = $false      # har vi redan sagt ifrån om den här gruppen?
+      medlemskap  = $null
     }
+  }
+  return $script:Vakt[$gid]
+}
 
-    # Sessionens läge loggas när det ÄNDRAS, inte varje svep. En rad var
-    # tjugonde sekund om att allt är som förut är brus, och brus är det man
-    # slutar läsa. Men första gången — och varje gång det vänder — ska det stå
-    # i klartext, för det är den upplysning som saknades helt förut.
-    if ($sidlage -ne $script:SenasteSidlage) {
-      $script:SenasteSidlage = $sidlage
-      $farg = switch ($sidlage) {
+<#
+  Kommer det fram varningar ur DEN HÄR gruppen just nu?
+
+  Sessionen räknas in: är den utloggad är varje grupp blind, hur bra gruppens
+  egen mätare än ser ut. Resten är gruppens eget.
+#>
+function Vakt-Lage {
+  param($Grupp)
+  if ($script:SessionLage -eq 'utloggad') { return 'blind' }
+  $v = Vakt-For $Grupp
+  if ($v.lage -eq 'blind') { return 'blind' }
+  if (-not $v.harLast -and $v.sagt) { return 'blind' }
+  return 'ok'
+}
+
+<#
+  Den globala spegeln, HÄRLEDD och aldrig satt för hand.
+
+  $script:VaktLage fanns före flergruppsstödet och läses av provet och av den
+  som felsöker en logg. Sattes den på var sitt ställe i varje gren blev den
+  fort osann — den fastnade på 'blind' efter en utloggning som redan var löst.
+  Nu räknas den fram ur tillståndet: blind om sessionen är utloggad eller om
+  NÅGON grupp är blind.
+#>
+function Uppdatera-VaktLage {
+  $blind = ($script:SessionLage -eq 'utloggad')
+  $tom = 0
+  foreach ($k in @($script:Vakt.Keys)) {
+    $v = $script:Vakt[$k]
+    if ($v.lage -eq 'blind') { $blind = $true }
+    if (-not $v.harLast -and $v.sagt) { $blind = $true }
+    if ($v.tomSekunder -gt $tom) { $tom = $v.tomSekunder }
+  }
+  $script:VaktLage = $(if ($blind) { 'blind' } else { 'ok' })
+  $script:VaktTomSekunder = $tom
+}
+
+# Sessionen delas av alla flikar. Larmet går en gång, inte en gång per grupp.
+function Kolla-Session {
+  param([string]$Sidlage)
+  try {
+    if ($Sidlage -ne $script:SenasteSidlage) {
+      $script:SenasteSidlage = $Sidlage
+      $farg = switch ($Sidlage) {
         'inloggad' { 'DarkGreen' }
         'utloggad' { 'Red' }
         default    { 'DarkYellow' }
       }
-      Logga 'SESSION' ('sidan rapporterar: ' + $sidlage) $farg
+      Logga 'SESSION' ('sidan rapporterar: ' + $Sidlage) $farg
+    }
+
+    if ($Sidlage -eq 'utloggad' -and $script:SessionLage -eq 'ok') {
+      $script:SessionLage = 'utloggad'
+      Uppdatera-VaktLage
+      Logga 'VAKTHUND' 'BLIND — Facebook-sessionen är utloggad i bryggfönstret.' Red
+      Skicka-Driftnotis -Titel 'Bryggan ser inte grupperna' `
+        -Text ('Facebook-sessionen är utloggad i bryggfönstret. Inga varningar kommer fram ' +
+               'förrän du loggar in igen.') | Out-Null
+      return
+    }
+    if ($Sidlage -eq 'inloggad' -and $script:SessionLage -eq 'utloggad') {
+      $script:SessionLage = 'ok'
+      Uppdatera-VaktLage
+      Logga 'VAKTHUND' 'Facebook-sessionen är inloggad igen.' Green
+      Skicka-Driftnotis -Titel 'Bryggan läser igen' `
+        -Text 'Kontakten med Facebook är återställd. Varningarna går fram som vanligt.' | Out-Null
+    }
+  } catch {
+    Logga 'VAKTHUND' ('sessionskollen kunde inte köras: ' + $_.Exception.Message) DarkYellow
+  }
+}
+
+function Kolla-Vakthund {
+  param($Grupp, $Svepresultat, [int]$Inlagg)
+  try {
+    $v = Vakt-For $Grupp
+    $namn = [string]$Grupp.namn
+    $nu = Get-Date
+    $timme = $nu.Hour
+    $dagtid = ($timme -ge 7 -and $timme -lt 22)
+
+    $medlemskap = 'okand'
+    if ($Svepresultat -and (@($Svepresultat.PSObject.Properties.Name) -contains 'medlemskap') -and
+        $Svepresultat.medlemskap) {
+      $medlemskap = [string]$Svepresultat.medlemskap
+    }
+    if ($medlemskap -ne $v.medlemskap) {
+      $v.medlemskap = $medlemskap
+      if ($medlemskap -eq 'ejmedlem') {
+        Logga 'MEDLEMSKAP' ('[' + $namn + '] sidan visar knappen "Gå med i grupp" — kontot är inte ' +
+          'medlem i gruppen.') Yellow
+      }
     }
 
     if ($Inlagg -gt 0) {
-      $script:VaktTomSekunder = 0
+      $v.tomSekunder = 0
+      if (-not $v.harLast) {
+        # Första inlägget någonsin ur den här gruppen. Sägs en gång: det är
+        # det enda positiva beskedet som finns att ge, och den som just la
+        # till en grupp vill se det.
+        $v.harLast = $true
+        Logga 'VAKTHUND' ('[' + $namn + '] läser gruppen — första inlägget kom fram.') Green
+      }
     } elseif ($dagtid) {
-      $script:VaktTomSekunder += [int]($SvepIntervallMs / 1000)
+      $v.tomSekunder += [int]($SvepIntervallMs / 1000)
     }
 
-    $utloggad = ($sidlage -eq 'utloggad')
-    $blind = $utloggad -or ($script:VaktTomSekunder -ge (6 * 3600))
-
-    if ($blind -and $script:VaktLage -eq 'ok') {
-      $script:VaktLage = 'blind'
-      $script:VaktSedan = $nu
-      $skal = $(if ($utloggad) { 'Facebook-sessionen är utloggad i bryggfönstret.' }
-                else { 'Inte ett enda inlägg på sex dagtimmar.' })
-      Logga 'VAKTHUND' ('BLIND — ' + $skal) Red
-      Skicka-Driftnotis -Titel 'Bryggan ser inte gruppen' `
-        -Text ($skal + ' Inga varningar kommer fram förrän det är löst.') | Out-Null
+    # ---- Läge 'ny': gruppen har aldrig gett något ----------------------
+    if (-not $v.harLast) {
+      if ($v.tomSekunder -ge $script:VAKT_NY_SEKUNDER -and -not $v.sagt) {
+        $v.sagt = $true
+        Uppdatera-VaktLage
+        $skal = 'Inte ett enda inlägg sedan bryggan startade.'
+        if ($medlemskap -eq 'ejmedlem') {
+          $skal = 'Kontot är inte medlem i gruppen — sidan visar "Gå med i grupp".'
+        }
+        Logga 'VAKTHUND' ('[' + $namn + '] LÄSER INGENTING — ' + $skal) Red
+        Logga 'VAKTHUND' ('  En privat grupp lämnar inte ut ett enda inlägg till en icke-medlem. ' +
+          'Sidan renderar, sessionen är inloggad, flödet är tomt — det ser ut precis som en lugn kväll.') Yellow
+        Logga 'VAKTHUND' ('  Gå med i gruppen, eller ta bort den ur groupIds i ' +
+          (Split-Path -Leaf $Bryggfil) + '. Grupp-id: ' + $Grupp.id) Yellow
+        Logga 'VAKTHUND' '  Det här sägs en gång per körning. De andra grupperna läses som vanligt.' DarkGray
+        Skicka-Driftnotis -Titel ('Bryggan läser inte ' + $namn) `
+          -Text ($skal + ' Inga varningar kommer från den gruppen förrän det är löst.') | Out-Null
+      }
+      Uppdatera-VaktLage
       return
     }
 
-    if (-not $blind -and $script:VaktLage -eq 'blind' -and $Inlagg -gt 0) {
-      $script:VaktLage = 'ok'
-      $script:VaktSedan = $nu
-      Logga 'VAKTHUND' 'läser gruppen igen.' Green
-      Skicka-Driftnotis -Titel 'Bryggan läser igen' `
-        -Text 'Kontakten med gruppen är återställd. Varningarna går fram som vanligt.' | Out-Null
+    # ---- Läge 'ok'/'blind': gruppen har fungerat ------------------------
+    $blind = ($v.tomSekunder -ge $script:VAKT_TOM_SEKUNDER)
+
+    if ($blind -and $v.lage -ne 'blind') {
+      $v.lage = 'blind'
+      Uppdatera-VaktLage
+      Logga 'VAKTHUND' ('[' + $namn + '] BLIND — inte ett enda inlägg på sex dagtimmar.') Red
+      Skicka-Driftnotis -Titel ('Bryggan ser inte ' + $namn) `
+        -Text 'Inte ett enda inlägg på sex dagtimmar. Inga varningar kommer fram förrän det är löst.' | Out-Null
+      return
     }
+
+    if (-not $blind -and $v.lage -eq 'blind' -and $Inlagg -gt 0) {
+      $v.lage = 'ok'
+      Uppdatera-VaktLage
+      Logga 'VAKTHUND' ('[' + $namn + '] läser gruppen igen.') Green
+      Skicka-Driftnotis -Titel ('Bryggan läser ' + $namn + ' igen') `
+        -Text 'Kontakten med gruppen är återställd. Varningarna går fram som vanligt.' | Out-Null
+      return
+    }
+
+    if ($v.lage -eq 'ny') { $v.lage = 'ok' }
+    Uppdatera-VaktLage
   } catch {
     # Vakthunden får aldrig fälla daemonen. Ett fel här betyder att vi står
     # utan vakthund, inte utan brygga.
@@ -1792,6 +2461,11 @@ function Kor-Startprob {
     '... längd=' + $script:ServiceRoleKey.Length) DarkGray
 
   # ---- 1. Databasen -------------------------------------------------------
+  #
+  # Utfallet här avgör hur steg 2 ska läsas. Grön databas betyder att valvet
+  # bär en läsbar nyckel, och det är den nyckeln som ringer edge-funktionen i
+  # skarp drift — inte daemonens egen.
+  $dbGron = $false
   try {
     $k = Invoke-RestMethod -Uri ($script:SupabaseUrl + '/rest/v1/rpc/fbmejl_notis_konfig') `
       -Method Post -TimeoutSec 25 -ContentType 'application/json' -Body '{}' -Headers @{
@@ -1810,6 +2484,7 @@ function Kor-Startprob {
     $rad = ('klar=' + $klar + ' nyckel_kalla=' + $kalla + ' form=' + $form + ' längd=' + $langd +
             ' mottagare=' + $mott + ' pg_net=' + $pgnet + ' valv_läsbart=' + $valv)
     if ($klar -and $mott -gt 0 -and $pgnet) {
+      $dbGron = $true
       Logga 'PROB' ('GRÖN databasen: ' + $rad) Green
     } else {
       $allt = $false
@@ -1835,26 +2510,61 @@ function Kor-Startprob {
   }
 
   # ---- 2. Edge-funktionen -------------------------------------------------
+  #
+  # DEN HÄR PROBEN FÅR INTE STOPPA DAEMONEN, och det är en rättelse.
+  #
+  # Den ringer fbmejl-push med daemonens EGEN nyckel. Det är inte den väg
+  # notisen faktiskt tar: daemonen anropar fbmejl_ta_emot i databasen, och det
+  # är DATABASEN som ringer fbmejl-push, med nyckeln ur valvet. Daemonens
+  # nyckel når aldrig edge-funktionen i skarp drift.
+  #
+  # På ett projekt med de nya API-nycklarna finns det inte längre EN nyckel som
+  # öppnar båda dörrarna:
+  #
+  #   PostgREST (fbmejl_ta_emot)  godtar den gamla eyJ-nyckeln, inte sb_secret
+  #   Edge (fbmejl-push)          godtar sb_secret, inte eyJ
+  #
+  # Daemonen måste därför bära eyJ-nyckeln, och den nyckeln GER 401 här — på en
+  # kedja som fungerar. Förut stoppade det starten helt: "Startproben är RÖD",
+  # noll inlägg lästa, med grön databas på raden ovanför. Ett larm som går på
+  # ett friskt system lär folk att strunta i larmet.
+  #
+  # Sanningen om push står redan i steg 1: fbmejl_notis_konfig svarar klar=true
+  # bara när valvet har en LÄSBAR nyckel, och det är exakt den nyckel databasen
+  # kommer att använda. Är steg 1 grönt är det här steget en upplysning.
+  #
+  # Är steg 1 RÖTT betyder ett 401 här fortfarande något, och då räknas det.
+  $pushGron = $false
   try {
     $d = Invoke-RestMethod -Uri $script:DriftUrl -Method Post -TimeoutSec 25 `
       -ContentType 'application/json' -Body '{"dry":true}' -Headers @{
-        'Authorization' = 'Bearer ' + $script:ServiceRoleKey
+        'Authorization' = 'Bearer ' + (Edge-Nyckel)
       }
     $m = '?'
     try { if ($null -ne $d.mottagare) { $m = [string]$d.mottagare } } catch { }
+    $pushGron = $true
     Logga 'PROB' ('GRÖN fbmejl-push: torrprob godkänd, mottagare=' + $m) Green
     Logga 'PROB' '     (bevisar nyckel, databas och mottagare — INTE VAPID. Det gör söndagens livstecken.)' DarkGray
   } catch {
-    $allt = $false
     $status = 0
     try { $status = [int]$_.Exception.Response.StatusCode } catch { }
-    Logga 'PROB' ('RÖD  fbmejl-push svarade HTTP ' + $status + ': ' + $_.Exception.Message) Red
-    if ($status -eq 401) {
-      Logga 'PROB' '     ÅTGÄRD: FEL UTGÅVA av nyckeln. Prova den andra strängen med tools\satt-nyckel.ps1.' Yellow
-    } elseif ($status -eq 500) {
-      Logga 'PROB' '     ÅTGÄRD: VAPID_KEYS eller SUPABASE_URL saknas i funktionens miljö. Annat fel än nyckeln.' Yellow
-    } elseif ($status -eq 404) {
-      Logga 'PROB' '     ÅTGÄRD: fbmejl-push är inte utrullad på projektet. Se docs\notiskedjan.md steg 2.' Yellow
+
+    # Databasen grön + 401 här = de två dörrarna vill ha var sin utgåva.
+    # Väntat, ofarligt, och inget att stoppa för.
+    if ($status -eq 401 -and $dbGron) {
+      Logga 'PROB' 'GUL  fbmejl-push nekar daemonens egen nyckel (401) — VÄNTAT och ofarligt.' DarkYellow
+      Logga 'PROB' '     Daemonen bär eyJ-nyckeln för PostgREST. Push ringer databasen upp, med' DarkGray
+      Logga 'PROB' '     sb_secret-nyckeln ur valvet. Steg 1 ovan är beviset som gäller.' DarkGray
+    } else {
+      $allt = $false
+      Logga 'PROB' ('RÖD  fbmejl-push svarade HTTP ' + $status + ': ' + $_.Exception.Message) Red
+      if ($status -eq 401) {
+        Logga 'PROB' '     ÅTGÄRD: FEL UTGÅVA av nyckeln. Prova den andra strängen med tools\satt-nyckel.ps1.' Yellow
+      } elseif ($status -eq 500) {
+        Logga 'PROB' '     ÅTGÄRD: VAPID_KEYS eller SUPABASE_URL saknas i funktionens miljö. Annat fel än nyckeln.' Yellow
+      } elseif ($status -eq 404) {
+        Logga 'PROB' '     ÅTGÄRD: fbmejl-push är inte utrullad på projektet. Se docs\notiskedjan.md steg 2.' Yellow
+      }
     }
   }
 
@@ -1937,6 +2647,30 @@ function Starta-Bryggfonstret {
   # Citattecken runt sökvägen med flit: repot ligger under "Claude code
   # 2GNDTN" — två mellanslag — och utan dem delar Windows argumentet där och
   # Chrome tolkar bitarna som adresser.
+  #
+  # EN FLIK PER GRUPP, I SAMMA FÖNSTER OCH SAMMA PROFIL. Chrome tar flera
+  # adresser på kommandoraden och öppnar en flik per adress.
+  #
+  # Alternativen som valdes bort, och varför:
+  #
+  #   En flik som navigerar mellan grupperna. Varje navigering river den
+  #   isolerade världen, och kalibrerade (ett Set i modulscope) börjar då tomt.
+  #   VARJE svep blir alltså ett kalibreringssvep för gruppen man kommer till,
+  #   och ett kalibreringssvep ger per definition ingen observerad ålder. Utan
+  #   ålder skickas ingenting, och på den riktiga gruppsidan gick tiden inte
+  #   att läsa på 5 av 7 inlägg. Resultatet hade varit nästan total tystnad
+  #   som ser ut som en lugn dag.
+  #
+  #   Ett fönster och en profil per grupp. Varje profil måste loggas in på
+  #   Facebook för hand, och två samtidigt inloggade sessioner på samma konto
+  #   är en tydligare automationssignal mot Meta än två flikar. Dubbelt minne,
+  #   två fönster i vägen, och geografiuppdelningen i daemonen blir inte
+  #   enklare av att fönstren är två.
+  #
+  # Flikar i bakgrunden LÄSER — det är mätt, inte antaget: loggen har rader
+  # med "flik=dold" och "nya=2" i samma svep. Flaggorna nedan stänger av
+  # Chromes strypning av dolda flikar, och daemonens klocka ligger dessutom
+  # utanför sidan.
   $argument = @(
     "--user-data-dir=`"$($script:ChromeProfil)`"",
     '--disable-background-timer-throttling',
@@ -1945,9 +2679,9 @@ function Starta-Bryggfonstret {
     "--remote-debugging-port=$Port",
     '--no-first-run',
     '--no-default-browser-check',
-    '--new-window',
-    "https://www.facebook.com/groups/$GruppId/"
+    '--new-window'
   )
+  foreach ($g in $script:Grupper) { $argument += ('https://www.facebook.com/groups/' + $g.id + '/') }
 
   Logga 'FÖNSTER' 'startar bryggfönstret...' Cyan
   try {
@@ -2088,38 +2822,52 @@ function Kort {
 #  Ett svep, hela vägen
 # =====================================================================
 
+<#
+  Ett svep för EN grupp.
+
+  Returnerar utkorgen i stället för att skicka den. Skälet är buntningen:
+  fbmejl_ta_emot skickar EN notis per omgång och räknar resten som "odelade"
+  till nästa gång. Skickade varje grupp för sig blev två grupper i samma tick
+  till två omgångar, alltså en notis plus en varning som tiominutersspärren
+  håller tillbaka — och ingenstans syns att det hände. Huvudloopen samlar
+  därför alla gruppers rader och skickar dem i ett anrop. Se Tom-Utkorg.
+#>
 function Behandla-Svep {
-  param($Svepresultat)
+  param($Grupp, $Svepresultat)
+
+  $tom = @{ utkorg = @(); nycklar = @(); poster = 0 }
 
   $script:Summa.svep++
   $nu = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  $gid = [string]$Grupp.id
+  $namn = [string]$Grupp.namn
 
   # GRUPPFILTRET, tredje gången. Sidan svarar med vilken grupp den står i, och
   # står den i fel grupp läses ingenting — inte ens loggas texterna.
-  if ($Svepresultat.grupp -ne $GruppId) {
+  if ($Svepresultat.grupp -ne $gid) {
     if (-not $Svepresultat.grupp) {
       # Vanligast direkt efter en omstart: svepet hann före navigeringen och
       # adressen är ännu inte /groups/<id>/. Går över av sig själv.
       Logga 'FEL-GRUPP' ('adressen är ' + $Svepresultat.sokvag +
         ' — ingen grupp där ännu. Inget läses det här svepet.') DarkGray
     } else {
-      Logga 'FEL-GRUPP' ('fliken står i ' + $Svepresultat.grupp + ' men bryggan lyssnar på ' +
-        $GruppId + ' — inget läses.') DarkYellow
+      Logga 'FEL-GRUPP' ('fliken står i ' + $Svepresultat.grupp + ' men den här fliken är låst vid ' +
+        $gid + ' (' + $namn + ') — inget läses.') DarkYellow
     }
-    return
+    return $tom
   }
 
   # Bryggkodens egen grupptabell säger ifrån om gruppen saknar område. Då vet
   # ingen var en varning skulle hamna, och då skickas ingen.
   if ($Svepresultat.gruppfel) {
     Logga 'STOPP' ('bryggkoden vägrar gruppen: ' + $Svepresultat.gruppfel) Red
-    return
+    return $tom
   }
   if ((@($Svepresultat.PSObject.Properties.Name) -contains 'okandGrupp') -and $Svepresultat.okandGrupp) {
     Logga 'STOPP' ('bryggkodens grupptabell känner inte igen ' + $Svepresultat.grupp + ' — inget läses.') Red
-    return
+    return $tom
   }
-  Uppdatera-Omrade -Omrade $Svepresultat.omrade
+  if (-not (Kolla-Omrade -Grupp $Grupp -Omrade $Svepresultat.omrade)) { return $tom }
 
   $poster = @($Svepresultat.poster)
   $nya = 0
@@ -2138,8 +2886,9 @@ function Behandla-Svep {
     }
   }
 
-  # Svepets utkorg. Töms varje svep, skickas i ETT anrop efter loopen så att
-  # fbmejl_ta_emot ser dem som en omgång och buntar notisen. Se Skicka-Omgang.
+  # Svepets utkorg. Lämnas tillbaka till huvudloopen, som slår ihop alla
+  # gruppers rader och skickar dem i ETT anrop så att fbmejl_ta_emot ser dem
+  # som en omgång och buntar notisen. Se Tom-Utkorg.
   $utkorg = @()
   $utkorgNycklar = @()
 
@@ -2267,8 +3016,13 @@ function Behandla-Svep {
     }
 
     # ---- Geokodning, från PowerShell ------------------------------------
+    #
+    # GRUPPENS ruta och GRUPPENS ort, inte en global. Det här är raden som
+    # gör att en Stockholmsvarning aldrig kan hamna på Västeråskartan:
+    # frågan bär gruppens viewbox och bounded=1, och svaret kontrolleras mot
+    # samma ruta en gång till i Geokoda innan koordinaten släpps vidare.
     $traff = $null
-    try { $traff = Geokoda -Plats ([string]$t.place) }
+    try { $traff = Geokoda -Plats ([string]$t.place) -Grupp $Grupp }
     catch {
       $script:Summa.misslyckade++
       Markera-Forsok $p.nyckel
@@ -2319,53 +3073,15 @@ function Behandla-Svep {
       continue
     }
 
-    # Skickas inte här. Läggs i utkorgen och går i ett anrop efter svepet,
-    # så att fbmejl_ta_emot ser dem som EN omgång och skickar EN notis.
+    # Skickas inte här. Läggs i utkorgen och går i ett anrop efter att ALLA
+    # gruppers svep gjorts, så att fbmejl_ta_emot ser dem som EN omgång och
+    # skickar EN notis.
     $utkorg += ,$rad
     $utkorgNycklar += ,$p.nyckel
     Logga 'KÖAD' (
-      'typ=' + $typ + ' plats="' + $traff.label + '" ålder=' + $alderMin + 'min (' + $p.kalla + ')'
+      '[' + $namn + '] typ=' + $typ + ' plats="' + $traff.label + '" ålder=' + $alderMin +
+      'min (' + $p.kalla + ')'
     ) DarkGray
-  }
-
-  # ---- Utkorgen: ett anrop för hela svepet ----------------------------
-  if ($Skarpt -and $utkorg.Count -gt 0) {
-    try {
-      $svar = Skicka-Omgang -Rader $utkorg
-      foreach ($n in $utkorgNycklar) { Markera-Klar $n }
-
-      # Läs av vad servern FAKTISKT gjorde. Det är den återkopplingen som
-      # saknades och som lät det gamla felet leva: daemonen sa "skickad"
-      # medan ingenting hände på andra sidan.
-      $skapade = 0; $dubbletter = 0; $vagrade = 0; $notis = 'okänd'
-      if ($svar) {
-        if ($null -ne $svar.skrivna)    { $skapade    = [int]$svar.skrivna }
-        elseif ($null -ne $svar.skapade){ $skapade    = [int]$svar.skapade }
-        if ($null -ne $svar.dubbletter) { $dubbletter = [int]$svar.dubbletter }
-        if ($null -ne $svar.vagrade)    { $vagrade    = [int]$svar.vagrade }
-        if ($null -ne $svar.notis)      { $notis      = [string]$svar.notis }
-      }
-      $script:Summa.skickade   += $skapade
-      $script:Summa.dubbletter += $dubbletter
-      Logga 'OMGÅNG' (
-        'skickade=' + $utkorg.Count + ' rapporter=' + $skapade +
-        ' dubbletter=' + $dubbletter + ' vägrade=' + $vagrade + ' notis=' + $notis
-      ) Green
-      if ($svar -and $svar.utanNyckel) {
-        # Halva kedjan gick. Säg det rakt ut varje gång — annars tror man att
-        # tystnaden i telefonen betyder att inget hände i gruppen.
-        Logga 'KARTA-UTAN-NOTIS' (
-          'Rapporten syns i appen. Ingen push till lås skärm: service_role-nyckeln saknas. ' +
-          'Kör tools\satt-nyckel.ps1 så går även notisen.'
-        ) Yellow
-      } elseif ($skapade -gt 0 -and $notis -eq 'False') {
-        Logga 'OMGÅNG' ('  rapport skapad men INGEN notis — se fbmejl_notis_logg för skälet') Yellow
-      }
-    } catch {
-      $script:Summa.misslyckade += $utkorg.Count
-      foreach ($n in $utkorgNycklar) { Markera-Forsok $n }
-      Logga 'SKICK-FEL' ($_.Exception.Message) Red
-    }
   }
 
   $kalibrering = ''
@@ -2374,12 +3090,77 @@ function Behandla-Svep {
   if ($Svepresultat.dold) { $dold = ' flik=dold' }
 
   Logga 'SVEP' (
-    'inlägg=' + $poster.Count +
+    '[' + $namn + '] inlägg=' + $poster.Count +
     ' nya=' + $nya +
     ' med-ålder=' + $medTidNu +
     ' utan-ålder=' + $utanTidNu +
     ' vägrade=' + $vagradeNu +
     $dold + $kalibrering) White
+
+  return @{ utkorg = $utkorg; nycklar = $utkorgNycklar; poster = $poster.Count }
+}
+
+<#
+  Skicka en omgång och läs av vad servern faktiskt gjorde.
+
+  Anropas en gång per notisläge och tick, inte en gång per grupp: raderna
+  från alla grupper som får pusha går i SAMMA anrop, för det är omgången
+  fbmejl_ta_emot buntar notisen på. Grupper med notis: false går i ett eget
+  anrop på anon-vägen, som ändå inte utlöser någon notis och alltså inte kan
+  splittra buntningen.
+#>
+function Tom-Utkorg {
+  param([object[]]$Rader, [string[]]$Nycklar, [switch]$UtanNotis, [string]$Grupper)
+  if (-not $Rader -or $Rader.Count -eq 0) { return }
+
+  try {
+    $svar = Skicka-Omgang -Rader $Rader -UtanNotis:$UtanNotis
+    foreach ($n in $Nycklar) { Markera-Klar $n }
+
+    # Läs av vad servern FAKTISKT gjorde. Det är den återkopplingen som
+    # saknades och som lät det gamla felet leva: daemonen sa "skickad"
+    # medan ingenting hände på andra sidan.
+    $skapade = 0; $dubbletter = 0; $vagrade = 0; $notis = 'okänd'
+    if ($svar) {
+      if ($null -ne $svar.skrivna)     { $skapade    = [int]$svar.skrivna }
+      elseif ($null -ne $svar.skapade) { $skapade    = [int]$svar.skapade }
+      if ($null -ne $svar.dubbletter)  { $dubbletter = [int]$svar.dubbletter }
+      if ($null -ne $svar.vagrade)     { $vagrade    = [int]$svar.vagrade }
+      if ($null -ne $svar.notis)       { $notis      = [string]$svar.notis }
+    }
+    $script:Summa.skickade   += $skapade
+    $script:Summa.dubbletter += $dubbletter
+    Logga 'OMGÅNG' (
+      $(if ($Grupper) { '[' + $Grupper + '] ' } else { '' }) +
+      'skickade=' + $Rader.Count + ' rapporter=' + $skapade +
+      ' dubbletter=' + $dubbletter + ' vägrade=' + $vagrade + ' notis=' + $notis
+    ) Green
+
+    $avsiktligt = ($svar -and (@($svar.PSObject.Properties.Name) -contains 'avsiktligt') -and $svar.avsiktligt)
+    if ($avsiktligt) {
+      # INTE ett fel. Gruppen står med notis: false i bryggfilen. Raden finns
+      # för att skillnaden mot en saknad nyckel ska synas — annars felsöker
+      # man en nyckel som inte fattas.
+      Logga 'KARTA-UTAN-NOTIS' (
+        'Rapporten syns i appen och på kartan. Ingen push: gruppen står med notis: false i ' +
+        (Split-Path -Leaf $Bryggfil) + ' — notisvägen på servern saknar geografi och skulle ' +
+        'skicka den till varenda prenumerant, oavsett stad.'
+      ) DarkGray
+    } elseif ($svar -and $svar.utanNyckel) {
+      # Halva kedjan gick. Säg det rakt ut varje gång — annars tror man att
+      # tystnaden i telefonen betyder att inget hände i gruppen.
+      Logga 'KARTA-UTAN-NOTIS' (
+        'Rapporten syns i appen. Ingen push till lås skärm: service_role-nyckeln saknas. ' +
+        'Kör tools\satt-nyckel.ps1 så går även notisen.'
+      ) Yellow
+    } elseif ($skapade -gt 0 -and $notis -eq 'False') {
+      Logga 'OMGÅNG' ('  rapport skapad men INGEN notis — se fbmejl_notis_logg för skälet') Yellow
+    }
+  } catch {
+    $script:Summa.misslyckade += $Rader.Count
+    foreach ($n in $Nycklar) { Markera-Forsok $n }
+    Logga 'SKICK-FEL' ($_.Exception.Message) Red
+  }
 }
 
 function Skriv-Summa {
@@ -2409,26 +3190,57 @@ function Skriv-Summa {
 
 Logga 'START' ('Polisvakt brygg-daemon — ' +
   $(if ($Skarpt) { 'SKARPT LÄGE, skriver till databasen' } else { 'TORRKÖRNING, skriver ingenting' }) +
-  '  grupp=' + $GruppId + '  svep var ' + [math]::Round($SvepIntervallMs / 1000) + ' s') $(if ($Skarpt) { 'Yellow' } else { 'Cyan' })
+  '  grupper=' + $script:Grupper.Count + '  svep var ' + [math]::Round($SvepIntervallMs / 1000) + ' s') $(if ($Skarpt) { 'Yellow' } else { 'Cyan' })
+foreach ($g in $script:Grupper) {
+  Logga 'GRUPP' ('  ' + $g.id + '  ' + $g.namn + '  [' + (@($g.ruta) -join ',') + ']' +
+    '  ort=' + $(if ($g.ort) { $g.ort } else { '—' }) +
+    $(if (-not $g.notis) { '  notis=AV (karta ja, push nej)' } else { '' })) DarkCyan
+}
+if ($GruppId -and @($GruppId).Count -gt 0 -and $script:Grupper.Count -lt $script:AllaGrupper.Count) {
+  Logga 'GRUPP' ('-GruppId angivet: läser ' + $script:Grupper.Count + ' av ' +
+    $script:AllaGrupper.Count + ' grupper i bryggfilen. Ta bort flaggan för att läsa alla ' +
+    '(kör om tools\polisvakt-brygga.ps1 -Installera om den kommer från Schemaläggaren).') Yellow
+}
+foreach ($g in $script:Grupper) {
+  if ($g.id -notmatch '^\d+$') {
+    # Adressen öppnas med exakt den sträng som står i listan, och Anslut
+    # matchar på samma sträng. Står gruppen med sin slug fungerar det så
+    # länge Facebook inte skriver om adressen — men numeriska id byts aldrig,
+    # och en slug kan gruppens admin ändra. Värt en rad, inte ett stopp.
+    Logga 'GRUPP' ('  ' + $g.id + ' är ingen sifferform. Facebook skriver inte om numeriska ' +
+      'adresser till slug, så numeriskt id är det stabila valet.') DarkYellow
+  }
+}
 Logga 'START' ('läsdel ur ' + (Split-Path -Leaf $Bryggfil) + ': ' + $script:Lasdel.Length + ' tecken, ordagrant')
 Logga 'START' ('logg: ' + $script:LoggSokvag)
 
 if ($Sjalvtest) {
-  $kontext = $null
-  $a = Anslut -Port $Felsokningsport -GruppId $GruppId
-  if ($a -and -not $a.ContainsKey('fel')) {
-    $kontext = $a
-    try { Gor-Svep -Kontext $kontext | Out-Null } catch {
-      Logga 'VARNING' ('kunde inte injicera läsaren: ' + $_.Exception.Message) DarkYellow
-      $kontext = $null
+  # PRODUKTREGELN GÄLLER VARJE GRUPP LIKA, och det provas mot varje grupp för
+  # sig. Varje flik bär sin EGEN injicerade kopia av bryggkoden; en spärr som
+  # råkar sitta i den ena fliken bevisar ingenting om den andra.
+  $fel = 0
+  $korda = 0
+  foreach ($g in $script:Grupper) {
+    $kontext = $null
+    $a = Anslut -Port $Felsokningsport -Grupp $g
+    if ($a -and -not $a.ContainsKey('fel')) {
+      $kontext = $a
+      try { Gor-Svep -Kontext $kontext | Out-Null } catch {
+        Logga 'VARNING' ('kunde inte injicera läsaren i ' + $g.namn + ': ' + $_.Exception.Message) DarkYellow
+        $kontext = $null
+      }
+    } else {
+      Logga 'INFO' ('[' + $g.namn + '] ' + $a.fel) DarkYellow
     }
-  } else {
-    Logga 'INFO' $a.fel DarkYellow
+    Logga 'PROV' ('Produktregeln i gruppen "' + $g.namn + '"' +
+      $(if ($kontext) { ' — mätt i sidans egen kopia av bryggkoden' }
+        else { ' — bara PowerShell-spärren, ingen flik att fråga' })) Cyan
+    $fel += Kor-Sjalvtest -Kontext $kontext
+    $korda++
+    Koppla-Ner $kontext
   }
-  $fel = Kor-Sjalvtest -Kontext $kontext
-  Koppla-Ner $kontext
   if ($fel -gt 0) { Logga 'PROV' ("$fel fel — produktregeln håller INTE.") Red; exit 1 }
-  Logga 'PROV' 'Alla fall gröna.' Green
+  Logga 'PROV' ('Alla fall gröna i alla ' + $korda + ' grupper.') Green
   exit 0
 }
 
@@ -2444,59 +3256,497 @@ if ($Sjalvtest) {
 # Sju steg. Ingen av dem rör nätet, Chrome eller databasen.
 
 function Fejksvep {
-  param([string]$Sidlage)
-  return [pscustomobject]@{ sidlage = $Sidlage }
+  param([string]$Sidlage, [string]$Medlemskap = 'okand')
+  return [pscustomobject]@{ sidlage = $Sidlage; medlemskap = $Medlemskap }
+}
+
+<#
+  Ett krav i ett prov: $true när det håller, annars förklaringen.
+
+  DEN HÄR FUNKTIONEN FINNS FÖR ATT ETT PROV LJÖG.
+
+  Den naturliga formen `return (villkor) -or 'förklaring'` är hämtad från
+  JavaScript, där `a || 'text'` ger tillbaka strängen. I PowerShell är -or en
+  BOOLESK operator: den gör om 'förklaring' till $true eftersom strängen inte
+  är tom, och hela uttrycket blir alltså $true oavsett villkoret. Fem prov
+  skrivna så var gröna utan att mäta någonting, och det upptäcktes bara för
+  att en avsiktlig röd-bevisning inte blev röd.
+
+  Ett prov som inte kan bli rött är värre än inget prov: det ser ut som
+  täckning.
+#>
+function Kravs {
+  param([bool]$Villkor, [string]$Meddelande)
+  if ($Villkor) { return $true }
+  return $Meddelande
+}
+
+function Fejkgrupp {
+  param([string]$Id, [string]$Namn, $Ruta, [string]$Ort = '', [string]$Omrade = '')
+  $orter = @()
+  foreach ($o in @($Ort, $Omrade)) { if ($o) { $orter += $o.ToLowerInvariant() } }
+  return @{ id = $Id; namn = $Namn; ort = $Ort; omrade = $Omrade
+            ruta = @($Ruta); orter = $orter; notis = $true }
 }
 
 if ($ProvaVakthund) {
-  Logga 'PROV' 'Vakthunden — larmar den EN gång per tillståndsövergång?' Cyan
-  $fel = 0
+  Logga 'PROV' 'Vakthunden — larmar den EN gång per tillståndsövergång, och per grupp?' Cyan
 
+  $script:ProvFel = 0
+  $script:ProvAntal = 0
+
+  # Läget som mäts är GRUPPENS: sessionen plus just den här gruppens tillstånd.
+  # Med bara en grupp är det samma sak som förut. Med två är det den enda
+  # frågan som betyder något — "kommer det fram varningar ur DEN HÄR gruppen"
+  # — och det är precis den frågan den gamla globala mätaren inte kunde svara
+  # på, eftersom en aktiv grupp nollställde den åt alla.
   function Steg {
-    param([string]$Namn, [string]$Sidlage, [int]$Inlagg,
-          [string]$VantatLage, [int]$VantadeNotiser)
+    param([string]$Namn, $Grupp, [string]$Sidlage, [int]$Inlagg,
+          [string]$VantatLage, [int]$VantadeNotiser, [string]$Medlemskap = 'okand')
     $fore = $script:DriftRaknare
-    Kolla-Vakthund -Svepresultat (Fejksvep $Sidlage) -Inlagg $Inlagg
+    Kolla-Session -Sidlage $Sidlage
+    Kolla-Vakthund -Grupp $Grupp -Svepresultat (Fejksvep $Sidlage $Medlemskap) -Inlagg $Inlagg
     $nya = $script:DriftRaknare - $fore
-    $ok = ($script:VaktLage -eq $VantatLage) -and ($nya -eq $VantadeNotiser)
-    Logga 'PROV' ('  {0,-46} läge={1,-5} notiser={2}  {3}' -f
-      $Namn, $script:VaktLage, $nya, $(if ($ok) { 'OK' } else {
+    $lage = Vakt-Lage $Grupp
+    $ok = ($lage -eq $VantatLage) -and ($nya -eq $VantadeNotiser)
+    $script:ProvAntal++
+    Logga 'PROV' ('  {0,-52} läge={1,-5} notiser={2}  {3}' -f
+      $Namn, $lage, $nya, $(if ($ok) { 'OK' } else {
         'FEL — väntade läge=' + $VantatLage + ' notiser=' + $VantadeNotiser })) `
       $(if ($ok) { 'Green' } else { 'Red' })
     if (-not $ok) { $script:ProvFel++ }
   }
 
+  # Ett påstående utan svep. Används för de egenskaper som handlar om
+  # FÖRHÅLLANDET mellan två grupper, inte om ett enskilt svep.
+  function Provfall2 {
+    param([string]$Namn, [scriptblock]$Kod)
+    $script:ProvAntal++
+    $svar = $null
+    try { $svar = & $Kod } catch { $svar = 'kastade: ' + $_.Exception.Message }
+    # -is [bool] med flit: bara ett riktigt booleskt $true räknas som grönt.
+    # Ett prov som av misstag lämnar tillbaka en sträng ska falla, inte passera.
+    $ok = ($svar -is [bool] -and $svar)
+    Logga 'PROV' ('  {0,-52} {1}' -f $Namn, $(if ($ok) { 'OK' } else { 'FEL — ' + $svar })) `
+      $(if ($ok) { 'Green' } else { 'Red' })
+    if (-not $ok) { $script:ProvFel++ }
+  }
+
+  $VST = Fejkgrupp '317968668373072' 'Västerås' @(15.10, 59.30, 17.30, 60.30) 'Västerås' 'Västmanland'
+  $STH = Fejkgrupp '563061233834062' 'Stockholm' @(17.20, 58.80, 19.30, 60.20) 'Stockholm' 'Stockholms län'
+
+  # ---- Den gamla tillståndsmaskinen, oförändrad i sitt beteende --------
   $script:ProvFel = 0
   $script:VaktLage = 'ok'
   $script:VaktTomSekunder = 0
   $script:SenasteSidlage = $null
+  $script:SessionLage = 'ok'
   $script:DriftRaknare = 0
+  $script:Vakt = @{}
+  # Gruppen har redan läst — annars gäller ny-regeln, som provas för sig nedan.
+  (Vakt-For $VST).harLast = $true
+  (Vakt-For $VST).lage = 'ok'
 
-  Steg 'inloggad, ett inlägg'                    'inloggad' 1 'ok'    0
-  Steg 'utloggad — ska larma EN gång'            'utloggad' 0 'blind' 1
-  Steg 'utloggad igen — får INTE larma om'       'utloggad' 0 'blind' 0
-  Steg 'utloggad tredje gången — fortfarande tyst' 'utloggad' 0 'blind' 0
-  Steg 'inloggad men tomt flöde — ännu inte löst' 'inloggad' 0 'blind' 0
-  Steg 'inloggad med inlägg — ska säga läser igen' 'inloggad' 2 'ok'    1
-  Steg 'allt lugnt igen — inga fler notiser'     'inloggad' 2 'ok'    0
+  Steg 'inloggad, ett inlägg'                      $VST 'inloggad' 1 'ok'    0
+  Steg 'utloggad — ska larma EN gång'              $VST 'utloggad' 0 'blind' 1
+  Steg 'utloggad igen — får INTE larma om'         $VST 'utloggad' 0 'blind' 0
+  Steg 'utloggad tredje gången — fortfarande tyst' $VST 'utloggad' 0 'blind' 0
+  Steg 'inloggad men tomt flöde — ännu inte löst'  $VST 'inloggad' 0 'ok'    1
+
+  # Not: raden ovan larmar "läser igen" på SESSIONEN, som är global och delas
+  # av alla flikar. Den är löst i samma sekund som sidan säger inloggad; att
+  # vänta på ett inlägg hade betytt att beskedet dröjer till nästa gång någon
+  # postar, vilket kan vara timmar. Gruppens egen tomhet mäts separat nedan.
+  Steg 'inloggad med inlägg — allt normalt'        $VST 'inloggad' 2 'ok'    0
+  Steg 'allt lugnt igen — inga fler notiser'       $VST 'inloggad' 2 'ok'    0
 
   # Sex dagtimmar utan ett enda inlägg. Mätaren sätts direkt i stället för att
   # vänta sex timmar; tröskeln är redan nådd, så provet ger samma svar oavsett
   # vad klockan är när det körs.
-  $script:VaktTomSekunder = 6 * 3600
-  Steg 'sex dagtimmar helt tomt — ska larma'     'inloggad' 0 'blind' 1
-  Steg 'sjunde timmen — får INTE larma om'       'inloggad' 0 'blind' 0
+  (Vakt-For $VST).tomSekunder = 6 * 3600
+  Steg 'sex dagtimmar helt tomt — ska larma'       $VST 'inloggad' 0 'blind' 1
+  (Vakt-For $VST).tomSekunder = 6 * 3600
+  Steg 'sjunde timmen — får INTE larma om'         $VST 'inloggad' 0 'blind' 0
+  Steg 'ett inlägg igen — ska säga läser igen'     $VST 'inloggad' 2 'ok'    1
 
   # Ett okänt sidläge får ALDRIG utlösa ett larm. Facebook byter markup ofta,
   # och en vakthund som skriker på okänt läge blir avstängd inom en vecka.
-  $script:VaktLage = 'ok'
-  $script:VaktTomSekunder = 0
-  Steg 'okänt sidläge, tomt flöde — ska tiga'    'okand'    0 'ok'    0
+  Steg 'okänt sidläge, tomt flöde — ska tiga'      $VST 'okand'    0 'ok'    0
 
-  Logga 'PROV' ('Vakthunden: ' + (10 - $script:ProvFel) + '/10') `
+  # ---- Ansluten grupp som inte går att läsa ----------------------------
+  #
+  # Ägaren är inte medlem i Stockholmsgruppen. En privat grupp ger då noll
+  # inlägg för alltid, medan sessionen är inloggad och varje led rapporterar
+  # framgång. Det ser exakt ut som en lugn kväll i Stockholm.
+  Logga 'PROV' '  — en ansluten grupp som aldrig ger något —' Cyan
+  Steg 'ny grupp, första svepet tomt — ska tiga än' $STH 'inloggad' 0 'ok' 0 'ejmedlem'
+  (Vakt-For $STH).tomSekunder = $script:VAKT_NY_SEKUNDER
+  Steg 'fem minuter utan ett enda inlägg — säg ifrån' $STH 'inloggad' 0 'blind' 1 'ejmedlem'
+  (Vakt-For $STH).tomSekunder = $script:VAKT_NY_SEKUNDER * 10
+  Steg 'en timme senare — får INTE säga om det'    $STH 'inloggad' 0 'blind' 0 'ejmedlem'
+  (Vakt-For $STH).tomSekunder = $script:VAKT_NY_SEKUNDER * 100
+  Steg 'ett dygn senare — fortfarande tyst'        $STH 'inloggad' 0 'blind' 0 'ejmedlem'
+
+  # Den andra gruppen får inte påverkas av att den första är blind, och
+  # tvärtom. Det var precis felet i den gamla globala mätaren: $VaktTomSekunder
+  # nollställdes så fort NÅGON grupp gav inlägg, så en tyst Stockholmsflik
+  # doldes helt av en aktiv Västeråsflik. Raden nedan mäter att det inte kan
+  # hända igen — Stockholm står som blind i samma stund.
+  Steg 'Västerås läser som vanligt trots det'      $VST 'inloggad' 3 'ok'    0
+  Provfall2 'Stockholm är fortfarande blind samtidigt' {
+    return Kravs ((Vakt-Lage $STH) -eq 'blind') 'Stockholm räknades som ok'
+  }
+
+  # Och när ägaren väl gått med ska gruppen säga till EN gång att den läser.
+  Steg 'ägaren går med — första inlägget kommer'   $STH 'inloggad' 1 'ok'    0 'medlem'
+  Steg 'nästa svep — inget mer att säga'           $STH 'inloggad' 2 'ok'    0 'medlem'
+
+  $gick = $script:ProvAntal - $script:ProvFel
+  Logga 'PROV' ('Vakthunden: ' + $gick + '/' + $script:ProvAntal) `
     $(if ($script:ProvFel -eq 0) { 'Green' } else { 'Red' })
   if ($script:ProvFel -gt 0) { exit 1 }
-  Logga 'PROV' 'Alla fall gröna. Larmet går en gång per övergång, aldrig i repris.' Green
+  Logga 'PROV' 'Alla fall gröna. Larmet går en gång per övergång och grupp, aldrig i repris.' Green
+  exit 0
+}
+
+# =====================================================================
+#  Provet på grupplistan och på att varje grupp bär sin egen ruta
+# =====================================================================
+#
+# Tre frågor, och alla tre har ett rätt svar som är dyrt att ha fel:
+#
+#   1. Läser daemonen samma lista som bryggkoden? De två tolkarna är skrivna
+#      i olika språk mot samma text. Går de isär läser användarskriptet och
+#      daemonen olika grupper, och ingen av dem säger till.
+#   2. Får varje grupp SIN ruta? Det var felet som gjorde en andra grupp
+#      meningslös: varje grupp fick Västmanlands.
+#   3. Kan en Stockholmsvarning hamna på Västeråskartan? Nej är det enda
+#      godtagbara svaret, och det ska mätas, inte påstås.
+
+if ($ProvaGrupper) {
+  Logga 'PROV' 'Grupplistan — en sanning, och en ruta per grupp' Cyan
+  $script:ProvFel = 0
+  $script:ProvAntal = 0
+
+  function Provfall {
+    param([string]$Namn, [scriptblock]$Kod)
+    $script:ProvAntal++
+    $svar = $null
+    try { $svar = & $Kod } catch { $svar = 'kastade: ' + $_.Exception.Message }
+    # -is [bool] med flit: bara ett riktigt booleskt $true räknas som grönt.
+    # Ett prov som av misstag lämnar tillbaka en sträng ska falla, inte passera.
+    $ok = ($svar -is [bool] -and $svar)
+    Logga 'PROV' ('  {0,-64} {1}' -f $Namn, $(if ($ok) { 'OK' } else { 'FEL — ' + $svar })) `
+      $(if ($ok) { 'Green' } else { 'Red' })
+    if (-not $ok) { $script:ProvFel++ }
+  }
+
+  $VMR = @(15.10, 59.30, 17.30, 60.30)
+  $STR = @(17.20, 58.80, 19.30, 60.20)
+  $gVast = Fejkgrupp '317968668373072' 'Västerås' $VMR 'Västerås' 'Västmanland'
+  $gSthlm = Fejkgrupp '563061233834062' 'Stockholm' $STR 'Stockholm' 'Stockholms län'
+
+  # ---- 1. Den riktiga filen -------------------------------------------
+  Provfall 'bryggfilens egen lista går att läsa och har minst en grupp' {
+    if ($script:AllaGrupper.Count -lt 1) { return 'noll grupper' }
+    return $true
+  }
+  Provfall 'Västeråsgruppen står kvar med oförändrad ruta' {
+    $g = $script:AllaGrupper | Where-Object { $_.id -eq '317968668373072' } | Select-Object -First 1
+    if (-not $g) { return 'gruppen saknas i listan' }
+    $r = (@($g.ruta) -join ',')
+    return ($r -eq '15.1,59.3,17.3,60.3') -or ('rutan är ' + $r)
+  }
+  Provfall 'varje grupp i filen har en giltig ruta och ett eget id' {
+    $sedda = @()
+    foreach ($g in $script:AllaGrupper) {
+      if (-not (Giltig-Ruta $g.ruta)) { return $g.id + ' har ingen giltig ruta' }
+      if ($sedda -contains $g.id) { return $g.id + ' står två gånger' }
+      $sedda += $g.id
+    }
+    return $true
+  }
+  Provfall 'utkommenterade grupper räknas INTE som anslutna' {
+    # Stockholmsraderna ligger färdigskrivna men bortkommenterade i filen.
+    # Läser tolkaren dem öppnar daemonen flikar mot grupper ägaren inte gått
+    # med i, och vakthunden larmar om något som aldrig var påslaget.
+    foreach ($g in $script:AllaGrupper) {
+      if ($g.id -eq '563061233834062' -or $g.id -eq '280649102036931') {
+        return 'en utkommenterad grupp (' + $g.id + ') lästes som ansluten'
+      }
+    }
+    return $true
+  }
+
+  # ---- 2. Reglerna, mot samma text bryggan skulle läsa -----------------
+  Provfall 'två grupper i listan ger två grupper' {
+    $k = "groupIds: [ { id: '111', namn: 'A', ort: 'Ao', omrade: 'Al', ruta: [15.1, 59.3, 17.3, 60.3] }, " +
+         "{ id: '222', namn: 'B', ort: 'Bo', omrade: 'Bl', ruta: [17.2, 58.8, 19.3, 60.2] } ],"
+    $g = @(Plocka-Grupper -Kalla $k)
+    if ($g.Count -ne 2) { return 'fick ' + $g.Count }
+    if ($g[0].id -ne '111' -or $g[1].id -ne '222') { return 'fel id' }
+    return Kravs ((@($g[0].ruta) -join ',') -ne (@($g[1].ruta) -join ',')) 'båda fick samma ruta'
+  }
+  Provfall 'appens form med dubbla citattecken läses likadant' {
+    # "Kopiera inställning till bryggan" skriver med JSON.stringify.
+    $k = 'groupIds: [ { id: "111", namn: "Polisen \"Norr\"", ort: "Ao", omrade: "Al", ' +
+         'ruta: [15.10, 59.30, 17.30, 60.30] } ],'
+    $g = @(Plocka-Grupper -Kalla $k)
+    if ($g.Count -ne 1) { return 'fick ' + $g.Count }
+    return Kravs ($g[0].namn -eq 'Polisen "Norr"') ('namnet blev ' + $g[0].namn)
+  }
+  Provfall 'exakt det appen lägger i urklipp går igenom hela vägen' {
+    # Ordagrant ur "Kopiera inställning till bryggan" i appen, med svenska
+    # tecken och dubbla citattecken. Rundturen app -> fil -> daemon är den
+    # skarv som brukar gå sönder tyst: appen ser rätt ut, bryggan startar
+    # inte, och ingen av dem säger varför.
+    $k = @'
+groupIds: [
+      { id: "317968668373072", namn: "Här Står Polisen - Västerås", ort: "Västerås", omrade: "Västmanland", ruta: [15.10, 59.30, 17.30, 60.30] },
+      { id: "563061233834062", namn: "Poliskontroller Stockholm", ort: "Stockholm", omrade: "Stockholms län", ruta: [17.20, 58.80, 19.30, 60.20], notis: false },
+    ],
+'@
+    $g = @(Plocka-Grupper -Kalla $k)
+    if ($g.Count -ne 2) { return 'fick ' + $g.Count + ' grupper' }
+    if ($g[0].namn -ne 'Här Står Polisen - Västerås') { return 'namnet blev "' + $g[0].namn + '"' }
+    if ($g[1].omrade -ne 'Stockholms län') { return 'området blev "' + $g[1].omrade + '"' }
+    if (($g[1].orter -join '/') -ne 'stockholm/stockholms län') {
+      return 'orterna blev ' + ($g[1].orter -join '/')
+    }
+    if ((@($g[1].ruta) -join ',') -ne '17.2,58.8,19.3,60.2') {
+      return 'rutan blev ' + (@($g[1].ruta) -join ',')
+    }
+    if (-not $g[0].notis) { return 'Västerås tystades av en saknad notis-nyckel' }
+    return Kravs (-not $g[1].notis) 'Stockholm fick notis trots notis: false'
+  }
+
+  Provfall 'en grupp utan ruta STOPPAR starten när det finns fler än en' {
+    $k = "groupIds: [ { id: '111', ruta: [15.1, 59.3, 17.3, 60.3] }, { id: '222', namn: 'Utan' } ],"
+    try { Plocka-Grupper -Kalla $k | Out-Null } catch { return $true }
+    return 'listan godtogs trots att en grupp saknar område'
+  }
+  Provfall 'en vänd ruta räknas inte som en ruta' {
+    $k = "groupIds: [ { id: '111', ruta: [17.3, 59.3, 15.1, 60.3] } ],"
+    try { Plocka-Grupper -Kalla $k | Out-Null } catch { return $true }
+    return 'en vänd ruta godtogs'
+  }
+  Provfall 'gamla formen — en ensam naken sträng — betyder Västmanland' {
+    $g = @(Plocka-Grupper -Kalla "groupIds: [],`n groupId: '317968668373072',")
+    if ($g.Count -ne 1) { return 'fick ' + $g.Count }
+    return Kravs ((@($g[0].ruta) -join ',') -eq '15.1,59.3,17.3,60.3') ('rutan blev ' + (@($g[0].ruta) -join ','))
+  }
+  Provfall 'samma grupp två gånger blir en' {
+    $k = "groupIds: [ { id: '111', ruta: [15.1, 59.3, 17.3, 60.3] }, " +
+         "{ id: 'https://www.facebook.com/groups/111/', ruta: [17.2, 58.8, 19.3, 60.2] } ],"
+    $g = @(Plocka-Grupper -Kalla $k)
+    return Kravs ($g.Count -eq 1) ('fick ' + $g.Count)
+  }
+  Provfall 'gruppflödet /groups/feed/ går inte att ansluta' {
+    $k = "groupIds: [ { id: 'feed', ruta: [15.1, 59.3, 17.3, 60.3] } ],"
+    try { Plocka-Grupper -Kalla $k | Out-Null } catch { return $true }
+    return 'feed godtogs som grupp'
+  }
+  Provfall 'notis: false läses, och saknad notis betyder true' {
+    $k = "groupIds: [ { id: '111', ruta: [15.1, 59.3, 17.3, 60.3] }, " +
+         "{ id: '222', ruta: [17.2, 58.8, 19.3, 60.2], notis: false } ],"
+    $g = @(Plocka-Grupper -Kalla $k)
+    if ($g.Count -ne 2) { return 'fick ' + $g.Count }
+    if (-not $g[0].notis) { return 'första gruppen tystades av en saknad nyckel' }
+    return Kravs (-not $g[1].notis) 'notis: false lästes inte'
+  }
+
+  # ---- 2b. Det som faktiskt injiceras i sidan --------------------------
+  #
+  # DET HÄR ÄR PROVET PÅ SJÄLVA BUGGEN.
+  #
+  # Fram till 2.4 injicerade daemonen `groupId: '<id>'` — en naken sträng —
+  # och bryggans normaliseraGrupper tog då bakåtkompatibilitetsgrenen:
+  # Västmanlands ruta och orten Västerås, oavsett vilket id som stod där.
+  # Ingenting kraschade. Stockholmsgruppens platser slogs bara upp mot
+  # Västmanland, svarade tomt, och loggades som "okänd-plats".
+  Logga 'PROV' '  — läsarkoden som injiceras i fliken —' Cyan
+
+  Provfall 'läsarkoden bär gruppens EGEN ruta, inte bara ett id' {
+    $kod = Bygg-Lasarkod -Grupp $gSthlm
+    if ($kod -notmatch 'groupIds:\s*\[') { return 'CONFIG saknar en groupIds-lista' }
+    if ($kod -match "groupId:\s*'563061233834062'") {
+      return 'CONFIG bär ett naket groupId — bryggan ger då gruppen Västmanlands ruta'
+    }
+    foreach ($tal in @('17.2', '58.8', '19.3', '60.2')) {
+      if ($kod -notmatch [regex]::Escape($tal)) { return 'rutan saknar ' + $tal }
+    }
+    return $true
+  }
+  Provfall 'läsarkoden för Stockholm innehåller inte Västmanlands ruta' {
+    $kod = Bygg-Lasarkod -Grupp $gSthlm
+    # 15.1,59.3,17.3,60.3 får inte finnas någonstans i den injicerade
+    # CONFIG-raden. Gör den det har gruppen fått fel geografi med sig in.
+    $m = [regex]::Match($kod, 'groupIds:\s*(\[.*?\]),')
+    if (-not $m.Success) { return 'hittade ingen groupIds-rad' }
+    return Kravs ($m.Groups[1].Value -notmatch '15\.1') ('Västmanlands ruta följde med: ' + $m.Groups[1].Value)
+  }
+  Provfall 'två grupper får två olika läsarkoder och två olika versioner' {
+    $a = Bygg-Lasarkod -Grupp $gVast
+    $b = Bygg-Lasarkod -Grupp $gSthlm
+    if ($a -eq $b) { return 'samma kod för båda grupperna' }
+    $va = $script:LasarVersion[$gVast.id]
+    $vb = $script:LasarVersion[$gSthlm.id]
+    if (-not $va -or -not $vb) { return 'versionen saknas för en av grupperna' }
+    # Versionen styr om koden injiceras om. Delade grupperna version skulle
+    # den ena fliken tro att den andra gruppens läsare var dess egen.
+    return ($va -ne $vb) -or ('båda fick version ' + $va)
+  }
+
+  # ---- 3. EN STOCKHOLMSVARNING FÅR ALDRIG HAMNA PÅ VÄSTERÅSKARTAN ------
+  Logga 'PROV' '  — geografin: varje grupp bär sin egen ruta —' Cyan
+
+  Provfall 'Sergels torg räknas INTE som Västmanland' {
+    return Kravs (-not (Inom-Omradet -Lat 59.3326 -Lon 18.0649 -Grupp $gVast)) `
+      'Sergels torg godtogs i Västeråsgruppen'
+  }
+  Provfall 'Erikslund räknas INTE som Stockholm' {
+    return Kravs (-not (Inom-Omradet -Lat 59.6094 -Lon 16.4879 -Grupp $gSthlm)) `
+      'Erikslund godtogs i Stockholmsgruppen'
+  }
+  Provfall 'var och en hittar hem i sin egen ruta' {
+    if (-not (Inom-Omradet -Lat 59.6094 -Lon 16.4879 -Grupp $gVast)) { return 'Erikslund hittade inte hem' }
+    if (-not (Inom-Omradet -Lat 59.3326 -Lon 18.0649 -Grupp $gSthlm)) { return 'Sergels torg hittade inte hem' }
+    return $true
+  }
+  Provfall 'ortsuffixet kommer ur gruppen, inte ur en global' {
+    if (($gVast.orter -join '/') -ne 'västerås/västmanland') { return 'Västerås: ' + ($gVast.orter -join '/') }
+    if (($gSthlm.orter -join '/') -ne 'stockholm/stockholms län') { return 'Stockholm: ' + ($gSthlm.orter -join '/') }
+    return $true
+  }
+  Provfall 'geo-cachens nyckel bär gruppen — samma gata, två städer' {
+    # Cachefilen innehöll redan "vasagatan" -> Västerås. Utan gruppen i
+    # nyckeln hade Stockholms Vasagatan fått Västeråskoordinaten.
+    $spar = @{}
+    foreach ($n in @($script:Geo.Keys)) { $spar[$n] = $script:Geo[$n] }
+    try {
+      $script:Geo = @{}
+      $script:Geo[($gVast.id + '|vasagatan')] = @{ lat = 59.6103; lon = 16.5448; label = 'Vasagatan' }
+      $traffVast = Geokoda -Plats 'Vasagatan' -Grupp $gVast
+      if (-not $traffVast) { return 'Västerås egen cacherad hittades inte' }
+      if ($script:Geo.ContainsKey($gSthlm.id + '|vasagatan')) { return 'Stockholm delade Västerås rad' }
+      # Stockholmsgruppen har ingen rad — och den skulle ALDRIG få
+      # Västeråskoordinaten ur cachen. Det bevisas av att nyckeln saknas.
+      return $true
+    } finally {
+      $script:Geo = @{}
+      foreach ($n in @($spar.Keys)) { $script:Geo[$n] = $spar[$n] }
+    }
+  }
+
+  # ---- 3b. Svepets utkorg lämnas tillbaka, inte skickad ----------------
+  #
+  # Behandla-Svep skickade förut själv. Nu returnerar den utkorgen så att
+  # huvudloopen kan slå ihop alla gruppers rader till EN omgång — det är
+  # omgången fbmejl_ta_emot buntar notisen på.
+  #
+  # Det gör returtypen till något som måste stämma. PowerShell samlar ALLT en
+  # funktion skriver till pipelinen som dess returvärde: en enda rad som
+  # glömmer [void] eller Out-Null gör returen till en ARRAY, och då blir
+  # $skord.utkorg tyst tom och inga rapporter skickas någonsin. Samma
+  # felmekanism som redan bet en gång i den här filen (se Anslut och
+  # VoidTaskResult).
+  Logga 'PROV' '  — svepets utkorg —' Cyan
+
+  Provfall 'Behandla-Svep lämnar tillbaka EN hashtabell, inte en förorenad pipeline' {
+    $sparFil = $script:HanteradFil
+    $sparHant = $script:Hanterad
+    try {
+      # Hanteringslistan pekas om till en temporär fil: provet får aldrig
+      # bocka av ett riktigt inlägg i den skarpa listan.
+      $script:HanteradFil = Join-Path $env:TEMP ('pv-prov-hanterade-' + [guid]::NewGuid().ToString('N') + '.json')
+      $script:Hanterad = @{}
+
+      $svep = [pscustomobject]@{
+        grupp = $gVast.id
+        sokvag = '/groups/' + $gVast.id + '/'
+        gruppfel = $null
+        omrade = [pscustomobject]@{ id = $gVast.id; namn = $gVast.namn; ruta = $gVast.ruta; orter = $gVast.orter }
+        dold = $false
+        sidlage = 'inloggad'
+        medlemskap = 'medlem'
+        nu = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        kalibrerat = $true
+        poster = @(
+          # En vägrad rad bär varken text, id eller tolkning — precis som
+          # sidan lämnar den. Den ska räknas, bockas av, och INTE hamna i
+          # utkorgen.
+          [pscustomobject]@{ nyckel = 'g:prov|id:1'; externalId = 'fb:prov1'; plats = 0; vagrad = $true }
+        )
+      }
+
+      $skord = Behandla-Svep -Grupp $gVast -Svepresultat $svep
+
+      if ($skord -is [array]) {
+        return 'returen blev en array med ' + @($skord).Count +
+          ' element — någon rad i Behandla-Svep skriver till pipelinen'
+      }
+      if (-not ($skord -is [hashtable])) { return 'returen är en ' + $skord.GetType().Name }
+      foreach ($n in @('utkorg', 'nycklar', 'poster')) {
+        if (-not $skord.ContainsKey($n)) { return 'returen saknar ' + $n }
+      }
+      if (@($skord.utkorg).Count -ne 0) {
+        return 'en vägrad rad hamnade i utkorgen'
+      }
+      return Kravs ($skord.poster -eq 1) ('poster=' + $skord.poster)
+    } finally {
+      try { if (Test-Path $script:HanteradFil) { Remove-Item $script:HanteradFil -Force } } catch { }
+      $script:HanteradFil = $sparFil
+      $script:Hanterad = $sparHant
+    }
+  }
+
+  Provfall 'fel grupp i svaret ger en tom utkorg, inte ett undantag' {
+    # Fliken har navigerat bort. Returen måste ändå ha rätt form, annars
+    # kraschar huvudloopen på nästa rad i stället för att bara hoppa över.
+    $svep = [pscustomobject]@{
+      grupp = '999999'; sokvag = '/groups/999999/'; gruppfel = $null
+      omrade = $null; dold = $false; sidlage = 'inloggad'; medlemskap = 'okand'
+      nu = 0; kalibrerat = $true; poster = @()
+    }
+    $skord = Behandla-Svep -Grupp $gVast -Svepresultat $svep
+    if ($skord -is [array]) { return 'returen blev en array' }
+    return Kravs (@($skord.utkorg).Count -eq 0) 'utkorgen var inte tom'
+  }
+
+  # ---- 4. Produktregeln gäller varje grupp lika ------------------------
+  Logga 'PROV' '  — produktregeln, samma i varje grupp —' Cyan
+
+  $nykterFall = @(
+    'Nykterhetskontroll vid Sergels torg',
+    'Polisen har narkotikakontroll pa Sveavagen',
+    'De blaser alla vid Erikslund',
+    'Drogkontroll pa Stora gatan',
+    'Alkoholtest vid Slussen'
+  )
+  $polisFall = @(
+    'Polis star vid Erikslund',
+    'Fartkontroll pa Sveavagen'
+  )
+  foreach ($g in @($gVast, $gSthlm)) {
+    Provfall ('nykterhets- och drogkontroller vägras i "' + $g.namn + '"') {
+      foreach ($t in $nykterFall) {
+        if (-not (Test-Nykterhetskontroll $t)) { return 'släpptes igenom: ' + $t }
+      }
+      return $true
+    }.GetNewClosure()
+    Provfall ('vanliga poliskontroller släpps igenom i "' + $g.namn + '"') {
+      foreach ($t in $polisFall) {
+        if (Test-Nykterhetskontroll $t) { return 'vägrades felaktigt: ' + $t }
+      }
+      return $true
+    }.GetNewClosure()
+  }
+
+  $gick = $script:ProvAntal - $script:ProvFel
+  Logga 'PROV' ('Grupplistan: ' + $gick + '/' + $script:ProvAntal) `
+    $(if ($script:ProvFel -eq 0) { 'Green' } else { 'Red' })
+  if ($script:ProvFel -gt 0) { exit 1 }
+  Logga 'PROV' 'Alla fall gröna. En lista, en ruta per grupp, ingen varning i fel stad.' Green
   exit 0
 }
 
@@ -2620,10 +3870,17 @@ elseif (-not $script:ProbOk -and $Skarpt) {
 # kväll ska veckans enda riktiga bevis inte hoppas över.
 Kolla-Livstecken
 
-$script:Kontext = $null
+# EN KONTEXT PER GRUPP, EN LISTA I STÄLLET FÖR EN VARIABEL.
+#
+# Varje kontext är en egen flik, en egen isolerad värld och därmed en egen
+# kalibrering och en egen först-sedd-mekanik. Det är precis vad bryggkoden
+# kräver, och det är skälet att en flik per grupp valdes framför en flik som
+# navigerar: en navigering river världen och gör varje svep till ett
+# kalibreringssvep, alltså evig tystnad som ser ut som en lugn dag.
+$script:Kontexter = @{}          # gruppid -> kontext
+$script:KlaganPerGrupp = @{}     # gruppid -> när vi senast klagade
 $slutTid = $null
 if ($MinuterAttKora -gt 0) { $slutTid = (Get-Date).AddMinutes($MinuterAttKora) }
-$senasteKlagan = [DateTime]::MinValue
 
 
 
@@ -2656,76 +3913,139 @@ function Backa-Av {
   return [math]::Min($ms, 60000)
 }
 
+<#
+  ETT TICK = ETT SVEP PER GRUPP, OCH SEDAN EN OMGÅNG.
+
+  Ordningen är inte godtycklig. Alla gruppers svep görs först, deras utkorgar
+  slås ihop, och sedan går EN omgång till servern. fbmejl_ta_emot buntar
+  notisen per omgång; skickade varje grupp för sig blev två grupper i samma
+  tick till två omgångar, alltså en notis plus en som tiominutersspärren
+  sväljer utan att någon får veta.
+
+  Takten mättes innan den här ändringen skrevs: ett tomt svep ligger långt
+  under en sekund (loggens tomma svep står exakt 20 s isär), och ett svep som
+  både geokodade och skickade tog 1 s. Två flikar ryms alltså i 20 s med god
+  marginal utan att intervallet ändras. Det som kan tänja ett tick är
+  Nominatims ett-anrop-per-sekund, som är GEMENSAM för grupperna — en skur av
+  nya platser i två grupper samtidigt kostar en sekund per plats. Det är känt
+  och accepterat: nästa tick kommer ändå, och ingen rad tappas.
+#>
 try {
   while ($true) {
     if ($slutTid -and (Get-Date) -ge $slutTid) { break }
     if ($Svep -gt 0 -and $script:Forsok -ge $Svep) { break }
 
-    # ---- Anslutning ----------------------------------------------------
-    if (-not $script:Kontext) {
-      $a = Anslut -Port $Felsokningsport -GruppId $GruppId
-      if ($a.ContainsKey('fel')) {
-        # Klaga en gång i minuten, inte var tjugonde sekund. Bryggfönstret
-        # kan vara stängt en stund utan att det är ett haveri.
-        if (((Get-Date) - $senasteKlagan).TotalSeconds -gt 55) {
-          $senasteKlagan = Get-Date
-          Logga 'VÄNTAR' $a.fel DarkYellow
-        }
-
-        # Och gör något åt det, i stället för att bara klaga. Att öppna
-        # bryggfönstret igen efter en omstart eller ett stängt Chrome var ett
-        # av de återkommande handgreppen ägaren faktiskt klagade på. Den
-        # startar bara när PORTEN är död — står fliken bara på fel adress
-        # rörs ingenting, och den försöker som mest var tredje minut.
-        if (-not (Porten-Svarar -Port $Felsokningsport)) {
-          Starta-Bryggfonstret -Port $Felsokningsport | Out-Null
-        }
-
-        Start-Sleep -Milliseconds ([math]::Min($SvepIntervallMs, 5000))
-        continue
-      }
-      $script:Kontext = $a
-      Logga 'ANSLUTEN' ('flik ' + $script:Kontext.flikId + '  ' + $script:Kontext.url) DarkCyan
-    }
-
-    # ---- Svep ------------------------------------------------------------
+    $tickStart = Get-Date
     $script:Forsok++
     $sidfel = $false
-    try {
-      $resultat = Gor-Svep -Kontext $script:Kontext
-      Behandla-Svep -Svepresultat $resultat
-      $fel_i_rad = 0
+    $nagotSvep = $false
+    $utkorgNotis = @();   $nycklarNotis = @();   $grupperNotis = @()
+    $utkorgTyst = @();    $nycklarTyst = @()
 
-      # ---- Efterarbetet, i den här ordningen ---------------------------
-      #
-      # Alla tre är byggda att aldrig kasta. Huvudloopens catch tolkar varje
-      # undantag som "anslutningen till Chrome bröts" och kopplar ner — en
-      # nätstörning mot Supabase får inte kunna starta om CDP-anslutningen,
-      # och absolut inte räknas mot försöken på ett oskyldigt inlägg.
-      Kolla-Vakthund -Svepresultat $resultat -Inlagg (@($resultat.poster).Count)
+    foreach ($grupp in $script:Grupper) {
+      $gid = [string]$grupp.id
 
-      # Var sjätte svep, alltså ungefär varannan minut. Dödmansgreppet på
+      # ---- Anslutning, en per grupp -------------------------------------
+      if (-not $script:Kontexter.ContainsKey($gid) -or -not $script:Kontexter[$gid]) {
+        $a = Anslut -Port $Felsokningsport -Grupp $grupp
+        if ($a.ContainsKey('fel')) {
+          # Klaga en gång i minuten PER GRUPP, inte var tjugonde sekund.
+          # Bryggfönstret kan vara stängt en stund utan att det är ett haveri,
+          # och en grupp som saknar flik ska inte dränka den som fungerar.
+          $senast = [DateTime]::MinValue
+          if ($script:KlaganPerGrupp.ContainsKey($gid)) { $senast = $script:KlaganPerGrupp[$gid] }
+          if (((Get-Date) - $senast).TotalSeconds -gt 55) {
+            $script:KlaganPerGrupp[$gid] = Get-Date
+            Logga 'VÄNTAR' ('[' + $grupp.namn + '] ' + $a.fel) DarkYellow
+          }
+
+          # Och gör något åt det, i stället för att bara klaga. Den startar
+          # bara när PORTEN är död; saknas bara EN flik öppnar Anslut den
+          # själv med /json/new, utan att röra de andra grupperna.
+          if (-not (Porten-Svarar -Port $Felsokningsport)) {
+            Starta-Bryggfonstret -Port $Felsokningsport | Out-Null
+          }
+          continue
+        }
+        $script:Kontexter[$gid] = $a
+        Logga 'ANSLUTEN' ('[' + $grupp.namn + '] flik ' + $a.flikId + '  ' + $a.url) DarkCyan
+      }
+
+      # ---- Svep för den här gruppen -------------------------------------
+      try {
+        $resultat = Gor-Svep -Kontext $script:Kontexter[$gid]
+        $skord = Behandla-Svep -Grupp $grupp -Svepresultat $resultat
+        $nagotSvep = $true
+
+        if ($skord -and @($skord.utkorg).Count -gt 0) {
+          if ($grupp.notis) {
+            $utkorgNotis += @($skord.utkorg)
+            $nycklarNotis += @($skord.nycklar)
+            if ($grupperNotis -notcontains $grupp.namn) { $grupperNotis += $grupp.namn }
+          } else {
+            $utkorgTyst += @($skord.utkorg)
+            $nycklarTyst += @($skord.nycklar)
+          }
+        }
+
+        # Sessionen är delad; gruppens tomhet är gruppens egen.
+        $sidlage = 'okand'
+        if ((@($resultat.PSObject.Properties.Name) -contains 'sidlage') -and $resultat.sidlage) {
+          $sidlage = [string]$resultat.sidlage
+        }
+        Kolla-Session -Sidlage $sidlage
+        Kolla-Vakthund -Grupp $grupp -Svepresultat $resultat -Inlagg (@($resultat.poster).Count)
+      } catch {
+        $fel_i_rad++
+        $meddelande = $_.Exception.Message
+        if ($meddelande -like 'JS-fel i sidan*') {
+          $sidfel = $true
+          Logga 'SIDFEL' ('[' + $grupp.namn + '] ' + ($meddelande -replace '\s+', ' ')) Red
+          if ($fel_i_rad -eq 3) {
+            Logga 'SIDFEL' ('samma fel tre svep i rad. Läsarskalet passar inte bryggkoden i ' +
+              (Split-Path -Leaf $Bryggfil) + ' — det är en kodrättelse, inte något som går över.') Red
+          }
+        } else {
+          # Bara DEN HÄR gruppens anslutning kopplas ner. De andra flikarna
+          # rörs inte — en hängd renderare i en grupp får inte tysta resten.
+          Logga 'TAPPAD' ('[' + $grupp.namn + '] anslutningen bröts: ' + $meddelande +
+            ' — återansluter') DarkYellow
+          Koppla-Ner $script:Kontexter[$gid]
+          $script:Kontexter[$gid] = $null
+        }
+      }
+    }
+
+    if ($nagotSvep) { $fel_i_rad = 0 }
+
+    # ---- Utkorgarna: en omgång för dem som får pusha, en för de tysta ----
+    if ($Skarpt) {
+      Tom-Utkorg -Rader $utkorgNotis -Nycklar $nycklarNotis -Grupper ($grupperNotis -join ' + ')
+      Tom-Utkorg -Rader $utkorgTyst -Nycklar $nycklarTyst -UtanNotis
+    }
+
+    # ---- Efterarbetet ---------------------------------------------------
+    #
+    # Alla tre är byggda att aldrig kasta. En nätstörning mot Supabase får
+    # inte kunna starta om CDP-anslutningen, och absolut inte räknas mot
+    # försöken på ett oskyldigt inlägg.
+    if ($nagotSvep) {
+      # Var sjätte tick, alltså ungefär varannan minut. Dödmansgreppet på
       # servern larmar efter femton minuter, så tre missade pulser i rad
       # ryms utan falsklarm.
       if ($script:Forsok % 6 -eq 0) { Skicka-Puls -Svepnummer $script:Summa.svep }
-
       Kolla-Livstecken
       Skriv-Banderoll
-    } catch {
-      $fel_i_rad++
-      $meddelande = $_.Exception.Message
-      if ($meddelande -like 'JS-fel i sidan*') {
-        $sidfel = $true
-        Logga 'SIDFEL' ($meddelande -replace '\s+', ' ') Red
-        if ($fel_i_rad -eq 3) {
-          Logga 'SIDFEL' ('samma fel tre svep i rad. Läsarskalet passar inte bryggkoden i ' +
-            (Split-Path -Leaf $Bryggfil) + ' — det är en kodrättelse, inte något som går över.') Red
-        }
-      } else {
-        Logga 'TAPPAD' ('anslutningen bröts: ' + $meddelande + ' — återansluter') DarkYellow
-        Koppla-Ner $script:Kontext
-        $script:Kontext = $null
-      }
+    }
+
+    # Ticket klockas varje gång, men skrivs bara ut när det är värt en rad.
+    # Mätvärdet är det som avgör om takten håller med fler grupper, och det
+    # ska gå att läsa ur en riktig logg — inte bara ur ett testprotokoll.
+    $tickMs = [int]((Get-Date) - $tickStart).TotalMilliseconds
+    if ($script:Forsok -le 3 -or $script:Forsok % 30 -eq 0 -or $tickMs -gt ($SvepIntervallMs / 2)) {
+      Logga 'TAKT' ('tick ' + $script:Forsok + ': ' + $script:Grupper.Count + ' grupp(er) svepta på ' +
+        $tickMs + ' ms (intervall ' + $SvepIntervallMs + ' ms)') `
+        $(if ($tickMs -gt $SvepIntervallMs) { 'Yellow' } else { 'DarkGray' })
     }
 
     if ($script:Summa.svep -gt 0 -and $script:Summa.svep % 10 -eq 0) { Skriv-Summa }
@@ -2735,13 +4055,20 @@ try {
       $vila = Backa-Av -IRad $fel_i_rad
       if ($sidfel) { $vila = [math]::Max($vila, $SvepIntervallMs) }
       Start-Sleep -Milliseconds $vila
+    } elseif (-not $nagotSvep) {
+      # Ingen grupp gick att svepa — vänta kort och prova igen.
+      Start-Sleep -Milliseconds ([math]::Min($SvepIntervallMs, 5000))
     } else {
-      Start-Sleep -Milliseconds $SvepIntervallMs
+      # Intervallet räknas från tickets BÖRJAN, inte från dess slut. Annars
+      # glider takten isär så fort svepen kostar något, och två grupper kostar
+      # mer än en.
+      $kvar = $SvepIntervallMs - $tickMs
+      if ($kvar -gt 0) { Start-Sleep -Milliseconds $kvar }
     }
   }
 } finally {
   Skriv-Summa
-  Koppla-Ner $script:Kontext
+  foreach ($k in @($script:Kontexter.Keys)) { Koppla-Ner $script:Kontexter[$k] }
   if ($script:Mutex) {
     # Windows släpper handtaget även om processen dödas, men en ren
     # frisläppning gör att nästa start går igenom direkt i stället för att

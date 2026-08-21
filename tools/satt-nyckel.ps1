@@ -74,6 +74,19 @@ param(
   # Prova nyckeln som redan ligger i nycklar.xml. Frågar inte efter någon ny.
   [switch]$BaraProva,
 
+  # Ta nyckeln ur urklipp i stället för att fråga efter den.
+  #
+  # VARFÖR DEN FINNS: inklistringen var momentet som gick sönder, om och om
+  # igen. Urklipp rymmer en sträng i taget, och att kopiera KOMMANDOT som
+  # startar skriptet skriver över nyckeln man nyss kopierade. Klistrar man
+  # sedan in vid fel prompt hamnar hela hemligheten i klartext i fönstret och
+  # i kommandohistoriken — precis det man försökte undvika.
+  #
+  # Med den här flaggan finns ingen inklistring alls: nyckeln kopieras i
+  # dashboarden, skriptet startas UTAN att röra urklipp (Satt-nyckel.cmd på
+  # skrivbordet), och skriptet hämtar den själv. Den skrivs aldrig ut.
+  [switch]$FranUrklipp,
+
   # Var den krypterade filen hamnar. Bara för test.
   [string]$Nyckelfil
 )
@@ -255,6 +268,71 @@ if ($BaraProva) {
   Skriv 'Visar dashboarden TVÅ service role-nycklar — en sb_secret_... och en eyJ...' Yellow
   Skriv '— klistra in BÅDA, en i taget. Skriptet talar om vilken som duger var.' Yellow
   Skriv ''
+  # Den redan sparade nyckeln räknas med som kandidat.
+  #
+  # De två utgåvorna öppnar VAR SIN dörr på det här projektet: eyJ-nyckeln
+  # godtas av PostgREST (dörr A) och sb_secret av edge-funktionen (dörr B).
+  # Valvskrivningen behöver båda i SAMMA körning — den legitimerar sig med
+  # A-vinnaren och lagrar B-vinnarens värde.
+  #
+  # Utan den här raden blev det en omöjlig uppgift för användaren: urklipp
+  # rymmer en sträng i taget, och skriptet stod och väntade på nyckel 2 medan
+  # den andra strängen låg kvar i en webbläsare. Nu bär körningen med sig det
+  # som redan är sparat, och det räcker att klistra in DEN SOM SAKNAS.
+  if (Test-Path $Nyckelfil) {
+    try {
+      $sparad = Import-Clixml -Path $Nyckelfil
+      if ($sparad.service_role) {
+        $kandidater += ,@{ namn = 'sparad'; hemlig = $sparad.service_role }
+        Skriv 'Den redan sparade nyckeln provas också — du behöver bara klistra in den som saknas.' Green
+        Skriv ''
+      }
+    } catch {
+      Skriv ('Kunde inte läsa ' + $Nyckelfil + ' — den provas inte. ' + $_.Exception.Message) DarkYellow
+      Skriv ''
+    }
+  }
+
+  # Nyckeln ur urklipp — ingen inklistring, ingen prompt.
+  #
+  # Läses in i en SecureString direkt och nollställs sedan ur urklipp, så att
+  # nästa kopiering inte råkar bära med sig en servernyckel. Värdet skrivs
+  # aldrig ut; bara form och längd, precis som för de inskrivna kandidaterna.
+  if ($FranUrklipp) {
+    $urklipp = $null
+    try { $urklipp = Get-Clipboard -Raw -ErrorAction Stop } catch { }
+    $urklipp = if ($urklipp) { $urklipp.Trim() } else { '' }
+
+    if (-not $urklipp) {
+      Skriv 'Urklipp är tomt. Kopiera nyckeln i Supabase och kör igen.' Red
+      exit 1
+    }
+    # En hel rad kommandotext i urklipp är det vanligaste misstaget här: man
+    # kopierade kommandot som startar skriptet i stället för nyckeln. Säg det
+    # rakt ut i stället för att prova en uppenbar icke-nyckel mot servern.
+    if ($urklipp -match '\s' -or $urklipp.Length -lt 20) {
+      Skriv ('Det i urklipp ser inte ut som en nyckel (' + $urklipp.Length +
+             ' tecken' + $(if ($urklipp -match '\s') { ', innehåller mellanslag' } else { '' }) + ').') Red
+      Skriv 'Kopierade du kommandot i stället för nyckeln? Kopiera nyckeln i Supabase och kör igen.' Yellow
+      $urklipp = $null
+      exit 1
+    }
+
+    $s = New-Object System.Security.SecureString
+    foreach ($tecken in $urklipp.ToCharArray()) { $s.AppendChar($tecken) }
+    $s.MakeReadOnly()
+    $kandidater += ,@{ namn = 'urklipp'; hemlig = $s }
+
+    Skriv ('Nyckeln hämtad ur urklipp (' + (Form $urklipp) + '..., ' + $urklipp.Length + ' tecken).') Green
+    # Töm urklipp så att en servernyckel inte ligger kvar och väntar på att
+    # klistras in någon annanstans.
+    try { Set-Clipboard -Value ' ' } catch { }
+    $urklipp = $null
+    Skriv 'Urklipp tömt.' DarkGray
+    Skriv ''
+  }
+  else {
+
   Skriv 'Klistra in en nyckel och tryck Enter. Tom rad = klar.' White
   Skriv '(Inmatningen syns inte medan du skriver. Det är meningen.)' DarkGray
   Skriv ''
@@ -264,6 +342,8 @@ if ($BaraProva) {
     if (-not $s -or $s.Length -eq 0) { break }
     $kandidater += ,@{ namn = ('nyckel ' + $i); hemlig = $s }
   }
+
+  }  # slut på else — frågevägen
 
   if ($kandidater.Count -eq 0) {
     Skriv ''
@@ -327,8 +407,23 @@ if ($vinnareA) {
     # Export-Clixml på en SecureString krypterar med DPAPI: låst till det här
     # Windows-kontot på den här maskinen. Filen ligger utanför repot och
     # utanför OneDrive med flit.
-    @{ service_role = $vinnareA.hemlig; satt = (Get-Date).ToString('s') } |
-      Export-Clixml -Path $Nyckelfil -Force
+    # BÅDA nycklarna sparas, och det är inte en dubbellagring av samma sak.
+    #
+    # På ett projekt med de nya API-nycklarna öppnar de var sin dörr:
+    #   service_role  eyJ-nyckeln  -> PostgREST (fbmejl_ta_emot, valvet)
+    #   edge          sb_secret    -> edge-funktionen fbmejl-push
+    #
+    # Daemonen behöver båda. Rapporter skrivs över PostgREST, men driftnotiser
+    # och veckans livstecken ringer fbmejl-push DIREKT — och gjorde det med
+    # PostgREST-nyckeln, vilket gav 401 på en kedja som fungerade. Bevisligen:
+    # "DRIFT-FEL kunde inte skicka Polisvakt: kedjan lever ... (401)" medan
+    # startproben på raden ovanför sa GRÖN databasen.
+    #
+    # Fältet heter 'edge' och inte 'service_role_2' för att namnet ska säga
+    # VART nyckeln går, inte i vilken ordning den hittades.
+    $attSpara = @{ service_role = $vinnareA.hemlig; satt = (Get-Date).ToString('s') }
+    if ($vinnareB) { $attSpara['edge'] = $vinnareB.hemlig }
+    $attSpara | Export-Clixml -Path $Nyckelfil -Force
     Skriv ('  DAEMONEN: sparad i ' + $Nyckelfil + ' (DPAPI, låst till ditt konto på den här maskinen).') Green
   }
 } else {
@@ -378,7 +473,11 @@ if ($vinnareB) {
     # bryta sönder kroppen och ge ett obegripligt 400.
     $kropp = @{ p_namn = 'service_role_key'; p_varde = $kb } | ConvertTo-Json -Compress
 
-    $v = Anropa -Url ($SupabaseUrl + '/rest/v1/rpc/fbmejl_valv_satt') -Nyckel $ka -Kropp $kropp
+    # -MedApikey är inte valfritt mot PostgREST. Supabase-grinden kräver
+    # apikey-huvudet och svarar 401 utan det — ett 401 som ser ut som en
+    # nekad nyckel fast nyckeln är alldeles riktig. Samma flagga används av
+    # Prova-DorrA av exakt samma skäl.
+    $v = Anropa -Url ($SupabaseUrl + '/rest/v1/rpc/fbmejl_valv_satt') -Nyckel $ka -Kropp $kropp -MedApikey
 
     $ka = $null
     $kb = $null
