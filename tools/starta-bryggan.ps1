@@ -39,6 +39,7 @@
 
 param(
   [string]$GruppId = '317968668373072',
+  [int]$Felsokningsport = 9222,
   [switch]$AnvandVanligProfil
 )
 
@@ -55,10 +56,33 @@ if (-not $chrome) {
   exit 1
 }
 
+# Tillägget laddas direkt från mappen. Ingen Tampermonkey, ingen
+# installationssida, inget klick. Se tools\brygg-tillagg\LASMIG.md.
+$tillagg = Join-Path $PSScriptRoot 'brygg-tillagg'
+if (-not (Test-Path (Join-Path $tillagg 'manifest.json'))) {
+  Write-Host "Hittar inte tillagget i $tillagg" -ForegroundColor Red
+  exit 1
+}
+
+# Citattecken runt sokvagen, inte for snygghetens skull.
+#
+# Repot ligger under "Claude code 2GNDTN" — tva mellanslag. Utan citattecken
+# delar Windows argumentet vid dem, och Chrome tolkade bitarna som adresser:
+# den oppnade http://code/ och http://2gndtn/polisvakt/tools/brygg-tillagg
+# som flikar och laddade aldrig tillagget. Felet syntes bara pa att bryggan
+# var tyst, vilket ser likadant ut som allt annat som gar fel har.
 $argument = @(
+  "--load-extension=`"$tillagg`"",
+  "--disable-extensions-except=`"$tillagg`"",
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
+  # Felsokningsporten gor att bryggan gar att kontrollera utifran, i stallet
+  # for att nagon maste oppna konsolen och titta. Den lyssnar bara pa
+  # 127.0.0.1 och bara sa lange fonstret ar oppet.
+  "--remote-debugging-port=$Felsokningsport",
+  '--no-first-run',
+  '--no-default-browser-check',
   '--new-window',
   "https://www.facebook.com/groups/$GruppId/"
 )
@@ -66,21 +90,20 @@ $argument = @(
 if (-not $AnvandVanligProfil) {
   $profil = Join-Path $env:LOCALAPPDATA 'Polisvakt\chrome-brygga'
   if (-not (Test-Path $profil)) { New-Item -ItemType Directory -Force -Path $profil | Out-Null }
-  $argument = @("--user-data-dir=$profil") + $argument
+  $argument = @("--user-data-dir=`"$profil`"") + $argument
   Write-Host "Profil: $profil"
 }
 
+Write-Host "Tillagg: $tillagg"
 Start-Process -FilePath $chrome -ArgumentList $argument
 
 Write-Host ''
 Write-Host 'Bryggfönstret är startat.' -ForegroundColor Green
 Write-Host ''
-Write-Host 'Forsta gangen, i det nya fonstret:'
-Write-Host '  1. Logga in pa Facebook.'
-Write-Host '  2. Installera Tampermonkey fran Chrome Web Store.'
-Write-Host '  3. Oppna adressen nedan och tryck Installera:'
-Write-Host '     https://raw.githubusercontent.com/elliot851/polisvakt/main/tools/fb-bridge.user.js' -ForegroundColor Cyan
-Write-Host '  4. Ladda om gruppsidan.'
+Write-Host 'Bryggan laddas av Chrome sjalv. Ingen Tampermonkey behovs.'
+Write-Host ''
+Write-Host 'Enda sak du behover gora forsta gangen:'
+Write-Host '  Logga in pa Facebook i det nya fonstret.' -ForegroundColor Cyan
 Write-Host ''
 Write-Host 'Kontrollera i konsolen (F12) att det star:'
 Write-Host "  [Polisvakt] Facebook-bryggan ar igang for grupp $GruppId"
