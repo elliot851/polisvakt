@@ -42,6 +42,20 @@
 --   fbmejl_senaste     revisionsvy: vad kom in senaste dygnet.
 --   fbmejl_halsa       revisionsvy: går bryggan alls, och håller den måttet.
 --
+-- Och konfigurationen, som inte går genom databasinställningar längre. Se
+-- avsnittet KONFIGURATION; kortversionen är att alter database är stängd för
+-- rollen postgres på Supabase, så nyckeln bor i Vault och adressen i en tabell:
+--
+--   fbmejl_installningar     tabell. Adresser, i klartext. Aldrig nycklar.
+--   fbmejl_satt_installning() sättaren, som vägrar värden med nyckelform.
+--   fbmejl_valv_las()        läser en hemlighet ur vault.decrypted_secrets.
+--   fbmejl_kalla()           var ligger värdet? Läsordningen bor HÄR, ensam.
+--   fbmejl_installning()     icke-hemligt värde.
+--   fbmejl_hemlighet()       hemligt värde. Aldrig ur klartexttabellen.
+--   fbmejl_anropsnyckel()    nyckeln mot fbmejl-push.
+--   fbmejl_dolj_hemligheter() maskar nycklar ur text som ska loggas.
+--   fbmejl_notis_konfig()    hela facit, utan att en hemlighet syns.
+--
 -- Varför kön finns, i två steg istället för ett:
 --
 -- Tolkningen ligger i js/fbmejl.js, som anropar samma js/parser.js som rösten
@@ -518,6 +532,435 @@ create index if not exists fbmejl_notis_logg_koad_idx on public.fbmejl_notis_log
 
 alter table public.fbmejl_notis_logg enable row level security;
 revoke all on public.fbmejl_notis_logg from anon, authenticated;
+
+-- ============================ KONFIGURATION ==========================
+--
+-- Var ligger adressen, och var ligger nyckeln?
+--
+-- Den ursprungliga konstruktionen läste båda ur databasinställningar:
+--
+--   alter database postgres set app.service_role_key = '...';
+--   alter database postgres set app.fbmejl_push_url  = '...';
+--
+-- DET GÅR INTE PÅ DET HÄR PROJEKTET. SQL-editorn kör som rollen postgres, och
+-- postgres är inte superuser på Supabase. Uppmätt svar:
+--
+--   ERROR: 42501: permission denied to set parameter "app.fbmejl_push_url"
+--
+-- Alltså gick varken adressen eller nyckeln att sätta, och notiskedjan stod
+-- kvar i fbmejl_notis_ut() med "ingen url". Varje annat led såg friskt ut.
+-- Exakt det felmönster som den här filen redan bär tre ärr av.
+--
+-- ---------------------------------------------------------------------
+-- Två lager, och de skiljer på hemligt och inte hemligt
+--
+--   public.fbmejl_installningar    en vanlig liten tabell.  ADRESSER.
+--   vault.secrets (supabase_vault) krypterat valv.          NYCKLAR.
+--
+-- Varför inte lägga adressen i valvet också, när valvet ändå finns?
+--
+-- För att ett valv med två rader där bara den ena är känslig gör det svårare,
+-- inte lättare, att se vad som faktiskt måste skyddas. Adressen till
+-- edge-funktionen ÄR ingen hemlighet: den är
+-- https://<projekt>.supabase.co/functions/v1/fbmejl-push, projekt-id:t står
+-- redan öppet i js/config.js, och funktionen svarar 401 på varje anrop utan
+-- nyckel. Att kryptera den köper ingenting, och kostar två saker som är dyra
+-- just i den här kedjan: värdet går inte längre att LÄSA när man felsöker,
+-- och nästa människa som öppnar valvsidan ser två hemligheter och vet inte
+-- vilken av dem som är den som får en telefon att ringa.
+--
+-- Alltså: adressen i klartext i en tabell med radsäkerhet på och allt indraget
+-- från anon och authenticated, nyckeln i valvet. Valvsidan innehåller då
+-- exakt EN rad, och den raden är en riktig hemlighet.
+--
+-- ---------------------------------------------------------------------
+-- Ordningen, och varför den gamla vägen finns kvar
+--
+--   1. public.fbmejl_installningar     bara för icke-hemligt
+--   2. vault.decrypted_secrets         namnet ordagrant, se docs/notiskedjan.md
+--   3. current_setting('app.<namn>')   den gamla vägen
+--   4. null
+--
+-- Steg 3 är inte död kod. På ett projekt där alter database FUNGERAR — en
+-- egen Postgres, en självdriftad Supabase, eller ett projekt där ägaren har
+-- superuser — är de raderna redan körda och kedjan går. Tas steget bort
+-- slutar en fungerande installation att fungera vid nästa körning av den här
+-- filen, utan att någonting i den installationen har ändrats. Den sortens
+-- tyst nedgradering får inte finnas i en fil som är byggd för att köras om.
+--
+-- Steg 2 gäller även adressen. Det är en eftergift åt verkligheten: den som
+-- just satt nyckeln på valvsidan står på precis rätt plats för att av misstag
+-- klistra in adressen bredvid, och ett tyst "ingen url" är ett dyrt sätt att
+-- upptäcka det.
+--
+-- Ordningen ligger på ETT ställe: fbmejl_kalla(). Läsarna nedan frågar den
+-- var värdet finns och hämtar det sedan därifrån. Skälet är filens egen
+-- historia — samma regel skriven på två ställen driver isär, och här hade
+-- driften betytt att felsökningsfunktionen påstår en sak och notisen gör en
+-- annan.
+
+create table if not exists public.fbmejl_installningar (
+  nyckel      text primary key,
+  varde       text,
+  beskrivning text,
+  uppdaterad  timestamptz not null default now()
+);
+
+alter table public.fbmejl_installningar enable row level security;
+revoke all on public.fbmejl_installningar from anon, authenticated;
+
+-- Raderna finns med beskrivning även när värdet är tomt, så att
+-- "select * from public.fbmejl_installningar" svarar på frågan vad som GÅR
+-- att sätta. En tom tabell svarar bara att ingenting är satt.
+insert into public.fbmejl_installningar (nyckel, beskrivning) values
+  ('fbmejl_push_url',
+   'Adress till edge-funktionen fbmejl-push. https://<projekt>.supabase.co/functions/v1/fbmejl-push'),
+  ('fbmejl_tom_url',
+   'Adress till edge-funktionen fbmejl-tom. Bara om kön ska tömmas av pg_cron istället för Dashboard.')
+on conflict (nyckel) do nothing;
+
+-- Sättaren finns för att tabellen inte ska bli den plats där en nyckel
+-- hamnar av misstag. Den tar bara de namn som är kända, kräver https, och
+-- vägrar värden som har formen av en nyckel. Det sista är ingen paranoia:
+-- den som får "url saknas" i loggen och står på valvsidan med nyckeln i
+-- urklipp är en klistring från att lägga en service role-nyckel i klartext i
+-- en tabell som följer med i varje backup.
+create or replace function public.fbmejl_satt_installning(p_nyckel text, p_varde text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp as $$
+declare
+  v_nyckel text := lower(btrim(coalesce(p_nyckel, '')));
+  v_varde  text := nullif(btrim(coalesce(p_varde, '')), '');
+begin
+  if v_nyckel not in ('fbmejl_push_url', 'fbmejl_tom_url') then
+    return jsonb_build_object('ok', false, 'skal', 'okand nyckel',
+      'tillatna', jsonb_build_array('fbmejl_push_url', 'fbmejl_tom_url'));
+  end if;
+
+  if v_varde is not null then
+    -- Formkontroll, aldrig innehållskontroll. Samma princip som
+    -- edge-funktionens 401-logg: säg vad formen är, aldrig vad värdet är.
+    if v_varde !~ '^https://[A-Za-z0-9._-]+/' then
+      return jsonb_build_object('ok', false, 'skal', 'varde maste vara en https-adress',
+        'fick_langd', length(v_varde));
+    end if;
+    if v_varde ~ 'eyJ[A-Za-z0-9._-]{20,}' or v_varde ~ 'sb_[a-z]+_[A-Za-z0-9_-]{20,}' then
+      return jsonb_build_object('ok', false,
+        'skal', 'vardet har formen av en nyckel och lagras inte i klartext. Lagg den i valvet.',
+        'fick_langd', length(v_varde));
+    end if;
+  end if;
+
+  insert into public.fbmejl_installningar (nyckel, varde, uppdaterad)
+  values (v_nyckel, v_varde, now())
+  on conflict (nyckel) do update
+     set varde = excluded.varde, uppdaterad = now();
+
+  return jsonb_build_object('ok', true, 'nyckel', v_nyckel, 'varde', v_varde);
+end $$;
+
+-- ---------------------------------------------------------------------
+-- VALVET
+--
+-- supabase_vault lagrar hemligheten krypterad i vault.secrets och lämnar ut
+-- den dekrypterad genom vyn vault.decrypted_secrets. Vyn ägs av
+-- supabase_admin och är läsbar för postgres — alltså för en security
+-- definer-funktion som skapats i SQL-editorn, och för ingen annan.
+--
+-- Funktionen svarar null på ALLT som går fel: inget valv installerat, ingen
+-- läsrätt, inget sådant namn. Det är med flit — en notiskedja ska inte dö för
+-- att ett valv saknas — men det gör också att ett tyst null inte går att
+-- skilja från ett tomt valv. Därför finns fbmejl_notis_konfig() längre ner,
+-- som säger VARFÖR, med form och längd men aldrig med värde.
+create or replace function public.fbmejl_valv_las(p_namn text)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp as $$
+declare
+  v_varde text;
+begin
+  if p_namn is null or p_namn !~ '^[a-z][a-z0-9_]*$' then
+    return null;
+  end if;
+
+  -- to_regclass() ligger INNANFÖR exception-blocket, och det är ingen
+  -- slarvighet. Den slår upp schemat med LookupExplicitNamespace(), som
+  -- prövar USAGE och KASTAR om rätten saknas — även när objektet efterfrågas
+  -- med missing_ok. Låg den utanför skulle en databas där valvet finns men
+  -- inte är läsbart få hela notisen att dö med "permission denied for schema
+  -- vault", i stället för att svara null och låta konfigurationskontrollen
+  -- förklara varför.
+  begin
+    if to_regclass('vault.decrypted_secrets') is null then
+      return null;
+    end if;
+
+    select s.decrypted_secret into v_varde
+      from vault.decrypted_secrets s
+     where s.name = p_namn
+     order by s.created_at desc
+     limit 1;
+  exception when others then
+    -- Nästan alltid utebliven läsrätt på vault-schemat. Sväljs här och
+    -- rapporteras av fbmejl_notis_konfig() istället, som körs när någon
+    -- frågar och inte mitt i en notis.
+    return null;
+  end;
+
+  -- btrim är med flit. En hemlighet klistrad in i dashboarden får ofta en
+  -- radbrytning på slutet, och edge-funktionen kör .trim() på det den tar
+  -- emot. Trimmas det inte här jämförs en sträng med nyrad mot en utan, och
+  -- svaret blir 401 på en nyckel som ser alldeles rätt ut.
+  return nullif(btrim(coalesce(v_varde, '')), '');
+end $$;
+
+-- ---------------------------------------------------------------------
+-- KÄLLAN
+--
+-- Var finns värdet? Ordningen bor här och ingen annanstans. Funktionen
+-- lämnar aldrig ut något värde, bara namnet på platsen — den går därför att
+-- läsa i en felsökning utan att något känsligt hamnar på skärmen.
+--
+-- p_hemlig = true hoppar över tabellen helt. En hemlighet får inte läsas ur
+-- en klartexttabell ens om någon lagt den där för hand; skulle den vägen
+-- fungera vore sättarens vägran ovan bara en artighet.
+create or replace function public.fbmejl_kalla(p_namn text, p_hemlig boolean default false)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp as $$
+declare
+  v_finns boolean;
+begin
+  if p_namn is null or p_namn !~ '^[a-z][a-z0-9_]*$' then
+    return null;
+  end if;
+
+  if not coalesce(p_hemlig, false) then
+    select true into v_finns
+      from public.fbmejl_installningar i
+     where i.nyckel = p_namn
+       and coalesce(btrim(i.varde), '') <> ''
+     limit 1;
+    if coalesce(v_finns, false) then
+      return 'tabell';
+    end if;
+  end if;
+
+  if public.fbmejl_valv_las(p_namn) is not null then
+    return 'valv';
+  end if;
+
+  if nullif(btrim(coalesce(current_setting('app.' || p_namn, true), '')), '') is not null then
+    return 'databasinstallning';
+  end if;
+
+  return null;
+end $$;
+
+-- Icke-hemliga värden. Adresser, alltså.
+create or replace function public.fbmejl_installning(p_namn text)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp as $$
+declare
+  v_kalla text := public.fbmejl_kalla(p_namn, false);
+  v_varde text;
+begin
+  if v_kalla = 'tabell' then
+    select btrim(i.varde) into v_varde
+      from public.fbmejl_installningar i where i.nyckel = p_namn;
+  elsif v_kalla = 'valv' then
+    v_varde := public.fbmejl_valv_las(p_namn);
+  elsif v_kalla = 'databasinstallning' then
+    v_varde := btrim(current_setting('app.' || p_namn, true));
+  end if;
+  return nullif(coalesce(v_varde, ''), '');
+end $$;
+
+-- Hemliga värden. Aldrig ur tabellen.
+create or replace function public.fbmejl_hemlighet(p_namn text)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp as $$
+declare
+  v_kalla text := public.fbmejl_kalla(p_namn, true);
+begin
+  if v_kalla = 'valv' then
+    return public.fbmejl_valv_las(p_namn);
+  elsif v_kalla = 'databasinstallning' then
+    return nullif(btrim(coalesce(current_setting('app.' || p_namn, true), '')), '');
+  end if;
+  return null;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- NYCKELN SOM ANVÄNDS MOT fbmejl-push
+--
+-- Två namn, i tur och ordning:
+--
+--   fbmejl_anropsnyckel   en egen delad hemlighet, bara för det här anropet
+--   service_role_key      hela projektets service role-nyckel
+--
+-- Den EGNA hemligheten först, och det är ett val, inte en slump.
+--
+-- Edge-funktionen godtar tre nycklar: SUPABASE_SERVICE_ROLE_KEY (injicerad av
+-- plattformen), SERVICE_ROLE_KEY, och den valfria FBMEJL_ANROPSNYCKEL. Den
+-- sista är bättre av tre skäl:
+--
+--   1. Den kan roteras utan att röra något annat. Byts service role-nyckeln
+--      ut måste varje jobb, varje skript och varje funktion som bär den bytas
+--      samtidigt. Byts den här behöver två fält ändras, och ingenting annat i
+--      projektet vet ens om att det hänt.
+--   2. Läcker den kostar den mindre. Service role-nyckeln går förbi all
+--      radsäkerhet i hela databasen. Den här går att skicka EN sak med: en
+--      gruppnotis. Illa nog, och det är precis den bugg edge-funktionens
+--      egen kommentar kallar den värsta den kan ha — men det är en bugg med
+--      en botten.
+--   3. Den slipper fällan som redan kostat en felsökningskväll här. Projektet
+--      har både en sb_secret-nyckel och en äldre eyJ-JWT, plattformen
+--      injicerar EN av dem, och sätter man den andra svarar funktionen 401 på
+--      varje anrop. En egen sträng har ingen andra utgåva att förväxlas med.
+--
+-- Priset, sagt rakt ut: värdet måste sättas på TVÅ ställen — som hemlighet
+-- FBMEJL_ANROPSNYCKEL i edge-funktionen, och i valvet under namnet
+-- fbmejl_anropsnyckel. Glider de isär blir det 401. Men service role-vägen
+-- har samma tvåställesproblem och därtill ett ställe man inte råder över,
+-- eftersom plattformen väljer utgåva åt en. Två ställen man styr över är
+-- bättre än ett man styr över och ett man inte gör.
+--
+-- Service role-nyckeln ligger kvar som andrahandsval. Ett projekt som redan
+-- kört "alter database postgres set app.service_role_key = ..." fortsätter gå
+-- utan en enda ändring.
+create or replace function public.fbmejl_anropsnyckel()
+returns text
+language sql
+stable
+security definer
+set search_path = public, pg_temp as $$
+  select coalesce(public.fbmejl_hemlighet('fbmejl_anropsnyckel'),
+                  public.fbmejl_hemlighet('service_role_key'));
+$$;
+
+-- ---------------------------------------------------------------------
+-- INGEN HEMLIGHET I EN LOGG
+--
+-- fbmejl_notis_logg.skal bär två sorters text som kommer utifrån: sqlerrm
+-- från net.http_post(), och svarskroppen från det som svarade på adressen.
+-- Ingen av dem är hemlig i normalfallet. Men adressen är en INSTÄLLNING, och
+-- pekar den fel går bäraranropet till någon annans server — och en server som
+-- ekar tillbaka sina huvuden skriver då nyckeln rakt in i loggen, i en tabell
+-- som följer med i varje backup.
+--
+-- Därför maskas texten innan den sparas. Två lager:
+--
+--   1. De nycklar vi själva känner till, ordagrant utbytta.
+--   2. Formerna, för de nycklar vi inte känner till: "Bearer <något långt>",
+--      eyJ-strängar (JWT) och sb_-strängar (nya API-nycklar).
+--
+-- Kvar blir formen och längden, aldrig innehållet. Samma mönster som
+-- 401-loggen i supabase/functions/fbmejl-push/index.ts, och av samma skäl:
+-- det som ska felsökas är om nyckeln har rätt FORM, inte vilken den är.
+create or replace function public.fbmejl_dolj_hemligheter(p_text text)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp as $$
+declare
+  v_ut text := p_text;
+  v_h  text;
+begin
+  if v_ut is null or v_ut = '' then
+    return v_ut;
+  end if;
+
+  foreach v_h in array array[
+    public.fbmejl_hemlighet('fbmejl_anropsnyckel'),
+    public.fbmejl_hemlighet('service_role_key')
+  ] loop
+    if v_h is not null and length(v_h) >= 8 then
+      v_ut := replace(v_ut, v_h, '[hemlighet, ' || length(v_h) || ' tecken]');
+    end if;
+  end loop;
+
+  v_ut := regexp_replace(v_ut, '(?i)(bearer[[:space:]]+)[^[:space:]"'']{16,}',
+                         '\1[dold nyckel]', 'g');
+  v_ut := regexp_replace(v_ut, 'eyJ[A-Za-z0-9._-]{20,}',       '[dold jwt]',    'g');
+  v_ut := regexp_replace(v_ut, 'sb_[a-z]+_[A-Za-z0-9_-]{20,}', '[dold nyckel]', 'g');
+
+  return v_ut;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- GICK DET IN? SVARET UTAN ATT NÅGON HEMLIGHET SYNS
+--
+-- Det här är funktionen ägaren kör efter att ha lagt nyckeln i valvet. Den
+-- svarar på om kedjan har allt den behöver, och den skriver aldrig ut ett
+-- hemligt värde: bara om det finns, varifrån det kom, hur långt det är och
+-- vilka tre tecken det börjar på. Tre tecken räcker för att skilja eyJ från
+-- sb_ — alltså för att se den enda förväxling som faktiskt inträffar — och
+-- räcker inte till någonting annat.
+create or replace function public.fbmejl_notis_konfig()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp as $$
+declare
+  v_url        text := public.fbmejl_installning('fbmejl_push_url');
+  v_url_kalla  text := public.fbmejl_kalla('fbmejl_push_url', false);
+  v_nyckel     text := public.fbmejl_anropsnyckel();
+  v_egen       text := public.fbmejl_kalla('fbmejl_anropsnyckel', true);
+  v_srk        text := public.fbmejl_kalla('service_role_key', true);
+  v_valv_finns boolean := false;
+  v_valv_las   boolean := false;
+  v_valv_fel   text;
+  v_antal      bigint;
+begin
+  -- Både uppslagningen och räkningen ligger inne i exception-blocket. Samma
+  -- skäl som i fbmejl_valv_las(): to_regclass() prövar USAGE på schemat och
+  -- kastar om rätten saknas, och den här funktionen är just den man kör NÄR
+  -- något inte fungerar. Den får inte vara det som går sönder.
+  begin
+    v_valv_finns := to_regclass('vault.decrypted_secrets') is not null;
+    if v_valv_finns then
+      execute 'select count(*) from vault.secrets' into v_antal;
+      v_valv_las := true;
+    end if;
+  exception when others then
+    v_valv_fel := left(sqlerrm, 200);
+  end;
+
+  return jsonb_build_object(
+    'push_url',        v_url,
+    'push_url_kalla',  v_url_kalla,
+    'nyckel_finns',    v_nyckel is not null,
+    'nyckel_langd',    coalesce(length(v_nyckel), 0),
+    'nyckel_form',     coalesce(left(v_nyckel, 3), 'ingen'),
+    'nyckel_kalla',    case when v_egen is not null then 'fbmejl_anropsnyckel/' || v_egen
+                            when v_srk  is not null then 'service_role_key/' || v_srk
+                            else null end,
+    'valv_installerat', v_valv_finns,
+    'valv_lasbart',     v_valv_las,
+    'valv_hemligheter', v_antal,
+    'valv_fel',         v_valv_fel,
+    'pg_net',          exists (select 1 from pg_proc p
+                                 join pg_namespace n on n.oid = p.pronamespace
+                                where n.nspname = 'net' and p.proname = 'http_post'),
+    'mottagare',       public.fbmejl_gruppnotis_antal(),
+    'klar',            v_url is not null and v_nyckel is not null
+  );
+end $$;
 
 -- ============================ NOTISER: TEXTEN ========================
 --
@@ -1009,6 +1452,7 @@ declare
   v_skal     text;
   v_mottagare int;
   v_net_id   bigint;
+  v_fel      text;
 begin
   if p_nya is null or jsonb_typeof(p_nya) <> 'array' then
     return jsonb_build_object('skickad', false, 'skal', 'inget');
@@ -1120,18 +1564,42 @@ begin
   -- lyckas köa anropet lägger tillbaka varningarna i odelade, precis som en
   -- spärr gör. Det är hela skillnaden mot den första versionen, där odelade
   -- nollställdes innan man visste om något ens gick att skicka.
-  v_url    := current_setting('app.fbmejl_push_url', true);
-  v_nyckel := current_setting('app.service_role_key', true);
+  --
+  -- Adressen och nyckeln läses genom KONFIGURATION ovan, inte längre direkt
+  -- ur current_setting(). Den gamla vägen finns kvar som sista steg i
+  -- ordningen, så en installation där alter database fungerar är oförändrad.
+  -- Se resonemanget i det avsnittet.
+  v_url    := public.fbmejl_installning('fbmejl_push_url');
+  v_nyckel := public.fbmejl_anropsnyckel();
 
   if v_url is null or v_url = '' then
     update public.fbmejl_notis_lage
        set odelade = odelade + v_antal, dag = v_dag,
            antal_idag = v_lage.antal_idag,
-           senaste_fel = 'app.fbmejl_push_url saknas', uppdaterad = now()
+           senaste_fel = 'fbmejl_push_url saknas', uppdaterad = now()
      where id = 1;
     insert into public.fbmejl_notis_logg (antal, titel, text, utfall, skal)
-    values (v_totalt, v_titel, v_text, 'fel', 'app.fbmejl_push_url saknas');
+    values (v_totalt, v_titel, v_text, 'fel', 'fbmejl_push_url saknas');
     return jsonb_build_object('skickad', false, 'skal', 'ingen-url', 'titel', v_titel);
+  end if;
+
+  -- Nyckeln, innan anropet och inte efter det.
+  --
+  -- Utan nyckel svarar fbmejl-push 401 på varje anrop — den godtar ingen tom
+  -- sträng, med flit, för en tom nyckel som duger vore ett öppet API. Att
+  -- skicka ändå kostar en omgång varningar och lägger en rad i loggen som
+  -- ser ut som ett behörighetsfel fast det är ett konfigurationsfel. Här
+  -- läggs varningarna tillbaka i odelade istället, och loggen säger vad som
+  -- faktiskt saknas.
+  if v_nyckel is null or v_nyckel = '' then
+    update public.fbmejl_notis_lage
+       set odelade = odelade + v_antal, dag = v_dag,
+           antal_idag = v_lage.antal_idag,
+           senaste_fel = 'anropsnyckel saknas', uppdaterad = now()
+     where id = 1;
+    insert into public.fbmejl_notis_logg (antal, titel, text, utfall, skal)
+    values (v_totalt, v_titel, v_text, 'fel', 'anropsnyckel saknas');
+    return jsonb_build_object('skickad', false, 'skal', 'ingen-nyckel', 'titel', v_titel);
   end if;
 
   -- Katalogen, inte to_regproc(): den senare KASTAR på ett överlagrat namn
@@ -1174,14 +1642,21 @@ begin
       )
     ) into v_net_id;
   exception when others then
+    -- sqlerrm maskas innan den sparas. Nyckeln är ett ARGUMENT till
+    -- net.http_post(), och Postgres skriver normalt inte ut argument i sina
+    -- felmeddelanden — men "normalt" är inte "aldrig", och skillnaden syns
+    -- först den dag det inträffar, i en tabell som redan följt med i varje
+    -- backup. Maskningen kostar ingenting och stänger frågan. Se
+    -- fbmejl_dolj_hemligheter() i avsnittet KONFIGURATION.
+    v_fel := public.fbmejl_dolj_hemligheter(sqlerrm);
     update public.fbmejl_notis_lage
        set odelade = odelade + v_antal, dag = v_dag,
            antal_idag = v_lage.antal_idag,
-           senaste_fel = left(sqlerrm, 500), uppdaterad = now()
+           senaste_fel = left(v_fel, 500), uppdaterad = now()
      where id = 1;
     insert into public.fbmejl_notis_logg (antal, titel, text, utfall, skal)
-    values (v_totalt, v_titel, v_text, 'fel', left(sqlerrm, 200));
-    return jsonb_build_object('skickad', false, 'skal', 'fel', 'detalj', sqlerrm);
+    values (v_totalt, v_titel, v_text, 'fel', left(v_fel, 200));
+    return jsonb_build_object('skickad', false, 'skal', 'fel', 'detalj', v_fel);
   end;
 
   -- Först här. Anropet ligger i pg_nets kö, glesspärren och dygnstaket får
@@ -1256,11 +1731,31 @@ begin
   -- om notiserna gick fram.
   --
   -- Kolumnnamnen är pg_nets: id, status_code, content, timed_out, error_msg.
+  --
+  -- ---------------------------------------------------------------------
+  -- Varför svarskroppen maskas innan den sparas
+  --
+  -- r.content är det som svarade på adressen i fbmejl_push_url. Är adressen
+  -- rätt är det vår egen edge-funktion, och den svarar med fem tal och
+  -- ingenting annat — läs sista returen i fbmejl-push/index.ts. Men adressen
+  -- är en INSTÄLLNING. Pekar den fel gick bäraranropet till någon annans
+  -- server, och en server som ekar tillbaka sina huvuden skriver då nyckeln
+  -- rakt in i fbmejl_notis_logg.skal, i klartext, i en tabell som ligger i
+  -- varje backup.
+  --
+  -- Maskningen sker FÖRE kapningen till 200 tecken. Görs den efter matchar en
+  -- avhuggen nyckel ingen av mönstren, och det som blir kvar i loggen är en
+  -- prefix av en riktig nyckel. Mellansteget på 4000 tecken finns bara för
+  -- att slippa köra reguljära uttryck över hundra kilobyte HTML; en nyckel
+  -- som börjar bortom tecken 4000 hamnar ändå utanför de 200 som sparas.
+  --
+  -- Se fbmejl_dolj_hemligheter() i avsnittet KONFIGURATION.
 
   execute format($q$
     update public.fbmejl_notis_logg l
        set utfall = 'kvitterad',
-           skal   = left('HTTP ' || r.status_code || ' ' || coalesce(r.content, ''), 200)
+           skal   = left(public.fbmejl_dolj_hemligheter(
+                      left('HTTP ' || r.status_code || ' ' || coalesce(r.content, ''), 4000)), 200)
       from net._http_response r
      where r.id = l.net_id
        and l.utfall = 'koad'
@@ -1278,9 +1773,11 @@ begin
     update public.fbmejl_notis_logg l
        set utfall = 'fel',
            skal   = case
-                      when r.error_msg is not null then left(r.error_msg, 200)
+                      when r.error_msg is not null
+                        then left(public.fbmejl_dolj_hemligheter(left(r.error_msg, 4000)), 200)
                       when coalesce(r.timed_out, false) then 'tidsgrans'
-                      else left('HTTP ' || r.status_code || ' ' || coalesce(r.content, ''), 200)
+                      else left(public.fbmejl_dolj_hemligheter(
+                             left('HTTP ' || r.status_code || ' ' || coalesce(r.content, ''), 4000)), 200)
                     end
       from net._http_response r
      where r.id = l.net_id
@@ -1913,6 +2410,40 @@ grant execute on function public.fbmejl_mening(text, text, text, bigint)  to ano
 revoke execute on function public.fbmejl_gruppnotis_antal()               from public, anon, authenticated;
 grant  execute on function public.fbmejl_gruppnotis_antal()               to service_role;
 
+-- ---------------------------------------------------------------------
+-- KONFIGURATIONEN
+--
+-- Läsarna av hemligheter är indragna från ALLT, service_role inräknat. Det
+-- är inte en artighet mot service_role, som ändå kan det mesta — det är att
+-- den enda anroparen som behöver dem är fbmejl_notis_ut(), som är security
+-- definer och ägs av samma roll som funktionerna. Ett internt anrop i en
+-- security definer-funktion prövas mot ÄGAREN, inte mot den som anropade
+-- yttersta funktionen. Kedjan går alltså igenom utan att en enda roll
+-- utanför databasen har fått rätten att läsa nyckeln.
+--
+-- En hemlighet som anon kan läsa är ingen hemlighet. Beviset står i
+-- kontrollfråga 12 längst ner: den byter roll till anon på riktigt och
+-- kräver att anropet nekas.
+revoke all on function public.fbmejl_valv_las(text)                       from public, anon, authenticated, service_role;
+revoke all on function public.fbmejl_kalla(text, boolean)                 from public, anon, authenticated, service_role;
+revoke all on function public.fbmejl_hemlighet(text)                      from public, anon, authenticated, service_role;
+revoke all on function public.fbmejl_anropsnyckel()                       from public, anon, authenticated, service_role;
+
+-- Det icke-hemliga. Adressen får läsas och sättas av service_role, och
+-- konfigurationsstatusen får hämtas — den innehåller aldrig ett hemligt
+-- värde, bara form, längd och varifrån värdet kom. anon och authenticated
+-- får ingenting av det heller: adressen säger vilken edge-funktion som är
+-- notiskedjans, och det är onödig hjälp åt någon som letar efter den.
+revoke all on function public.fbmejl_installning(text)                    from public, anon, authenticated;
+revoke all on function public.fbmejl_satt_installning(text, text)         from public, anon, authenticated;
+revoke all on function public.fbmejl_dolj_hemligheter(text)               from public, anon, authenticated;
+revoke all on function public.fbmejl_notis_konfig()                       from public, anon, authenticated;
+
+grant execute on function public.fbmejl_installning(text)                 to service_role;
+grant execute on function public.fbmejl_satt_installning(text, text)      to service_role;
+grant execute on function public.fbmejl_dolj_hemligheter(text)            to service_role;
+grant execute on function public.fbmejl_notis_konfig()                    to service_role;
+
 -- Nätet får läsas av alla — det avslöjar ingenting och är bekvämt att kunna
 -- prova i editorn.
 grant execute on function public.fbmejl_ar_nykterhetskontroll(text)       to anon, authenticated, service_role;
@@ -2180,23 +2711,31 @@ end $$;
 
 -- Tömningen av kön, om du vill ha den i databasen istället för i Dashboard.
 --
--- Kräver att edge-funktionen fbmejl-tom är utrullad och att de två nycklarna
--- är satta som databasinställningar. Nycklarna får ALDRIG stå i klartext i
+-- Kräver att edge-funktionen fbmejl-tom är utrullad, att adressen till den är
+-- satt, och att en nyckel går att hitta. Nyckeln får ALDRIG stå i klartext i
 -- cron.job — den tabellen är läsbar för alla med databasåtkomst och följer
--- med i varje backup:
+-- med i varje backup. Därför står ett ANROP i jobbtexten nedan, aldrig ett
+-- värde:
 --
---   alter database postgres set app.service_role_key = 'eyJ...';
---   alter database postgres set app.fbmejl_tom_url =
---     'https://<projekt>.supabase.co/functions/v1/fbmejl-tom';
+--   select public.fbmejl_satt_installning('fbmejl_tom_url',
+--     'https://<projekt>.supabase.co/functions/v1/fbmejl-tom');
 --
--- Notiserna behöver en tredje inställning. Utan den skapas rapporterna som
--- vanligt men ingen push går ut, och fbmejl_halsa.notis_fel räknar upp:
+-- Notiserna behöver adressen till den andra funktionen. Utan den skapas
+-- rapporterna som vanligt men ingen push går ut, och fbmejl_halsa.notis_fel
+-- räknar upp:
 --
---   alter database postgres set app.fbmejl_push_url =
---     'https://<projekt>.supabase.co/functions/v1/fbmejl-push';
+--   select public.fbmejl_satt_installning('fbmejl_push_url',
+--     'https://<projekt>.supabase.co/functions/v1/fbmejl-push');
 --
--- Inställningar slår igenom först i NYA anslutningar. Sätt dem, öppna en ny
--- flik i SQL-editorn, och kör den här filen igen.
+-- Nyckeln läggs i valvet, inte här. Se avsnittet KONFIGURATION ovan och
+-- docs/notiskedjan.md.
+--
+-- OBSERVERA att tömningen och notisen inte godtar samma nyckel. fbmejl-push
+-- godtar den egna hemligheten FBMEJL_ANROPSNYCKEL; fbmejl-tom kräver den
+-- riktiga service role-nyckeln i Authorization, eller CRON_SECRET i huvudet
+-- x-cron-secret. Därför läser jobbet nedan uttryckligen service_role_key och
+-- inte fbmejl_anropsnyckel. Skulle det ändras måste fbmejl-tom/index.ts
+-- ändras först, inte den här raden.
 --
 -- Blocket nedan gör ingenting förrän fbmejl_tom_url är satt.
 
@@ -2214,9 +2753,9 @@ begin
     return;
   end if;
 
-  v_url := current_setting('app.fbmejl_tom_url', true);
+  v_url := public.fbmejl_installning('fbmejl_tom_url');
   if v_url is null or v_url = '' then
-    raise notice 'app.fbmejl_tom_url är inte satt — tömningen schemaläggs inte. Se docs/fbmejl.md.';
+    raise notice 'fbmejl_tom_url är inte satt — tömningen schemaläggs inte. Se docs/fbmejl.md.';
     return;
   end if;
 
@@ -2231,7 +2770,7 @@ begin
       url     := %L,
       headers := jsonb_build_object(
         'Content-Type',  'application/json',
-        'Authorization', 'Bearer ' || coalesce(current_setting('app.service_role_key', true), '')
+        'Authorization', 'Bearer ' || coalesce(public.fbmejl_hemlighet('service_role_key'), '')
       ),
       body    := jsonb_build_object('kalla', 'pg_cron')
     );
@@ -2406,9 +2945,10 @@ end $$;
 --      select public.fbmejl_notis_stam_av();
 --
 --     Står allt kvar som 'koad' efter avstämningen saknas pg_net, eller så
---     hann svaret städas bort. Står det 'fel' med "HTTP 401" är
---     app.service_role_key fel; "HTTP 404" betyder att edge-funktionen
---     fbmejl-push inte är utrullad.
+--     hann svaret städas bort. Står det 'fel' med "HTTP 401" är nyckeln fel —
+--     kör punkt 12 nedan; "HTTP 404" betyder att edge-funktionen fbmejl-push
+--     inte är utrullad. Står det 'fel' med "fbmejl_push_url saknas" eller
+--     "anropsnyckel saknas" är det konfigurationen, inte kedjan.
 --
 -- 9c. Reglaget för gruppnotiser. Ska ge ok = false och skal = 'ingen-rad' för
 --     en endpoint som inte finns, alltså precis det fall som tidigare gav ett
@@ -2461,6 +3001,96 @@ end $$;
 --     bryggan inte omställd — se docs/notiskedjan.md:
 --
 --      select * from public.fbmejl_notiskedjan;
+--
+-- 12. Konfigurationen. Ett svar, hela bilden, och inte en enda hemlighet i
+--     det. klar = true betyder att både adress och nyckel finns:
+--
+--      select jsonb_pretty(public.fbmejl_notis_konfig());
+--
+--     nyckel_kalla säger vilket namn som svarade och varifrån, till exempel
+--     "fbmejl_anropsnyckel/valv". Står det null finns ingen nyckel någonstans.
+--     nyckel_form är tre tecken: 'eyJ' är en JWT, 'sb_' en ny hemlig nyckel,
+--     något annat är en egen sträng. Tre tecken räcker för att se den enda
+--     förväxling som faktiskt inträffar och räcker inte till något annat.
+--
+--     valv_installerat = false betyder att tillägget supabase_vault inte är
+--     påslaget. valv_lasbart = false med valv_fel satt betyder att det finns
+--     men inte går att läsa för den roll som äger funktionerna.
+--
+-- 12b. BEVISET att anon inte kommer åt hemligheten. Byter roll på riktigt och
+--      kräver att anropet nekas. Ska skriva OK tre gånger:
+--
+--      do $bevis$
+--      declare v_svar text; v_ok boolean;
+--      begin
+--        foreach v_svar in array array['fbmejl_valv_las', 'fbmejl_hemlighet',
+--                                      'fbmejl_anropsnyckel'] loop
+--          v_ok := false;
+--          begin
+--            set local role anon;
+--            if v_svar = 'fbmejl_anropsnyckel' then
+--              execute 'select public.fbmejl_anropsnyckel()';
+--            else
+--              execute 'select public.' || v_svar || '(''service_role_key'')';
+--            end if;
+--          exception when insufficient_privilege then
+--            v_ok := true;
+--          end;
+--          reset role;
+--          if v_ok then
+--            raise notice 'OK: anon nekas av %', v_svar;
+--          else
+--            raise warning 'FEL: anon slapp in i % — kor revoke-raderna igen', v_svar;
+--          end if;
+--        end loop;
+--      end $bevis$;
+--
+--      Och samma sak ur katalogen, för den som hellre läser ett rutnät. Alla
+--      sex ska vara false:
+--
+--      Uppslagningen av vault-objekten går via pg_namespace och pg_class och
+--      inte via namnsträngar. Ett kvalificerat namn slår upp schemat med
+--      LookupExplicitNamespace(), som kastar när USAGE saknas — och en
+--      kontrollfråga som DÖR när rätten saknas svarar inte på frågan den
+--      ställdes för att svara på.
+--
+--      select
+--        has_function_privilege('anon','public.fbmejl_hemlighet(text)','execute')          as anon_hemlighet,
+--        has_function_privilege('authenticated','public.fbmejl_hemlighet(text)','execute') as auth_hemlighet,
+--        has_function_privilege('anon','public.fbmejl_valv_las(text)','execute')           as anon_valv_las,
+--        has_function_privilege('anon','public.fbmejl_anropsnyckel()','execute')           as anon_nyckel,
+--        coalesce((select has_schema_privilege('anon', n.oid, 'usage')
+--                    from pg_namespace n where n.nspname = 'vault'), false)                as anon_valv_schema,
+--        coalesce((select has_table_privilege('anon', c.oid, 'select')
+--                    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+--                   where n.nspname = 'vault' and c.relname = 'decrypted_secrets'), false) as anon_valv_vy;
+--
+-- 12c. Att ingen hemlighet kan hamna i loggen. Maskningen ska bita på alla
+--      fyra formerna. Ska ge fyra rader utan en enda nyckel i:
+--
+--      select public.fbmejl_dolj_hemligheter(
+--               'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaaaaaaaaaaa')
+--        union all
+--      select public.fbmejl_dolj_hemligheter('nyckeln sb_secret_abcdefghijklmnopqrstuvwxyz kom med')
+--        union all
+--      select public.fbmejl_dolj_hemligheter('HTTP 200 {"ok":true,"mottagare":1,"skickade":1}')
+--        union all
+--      select public.fbmejl_dolj_hemligheter(
+--               'Bearer ' || coalesce(public.fbmejl_anropsnyckel(), 'ingen-nyckel-satt'));
+--
+--      Sista raden är den som räknas: den matar in den RIKTIGA nyckeln och
+--      ska ge "Bearer [hemlighet, N tecken]" eller "Bearer [dold nyckel]".
+--      Kommer nyckeln ut i klartext är maskningen trasig — och då ska
+--      ingenting rulla ut förrän den är lagad.
+--
+--      Och att loggen faktiskt är ren, efter en riktig omgång. Ska ge noll
+--      rader:
+--
+--      select id, skickat_at, left(skal, 120) from public.fbmejl_notis_logg
+--       where skal ~ 'eyJ[A-Za-z0-9._-]{20,}'
+--          or skal ~ 'sb_[a-z]+_[A-Za-z0-9_-]{20,}'
+--          or (public.fbmejl_anropsnyckel() is not null
+--              and position(public.fbmejl_anropsnyckel() in coalesce(skal, '')) > 0);
 --
 -- Gick en omgång fel och la ut skräp? Så här släcks den utan att historiken
 -- raderas — rapporterna försvinner ur appen inom en tömningscykel, men

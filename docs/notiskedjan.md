@@ -55,7 +55,12 @@ bryggan själv, och det står sist.
 
 ---
 
-## Steg 1 — kör migrationen
+## Steg 1 — kör migrationerna
+
+Två filer, i den här ordningen. Båda går att köra om hur många gånger som
+helst, och ingen av dem rör data.
+
+### 1a — notiskedjan
 
 1. Öppna **Supabase Dashboard → SQL Editor → New query**.
 2. Klistra in hela innehållet i
@@ -72,10 +77,42 @@ Kommer det ett `ERROR` i stället säger felmeddelandet vilket påstående som
 inte höll. Ingenting är då sönder — objekten är redan skapade och filen går
 att köra om efter en rättning.
 
-Filen går att köra om hur många gånger som helst. Den rör ingen data.
-
 Kör sedan kontrollfrågorna längst ner i samma fil, punkt 1 till 6. Punkt 4 ska
 ge **noll rader** och punkt 5 ska ge **sex rader**.
+
+### 1b — konfigurationen i valvet
+
+1. **SQL Editor → New query** igen.
+2. Klistra in hela innehållet i
+   `supabase/migrationer/2026-08-21-konfiguration-i-valvet.sql`.
+3. Tryck **Run**.
+
+Den här flyttar adressen och nyckeln från databasinställningar — som **inte
+går att sätta** på ett Supabase-projekt, se steg 4 — till en inställningstabell
+och till Vault. Den sätter adressen åt dig.
+
+**Så vet du att det blev rätt:** sista satsen i filen ger en rad med hela
+facit. Direkt efter körningen ska den se ut så här:
+
+* `klar` = `false` — **väntat**, nyckeln finns inte än, det är steg 4
+* `push_url` = hela adressen, `url_kalla` = `tabell`
+* `notis_ut_omstalld` = `true`, `stam_av_maskar` = `true`
+* `valv` = `true`
+* de sex kolumnerna som börjar på `anon_` = **`false`, allihop**
+
+Och bland meddelandena:
+
+```
+NOTICE:  OK: anon nekas av fbmejl_valv_las()
+NOTICE:  OK: anon nekas av fbmejl_hemlighet()
+NOTICE:  OK: anon nekas av fbmejl_anropsnyckel()
+```
+
+Står det `WARNING` där i stället är en hemlighet läsbar för fel roll, och då
+ska ingenting rullas ut förrän det är lagat.
+
+`valv` = `false` betyder att tillägget inte är påslaget: **Database →
+Extensions → `supabase_vault` → Enable**, kör sedan filen igen.
 
 ---
 
@@ -194,45 +231,228 @@ Alla måste då slå på notiser igen.
 
 ---
 
-## Steg 4 — databasinställningarna
+## Steg 4 — nyckeln i valvet
 
-Två inställningar. De får **aldrig** stå i klartext i ett cron-jobb —
-`cron.job` är läsbar för alla med databasåtkomst och följer med i varje
-backup. Därför sätts de på databasen och läses med `current_setting()`.
+### Läs det här först: `alter database` fungerar inte här
 
-Öppna **SQL Editor** och kör:
+Äldre versioner av den här filen sa åt dig att köra:
 
 ```sql
-alter database postgres set app.service_role_key = 'DIN_SERVICE_ROLE_NYCKEL';
-alter database postgres set app.fbmejl_push_url  =
-  'https://livvehyqowmcafnisxho.supabase.co/functions/v1/fbmejl-push';
+alter database postgres set app.service_role_key = '...';
+alter database postgres set app.fbmejl_push_url  = '...';
 ```
 
-**Var hittar du service role-nyckeln:** Dashboard → **Project Settings → API
-Keys**. Det är den som är märkt `service_role` / `secret`. Den är inte
-`anon`/`publishable` — den nyckeln ligger öppet i appen och duger inte.
+**Det går inte på det här projektet.** Uppmätt svar i SQL-editorn:
 
-> **Har projektet både en `sb_secret_…`-nyckel och en gammal `eyJ…`-JWT?**
-> Ta då i första hand den som visas som **service_role**. Blir det ändå 401
-> när du provar i steg 5 är det de två utgåvorna som inte matchar — se
-> felsökningen längst ner. Funktionen godtar numera båda, och loggar vilken
-> form den fick, så felet går att se i stället för att gissas.
+```
+ERROR: 42501: permission denied to set parameter "app.fbmejl_push_url"
+```
 
-### Inställningar slår igenom först i NYA anslutningar
+SQL-editorn kör som rollen `postgres`, och `postgres` är **inte** superuser på
+ett Supabase-projekt. `alter database ... set` är alltså stängd — för både
+adressen och nyckeln. Ingen mängd omkörningar hjälper: funktionen läste ett
+värde som var omöjligt att skriva.
 
-Det här är fällan i det här steget, och den ser ut som att ingenting hänt.
+Kör i stället migrationen
+`supabase/migrationer/2026-08-21-konfiguration-i-valvet.sql`. Den läser
+konfigurationen ur **Vault** och ur en liten inställningstabell, och det finns
+inte ett enda `alter database` i den.
 
-1. Kör de två `alter database`-raderna.
-2. **Stäng SQL-editorfliken och öppna en ny.**
-3. Kontrollera:
+**Adressen sätter migrationen själv.** Den är ingen hemlighet, den står redan i
+`js/config.js`, och den hamnar i `public.fbmejl_installningar` där du kan läsa
+den. Det enda som återstår efter migrationen är nyckeln, och den ska ingen
+annan än du se.
+
+### Nyckeln — två fält, samma sträng
+
+Databasen måste legitimera sig mot `fbmejl-push`. Den behöver **inte** bära
+projektets service role-nyckel för det. Använd en egen slumpad sträng som bara
+används till just det här anropet:
+
+* den kan roteras utan att något annat i projektet rörs
+* läcker den kan den skicka en gruppnotis, inte läsa hela databasen
+* den har ingen andra utgåva att förväxlas med — och just den förväxlingen är
+  kedjans mest tidsödande fel, se felsökningen längst ner
+
+Samma sträng ska stå på **två** ställen. Glider de isär blir det `HTTP 401`.
+
+#### Först: hitta på strängen
+
+Vilken lång slumpad sträng som helst duger. Minst **20 tecken**, gärna 40.
+Kortare än 20 räknas inte av edge-funktionen och ger 401.
+
+```powershell
+-Join ((48..57) + (65..90) + (97..122) | Get-Random -Count 44 | ForEach-Object { [char]$_ })
+```
+
+Kopiera resultatet. Det är den enda gången du behöver se det.
+
+#### Fält 1 — hemligheten på edge-funktionen
+
+1. Öppna **Supabase Dashboard**
+2. Klicka **Edge Functions** i vänstermenyn
+3. Klicka **Secrets** (fliken högst upp, bredvid *Functions*)
+4. Klicka **Add new secret**
+5. **Key:** `FBMEJL_ANROPSNYCKEL`
+6. **Value:** strängen du kopierade
+7. Klicka **Save**
+
+Namnet måste stå **exakt** så, versaler och allt: `FBMEJL_ANROPSNYCKEL`.
+
+Går det inte att hitta *Secrets* under Edge Functions ligger den under
+**Project Settings → Edge Functions → Secrets** i vissa versioner av
+dashboarden. Samma sak.
+
+Eller, om du hellre använder CLI:
+
+```powershell
+supabase secrets set FBMEJL_ANROPSNYCKEL="samma-strang-som-i-valvet"
+```
+
+> Edge-funktionen läser sina hemligheter vid uppstart. Har den redan körts en
+> gång kan den behöva startas om innan den ser den nya nyckeln — enklast är att
+> rulla ut den på nytt enligt steg 2. Får du 401 direkt efter att ha satt
+> hemligheten är det nästan alltid det som saknas.
+
+#### Fält 2 — hemligheten i valvet
+
+1. Öppna **Supabase Dashboard**
+2. Klicka **Project Settings** (kugghjulet längst ner i vänstermenyn)
+3. Klicka **Vault** i listan till vänster
+4. Klicka **Add new secret**
+5. **Name:** `fbmejl_anropsnyckel`
+6. **Secret:** samma sträng som i fält 1
+7. **Description** (valfritt): `Anropsnyckel mot edge-funktionen fbmejl-push`
+8. Klicka **Save** / **Add secret**
+
+Ligger *Vault* inte under Project Settings i din version av dashboarden finns
+den under **Integrations → Vault**, eller direkt på
+`https://supabase.com/dashboard/project/livvehyqowmcafnisxho/settings/vault/secrets`.
+
+**NAMNET MÅSTE VARA EXAKT `fbmejl_anropsnyckel`** — små bokstäver, understreck,
+inga mellanslag, ingen bindestreck. Det är den sträng
+`public.fbmejl_anropsnyckel()` slår upp. Heter den något annat hittas den inte,
+och kedjan säger `anropsnyckel saknas` utan att någonting annat är fel.
+
+Klistrar dashboarden in en radbrytning på slutet gör det ingenting: `btrim()`
+i `fbmejl_valv_las()` tar bort den, av precis det skälet.
+
+> **Vill du hellre använda projektets service role-nyckel?** Det går. Lägg den i
+> valvet under namnet `service_role_key` i stället, och hoppa över fält 1.
+> Funktionen godtar den, men då gäller varningen om de två utgåvorna längst ner
+> — och nyckeln du lägger i valvet måste vara samma utgåva som plattformen
+> injicerar i funktionen. Det är just den osäkerheten den egna strängen är till
+> för att slippa.
+
+### Så vet du att det blev rätt
+
+Kör i **SQL Editor**:
 
 ```sql
-select current_setting('app.fbmejl_push_url', true)                as url,
-       length(current_setting('app.service_role_key', true))       as nyckel_langd;
+select public.fbmejl_notis_konfig();
 ```
 
-**Så vet du att det blev rätt:** `url` ska vara hela adressen, och
-`nyckel_langd` ska vara ett tresiffrigt tal — inte `null` och inte `0`.
+Ska ge, i huvudsak:
+
+```json
+{
+  "klar": true,
+  "push_url": "https://livvehyqowmcafnisxho.supabase.co/functions/v1/fbmejl-push",
+  "push_url_kalla": "tabell",
+  "nyckel_finns": true,
+  "nyckel_kalla": "fbmejl_anropsnyckel/valv",
+  "nyckel_langd": 44,
+  "nyckel_form": "aB3",
+  "valv_installerat": true,
+  "valv_lasbart": true,
+  "pg_net": true,
+  "mottagare": 1
+}
+```
+
+`nyckel_form` är de tre första tecknen och ingenting mer. Tre tecken räcker för
+att skilja `eyJ` (JWT) från `sb_` (ny hemlig nyckel) från din egen slumpade
+sträng — alltså för att se den enda förväxling som faktiskt inträffar. Hela
+nyckeln lämnar aldrig valvet, varken hit eller till en logg.
+
+| Symptom | Betyder |
+|---|---|
+| `"klar": false`, `nyckel_finns: false` | hemligheten saknas eller heter fel i valvet — kolla stavningen `fbmejl_anropsnyckel` |
+| `"valv_installerat": false` | tillägget `supabase_vault` är inte påslaget. **Database → Extensions → `supabase_vault` → Enable** |
+| `"valv_lasbart": false` med `valv_fel` satt | valvet finns men går inte att läsa för den roll som äger funktionerna. Kör migrationen igen i SQL-editorn, som `postgres` |
+| `"push_url": null` | migrationen är inte körd, eller så kördes den på ett annat projekt |
+| `"mottagare": 0` | steg 5 |
+
+### Bevis att hemligheten inte läcker
+
+Nyckeln läses av `public.fbmejl_hemlighet()`, som är `security definer` med
+`set search_path` och indragen från **alla** roller — `anon`, `authenticated`
+och `service_role`. Migrationen bevisar det själv när den körs, genom att byta
+roll till `anon` på riktigt och kräva att anropet nekas. Vill du se det igen:
+
+```sql
+select
+  has_function_privilege('anon','public.fbmejl_hemlighet(text)','execute')          as anon_hemlighet,
+  has_function_privilege('authenticated','public.fbmejl_hemlighet(text)','execute') as auth_hemlighet,
+  has_function_privilege('anon','public.fbmejl_valv_las(text)','execute')           as anon_valv_las,
+  has_function_privilege('anon','public.fbmejl_anropsnyckel()','execute')           as anon_nyckel,
+  coalesce((select has_schema_privilege('anon', n.oid, 'usage')
+              from pg_namespace n where n.nspname = 'vault'), false)                as anon_valv_schema,
+  coalesce((select has_table_privilege('anon', c.oid, 'select')
+              from pg_class c join pg_namespace n on n.oid = c.relnamespace
+             where n.nspname = 'vault' and c.relname = 'decrypted_secrets'), false) as anon_valv_vy;
+```
+
+**Alla sex ska vara `false`.** En enda `true` betyder att nyckeln är läsbar för
+den publika nyckel som ligger öppet i `js/config.js`, och då är den ingen
+hemlighet.
+
+Och att den inte kan hamna i notisloggen — ska ge noll rader:
+
+```sql
+select id, skickat_at, left(skal, 120) from public.fbmejl_notis_logg
+ where skal ~ 'eyJ[A-Za-z0-9._-]{20,}'
+    or skal ~ 'sb_[a-z]+_[A-Za-z0-9_-]{20,}'
+    or (public.fbmejl_anropsnyckel() is not null
+        and position(public.fbmejl_anropsnyckel() in coalesce(skal, '')) > 0);
+```
+
+### Var adressen ligger, och varför inte i valvet
+
+Adressen står i `public.fbmejl_installningar` i klartext:
+
+```sql
+select nyckel, varde, uppdaterad from public.fbmejl_installningar;
+```
+
+Det är ett medvetet val. En URL till en edge-funktion är ingen hemlighet:
+projekt-id:t står redan i `js/config.js`, och funktionen svarar 401 på varje
+anrop utan nyckel. Läggs den i valvet köper det ingenting och kostar två saker
+— värdet går inte längre att **läsa** när du felsöker, och nästa människa som
+öppnar valvsidan ser två hemligheter utan att veta vilken som är den riktiga.
+Ett valv där hälften inte är hemligt är ett valv man slutar tro på.
+
+Tabellen har radsäkerhet på och allt indraget från `anon` och `authenticated`.
+Den är alltså inte offentlig — bara okrypterad.
+
+Behöver du ändra adressen:
+
+```sql
+select public.fbmejl_satt_installning('fbmejl_push_url',
+  'https://livvehyqowmcafnisxho.supabase.co/functions/v1/fbmejl-push');
+```
+
+Sättaren vägrar värden som har formen av en nyckel. Det är med flit: den som
+just fått "url saknas" och står med nyckeln i urklipp är en klistring från att
+lägga en service role-nyckel i klartext i en tabell som ligger i varje backup.
+
+### Har du superuser? Då fungerar den gamla vägen fortfarande
+
+Läsordningen är **inställningstabell → valv → `current_setting('app.…')` →
+null**. Sista steget är kvar med flit: på en egen Postgres eller ett projekt
+där `alter database` fungerar är raderna redan körda, och kedjan går utan att
+någonting behöver ändras. Ingen fungerande installation slutar fungera av den
+här migrationen.
 
 ---
 
@@ -484,46 +704,55 @@ select id, skickat_at, antal, utfall, titel, left(skal, 160)
 | `utfall = ingen-mottagare` | noll prenumeranter har gruppnotiser på | steg 5 |
 | `utfall = sparrad`, `skal = natt` | klockan är mellan 23 och 06 | inget fel |
 | `utfall = sparrad`, `skal = for-tatt` | mindre än 10 minuter sedan förra | inget fel |
-| `utfall = fel`, `skal = app.fbmejl_push_url saknas` | inställningen är inte satt, eller så läses den i en gammal anslutning | steg 4, och öppna en **ny** SQL-flik |
+| `utfall = fel`, `skal = fbmejl_push_url saknas` | adressen är inte satt | `select public.fbmejl_notis_konfig();`, sedan steg 1b |
+| `utfall = fel`, `skal = anropsnyckel saknas` | ingen nyckel i valvet, eller fel namn på hemligheten | steg 4, kolla stavningen `fbmejl_anropsnyckel` |
 | `utfall = fel`, `skal = pg_net saknas` | tillägget pg_net är inte påslaget | Dashboard → Database → Extensions → `pg_net` |
 | `utfall = fel` med `HTTP 404` | `fbmejl-push` är inte utrullad, eller heter fel | steg 2 |
-| `utfall = fel` med `HTTP 401` | `app.service_role_key` är inte den nyckel funktionen godtar | se nedan |
+| `utfall = fel` med `HTTP 401` | nyckeln i valvet är inte den funktionen godtar | se nedan |
 | Allt står kvar som `koad` | avstämningen körs inte | `select public.fbmejl_notis_stam_av();` och kolla cron-jobbet `polisvakt-fbmejl-notisavstamning` |
 | `kvitterad`, men ingen notis i luren | servern gjorde sitt; felet är i telefonen | notiser avstängda för appen i telefonens inställningar, eller batterioptimering |
 | Notisen säger "Polisvakt / Dags att köra?" | fältnamnen översätts inte | edge-funktionen är en gammal version — rulla ut den igen, steg 2 |
 
-### `HTTP 401` — de två nyckelutgåvorna
+### `HTTP 401` — nyckeln i valvet är inte den funktionen godtar
 
-Detta är kedjans mest tidsödande fel, och det ser ut som ett behörighetsfel
-när det egentligen är två utgåvor av **samma** behörighet.
+Detta är kedjans mest tidsödande fel. Två varianter, och de ser likadana ut.
 
-Projektet har nya API-nycklar. Dashboarden visar då både en `sb_secret_…` och
-en äldre `eyJ…`-JWT, och plattformen injicerar en av dem i funktionens
-miljövariabel. Sätter du `app.service_role_key` till den andra svarar
-funktionen 401 på varje anrop.
+**Öppna först loggen.** Dashboard → **Edge Functions → `fbmejl-push` → Logs**,
+leta efter raden som börjar `Nekat anrop.` Den säger vilken **form och längd**
+som skickades och vilka som godtas — utan att skriva ut någon nyckel.
 
-Funktionen godtar numera alla nycklar den känner till och **loggar formen**
-när den nekar. Öppna **Dashboard → Edge Functions → fbmejl-push → Logs** och
-leta efter raden som börjar `Nekat anrop.` Den säger vilken form och längd som
-skickades och vilka som godtas — utan att skriva ut någon nyckel.
+Jämför med databassidan:
 
-* **Olika form** (`eyJ` mot `sb_`): sätt `app.service_role_key` till den andra
-  utgåvan.
+```sql
+select public.fbmejl_notis_konfig();
+```
+
+**Variant 1 — de två fälten är inte samma sträng.** Använder du en egen
+`FBMEJL_ANROPSNYCKEL` måste hemligheten på edge-funktionen och hemligheten
+`fbmejl_anropsnyckel` i valvet vara **exakt** samma. Loggen säger vilken längd
+den fick och vilka längder den godtar; skiljer de sig är det en av dem som är
+fel. Sätt om båda från samma urklipp.
+
+Är längden 0 i `nyckel_langd` finns ingen nyckel alls i valvet — kolla att
+hemligheten heter `fbmejl_anropsnyckel` och inget annat.
+
+Är nyckeln **kortare än 20 tecken** räknas den inte av edge-funktionen alls.
+Den skriver då en rad vid uppstart som säger vilken variabel och vilken längd.
+Ta en längre sträng.
+
+**Variant 2 — de två utgåvorna av service role-nyckeln.** Gäller bara om du
+valde att lägga `service_role_key` i valvet i stället för en egen sträng.
+Projektet har nya API-nycklar: dashboarden visar då både en `sb_secret_…` och
+en äldre `eyJ…`-JWT, plattformen injicerar **en** av dem i funktionens
+miljövariabel, och lägger du den andra i valvet svarar funktionen 401 på varje
+anrop. Ingenting säger att de bara är olika utgåvor av samma behörighet.
+
+* **Olika form** (`eyJ` mot `sb_` i loggraden): lägg den andra utgåvan i valvet.
 * **Samma form, olika längd**: det är en nyckel från ett annat projekt.
-* **Får du det inte att gå ihop**: sätt en egen hemlighet i stället, och peka
-  databasen på den.
-
-  ```powershell
-  supabase secrets set FBMEJL_ANROPSNYCKEL="en-lang-slumpad-strang"
-  ```
-
-  ```sql
-  alter database postgres set app.service_role_key = 'en-lang-slumpad-strang';
-  ```
-
-  Öppna en ny SQL-flik efteråt. Notera att `app.service_role_key` då bara
-  används mot `fbmejl-push`; använder du samma inställning för andra jobb
-  måste de också klara den nyckeln.
+* **Får du det inte att gå ihop**: sluta använda service role-nyckeln. Sätt en
+  egen sträng enligt steg 4 i stället — den har ingen andra utgåva att
+  förväxlas med, och det är hela skälet till att den vägen är den
+  rekommenderade.
 
 ---
 
@@ -532,7 +761,8 @@ skickades och vilka som godtas — utan att skriva ut någon nyckel.
 | Fil | Roll |
 |---|---|
 | `supabase/fbmejl.sql` | hela serversidan, idempotent, kör om när som helst |
-| `supabase/migrationer/2026-08-21-brygga-notiskedja.sql` | den här ändringen som delta |
+| `supabase/migrationer/2026-08-21-brygga-notiskedja.sql` | notiskedjan som delta |
+| `supabase/migrationer/2026-08-21-konfiguration-i-valvet.sql` | konfigurationen ur Vault, utan `alter database` |
 | `supabase/functions/fbmejl-push/index.ts` | edge-funktionen som skickar pushen |
 | `js/sammanfattning.js` | samma mening, byggd på klienten |
 | `js/parser.js` | `SOBRIETY_WORDS` / `SOBRIETY_STAMMAR` — produktregeln |

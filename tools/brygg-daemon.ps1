@@ -277,6 +277,36 @@ function Plocka-Strang {
 $script:SupabaseUrl = Plocka-Strang -Kalla $script:BryggKalla -Falt 'supabaseUrl'
 $script:SupabaseKey = Plocka-Strang -Kalla $script:BryggKalla -Falt 'supabaseKey'
 
+# ---- service_role-nyckeln, bara i skarpt läge -----------------------------
+#
+# fbmejl_ta_emot är revokad från anon med flit: den skriver rapporter och
+# utlöser notiser. Anon-nyckeln ovan ligger öppet i appens källkod och duger
+# därför inte här.
+#
+# Nyckeln läses ur tools/fbmejl.hemligheter.json, som är gitignorerad sedan
+# mejlpollaren behövde ett IMAP-lösenord. Den ligger ALDRIG i den här filen
+# och aldrig i bryggkoden — repot är publikt.
+#
+# Läses även i torrkörning, men bara för att kunna säga till i förväg att
+# den saknas. Bättre att få veta nu än när det första riktiga inlägget dyker
+# upp och ingenting händer.
+$script:HemligFil = Join-Path $PSScriptRoot 'fbmejl.hemligheter.json'
+$script:ServiceRoleKey = $null
+if (Test-Path $script:HemligFil) {
+  try {
+    $h = Get-Content -Raw -Encoding UTF8 $script:HemligFil | ConvertFrom-Json
+    foreach ($namn in @('supabase_service_role', 'service_role', 'SUPABASE_SERVICE_ROLE_KEY')) {
+      $v = $h.PSObject.Properties[$namn]
+      if ($v -and $v.Value) { $script:ServiceRoleKey = ([string]$v.Value).Trim(); break }
+    }
+  } catch {
+    Write-Host "Kunde inte läsa $($script:HemligFil): $($_.Exception.Message)" -ForegroundColor Red
+  }
+}
+if (-not $script:ServiceRoleKey -and $env:PV_SUPABASE_SERVICE_KEY) {
+  $script:ServiceRoleKey = $env:PV_SUPABASE_SERVICE_KEY.Trim()
+}
+
 # ---- Området och livslängderna, ur samma fil ------------------------------
 # Förvalet är Västmanland, samma siffror som bryggan alltid haft. Det är bara
 # ett golv: vid första svepet hämtar daemonen gruppens verkliga ruta ur
@@ -1149,18 +1179,46 @@ function Geokoda {
 #  Skrivning till Supabase — bara i skarpt läge
 # =====================================================================
 
-function Skicka-Rad {
-  param($Rad)
-  if (-not $Skarpt) { throw 'Skicka-Rad anropad i torrkörning. Det är ett fel i daemonen.' }
+# Hela svepets rader går i ETT anrop till fbmejl_ta_emot.
+#
+# VARFÖR INTE RAKT TILL reports
+#
+# Daemonen skrev förut till /rest/v1/reports. Rapporten hamnade på kartan och
+# telefonen var tyst — det finns ingen utlösare på den tabellen. Notisen,
+# takten, avdubblingen och nykterhetsnätet sitter allihop i fbmejl_ta_emot,
+# och den vägen gick daemonen förbi. Ett led som rapporterar 201 medan
+# slutresultatet är noll är den svåraste sortens fel, och det här projektet
+# har haft tre av dem.
+#
+# VARFÖR EN OMGÅNG OCH INTE EN RAD I TAGET
+#
+# fbmejl_ta_emot buntar med flit: den skickar EN notis för hela omgången och
+# räknar resten som "odelade" till nästa gång. Fyra separata anrop blir fyra
+# omgångar, alltså en notis plus tre varningar som spärren håller tillbaka i
+# tio minuter — och ingenstans syns att det hände. Därför samlas svepet i en
+# utkorg och skickas i ett svep.
+#
+# Servern sätter source själv. Raderna ser ut precis som förut.
 
-  $url = $script:SupabaseUrl + '/rest/v1/reports?on_conflict=external_id'
-  $svar = Invoke-RestMethod -Uri $url -Method Post -TimeoutSec 25 -ContentType 'application/json' -Headers @{
-    'apikey'        = $script:SupabaseKey
-    'Authorization' = 'Bearer ' + $script:SupabaseKey
-    'Prefer'        = 'resolution=ignore-duplicates,return=representation'
-  } -Body (ConvertTo-Json $Rad -Depth 6 -Compress)
+function Skicka-Omgang {
+  param([object[]]$Rader)
+  if (-not $Skarpt) { throw 'Skicka-Omgang anropad i torrkörning. Det är ett fel i daemonen.' }
+  if (-not $Rader -or $Rader.Count -eq 0) { return $null }
+  if (-not $script:ServiceRoleKey) {
+    throw 'Ingen service_role-nyckel. Lägg den i tools/fbmejl.hemligheter.json under "supabase_service_role". Filen är gitignorerad.'
+  }
 
-  return (@($svar).Count -gt 0)
+  $url = $script:SupabaseUrl + '/rest/v1/rpc/fbmejl_ta_emot'
+  $kropp = @{ p_rader = @($Rader) } | ConvertTo-Json -Depth 8 -Compress
+
+  # service_role, inte anon-nyckeln. fbmejl_ta_emot är revokad från anon med
+  # flit: den skriver rapporter och utlöser notiser.
+  $svar = Invoke-RestMethod -Uri $url -Method Post -TimeoutSec 30 -ContentType 'application/json' -Headers @{
+    'apikey'        = $script:ServiceRoleKey
+    'Authorization' = 'Bearer ' + $script:ServiceRoleKey
+  } -Body $kropp
+
+  return $svar
 }
 
 # =====================================================================
@@ -1320,6 +1378,11 @@ function Behandla-Svep {
       $nya++
     }
   }
+
+  # Svepets utkorg. Töms varje svep, skickas i ETT anrop efter loopen så att
+  # fbmejl_ta_emot ser dem som en omgång och buntar notisen. Se Skicka-Omgang.
+  $utkorg = @()
+  $utkorgNycklar = @()
 
   foreach ($p in $poster) {
 
@@ -1497,20 +1560,44 @@ function Behandla-Svep {
       continue
     }
 
+    # Skickas inte här. Läggs i utkorgen och går i ett anrop efter svepet,
+    # så att fbmejl_ta_emot ser dem som EN omgång och skickar EN notis.
+    $utkorg += ,$rad
+    $utkorgNycklar += ,$p.nyckel
+    Logga 'KÖAD' (
+      'typ=' + $typ + ' plats="' + $traff.label + '" ålder=' + $alderMin + 'min (' + $p.kalla + ')'
+    ) DarkGray
+  }
+
+  # ---- Utkorgen: ett anrop för hela svepet ----------------------------
+  if ($Skarpt -and $utkorg.Count -gt 0) {
     try {
-      $ny = Skicka-Rad -Rad $rad
-      Markera-Klar $p.nyckel
-      if ($ny) {
-        $script:Summa.skickade++
-        Logga 'SKICKAD' ('typ=' + $typ + ' plats="' + $traff.label + '" ålder=' + $alderMin + 'min (' + $p.kalla + ')') Green
-        Logga 'SKICKAD' ('  text: "' + (Kort ([string]$p.text) 240) + '"') Green
-      } else {
-        $script:Summa.dubbletter++
-        Logga 'DUBBLETT' ('extid=' + $rad.external_id + ' fanns redan') DarkGray
+      $svar = Skicka-Omgang -Rader $utkorg
+      foreach ($n in $utkorgNycklar) { Markera-Klar $n }
+
+      # Läs av vad servern FAKTISKT gjorde. Det är den återkopplingen som
+      # saknades och som lät det gamla felet leva: daemonen sa "skickad"
+      # medan ingenting hände på andra sidan.
+      $skapade = 0; $dubbletter = 0; $vagrade = 0; $notis = 'okänd'
+      if ($svar) {
+        if ($null -ne $svar.skrivna)    { $skapade    = [int]$svar.skrivna }
+        elseif ($null -ne $svar.skapade){ $skapade    = [int]$svar.skapade }
+        if ($null -ne $svar.dubbletter) { $dubbletter = [int]$svar.dubbletter }
+        if ($null -ne $svar.vagrade)    { $vagrade    = [int]$svar.vagrade }
+        if ($null -ne $svar.notis)      { $notis      = [string]$svar.notis }
+      }
+      $script:Summa.skickade   += $skapade
+      $script:Summa.dubbletter += $dubbletter
+      Logga 'OMGÅNG' (
+        'skickade=' + $utkorg.Count + ' rapporter=' + $skapade +
+        ' dubbletter=' + $dubbletter + ' vägrade=' + $vagrade + ' notis=' + $notis
+      ) Green
+      if ($skapade -gt 0 -and $notis -eq 'False') {
+        Logga 'OMGÅNG' ('  rapport skapad men INGEN notis — se fbmejl_notis_logg för skälet') Yellow
       }
     } catch {
-      $script:Summa.misslyckade++
-      Markera-Forsok $p.nyckel
+      $script:Summa.misslyckade += $utkorg.Count
+      foreach ($n in $utkorgNycklar) { Markera-Forsok $n }
       Logga 'SKICK-FEL' ($_.Exception.Message) Red
     }
   }

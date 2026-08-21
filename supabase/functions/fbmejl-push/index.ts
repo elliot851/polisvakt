@@ -59,12 +59,34 @@
 //
 // SUPABASE_URL och SUPABASE_SERVICE_ROLE_KEY injiceras av plattformen.
 //
-//   FBMEJL_ANROPSNYCKEL   VALFRI. Sätts bara om anropen från databasen får
-//                         401 — se TILLATNA_ANROPSNYCKLAR nedan.
+//   FBMEJL_ANROPSNYCKEL   REKOMMENDERAD. En egen lång slumpad sträng, bara
+//                         för det här anropet. Se nedan.
 //
-// Anroparen legitimerar sig med service role-nyckeln i Authorization-huvudet.
-// Det är den nyckel fbmejl_notis_ut() plockar ur app.service_role_key. Se
-// kontrollen i Deno.serve() nedan, och läs varför den behövs där.
+// Anroparen legitimerar sig med en nyckel i Authorization-huvudet. Vilken
+// nyckel den plockar upp bestäms av public.fbmejl_anropsnyckel() i
+// supabase/fbmejl.sql, som läser i den här ordningen:
+//
+//   1. valvet, hemligheten som heter fbmejl_anropsnyckel
+//   2. valvet, hemligheten som heter service_role_key
+//   3. current_setting('app.fbmejl_anropsnyckel') respektive
+//      current_setting('app.service_role_key'), den gamla vägen
+//
+// FÖRSTA VÄGEN ÄR DEN SOM SKA ANVÄNDAS, och det är ett val med skäl. Sätt
+// FBMEJL_ANROPSNYCKEL här och samma sträng i valvet under namnet
+// fbmejl_anropsnyckel:
+//
+//   * Den roteras utan att röra något annat i projektet. Service role-nyckeln
+//     bärs av varje jobb och skript; den här bärs av ett anrop.
+//   * Läcker den kostar den mindre. Service role-nyckeln går förbi all
+//     radsäkerhet i hela databasen. Den här kan skicka en gruppnotis — illa
+//     nog, se kontrollen i Deno.serve() nedan, men en skada med en botten.
+//   * Den har ingen andra utgåva att förväxlas med, vilket är precis den
+//     fälla som beskrivs vid TILLATNA_ANROPSNYCKLAR nedan.
+//
+// Databasinställningarna i steg 3 finns kvar för bakåtkompatibilitet. På ett
+// Supabase-projekt går de INTE att sätta: SQL-editorn kör som rollen postgres,
+// som inte är superuser, och alter database ... set svarar 42501. Se
+// docs/notiskedjan.md.
 
 import * as webpush from 'jsr:@negrel/webpush@0.5.0';
 
@@ -85,22 +107,51 @@ const SERVICE_ROLE =
  *
  * Projektet har nya API-nycklar (js/config.js bär en sb_publishable-nyckel).
  * Dashboarden visar då både den nya hemliga nyckeln och den gamla JWT:n, och
- * plattformen injicerar EN av dem i SUPABASE_SERVICE_ROLE_KEY. Sätter man
- * app.service_role_key i databasen till den andra svarar funktionen 401 på
- * varje anrop. I fbmejl_notis_logg står det då 'fel' med "HTTP 401", och
- * ingenting säger att de två nycklarna bara är olika utgåvor av samma
- * behörighet.
+ * plattformen injicerar EN av dem i SUPABASE_SERVICE_ROLE_KEY. Lägger man den
+ * andra i valvet svarar funktionen 401 på varje anrop. I fbmejl_notis_logg
+ * står det då 'fel' med "HTTP 401", och ingenting säger att de två nycklarna
+ * bara är olika utgåvor av samma behörighet.
  *
- * Därför: alla nycklar vi känner till duger, och en valfri egen hemlighet
- * FBMEJL_ANROPSNYCKEL går att sätta om ingen av dem matchar det databasen
- * har. Listan filtreras på längd så en tom miljövariabel aldrig kan bli en
- * giltig tom nyckel — det vore ett öppet API.
+ * Därför: alla nycklar vi känner till duger, och en egen hemlighet
+ * FBMEJL_ANROPSNYCKEL går att sätta — den är numera den rekommenderade
+ * vägen, se hemlighetslistan överst i filen. Listan filtreras på längd så en
+ * tom miljövariabel aldrig kan bli en giltig tom nyckel — det vore ett öppet
+ * API.
  */
+const MIN_NYCKELLANGD = 20;
+
 const TILLATNA_ANROPSNYCKLAR = [
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
   Deno.env.get('SERVICE_ROLE_KEY') ?? '',
   Deno.env.get('FBMEJL_ANROPSNYCKEL') ?? '',
-].filter((k) => k.length >= 20);
+].filter((k) => k.length >= MIN_NYCKELLANGD);
+
+/**
+ * En satt men för kort nyckel är värre än ingen nyckel alls.
+ *
+ * Längdfiltret ovan är rätt, men det är TYST. Sätter ägaren
+ * FBMEJL_ANROPSNYCKEL till något kort — en handskriven sträng istället för en
+ * slumpad — faller den ur listan, databasen skickar den lydigt, och svaret
+ * blir 401 på en nyckel som ser precis rätt ut i båda ändarna. Det felet är
+ * osynligt i allt utom den här raden.
+ *
+ * Loggas vid uppstart, med namn och LÄNGD. Aldrig värdet.
+ */
+for (const namn of ['SUPABASE_SERVICE_ROLE_KEY', 'SERVICE_ROLE_KEY', 'FBMEJL_ANROPSNYCKEL']) {
+  const v = Deno.env.get(namn) ?? '';
+  if (v.length > 0 && v.length < MIN_NYCKELLANGD) {
+    console.error(
+      `${namn} är satt men bara ${v.length} tecken lång och räknas därför inte. ` +
+        `Minst ${MIN_NYCKELLANGD} krävs. Sätt en längre sträng, i BÅDA ändarna: här och i valvet.`,
+    );
+  }
+}
+if (TILLATNA_ANROPSNYCKLAR.length === 0) {
+  console.error(
+    'INGEN giltig anropsnyckel i miljön — varje anrop kommer att nekas med 401. ' +
+      'Sätt FBMEJL_ANROPSNYCKEL. Se docs/notiskedjan.md.',
+  );
+}
 
 /**
  * Livslängd på pushen hos pushtjänsten.
@@ -322,7 +373,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
    * alls, för den skulle vara osynlig i alla loggar.
    *
    * Anroparen är fbmejl_notis_ut() via pg_net, som sätter huvudet från
-   * app.service_role_key. Bara den nyckeln duger.
+   * public.fbmejl_anropsnyckel() — normalt hemligheten fbmejl_anropsnyckel i
+   * valvet. Bara en nyckel ur listan ovan duger.
    */
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
@@ -330,8 +382,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Diagnosen, utan att logga en hemlighet.
     //
     // Ett 401 utan förklaring ser exakt likadant ut oavsett om anroparen är
-    // en främling eller om ägaren råkat sätta app.service_role_key till fel
-    // utgåva av sin egen nyckel. Det ena kräver ingenting, det andra kräver
+    // en främling eller om ägaren råkat lägga fel utgåva av sin egen nyckel i
+    // valvet. Det ena kräver ingenting, det andra kräver
     // en rättning — och skillnaden syns i FORMEN och LÄNGDEN, inte i
     // innehållet. Nycklarnas tre första tecken skiljer 'eyJ' (JWT) från
     // 'sb_' (ny hemlig nyckel), och det räcker för att se felet.
@@ -406,6 +458,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // fbmejl_notis_logg.skal — kapat till 200 tecken. Håll det kort och håll
   // talen först, så de överlever kapningen. Det här är den enda plats där
   // frågan "nådde notisen fram?" får ett svar som går att spara.
+  //
+  // OCH: fem tal, ingenting annat. Aldrig ett värde ur Deno.env, aldrig ett
+  // eko av inkommande huvuden, aldrig en endpoint. Allt som står här hamnar i
+  // en tabell som följer med i varje backup. Databassidan maskar visserligen
+  // nyckelformer innan den sparar — se fbmejl_dolj_hemligheter() i
+  // supabase/fbmejl.sql — men det är ett skyddsnät mot att adressen pekar på
+  // NÅGON ANNANS server. Det är inte en ursäkt för att skriva något känsligt
+  // här.
   return Response.json({
     ok: true,
     mottagare: rader.length,
