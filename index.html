@@ -273,6 +273,20 @@
     <button class="ub-close" id="ubLater" type="button" aria-label="Senare">✕</button>
   </div>
 
+  <!-- Vad som hänt sedan sist.
+       Ligger på kartan och inte i en meny: den som måste leta efter nyheter
+       slutar leta. Räknar rapporter som kommit in sedan appen senast var
+       öppen, och försvinner när man tittat. -->
+  <div class="nya-banner" id="nyaBanner" hidden>
+    <span class="nya-ikon" id="nyaIkon">🚓</span>
+    <div class="nya-text">
+      <b id="nyaRubrik"></b>
+      <span id="nyaNot"></span>
+    </div>
+    <button id="nyaVisa" type="button">Visa</button>
+    <button class="nya-close" id="nyaStang" type="button" aria-label="Stäng">✕</button>
+  </div>
+
   <!-- Varningsbanner -->
   <div id="alertBanner" class="alert-banner" hidden>
     <div class="alert-icon" id="alertIcon">⚠️</div>

@@ -243,6 +243,7 @@ async function boot() {
   wireDriving();
   wireUpdates();
   wireUpdateBanner();
+  wireSedanSist();
   wireCoverage();
   wireRoute();
   wireWinter();
@@ -5083,6 +5084,120 @@ function applyUpdateWhenSafe() {
   pendingUpdate = false;
   toast('Ny version installerad. Startar om appen…', 2500);
   setTimeout(() => location.reload(), 1200);
+}
+
+/* ================= "Sedan sist" =================
+ *
+ * En rad högst upp som säger vad som hänt medan appen var stängd, och
+ * försvinner när man tittat.
+ *
+ * Skälet den finns: rapporterna hamnar på kartan och i listan, men den som
+ * öppnar appen ser inte SKILLNADEN mot förra gången. Man måste leta, och den
+ * som måste leta slutar leta. Varningsbannern hjälper inte här — den bygger
+ * på närhet och tystnar om faran är fem kilometer bort, vilket den oftast är
+ * när man just låst upp telefonen hemma.
+ *
+ * TVÅ FÄLLOR SOM AVGJORDE HUR DEN RÄKNAR:
+ *
+ * 1. "Sedan sist" måste betyda sedan du SÅG, inte sedan appen startade.
+ *    Räknar man från appstart nollställs den av varje omladdning — och appen
+ *    laddar om sig själv vid varje ny version. Tidpunkten sparas därför i
+ *    lagringen och överlever både omladdning och att telefonen stängs av.
+ *
+ * 2. Räkna på när rapporten SKAPADES, inte när vi hämtade den. Hämtningen
+ *    säger bara när vår telefon råkade fråga; två förare hade fått olika
+ *    svar på samma fråga. createdAt är samma för alla.
+ *
+ * Egna rapporter räknas inte. Man behöver inte påminnas om det man själv
+ * nyss skrev in.
+ */
+const SEDAN_SIST_NYCKEL = 'pv.sedanSist.v1';
+const SEDAN_SIST_TAK_MS = 24 * 60 * 60 * 1000;   // "dagens rapporter", inte veckans
+
+function sedanSistLast() {
+  const n = Number(localStorage.getItem(SEDAN_SIST_NYCKEL));
+  // Första gången: räkna från nu, inte från 1970. Annars möts en ny användare
+  // av "47 nya rapporter", vilket varken är sant eller användbart.
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
+  // Har telefonen legat i en låda i en vecka är "sedan sist" inte intressant
+  // längre. Ett dygn är det längsta som fortfarande betyder något för någon
+  // som ska köra bil idag.
+  return Math.max(n, Date.now() - SEDAN_SIST_TAK_MS);
+}
+
+function sedanSistSpara(t = Date.now()) {
+  try { localStorage.setItem(SEDAN_SIST_NYCKEL, String(t)); } catch {}
+}
+
+/** De rapporter som kommit in sedan man tittade sist, nyast först. */
+function nyaSedanSist() {
+  const sedan = sedanSistLast();
+  return store.active()
+    .filter(h => !h.fixed                       // fasta kameror är aldrig nyheter
+              && Number(h.createdAt) > sedan
+              && !arMin(h))                     // inte det man själv rapporterat
+    .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+}
+
+function renderSedanSist() {
+  const el = $('nyaBanner');
+  if (!el) return;
+  if (el.dataset.stangd === '1') { el.hidden = true; return; }
+
+  const nya = nyaSedanSist();
+  if (!nya.length) { el.hidden = true; return; }
+
+  const senaste = nya[0];
+  $('nyaIkon').textContent = TYPE_ICON[senaste.type] || '⚠️';
+  $('nyaRubrik').textContent = nya.length === 1
+    ? '1 ny rapport sedan sist'
+    : `${nya.length} nya rapporter sedan sist`;
+  // Den senaste i klartext. En siffra ensam säger inte om det är värt att
+  // titta; en mening gör det.
+  $('nyaNot').textContent = sammanfattaKort(senaste);
+  el.hidden = false;
+}
+
+function wireSedanSist() {
+  const el = $('nyaBanner');
+  if (!el) return;
+
+  const kvittera = () => {
+    sedanSistSpara();
+    el.dataset.stangd = '1';
+    el.hidden = true;
+  };
+
+  $('nyaVisa').onclick = () => {
+    kvittera();
+    showView('map');
+    // Öppna listan så man ser allihop, inte bara den översta.
+    $('sheet')?.classList.add('open');
+    renderHazards();
+  };
+  $('nyaStang').onclick = kvittera;
+
+  store.addEventListener('change', renderSedanSist);
+
+  /*
+   * Räkna om när appen kommer tillbaka i förgrunden.
+   *
+   * Det är då man faktiskt tittar, och det är hela poängen med funktionen:
+   * du låser upp mobilen, går in, och ser direkt vad som hänt. Utan den här
+   * raden hade bannern bara ritats vid start, och en app som legat öppen i
+   * bakgrunden hela dagen hade aldrig sagt något.
+   *
+   * Stängd-flaggan nollställs här: nästa gång du kommer tillbaka är det en ny
+   * gång, och det du redan kvitterat räknas inte igen eftersom tidpunkten
+   * flyttades fram när du kvitterade.
+   */
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    delete el.dataset.stangd;
+    renderSedanSist();
+  });
+
+  renderSedanSist();
 }
 
 function wireUpdateBanner() {

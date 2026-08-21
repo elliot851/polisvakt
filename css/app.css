@@ -1583,3 +1583,42 @@ body.is-morkt .topp { visibility: hidden; }
    längre än det den ersatte, så den behöver luft och radavstånd — annars
    läser man den inte i en bil. */
 .pop-sum { font-size: 13px; line-height: 1.45; margin: 5px 0 0; }
+
+/* ---------- "Sedan sist"-banner på kartan ----------
+
+   Samma form som ny version-bannern, men grön i stället för blå. Skillnaden
+   ska synas i ögonvrån: den blå betyder "appen vill något av dig", den gröna
+   betyder "något har hänt på vägen". Ligger under den blå (top-offset) så de
+   aldrig täcker varandra när båda är uppe. */
+.nya-banner {
+  position: absolute; z-index: 875;
+  top: calc(var(--safe-top) + 66px); left: 10px; right: 10px;
+  display: flex; align-items: center; gap: 12px;
+  background: linear-gradient(180deg, #1f7a4d, #17603c);
+  border: 1px solid rgba(255,255,255,.2);
+  border-radius: var(--radius); padding: 11px 12px 11px 14px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  animation: slam .28s cubic-bezier(.2,1.3,.4,1);
+}
+.nya-banner[hidden] { display: none; }
+
+/* Är ny version uppe samtidigt hamnar den här under, inte ovanpå. */
+.update-banner:not([hidden]) ~ .nya-banner {
+  top: calc(var(--safe-top) + 66px + 72px);
+}
+
+.nya-ikon { font-size: 20px; flex: none; }
+.nya-text { flex: 1; min-width: 0; }
+.nya-text b { display: block; font-size: 15px; }
+.nya-text span {
+  font-size: 12.5px; opacity: .9;
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nya-banner > button {
+  background: #fff; color: #145433; font-weight: 700; font-size: 13.5px;
+  padding: 9px 14px; border-radius: 10px; flex: none;
+}
+.nya-banner .nya-close {
+  background: transparent; color: #fff; opacity: .7; font-size: 15px;
+  padding: 6px 2px; width: auto;
+}
