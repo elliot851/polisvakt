@@ -56,8 +56,19 @@ if (-not $chrome) {
   exit 1
 }
 
-# Tillägget laddas direkt från mappen. Ingen Tampermonkey, ingen
-# installationssida, inget klick. Se tools\brygg-tillagg\LASMIG.md.
+# OBS: --load-extension fungerar INTE längre.
+#
+# Chrome tog bort flaggan av säkerhetsskäl. Uppmätt på Chrome 151, egen
+# profil, isolerat test: tillägget laddades inte, window.__polisvakt fanns
+# inte. Flaggan skickas fortfarande med — den skadar inget och börjar
+# fungera igen om Google ändrar sig — men förlita dig inte på den.
+#
+# Tillägget måste installeras EN gång via chrome://extensions:
+#   Utvecklarläge på  ->  Läs in okomprimerat  ->  välj tools\brygg-tillagg
+# Efter det ligger det kvar och laddas vid varje start, utan den här filen.
+#
+# Det den här startaren fortfarande gör nytta för är flaggorna mot
+# timer-strypning. Se längre ned.
 $tillagg = Join-Path $PSScriptRoot 'brygg-tillagg'
 if (-not (Test-Path (Join-Path $tillagg 'manifest.json'))) {
   Write-Host "Hittar inte tillagget i $tillagg" -ForegroundColor Red
@@ -73,7 +84,6 @@ if (-not (Test-Path (Join-Path $tillagg 'manifest.json'))) {
 # var tyst, vilket ser likadant ut som allt annat som gar fel har.
 $argument = @(
   "--load-extension=`"$tillagg`"",
-  "--disable-extensions-except=`"$tillagg`"",
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
@@ -87,10 +97,25 @@ $argument = @(
   "https://www.facebook.com/groups/$GruppId/"
 )
 
-if (-not $AnvandVanligProfil) {
+if ($AnvandVanligProfil) {
+  # Din vanliga profil: redan inloggad, alla tillagg kvar. Priset ar att
+  # Chrome laser --load-extension bara vid uppstart, sa allt maste vara
+  # stangt forst. Kollar det i stallet for att tyst starta en flik i den
+  # instans som redan kor -- da hade flaggorna ignorerats och bryggan aldrig
+  # laddats, vilket ser likadant ut som allt annat som gar fel har.
+  $kor = Get-Process chrome -ErrorAction SilentlyContinue
+  if ($kor) {
+    Write-Host 'Chrome kor redan. Flaggorna ignoreras da och bryggan laddas INTE.' -ForegroundColor Red
+    Write-Host 'Stang Chrome helt och kor om, eller kor utan -AnvandVanligProfil.'
+    exit 1
+  }
+  Write-Host 'Profil: din vanliga (alla flikar och tillagg kvar)'
+} else {
   $profil = Join-Path $env:LOCALAPPDATA 'Polisvakt\chrome-brygga'
   if (-not (Test-Path $profil)) { New-Item -ItemType Directory -Force -Path $profil | Out-Null }
-  $argument = @("--user-data-dir=`"$profil`"") + $argument
+  # Egen profil betyder egna tillagg. Utan den har raden skulle Chrome
+  # ladda noll tillagg dar, vilket ar bra -- men bryggan maste undantas.
+  $argument = @("--user-data-dir=`"$profil`"", "--disable-extensions-except=`"$tillagg`"") + $argument
   Write-Host "Profil: $profil"
 }
 
@@ -100,10 +125,16 @@ Start-Process -FilePath $chrome -ArgumentList $argument
 Write-Host ''
 Write-Host 'Bryggfönstret är startat.' -ForegroundColor Green
 Write-Host ''
-Write-Host 'Bryggan laddas av Chrome sjalv. Ingen Tampermonkey behovs.'
+Write-Host 'FORSTA GANGEN maste tillagget las in for hand en gang:'
+Write-Host '  1. Oppna chrome://extensions'
+Write-Host '  2. Sla pa Utvecklarlage uppe till hoger'
+Write-Host '  3. Las in okomprimerat -> valj mappen:'
+Write-Host "     $tillagg" -ForegroundColor Cyan
+Write-Host '  4. Ladda om gruppsidan'
 Write-Host ''
-Write-Host 'Enda sak du behover gora forsta gangen:'
-Write-Host '  Logga in pa Facebook i det nya fonstret.' -ForegroundColor Cyan
+Write-Host 'Chrome tog bort --load-extension av sakerhetsskal, sa det gar'
+Write-Host 'inte att gora fran kommandoraden langre. Efter steg 1-3 ligger'
+Write-Host 'tillagget kvar och laddas automatiskt varje gang.'
 Write-Host ''
 Write-Host 'Kontrollera i konsolen (F12) att det star:'
 Write-Host "  [Polisvakt] Facebook-bryggan ar igang for grupp $GruppId"

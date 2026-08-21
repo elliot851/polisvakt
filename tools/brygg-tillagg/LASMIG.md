@@ -14,18 +14,35 @@ förbi på distans:
 2. Chrome kräver sedan en extra växel, *Tillåt användarskript*, som är av
    som förval. Utan den installeras skriptet men körs aldrig, helt tyst.
 
-`--load-extension` går förbi båda. Chrome laddar mappen vid start, och
-`world: "MAIN"` gör att koden kör i sidans egen värld — exakt som ett
-användarskript, så `__polisvakt` finns i konsolen som vanligt.
+Ett vanligt tillägg går förbi båda. `world: "MAIN"` gör att koden kör i
+sidans egen värld — exakt som ett användarskript, så `__polisvakt` finns i
+konsolen som vanligt.
 
-## Kör
+## Installera en gång
+
+Chrome tog bort `--load-extension` av säkerhetsskäl — uppmätt på Chrome 151:
+tillägget laddades inte, `window.__polisvakt` fanns inte. Det går alltså inte
+längre att ladda ett tillägg från kommandoraden.
+
+Installera i stället en gång, tre klick:
+
+1. Öppna `chrome://extensions`
+2. Slå på **Utvecklarläge** uppe till höger
+3. **Läs in okomprimerat** → välj mappen `tools\brygg-tillagg`
+
+Efter det ligger tillägget kvar och laddas vid varje start. Ingen
+Tampermonkey, ingen `.user.js`-fångst, ingen växel för användarskript.
+
+
+## Startaren
 
 ```
 powershell -ExecutionPolicy Bypass -File tools\starta-bryggan.ps1
 ```
 
-Startaren pekar ut den här mappen åt Chrome. Du behöver inte röra
-`chrome://extensions`.
+Den installerar ingenting — det gjorde den innan Chrome tog bort flaggan.
+Kvar gör den nytta för flaggorna mot timer-strypning, som håller svepet på
+tjugo sekunder i stället för sextio när fönstret ligger i bakgrunden.
 
 ## Hålls synkad för hand
 
