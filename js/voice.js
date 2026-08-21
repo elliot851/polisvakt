@@ -47,8 +47,29 @@ const audioSession = {
   },
   /** Blanda med musiken. */
   background() { this.set('ambient'); },
-  /** Bryt in, låt musiken återgå efteråt. */
-  announce() { this.set('transient'); },
+  /** Kvar under sitt gamla namn så inget som anropar den går sönder. */
+  announce() { this.duck(); },
+  /*
+   * Varför vi duckar och inte pausar.
+   *
+   * 'transient-solo' hade pausat Spotify helt. Det låter bättre på pappret,
+   * men det lägger ett ansvar på appen som den inte klarar av att bära: går
+   * något fel mitt i en varning — fliken dödas, sidan kraschar, batteriet tar
+   * slut — blir musiken stående pausad, och föraren vet inte varför. En app
+   * som ska göra körningen enklare får inte kunna lämna bilen tyst.
+   *
+   * 'transient' sänker musiken kraftigt medan rösten går och låter
+   * operativsystemet höja tillbaka den efteråt, helt utan att appen behöver
+   * göra något. Blir det fel återgår ljudet ändå. Det är rätt sorts fel att
+   * ha: värsta utfallet är att musiken låter lågt en stund för länge, inte
+   * att den försvinner.
+   *
+   * Ducking finns i Safari på iOS 17 och senare. Saknas API:et hörs rösten
+   * så gott den kan över musiken. Att styra Spotify från en webbapp på
+   * Android går inte alls — plattformsbegränsning, inte något appen kan
+   * koda sig runt.
+   */
+  duck() { this.set('transient'); },
 };
 
 export { audioSession };
@@ -111,7 +132,21 @@ export class Speaker {
     if (!voiceOutputSupported || !this.enabled || !text) return;
     if (this.muted && (opts.priority ?? 1) < 2) return;
 
-    const item = { text, priority: opts.priority ?? 1 };
+    /*
+     * Upprepning: en varning sägs två gånger som förval.
+     *
+     * Man kör bil. Det är vägbuller, kanske passagerare, kanske musik som
+     * just duckat. Den första meningen används ofta bara till att flytta
+     * uppmärksamheten dit — det är den andra man faktiskt hör. Ett
+     * vägmärke står kvar tills man passerat det; en röst gör inte det,
+     * och upprepningen är det närmaste vi kommer.
+     *
+     * Bekräftelser (prioritet 0) upprepas inte. "Klippet är sparat" två
+     * gånger är tjat, inte säkerhet.
+     */
+    const prioritet = opts.priority ?? 1;
+    const gangerKvar = opts.ganger ?? (prioritet >= 1 ? 2 : 1);
+    const item = { text, priority: prioritet, kvar: gangerKvar };
 
     /*
      * Avbryt bara det som är MINDRE viktigt än det nya.
@@ -154,7 +189,7 @@ export class Speaker {
     u.volume = this.volume;
     if (this.voice) u.voice = this.voice;
     this.speaking = true;
-    audioSession.announce();          // dämpa musiken medan vi pratar
+    audioSession.duck();   // sänk musiken, operativsystemet höjer tillbaka
     notifySpeaking(true, item.text);  // och stäng mikrofonen så vi inte hör oss själva
     this.onSpeakingChange(true);
     const done = () => {
@@ -162,7 +197,20 @@ export class Speaker {
       this.current = null;
       notifySpeaking(false, item.text);
       this.onSpeakingChange(false);
-      setTimeout(() => this.#drain(), 120);
+      /*
+       * Ska den sägas en gång till läggs den först i kön igen, inte direkt
+       * efter varandra. Skillnaden märks: kommer något viktigare in mellan
+       * de två gångerna ska det få gå före, och andra gången kommer efter.
+       * En andra uppläsning är värdefull, men inte viktigare än en ny
+       * varning.
+       */
+      if (item.kvar > 1) {
+        this.queue.unshift({ ...item, kvar: item.kvar - 1 });
+        this.queue.sort((a, b) => b.priority - a.priority);
+      }
+      // Paus mellan gångerna. 120 ms räcker mellan olika meningar, men två
+      // likadana i rad flyter ihop till en enda obegriplig ramsa.
+      setTimeout(() => this.#drain(), item.kvar > 1 ? 700 : 120);
     };
     u.onend = done;
     u.onerror = done;
