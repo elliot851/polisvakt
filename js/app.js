@@ -4785,7 +4785,22 @@ function renderChatt() {
     ul.appendChild(li);
   }
 
-  $('chattTomt').hidden = lista.length > 0;
+  /*
+   * Tomrutan ska säga VARFÖR den är tom.
+   *
+   * "Inga meddelanden än. Säg något." stämmer bara när servern svarade och
+   * inte hade något att ge. Är chatten stängd för utomstående är listan tom
+   * av ett helt annat skäl, och då är standardtexten en osanning som får folk
+   * att tro att chatten är död i stället för att logga in.
+   *
+   * Rutan visas då även när det ligger kvar gamla meddelanden i cachen från
+   * en tidigare inloggning. De uppdateras inte längre, och det ska stå.
+   */
+  const tomt = $('chattTomt');
+  const sparr = chatt.lasSparr;
+  tomt.textContent = sparr || 'Inga meddelanden än. Säg något.';
+  tomt.hidden = !sparr && lista.length > 0;
+
   // Rulla till senaste. Man läser en chatt nerifrån.
   ul.scrollTop = ul.scrollHeight;
   uppdateraSkrivlage();
@@ -4883,10 +4898,12 @@ function renderDcChatt() {
     li.innerHTML = `<b>${escapeHtml(m.visningsnamn || 'Förare')}</b> ${escapeHtml(m.text)}`;
     ul.appendChild(li);
   }
-  if (!lista.length) {
+  // Samma sanning som i chattvyn, fast kortare. Står det "Inget nytt." när
+  // chatten i själva verket är stängd ljuger rutan i ögonvrån för föraren.
+  if (chatt.lasSparr || !lista.length) {
     const li = document.createElement('li');
     li.className = 'tom';
-    li.textContent = 'Inget nytt.';
+    li.textContent = chatt.lasSparr ? 'Logga in för att se chatten.' : 'Inget nytt.';
     ul.appendChild(li);
   }
   ul.scrollTop = ul.scrollHeight;
@@ -4934,8 +4951,12 @@ function wireChatt() {
      * kontakt med servern: Logga in för att se chatten" — två påståenden
      * ovanpå varandra där bara det ena stämde.
      *
-     * Är man utloggad står skälet redan vid skrivfältet. Att upprepa det
-     * här gör bara samma sak sagd två gånger.
+     * Är man utloggad står skälet redan på två ställen: vid skrivfältet och
+     * i tomrutan där meddelandena skulle ha stått. Att upprepa det en tredje
+     * gång gör bara samma sak sagd tre gånger. Modulen sätter för övrigt
+     * inget synkFel alls när man är utloggad — den frågar inte servern då —
+     * så raden nedan fångar bara ögonblicket mellan en utloggning och nästa
+     * hämtning.
      */
     const utloggad = !chatt.inloggad;
     el.textContent = (chatt.synkFel && !utloggad) ? chatt.synkFel : '';
@@ -4962,7 +4983,18 @@ function wireChatt() {
 
   auth.addEventListener('change', () => {
     chatt.konfigurera({ identitet: auth.identity, visningsnamn: reputation.nickname });
+    /*
+     * Rita om, inte bara lås upp skrivfältet.
+     *
+     * Läsningen är också stängd för utloggade, och den texten står i
+     * tomrutan. Uppdaterades bara skrivläget stod "Chatten är bara för
+     * inloggade" kvar tills nästa pollning hann in — alltså upp till en
+     * minut efter att man loggat in, vilket ser ut som att inloggningen
+     * inte tog.
+     */
     uppdateraSkrivlage();
+    if (document.body.dataset.view === 'chatt') renderChatt();
+    if (!$('dcChatt').hidden) renderDcChatt();
   });
 
   uppdateraSkrivlage();

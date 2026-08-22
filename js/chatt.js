@@ -507,6 +507,29 @@ export class Chatt extends EventTarget {
   get harBackend() { return !!(this.cfg.url && this.cfg.key); }
   get inloggad() { return !!this.cfg.identitet; }
 
+  /**
+   * Varför flödet inte går att läsa just nu — eller null när det går.
+   *
+   * Chatten är stängd för utomstående, och det är ett medvetet beslut som
+   * står i supabase/chatt.sql: rapporterna är publika för att en varning gör
+   * nytta även för den som aldrig registrerat sig, medan chatten är fritext
+   * folk skriver till varandra. Vyn chatt_flode är därför utdelad till
+   * authenticated och till ingen annan, och den kräver auth.uid() i sig själv.
+   *
+   * Följden måste synas. Tidigare hämtade appen flödet med anon-nyckeln, fick
+   * 401, och visade en tom lista med "Inga meddelanden än. Säg något." — ett
+   * påstående som inte var sant. Den som läste det trodde att chatten var
+   * tom, inte att den var stängd, och hade ingen anledning att logga in.
+   *
+   * Utan backend returneras null: då är ingenting stängt, appen kör bara
+   * lokalt, och den saknaden har egna texter på annat håll.
+   */
+  get lasSparr() {
+    if (!this.harBackend || this.inloggad) return null;
+    return 'Chatten är bara för inloggade. Logga in så ser du vad andra ' +
+           'förare skriver i din trakt.';
+  }
+
   konfigurera(cfg) {
     const gickIgang = !!this.timer;
     this.cfg = { ...this.cfg, ...cfg };
@@ -793,7 +816,9 @@ export class Chatt extends EventTarget {
     this.#emit('meddelanden');
 
     if (!this.harBackend) return { ok: true };
-    if (!this.online) { this.#koa({ op: 'radera', id }); return { ok: true }; }
+    // Utloggad räknas som offline här: anropet kan bara ge 401, och köandet
+    // gör redan rätt sak med ett anrop som inte går fram just nu.
+    if (!this.online || !this.inloggad) { this.#koa({ op: 'radera', id }); return { ok: true }; }
     try { await this.#sand({ op: 'radera', id }); }
     catch { this.#koa({ op: 'radera', id }); }
     return { ok: true };
@@ -811,7 +836,9 @@ export class Chatt extends EventTarget {
     this.#emit('meddelanden');
 
     if (!this.harBackend) return { ok: true };
-    if (!this.online) { this.#koa({ op: 'anmal', id, skal }); return { ok: true }; }
+    // Samma sak som i radera(): utan inloggning finns ingen väg fram, och en
+    // anmälan är för viktig för att tappas — den ligger kvar i kön.
+    if (!this.online || !this.inloggad) { this.#koa({ op: 'anmal', id, skal }); return { ok: true }; }
     try { await this.#sand({ op: 'anmal', id, skal }); }
     catch { this.#koa({ op: 'anmal', id, skal }); }
     return { ok: true };
@@ -857,6 +884,26 @@ export class Chatt extends EventTarget {
     if (stadat) { this.#spara(); this.#emit('meddelanden'); }
 
     if (!this.harBackend || !this.online) return;
+
+    /*
+     * Utloggad: fråga inte.
+     *
+     * Vyn chatt_flode är utdelad till authenticated och till ingen annan, så
+     * anropet kan bara sluta på ett sätt — 401. Att skicka det ändå gav ett
+     * rött fel i konsolen vid varje sidladdning och sedan var åttonde sekund
+     * så länge appen stod öppen, för ingenting: svaret var känt innan frågan
+     * ställdes. Ett känt 401 i konsolen är dessutom värre än inget, för det
+     * ser ut som en trasig behörighet och drar felsökning till fel ställe.
+     *
+     * Skälet visas i stället i gränssnittet, via lasSparr. Det här är inget
+     * synkfel — servern gör precis det den ska — så synkFel nollställs hellre
+     * än sätts. Annars hade det stått "ingen kontakt med servern" om en
+     * server som mår bra.
+     */
+    if (!this.inloggad) {
+      if (this.synkFel !== null) { this.synkFel = null; this.#emit('status'); }
+      return;
+    }
 
     // Var tionde hämtning tas hela fönstret om. Inkrementell hämtning ser
     // bara nya rader — den som raderat sitt meddelande skulle annars ligga
@@ -925,8 +972,13 @@ export class Chatt extends EventTarget {
    * Översätt ett nätverksfel till något en förare kan agera på.
    *
    * "Ingen kontakt med servern: HTTP 401" säger ingenting till den som ser
-   * det. 401 betyder här nästan alltid en enda sak: anropet gick iväg utan
-   * inloggning, för chatten är stängd för utomstående.
+   * det. 401 betyder här en enda sak numera: sessionen dög inte. Utloggad
+   * frågar vi inte ens (se hamta), så ett 401 hit betyder att en inloggning
+   * som fanns har gått ut — och det är något föraren kan göra något åt.
+   *
+   * Grenen för utloggad står kvar ändå. Den kostar en rad och täcker
+   * ögonblicket då sessionen försvinner mitt under ett anrop som redan är
+   * på väg.
    */
   #synkfelText(e) {
     const m = String(e?.message || '');
@@ -1005,6 +1057,13 @@ export class Chatt extends EventTarget {
 
   async tommKo() {
     if (!this.harBackend || !this.online) return;
+    /*
+     * Samma sak som i hamta(): utan inloggning kan ingenting i kön gå fram,
+     * och varje försök blir ett 401 i konsolen. Kön ligger kvar orörd — den
+     * som skrev något precis innan sessionen gick ut ska få det skickat när
+     * hen loggat in igen, inte tappa det tyst.
+     */
+    if (!this.inloggad) return;
     const k = lasJSON(this.#nyckel('ko'), []);
     if (!k.length) return;
     const kvar = [];

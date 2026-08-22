@@ -760,6 +760,82 @@ await T('stoppa() släcker timern', () => {
     || `dold=${c.dold}, igång=${igang}, efter stopp=${c.timer}`;
 });
 
+G('Utloggad — chatten är stängd, och det ska synas');
+
+/*
+ * Vyn chatt_flode är utdelad till authenticated och till ingen annan (se
+ * supabase/chatt.sql). En hämtning med anon-nyckeln kan alltså bara sluta på
+ * ett sätt: 401. Testerna nedan håller fast två saker — att frågan inte
+ * ställs alls, och att skälet finns att visa i gränssnittet i stället.
+ */
+
+/** Kör något med en låtsas-fetch och lämna tillbaka adresserna som anropades. */
+async function utanNat(fn) {
+  const original = globalThis.fetch;
+  const anrop = [];
+  globalThis.fetch = async (url) => {
+    anrop.push(String(url));
+    // Precis vad PostgREST svarar en anon-nyckel på chatt_flode.
+    return { ok: false, status: 401, json: async () => [], text: async () => '' };
+  };
+  try { await fn(); } finally { globalThis.fetch = original; }
+  return anrop;
+}
+
+/** Chatt med låtsasbackend. identitet: null betyder utloggad. */
+const medBackend = (cfg = {}) =>
+  nyChatt({ url: 'https://exempel.test', key: 'anon-nyckel', ...cfg });
+
+await T('utloggad: ingen hämtning går iväg — alltså inget 401 i konsolen', async () => {
+  const c = medBackend({ identitet: null });
+  c.online = true;
+  const anrop = await utanNat(() => c.hamta());
+  return anrop.length === 0 || `anrop gick iväg: ${anrop.join(', ')}`;
+});
+
+await T('inloggad: hämtningen går iväg som vanligt', async () => {
+  const c = medBackend();
+  c.online = true;
+  const anrop = await utanNat(() => c.hamta());
+  return (anrop.length === 1 && anrop[0].includes('chatt_flode'))
+    || `fick ${JSON.stringify(anrop)}`;
+});
+
+await T('utloggad: kön ligger kvar orörd i stället för att slå i väggen', async () => {
+  const c = medBackend({ identitet: null });
+  c.online = true;
+  const nyckel = `${c.cfg.lagringsPrefix}.ko.v1`;
+  localStorage.setItem(nyckel, JSON.stringify([{ op: 'anmal', id: 'm1', skal: '' }]));
+  const anrop = await utanNat(() => c.tommKo());
+  const kvar = JSON.parse(localStorage.getItem(nyckel));
+  localStorage.removeItem(nyckel);
+  return (anrop.length === 0 && kvar.length === 1)
+    || `anrop=${anrop.length}, kö=${JSON.stringify(kvar)}`;
+});
+
+await T('utloggad: hämtningen sätter inget synkfel — servern är inte trasig', async () => {
+  const c = medBackend({ identitet: null });
+  c.online = true;
+  await utanNat(() => c.hamta());
+  return c.synkFel === null || `fick ${c.synkFel}`;
+});
+
+await T('lasSparr är tyst när man är inloggad', () => {
+  const c = medBackend();
+  return c.lasSparr === null || `fick ${c.lasSparr}`;
+});
+
+await T('lasSparr förklarar varför flödet är tomt när man är utloggad', () => {
+  const c = medBackend({ identitet: null });
+  return (typeof c.lasSparr === 'string' && /logga in/i.test(c.lasSparr))
+    || `fick ${JSON.stringify(c.lasSparr)}`;
+});
+
+await T('utan backend är ingenting stängt — då är lasSparr tyst', () => {
+  const c = nyChatt({ identitet: null });
+  return c.lasSparr === null || `fick ${c.lasSparr}`;
+});
+
 /* =================================================================== */
 const total = ok + fel + hopp;
 const s = document.getElementById('summa');
