@@ -396,6 +396,10 @@ function ljudInstallningar() {
       ljudPa: s.ljudPa !== false,
       ljudVolym: tal(s.ljudVolym, forval.ljudVolym),
       volume: tal(s.volume, forval.volume),
+      // Vilken av varningsvarianterna föraren valt. Okänt värde faller
+      // tillbaka på förvalet i valjVarningsrecept() — en trasig inställning
+      // ska aldrig kunna göra varningen tyst.
+      varningsljud: typeof s.varningsljud === 'string' ? s.varningsljud : 'tydlig',
     };
   } catch {
     return forval;
@@ -416,16 +420,82 @@ function ljudInstallningar() {
  */
 const LJUDRECEPT = {
   // Polis, kontroll eller kamera framför. Se hela resonemanget ovanför.
+  /*
+   * TRE VARIANTER, och skälet är att jag inte kan höra dem.
+   *
+   * Den första versionen — tre pulser på 75, 75 och 140 ms kring 1175 Hz —
+   * beskrevs av ägaren som "ett ynkligt pip", och han har rätt: 350 ms totalt
+   * i ett tunt högt register låter som en avisering från en app, inte som en
+   * varning från något som ska rädda ett körkort.
+   *
+   * VAD SOM GÖR ETT LJUD ALLVARLIGT UTAN ATT SKRÄMMA — det är inte volym:
+   *
+   *   LÄNGD. Ett kort pip läses som "en notis kom in". Runt en sekund läses
+   *   som "lyssna nu". Det är den enskilt största skillnaden.
+   *
+   *   VÄXLING mellan två toner. Ett stillastående ljud smälter in i
+   *   motorljudet; en växling gör det omöjligt att sluta höra. Det är därför
+   *   varenda utryckningssignal i Europa växlar mellan två toner.
+   *
+   *   MJUKARE ATTACK, inte hårdare. En attack på 4 ms är ett knäpp, och ett
+   *   knäpp är precis det som får någon att rycka till bakom ratten. 12-18 ms
+   *   ger samma tydlighet utan skräcken.
+   *
+   *   REGISTER kring 700-1000 Hz. Örat är känsligast där, och det ligger
+   *   ovanför bilens egen lågfrekventa gröt utan att bli vasst.
+   *
+   * Vilken av de tre som är rätt går inte att resonera sig fram till — den
+   * ska höras i en bil i 90 km/h med musik på. Därför väljer föraren själv,
+   * och 'tydlig' är förvalet.
+   */
+
+  // TYDLIG (förval). Två toner som växlar tre gånger, som en perrongsignal.
+  // 840 ms totalt. Går inte att missa, går inte att rycka till av.
   alert: {
-    niva: 0.90,
-    attack: 0.004,
-    slapp: 0.030,
-    partialer: [1, 0.45, 0.22],
+    niva: 0.95,
+    attack: 0.014,
+    slapp: 0.070,
+    partialer: [1, 0.50, 0.28, 0.12],
     granssnitt: false,
     pulser: [
-      { f: 1175, vid: 0.000, langd: 0.075, niva: 0.85 },
-      { f: 1175, vid: 0.105, langd: 0.075, niva: 0.85 },
-      { f: 1568, vid: 0.210, langd: 0.140, niva: 1.00 },
+      { f: 784, vid: 0.000, langd: 0.170, niva: 0.92 },
+      { f: 988, vid: 0.190, langd: 0.170, niva: 1.00 },
+      { f: 784, vid: 0.380, langd: 0.170, niva: 0.92 },
+      { f: 988, vid: 0.570, langd: 0.270, niva: 1.00 },
+    ],
+  },
+
+  // LUGN. Samma figur men mörkare, mjukare och kortare. För den som tycker
+  // att förvalet är för mycket i en tyst kupé.
+  alertLugn: {
+    niva: 0.72,
+    attack: 0.022,
+    slapp: 0.110,
+    partialer: [1, 0.30, 0.12],
+    granssnitt: false,
+    pulser: [
+      { f: 659, vid: 0.000, langd: 0.190, niva: 0.90 },
+      { f: 831, vid: 0.215, langd: 0.300, niva: 1.00 },
+    ],
+  },
+
+  // KRAFTIG. Fyra växlingar, högre register, mer övertoner. För lastbil,
+  // dåligt ljudisolerad kupé eller den som kör med musiken uppe.
+  // Fortfarande 16 ms attack — kraftig betyder tätare och ljusare, aldrig
+  // ett hårdare anslag.
+  alertKraftig: {
+    niva: 1.00,
+    attack: 0.016,
+    slapp: 0.055,
+    partialer: [1, 0.62, 0.40, 0.24, 0.12],
+    granssnitt: false,
+    pulser: [
+      { f: 880, vid: 0.000, langd: 0.145, niva: 0.95 },
+      { f: 1175, vid: 0.160, langd: 0.145, niva: 1.00 },
+      { f: 880, vid: 0.320, langd: 0.145, niva: 0.95 },
+      { f: 1175, vid: 0.480, langd: 0.145, niva: 1.00 },
+      { f: 880, vid: 0.640, langd: 0.145, niva: 0.95 },
+      { f: 1175, vid: 0.800, langd: 0.260, niva: 1.00 },
     ],
   },
 
@@ -535,8 +605,29 @@ function haLjudkedja(ctx) {
  *        tystad = "Tyst i 15 minuter" är påslagen
  * @returns {{hordes:boolean, orsak:string}}
  */
+/**
+ * Vilket recept som ska spelas för en given sort.
+ *
+ * Bara 'alert' har varianter. Kvittensen och mikrofonpiket är kvitton på
+ * knapptryck och ska låta likadant för alla — att låta föraren välja där vore
+ * tre inställningar för noll nytta.
+ *
+ * Faller ALLTID tillbaka på LJUDRECEPT.alert. En inställning med ett värde
+ * ingen känner igen — gammal app, halvskriven localStorage, framtida variant
+ * som tagits bort — får göra ljudet till förvalet, aldrig till tystnad.
+ */
+export function valjRecept(sort = 'alert', valt = null) {
+  if (sort !== 'alert') return LJUDRECEPT[sort] || LJUDRECEPT.alert;
+  const namn = valt ?? ljudInstallningar().varningsljud;
+  if (namn === 'lugn') return LJUDRECEPT.alertLugn;
+  if (namn === 'kraftig') return LJUDRECEPT.alertKraftig;
+  return LJUDRECEPT.alert;
+}
+
 export function spelaVarningsljud(sort = 'alert', opts = {}) {
-  const recept = LJUDRECEPT[sort] || LJUDRECEPT.alert;
+  // opts.variant låter provknapparna spela en BESTÄMD variant utan att först
+  // spara den — man ska kunna höra alla tre efter varandra och sedan välja.
+  const recept = valjRecept(sort, opts.variant ?? null);
   const inst = ljudInstallningar();
   const tvinga = !!opts.tvinga;
 
@@ -923,9 +1014,25 @@ export class Speaker {
 // "Spela varningsljudet" vill höra ljudet. Ett prov som tiger bevisar
 // ingenting, och det var precis det felet demo() hade innan.
 
+/*
+ * Fjärde fältet är VARIANTEN, och bara varningen har en.
+ *
+ * Provknapparna spelar en bestämd variant utan att spara den. Att välja ljud
+ * kräver att man hör alla tre efter varandra, och en väljare som sparar vid
+ * varje tryck gör det omöjligt: man vet inte längre vilken som är vald när
+ * man är klar. Väljaren sparar, knapparna bara spelar.
+ */
 const LJUDPROV_KNAPPAR = [
-  ['btnProvaVarningsljud', 'alert', 'Så låter en varning: polis, kontroll eller kamera framför dig.'],
-  ['btnProvaKvittensljud', 'ack', 'Så låter en kvittens: din rapport gick fram. Mörkare, mjukare, tystare.'],
+  ['btnProvaVarningsljud', 'alert', null,
+    'Så låter varningen du har valt: polis, kontroll eller kamera framför dig.'],
+  ['btnProvaLjudLugn', 'alert', 'lugn',
+    'Lugn: två mörka toner, 0,5 sekunder. Minst av de tre.'],
+  ['btnProvaLjudTydlig', 'alert', 'tydlig',
+    'Tydlig: två toner som växlar tre gånger, 0,8 sekunder. Förvalet.'],
+  ['btnProvaLjudKraftig', 'alert', 'kraftig',
+    'Kraftig: sex växlingar, ljusare och tätare, 1,1 sekunder. För lastbil eller hög musik.'],
+  ['btnProvaKvittensljud', 'ack', null,
+    'Så låter en kvittens: din rapport gick fram. Mörkare, mjukare, tystare.'],
 ];
 
 const LJUDPROV_FEL = {
@@ -937,7 +1044,7 @@ const LJUDPROV_FEL = {
 
 function kopplaLjudprov() {
   if (typeof document === 'undefined') return;
-  for (const [id, sort, text] of LJUDPROV_KNAPPAR) {
+  for (const [id, sort, variant, text] of LJUDPROV_KNAPPAR) {
     const knapp = document.getElementById(id);
     if (!knapp || knapp.dataset.ljudprovKopplat === '1') continue;
     knapp.dataset.ljudprovKopplat = '1';
@@ -945,9 +1052,38 @@ function kopplaLjudprov() {
       // Trycket ÄR gesten. Låser upp ljudet om det inte redan är gjort —
       // därför ligger anropet här och inte i en setTimeout, där gesten är död.
       lasUppLjud();
-      const svar = spelaVarningsljud(sort, { tvinga: true });
+      const svar = spelaVarningsljud(sort, { tvinga: true, variant });
       const ruta = document.getElementById('provaLjudStatus');
       if (ruta) ruta.textContent = svar.hordes ? text : (LJUDPROV_FEL[svar.orsak] || 'Ljudet kom inte fram.');
+    });
+  }
+
+  /*
+   * Väljaren. Sparar i samma localStorage-nyckel som resten av appens
+   * inställningar, och spelar det valda ljudet direkt — annars måste man
+   * välja, leta upp provknappen och trycka, bara för att höra vad man valde.
+   */
+  const valjare = document.getElementById('setVarningsljud');
+  if (valjare && valjare.dataset.ljudprovKopplat !== '1') {
+    valjare.dataset.ljudprovKopplat = '1';
+    try {
+      valjare.value = ljudInstallningar().varningsljud;
+    } catch { }
+    valjare.addEventListener('change', () => {
+      const val = valjare.value;
+      try {
+        const s = JSON.parse(localStorage.getItem(APP_INSTALLNINGAR_NYCKEL) || '{}') || {};
+        s.varningsljud = val;
+        localStorage.setItem(APP_INSTALLNINGAR_NYCKEL, JSON.stringify(s));
+      } catch { }
+      lasUppLjud();
+      const svar = spelaVarningsljud('alert', { tvinga: true, variant: val });
+      const ruta = document.getElementById('provaLjudStatus');
+      if (ruta) {
+        ruta.textContent = svar.hordes
+          ? 'Sparat. Så här låter varningarna nu.'
+          : (LJUDPROV_FEL[svar.orsak] || 'Sparat, men ljudet kom inte fram.');
+      }
     });
   }
 }
@@ -1763,6 +1899,17 @@ export class Listener extends EventTarget {
     if (!all.length) return null;
 
     const best = all[0];
+    /*
+     * Utan platsKonvention, med flit. Facebook-gruppens regel "platsen ensam
+     * betyder polis" gäller lappar i den gruppen, inte det mikrofonen hör.
+     *
+     * MÄTT 2026-08-22, innan flaggan fanns: parseReportText('Bäckby') gav
+     * report/police 0,70. Föraren säger "nykterhetskontroll vid Bäckby",
+     * igenkänningen tappar det långa ordet, och raden nedanför returnerar
+     * tolkningen direkt — före tvåordsspärren och före alternativsökningen
+     * där en vägran vinner över allt annat. Resultatet blev en polisnål för
+     * det talaren sa var en nykterhetskontroll.
+     */
     const first = parseReportText(best);
     if (first) return { text: best, parsed: first, all };
 

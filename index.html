@@ -625,12 +625,33 @@
          med en kvittens. Den skillnaden går bara att höra genom att höra
          båda, efter varandra, i den bil man faktiskt kör. -->
     <h4 class="sub-head">Hur låter det?</h4>
-    <p class="hint">Varningen är byggd för att gå igenom motorljud och musik:
-      tre hårda pulser som stiger. Kvittensen är motsatsen — mörk, mjuk och
-      tyst. Prova båda i bilen, med musiken igång, så vet du vilken som är
-      vilken innan det gäller.</p>
+    <p class="hint">Varningen är byggd för att gå igenom motorljud och musik.
+      Kvittensen är motsatsen — mörk, mjuk och tyst. Prova båda i bilen, med
+      musiken igång, så vet du vilken som är vilken innan det gäller.</p>
+
+    <!-- Väljaren, och varför den finns.
+         Den första varningen var 350 ms i ett tunt högt register. Ägarens
+         omdöme: "ett ynkligt pip". Att bara skruva upp volymen gör den
+         skrämmande i stället, och ett ljud som får någon att rycka till bakom
+         ratten är farligare än inget ljud alls.
+         Vilken av de tre som är rätt går inte att avgöra vid ett skrivbord —
+         den ska höras i en bil i 90 km/h. Därför väljer föraren. -->
+    <label class="row"><span>Varningens styrka</span>
+      <select id="setVarningsljud">
+        <option value="lugn">Lugn</option>
+        <option value="tydlig" selected>Tydlig</option>
+        <option value="kraftig">Kraftig</option>
+      </select>
+    </label>
+    <p class="hint">Byter du här spelas ljudet direkt, så du hör vad du valt.</p>
+
     <div class="row-inline ljudprov">
-      <button class="btn-ghost small" id="btnProvaVarningsljud" type="button">Spela varningsljudet</button>
+      <button class="btn-ghost small" id="btnProvaLjudLugn" type="button">Lugn</button>
+      <button class="btn-ghost small" id="btnProvaLjudTydlig" type="button">Tydlig</button>
+      <button class="btn-ghost small" id="btnProvaLjudKraftig" type="button">Kraftig</button>
+    </div>
+    <div class="row-inline ljudprov">
+      <button class="btn-ghost small" id="btnProvaVarningsljud" type="button">Spela vald varning</button>
       <button class="btn-ghost small" id="btnProvaKvittensljud" type="button">Spela kvittensljudet</button>
     </div>
     <p class="hint" id="provaLjudStatus"></p>

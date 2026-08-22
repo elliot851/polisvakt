@@ -134,6 +134,10 @@ const defaults = {
    */
   ljudPa: true,
   ljudVolym: 0.75,
+  // Vilken av de tre varningsvarianterna som spelas. Läses av js/voice.js,
+  // som äger ljuden. Står här också så att appens övriga hantering av
+  // inställningar inte råkar skriva bort nyckeln när den sparar hela objektet.
+  varningsljud: 'tydlig',
   chattLastAt: 0,          // när chatten senast lästes, för antalet olästa
   morktLage: true,         // släck skärmen under körning när ingen rör den
   haptikPa: true,          // vibrationen når fram även när bilen är högljudd
@@ -4046,7 +4050,10 @@ function wireModePicker() {
   const demoKnapp = $('btnDemoInlagg');
   if (demoKnapp) demoKnapp.onclick = () => {
     const text = ($('fbDemoText').value || 'Polis vid Nacka').trim();
-    const tolkning = parseReportText(text);
+    // Samma flagga som js/facebook.js sätter. Knappen visar hur ett
+    // GRUPPINLÄGG hade behandlats, och utan flaggan hade demon svarat något
+    // annat än driften på exakt de inlägg som bara är ett platsnamn.
+    const tolkning = parseReportText(text, { platsKonvention: true });
     if (tolkning?.intent === 'refused') {
       $('demoStatus').textContent =
         'Den texten vägras av appen och skulle aldrig bli en varning. Det är meningen.';
