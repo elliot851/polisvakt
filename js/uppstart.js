@@ -59,6 +59,7 @@ import {
   begarPlats,
   begarNotiser,
   instruktioner,
+  plattform,
   markeraPlatsFragad,
   platsFragad,
   BAKGRUND,
@@ -283,6 +284,118 @@ function notisLage(n) {
   return n.prenumererad ? 'klart' : 'halv';
 }
 
+/* ------------------------------------------------------------------ */
+/* LJUDSTEGET — det enda vi inte kan mäta, och därför frågar om          */
+/* ------------------------------------------------------------------ */
+//
+// VARFÖR STEGET FINNS
+//
+// Behörigheten kan vara beviljad, prenumerationen kan ligga på servern, och
+// notisen kan komma fram — och ändå vara helt tyst. iOS sätter ofta en
+// nyinstallerad webbapp till ljudlös, och det syns ingenstans från koden:
+// Notification-API:t har inget sätt att fråga "får jag låta?".
+//
+// Mätt 23 aug 2026: en riktig push nådde båda ägarens enheter
+// ({"skickade":2,"fel":0}) och han hörde ingenting. Guiden sa "Påslaget".
+// Det är samma sorts fel som gått igen hela det här projektet — varje led
+// grönt, slutresultatet noll — och den enda skillnaden är att det här ledet
+// inte går att mäta från vår sida.
+//
+// Alltså frågar vi. Appen skickar en riktig notis till sig själv och låter
+// föraren svara. Svaret sparas, och frågan kommer tillbaka vid varje start
+// tills den är besvarad med ja.
+//
+// showNotification() på registreringen kräver INGEN server och ingen push:
+// samma notis, samma väg genom telefonen, samma ljudinställning. Det är den
+// enda provet som bevisar något.
+
+const LJUD_NYCKEL = 'pv.notisljud.v1';   // 'ja' | 'nej' | null (ej frågat)
+
+/*
+ * Menyvägen till ljudinställningen, per plattform.
+ *
+ * Den här listan är HANDSKRIVEN, till skillnad från de andra vägarna i guiden
+ * som kommer ur behorigheter.instruktioner(). Skälet: instruktioner() handlar
+ * om BEHÖRIGHETER, och ljudet är ingen behörighet — det finns inget API att
+ * fråga, inget tillstånd att bevilja, ingenting att läsa av. Att smyga in det
+ * bland behörighetsvägarna hade gjort den modulen till något annat än den är.
+ *
+ * Sista raden är samma på alla plattformar med flit: ringknappen på sidan är
+ * det överlägset vanligaste svaret, och den glöms av alla.
+ */
+function LJUD_VAG() {
+  const p = plattform();
+  if (p.os === 'ios') {
+    return [
+      'Öppna Inställningar på telefonen.',
+      'Gå till Notiser och leta upp Polisvakt i listan.',
+      'Slå på Ljud.',
+      'Kolla också att Fokus eller Stör ej inte är igång.',
+      'Och ringknappen på sidan av telefonen — står den på tyst hörs ingenting.',
+    ];
+  }
+  if (p.os === 'android') {
+    return [
+      'Öppna Inställningar på telefonen.',
+      'Gå till Appar, leta upp Chrome och sedan Aviseringar.',
+      'Hitta Polisvakt i listan och slå på ljud.',
+      'Kolla också att Stör ej inte är igång.',
+      'Och att telefonen inte står på ljudlöst.',
+    ];
+  }
+  return [
+    'Öppna webbläsarens inställningar för webbplatser.',
+    'Leta upp polisvakt.pages.dev och tillåt notiser.',
+    'Kolla att datorns eget ljud inte är avstängt.',
+  ];
+}
+
+function ljudSvar() {
+  try { return localStorage.getItem(LJUD_NYCKEL); } catch { return null; }
+}
+
+function sattLjudSvar(v) {
+  try { localStorage.setItem(LJUD_NYCKEL, v); } catch { }
+}
+
+/**
+ * Läget för ljudsteget.
+ *
+ * Frågan ställs BARA när notiserna faktiskt är påslagna. Att fråga "hörde du
+ * något?" av någon som inte har notiser är att fråga om en notis som aldrig
+ * skickades, och ett nej där hade låst guiden i ett steg föraren inte kan
+ * lösa.
+ */
+function ljudLage(notisLagetNu) {
+  if (notisLagetNu !== 'klart') return null;      // steget visas inte alls
+  const svar = ljudSvar();
+  if (svar === 'ja') return 'klart';
+  if (svar === 'nej') return 'nekat';
+  return 'vantar';
+}
+
+/** Skickar en riktig notis till telefonen, utan server. */
+export async function provaNotisljud() {
+  try {
+    if (!('serviceWorker' in navigator)) return { ok: false, skal: 'ingen-sw' };
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification('Polisvakt: hör du det här?', {
+      body: 'Så här låter en varning när appen är stängd. Svara i appen.',
+      icon: './icon.svg',
+      badge: './icon.svg',
+      // EGEN tag. Provet får aldrig ersätta en riktig polisvarning i luren —
+      // samma resonemang som driftnotisernas egna tag i tools/brygg-daemon.ps1.
+      tag: 'polisvakt-ljudprov',
+      silent: false,
+      vibrate: [220, 90, 120, 90, 220],
+      data: { url: './' },
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, skal: String(e && e.message || e).slice(0, 120) };
+  }
+}
+
 function platsLage(p) {
   if (p.ok) return 'klart';
   if (p.state === 'saknas') return 'garinte';
@@ -336,7 +449,13 @@ function byggSteg(st, { tillRad = false } = {}) {
   // och steg 0 säger redan vad som ska göras — två rutor om samma sak är en
   // vägg av text, vilket är precis det den här guiden ska slippa.
   if (!hemskarm) {
-    steg.push({ nyckel: 'notiser', namn: 'Notiser', lage: notisLage(st.notiser) });
+    const nl = notisLage(st.notiser);
+    steg.push({ nyckel: 'notiser', namn: 'Notiser', lage: nl });
+
+    // Ljudsteget kommer SIST och bara när notiserna är påslagna. Se
+    // ljudLage() för varför det inte går att mäta och därför måste frågas.
+    const ll = ljudLage(nl);
+    if (ll) steg.push({ nyckel: 'ljud', namn: 'Ljud', lage: ll });
   }
   return steg;
 }
@@ -568,15 +687,26 @@ function rita(st) {
     d.fel.hidden = false;
   }
 
+  let egenAndraKnapp = false;
   if (nu.nyckel === 'hemskarm') ritaHemskarm(d, st);
   else if (nu.nyckel === 'plats') ritaPlats(d, st, nu);
+  else if (nu.nyckel === 'ljud') egenAndraKnapp = ritaLjud(d, nu);
   else ritaNotiser(d, st, nu);
 
-  // Sista steget? Då är "Inte nu" en stängning, och inget annat.
+  /*
+   * Sista steget? Då är "Inte nu" en stängning, och inget annat.
+   *
+   * egenAndraKnapp finns för ljudsteget, som är det enda där andra knappen
+   * är ett SVAR ("Nej, tyst") och inte ett uppskjutande. Utan undantaget
+   * skrevs svaret över här nere, och ett nej gick inte att lämna alls —
+   * felet fanns i första bygget och hittades genom att läsa ordningen.
+   */
   const i = steg.findIndex(s => s.nyckel === nyckelNu);
   const finnsFler = i < steg.length - 1;
-  d.sen.textContent = finnsFler ? 'Inte nu' : 'Stäng';
-  d.sen.onclick = () => (finnsFler ? nasta() : stang());
+  if (!egenAndraKnapp) {
+    d.sen.textContent = finnsFler ? 'Inte nu' : 'Stäng';
+    d.sen.onclick = () => (finnsFler ? nasta() : stang());
+  }
   d.stang.onclick = () => stang();
 }
 
@@ -683,6 +813,87 @@ function ritaPlats(d, st, nu) {
 }
 
 /* ---------------------------- Steg 2 ------------------------------- */
+
+/*
+ * LJUDSTEGET.
+ *
+ * Två knappar, och båda är svar — inte "gör det här". Det är hela skillnaden
+ * mot resten av guiden: de andra stegen ber föraren om en handling vi kan
+ * mäta utfallet av, det här steget ber om en UPPGIFT vi inte kan mäta alls.
+ *
+ * "Skicka provnotis" ligger som huvudknapp tills provet skickats. Sedan byts
+ * kortet till frågan. Att visa ja/nej innan något skickats vore att fråga om
+ * en notis som aldrig kom.
+ */
+let ljudProvSkickat = false;
+
+function ritaLjud(d, nu) {
+  d.ikon.textContent = '🔊';
+
+  if (nu.lage === 'klart') {
+    d.titel.textContent = 'Ljudet fungerar';
+    d.text.textContent = 'Du har sagt att du hör notiserna. Hör du inget längre — kom tillbaka hit.';
+    d.fin.hidden = true;
+    d.ja.textContent = 'Klart';
+    d.ja.onclick = () => nasta();
+    return false;
+  }
+
+  if (nu.lage === 'nekat') {
+    // Föraren har svarat nej. Här finns ingen knapp som löser det åt hen:
+    // ljudet sitter i telefonens egna notisinställningar, och en webbsida
+    // kan varken läsa eller ändra dem.
+    d.titel.textContent = 'Notisen är ljudlös';
+    d.text.textContent =
+      'Appen kan inte slå på ljudet åt dig — det sitter i telefonens egna ' +
+      'notisinställningar. Så här hittar du det:';
+    d.fin.hidden = true;
+    d.vagrubrik.textContent = 'Slå på ljud för Polisvakt';
+    d.vag.replaceChildren();
+    for (const rad of LJUD_VAG()) d.vag.appendChild(el('li', null, rad));
+    d.vagrubrik.hidden = false;
+    d.vag.hidden = false;
+    d.ja.textContent = 'Prova igen';
+    d.ja.onclick = async () => {
+      ljudProvSkickat = false;
+      sattLjudSvar('');
+      await provaNotisljud();
+      ljudProvSkickat = true;
+      uppdatera();
+    };
+    return false;
+  }
+
+  // lage === 'vantar'
+  if (!ljudProvSkickat) {
+    d.titel.textContent = 'Hör du notiserna?';
+    d.text.textContent =
+      'Notiser är påslagna, men appen kan inte se om telefonen låter. ' +
+      'Tryck här så skickas en riktig notis — lyssna efter den.';
+    d.fin.textContent = 'Ha inte telefonen på ljudlöst när du provar.';
+    d.fin.hidden = false;
+    d.ja.textContent = 'Skicka provnotis';
+    d.ja.onclick = async () => {
+      const r = await provaNotisljud();
+      ljudProvSkickat = true;
+      felText = r.ok ? null : { nyckel: 'ljud', text: 'Provnotisen kunde inte skickas: ' + r.skal };
+      uppdatera();
+    };
+    return false;
+  }
+
+  d.titel.textContent = 'Hörde du den?';
+  d.text.textContent =
+    'En notis skickades nyss. Hörde du ett ljud eller kände en vibration?';
+  d.fin.hidden = true;
+  d.ja.textContent = 'Ja, jag hörde den';
+  d.ja.onclick = () => { sattLjudSvar('ja'); uppdatera(); };
+  // Andra knappen är normalt "Inte nu". Här betyder den "nej" — ett svar,
+  // inte ett uppskjutande — och därför byter den text.
+  d.sen.textContent = 'Nej, tyst';
+  d.sen.onclick = () => { sattLjudSvar('nej'); uppdatera(); };
+  return true;   // vi äger andra knappen, se rita() längre upp
+}
 
 function ritaNotiser(d, st, nu) {
   const n = st.notiser;
