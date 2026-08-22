@@ -703,6 +703,17 @@
     // "idag", eftersom ordet både överlevde rensningen och utlöste
     // bisatsgränsen innan ortnamnet hann läsas.
     'idag', 'dag', 'imorgon', 'ikväll', 'inatt', 'igår', 'pågår', 'ute', 'fortfarande',
+    // Klockan skrivs ut lika ofta som den skrivs med siffror. Siffrorna tas
+    // om hand av klockslagsregeln i extractPlace, orden här.
+    'kl', 'klockan',
+    // Ur det mätta inlägget "Polis för andra gången idag Emausskolan 13.45
+    // stan". 'andra' och 'idag' fanns redan; 'för' och 'gången' följde med in
+    // i platsfrasen och gjorde den oslagbar.
+    'för', 'gången', 'gånger', 'till',
+    // Fler verb i samma familj som 'står'/'kör'. Ett verb är aldrig en plats,
+    // och riktningen är ofarlig: ett ord för mycket här kan bara göra
+    // platsfrasen kortare, aldrig fel.
+    'stannar', 'stannat', 'passerar', 'passerade',
   ]);
 
   /*
@@ -755,8 +766,12 @@
     return false;
   }
 
+  // Böjningarna står utskrivna: matchningen är exakt strängmatchning, så
+  // 'korsningen' hjälper inte "Hammarby korsning".
   const DIRECTION_HINTS = new Set(['norrut', 'söderut', 'österut', 'västerut', 'infart', 'avfart',
-    'påfart', 'avfarten', 'påfarten', 'rondellen', 'rondell', 'korsningen', 'bron', 'rampen']);
+    'påfart', 'avfarten', 'påfarten', 'infarten', 'rondellen', 'rondell', 'korsningen', 'korsning',
+    'bron', 'bro', 'rampen', 'ramp', 'viadukten', 'viadukt', 'trafikplatsen', 'trafikplats',
+    'cirkulationsplatsen', 'cirkulationsplats']);
 
   const NOT_A_PLACE = new Set([
     ...CLEAR_WORDS, 'ihop',
@@ -770,6 +785,463 @@
     // platsfrasen som geokodningen får slå upp.
     'kontroll', 'kontrollen', 'kontroller', 'kontrollerna',
   ]);
+
+  /*
+   * Ord som gör inlägget till gruppens eget prat i stället för en observation.
+   *
+   * Gruppens NAMN innehåller ett typord ("Här Står Polisen - Västerås"). Varje
+   * jubileums-, välkomst- och regelinlägg som citerar namnet får därför en
+   * typordsträff gratis. Mätt 2026-08-22: "Idag firar Här Står Polisen -
+   * Västerås 12 år med 18K följare" gav report/police med tilliten 0,80 — över
+   * tröskeln 0,65 — och räddades bara av att geokodningen inte hittade
+   * skräpsträngen. Det är en systematisk källa till falska varningar, inte en
+   * slumpmässig, och den blir farligare i samma stund som platsuttaget blir
+   * bättre.
+   *
+   * Kontrollen är medvetet oberoende av inläggets längd, till skillnad från
+   * NOISE_WORDS ovan som bara gäller under fem ord: metainläggen är långa.
+   * Inget av orden förekommer i en observation av polis.
+   */
+  const GRUPPMETA_ORD = ['firar', 'firade', 'jubileum', 'följare', 'medlemmar', 'medlem',
+    'gruppen', 'gruppens', 'admin', 'administratör', 'moderator', 'välkommen', 'välkomna',
+    'regler', 'reglerna', 'påminnelse', 'inlägg', 'inlägget',
+    // Gruppens egen regeltext lyder "Man skriver enbart när man ser en
+    // poliskontroll." och gav report/control med tilliten 0,95 varje gång en
+    // administratör klistrade in den. Ingen som rapporterar polis skriver
+    // "skriver".
+    'skriver', 'skriv', 'skrivs'];
+
+  /* ---- Platsen ensam är en varning -------------------------------------- */
+
+  /*
+   * GRUPPENS KONVENTION, OCH VARFÖR DEN FÅR STYRA
+   *
+   * "Här Står Polisen - Västerås" har en enda regel på sin om-sida: "Man
+   * skriver enbart när man ser en poliskontroll." Följden är att folk skriver
+   * bara platsen, ibland med ett klockslag eller en färdriktning:
+   *     Dillos norrgående 11.15
+   *     Hemköp Öster Mälarstrand- 16:15
+   *     Irstamacken
+   *     Vallby vid entrén till Golfklubb.
+   * Alla fyra gav ingenting alls: parseReportText kräver ett typord, och inget
+   * av inläggen har ett. Fyra av de fem inlägg som föll i mätningen föll här.
+   *
+   * Priset för att öppna grinden är att "vad som helst" inte får bli polis. En
+   * falsk nål lär föraren att strunta i appen, och den går inte att ta
+   * tillbaka. Sju krav måste därför vara uppfyllda SAMTIDIGT — alla sju, och
+   * det första bär huvudlasten. Tre av dem (3, 4 och 5) skrevs om 2026-08-22
+   * efter en mätning som visade att de var för generösa; det står vid vart
+   * och ett vad som mättes:
+   *
+   *   1. Texten måste PEKA UT ETT KÄNT PLATSNAMN (PLATSORD nedan). Det är den
+   *      starkaste spärren och den enda som är POSITIV: ett ord vi aldrig sett
+   *      kan aldrig bära ett inlägg. Jämför extractPlace, som är ett rent
+   *      negativt filter och därför antar att varje okänt ord är ett platsnamn.
+   *      Med det kravet blir "texten pekar ut en plats" mätbart i stället för
+   *      en känsla.
+   *   2. Inlägget måste vara KORT (högst PLATS_MAX_ORD ord). Konventionen är en
+   *      lapp, inte ett resonemang.
+   *   3. Texten får inte vara en FRÅGA. En fråga är motsatsen till ett
+   *      påstående om vad någon just har sett. Frågetecknet räcker inte som
+   *      spärr — det utelämnas ofta — så ett frågeord var som helst (FRAGEORD)
+   *      och ett finit verb eller frågeord FÖRST i satsen (FRAGEINLEDNING)
+   *      fäller inlägget var för sig.
+   *   4. Texten måste vara en LAPP, inte en mening. Ett verb eller ett
+   *      pronomen (VERB_OCH_PRONOMEN) diskvalificerar direkt: den som skriver
+   *      "Jag åker till Erikslund nu" har skrivit en mening, och en mening kan
+   *      handla om vad som helst.
+   *   5. ALLT ÖVRIGT I TEXTEN måste peka på platsen. Utöver ortnamnet får bara
+   *      bindeord och tidsord (PLATS_BINDEORD), avblåsningsord, riktningar,
+   *      klockslag och ord som PRECISERAR platsen (PLATSPRECISERING) förekomma
+   *      — entrén, macken, Hemköp. Ett enda okänt ord räcker för att avstå.
+   *      Det är det som skiljer "Vallby vid entrén till Golfklubb" från "Bra
+   *      pizza på Dillos igår" och från "Kö på E18 österut", där platsen bara
+   *      är var något annat händer.
+   *   6. Klockslag och färdriktning är inget krav men ett STÖD: de beskriver
+   *      ett ögonblick och en rörelse, alltså precis vad en observation är, och
+   *      ger ett mindre avdrag på tilliten (se parseReportText).
+   *   7. Texten får inte innehålla ett typord ens som DELSTRÄNG. Kravet kom ur
+   *      provsviten: utan det räddade platsregeln precis de meningar som
+   *      typordsmatchningen medvetet vägrar. "Kameraövervakning i garaget på
+   *      Vasagatan", "Parkeringskontrollen står på Vasagatan" och "Kontrollerna
+   *      av matlådorna på skolan i Bäckby" blev alla polisvarningar, för de har
+   *      ett känt ortnamn, är korta och innehåller inget annat ämnesord. Se
+   *      motiveringen vid anropet.
+   *
+   * VALT BORT 1 — data/aliases.vasteras.json som lista. Den är rätt lista för
+   * GEOKODNING och fel för det här beslutet. Dels går den inte att nå härifrån:
+   * parser.js är synkron och fetch-fri, och bryggan kör på facebook.com där
+   * filen inte finns. Dels innehåller den vanliga svenska ord i bestämd form —
+   * punkt, gallerian, stationen, centralen, hamnen, arenan, sjukhuset,
+   * lasarettet, flygplatsen, abb — och med dem hade "Ses vid stationen" blivit
+   * en varning. PLATSORD är därför ett MEDVETET URVAL ur aliasfilen: bara namn
+   * som inte betyder något annat på svenska. Grannkommunerna (Sala, Köping,
+   * Arboga...) är också borta — konventionen gäller Västerås, och en ensam
+   * kommunrubrik är oftare prat än en observation.
+   *
+   * VALT BORT 2 — att låta tilliten vara spärren. Platsbonusen i confidence är
+   * `place.length >= 3` och säger ingenting om huruvida platsen ÄR en plats:
+   * "Tack för tipset om polisen vid Erikslund" får 0,90 idag med platsfrasen
+   * "tack för tipset". Tillit kan inte grinda det här.
+   *
+   * VALT BORT 3 — att kräva att INGENTING annat står i texten. Då hade bara
+   * enordsinlägget "Irstamacken" räddats, medan "Hemköp Öster Mälarstrand" och
+   * "Vallby vid entrén till Golfklubb" fallit. De är lika tydliga för en läsare.
+   *
+   * KVAR SOM RISK, MEDVETET: ett inlägg som bara är ett platsnamn kan gälla en
+   * nykterhetskontroll där ordet står i bilden eller i kommentarerna. Texten
+   * innehåller då ingenting för spärren att gå på — isSobrietyCheck kan bara
+   * fånga ord som faktiskt är skrivna. Det är ett av skälen till att tolkningen
+   * får LÄGRE tillit än ett uttalat påstående (se avdraget i parseReportText):
+   * resten av systemet ska kunna behandla den försiktigare.
+   */
+
+  // Högst så många ord i inlägget. Konventionen är en lapp, inte ett
+  // resonemang; "Idag firar gruppen 12 år med 18K följare" är fjorton ord.
+  const PLATS_MAX_ORD = 8;
+
+  /*
+   * Namn som ensamma får bära ett inlägg. Urval ur data/aliases.vasteras.json
+   * enligt VALT BORT 1 ovan: egennamn som inte också är ett gångbart svenskt
+   * allmänord, och inga grannkommuner.
+   *
+   * Medvetet UTELÄMNADE härifrån trots att de står i aliasfilen: punkt,
+   * gallerian, resecentrum, centralen, stationen, flygplatsen, hamnen, abb,
+   * sjukhuset, lasarettet, mdh, mdu, arenan, 66an, 56an, rv66, rv56, sala,
+   * köping, arboga, fagersta, hallstahammar, surahammar, kungsör, norberg,
+   * skinnskatteberg, kvicksund.
+   */
+  const PLATSORD = [
+    // Stadsdelar och orter i Västerås kommun
+    'hälla', 'hälla köpcentrum', 'erikslund', 'erikslundsrondellen', 'rocklunda',
+    'hammarby', 'hammarbyrampen', 'bäckby', 'backby', 'vallby', 'pettersberg',
+    'råby', 'raby', 'bjurhovda', 'skiljebo', 'malmaberg', 'viksäng', 'viksang',
+    'gideonsberg', 'skallberget', 'jakobsberg', 'blåsbo', 'emaus', 'nordanby',
+    'önsta', 'gryta', 'hökåsen', 'hokasen', 'skultuna', 'irsta', 'barkarö',
+    'tillberga', 'dingtuna', 'badelunda', 'tortuna', 'kungsåra', 'romfartuna',
+    'lillhärad', 'gäddeholm', 'johannisberg', 'öster mälarstrand', 'lillåudden',
+    // Namngivna hållpunkter. De sex sista skrev gruppen själv i de mätta
+    // inläggen, och alla sex saknades i aliasfilen — inlägget kastades då med
+    // "okänd-plats". Söksträngarna är tillagda där och provade mot Nominatim
+    // 2026-08-22; ingen av dem är gissad.
+    'dillos', 'dillos pizzeria', 'abb arena', 'bombardier',
+    'apalby', 'apalby ip', 'irstamacken', 'emausskolan',
+    'hemköp öster mälarstrand', 'vallby golfklubb', 'vallby golfklubben',
+    'västerås golfklubb',
+    // Gator och leder
+    'stora gatan', 'vasagatan', 'kopparbergsvägen', 'björnövägen', 'bjornovagen',
+    'djurgårdsvägen', 'norrleden', 'österleden', 'västerleden', 'bergslagsvägen',
+    'köpingsvägen', 'surahammarsvägen', 'pilgatan', 'sigurdsgatan',
+    'ängsgärdsgatan', 'e18', 'e18 västerut', 'e18 österut', 'riksväg 66',
+    'riksväg 56', 'räta linjen',
+  ];
+  const PLATSORD_SET = new Set(PLATSORD);
+  const PLATS_MAX_LED = Math.max(...PLATSORD.map(p => p.split(' ').length));
+
+  /*
+   * Efterled i sammansatta platsnamn där ORTNAMNET STÅR FÖRST: "Irstamacken" är
+   * macken i Irsta, "Vallbyrondellen" rondellen i Vallby.
+   *
+   * Det är motsatt riktning mot typordsmatchningen (matchaOrd), som bygger på
+   * att svenska sammansättningar är huvudfinala. Här är huvudordet just det som
+   * INTE är platsen, så matchningen måste gå framifrån — och en prefixmatchning
+   * utan en sluten lista över efterled hade gjort varje ord som råkar börja på
+   * ett ortnamn till en plats. Listan är därför sluten och kort.
+   */
+  const ORTSLED = new Set([
+    'macken', 'mackarna', 'rondellen', 'rondell', 'krysset', 'korset', 'korsningen',
+    'torget', 'torg', 'skolan', 'centrum', 'badet', 'hallen', 'kyrkan', 'bron',
+    'backen', 'motet', 'avfarten', 'påfarten', 'infarten', 'vägen', 'gatan',
+    'gården', 'parken', 'viken', 'udden', 'ip',
+  ]);
+  // Kortare förled än så vore gissningar: "råby" i "råbygga" är inte Råby.
+  const ORTSLED_MINLANGD = 5;
+
+  /*
+   * Ord som gör inlägget till en fråga. En fråga är motsatsen till ett
+   * påstående om vad någon just har sett, och NOISE_PHRASES fångar bara de
+   * exakta frasvändningar som mätts.
+   *
+   * MÄTT 2026-08-22: listan var för smal och de saknade orden stod dessutom i
+   * STOPWORDS, alltså räknades de AKTIVT som ord som pekar på platsen. "Är
+   * någon vid Vallby nu", "Var det vid Vasagatan" och "Nån som är i Irsta nu"
+   * blev alla report/police 0,70 och hamnade som nålar på kartan. Felet är
+   * självförstärkande: den som frågar gör det ofta för att appen redan visat
+   * en nål där, och svaret blev en ny nål på samma plats.
+   */
+  const FRAGEORD = new Set(['vem', 'vad', 'vart', 'varför', 'hur', 'vilken', 'vilket',
+    'vilka', 'undrar', 'vet', 'stämmer', 'kanske', 'finns', 'nån', 'någon', 'frågar']);
+
+  /*
+   * Ord som gör inlägget till en fråga NÄR DE STÅR FÖRST.
+   *
+   * Frågetecknet räcker inte: det utelämnas ofta i en snabb mobilkommentar,
+   * och FRAGEORD kan bara ta de ord som aldrig betyder något annat. En svensk
+   * sats som INLEDS med ett finit verb är däremot nästan alltid en fråga —
+   * "Är någon vid Vallby", "Har dom åkt", "Ser ni polisen" — medan ett
+   * påstående inleds med satsdelen som bär informationen. Konventionens egna
+   * inlägg inleds undantagslöst med platsnamnet.
+   *
+   * Orden prövas FÖRE stopporden med flit. Flera av dem (var, är, har, ser)
+   * står i STOPWORDS, och den listan är byggd för platsUTTAG — där är ett
+   * verb bara skräp att stryka, här är det beviset på att någon skrev en
+   * mening.
+   */
+  const FRAGEINLEDNING = new Set(['var', 'är', 'ar', 'har', 'hade', 'ser', 'såg', 'finns',
+    'kan', 'ska', 'vill', 'vet', 'undrar', 'gör', 'blir', 'kommer', 'får', 'tror', 'verkar',
+    'nån', 'någon', 'vem', 'vad', 'vart', 'varför', 'hur', 'vilken', 'vilket', 'vilka',
+    'stämmer', 'minns']);
+
+  /*
+   * Verb och pronomen. Ett enda av dem gör att texten inte längre är en LAPP.
+   *
+   * Konventionen "platsen ensam betyder polis" gäller lappar: någon skriver
+   * var hen ser polisen och inget mer. Den som skriver ett verb har skrivit
+   * en mening, och en mening kan handla om vad som helst — "Jag åker till
+   * Erikslund nu", "Vi kommer från Skultuna", "Sitter på Max i Erikslund".
+   *
+   * MÄTT 2026-08-22, och det är därför listan finns: krav 5 nedan använde
+   * STOPWORDS som godkännandelista. Den listan är byggd för det MOTSATTA
+   * ändamålet — att stryka ord ur en fras som redan har ett typord — och
+   * innehåller därför jag, vi, man, är, kommer, kör, ser, kolla. Vänd om till
+   * en positiv grind blev varje vardaglig mening med ett ortnamn i en
+   * polisvarning: 13 av 30 provade vardagsmeningar gav report/police 0,70,
+   * alla med en aliasnyckel som geokodar rent — alltså riktiga nålar.
+   *
+   * Listan är sluten och diskvalificerar direkt. Den kostar ingenting av de
+   * fyra mätta måltexterna: ingen av dem innehåller vare sig verb eller
+   * pronomen. Avblåsningsorden (CLEAR_WORDS: åkte, borta, fritt) står
+   * medvetet INTE här — de är hela poängen med att "Rocklunda fritt nu" ska
+   * kunna bli en släckning i stället för en varning.
+   */
+  const VERB_OCH_PRONOMEN = new Set([
+    'jag', 'du', 'vi', 'ni', 'man', 'dom', 'de', 'den', 'mig', 'dig', 'oss', 'er', 'dem',
+    'är', 'ar', 'var', 'vara', 'har', 'hade', 'kommer', 'kom', 'kör', 'körde', 'åker',
+    'sitter', 'satt', 'ligger', 'låg', 'står', 'stod', 'ser', 'såg', 'sett', 'kolla',
+    'kollade', 'ses', 'ska', 'skulle', 'vill', 'tänker', 'tror', 'undrar', 'vet', 'gör',
+    'blir', 'jobbar', 'bor', 'går', 'gick', 'tar', 'fick', 'får',
+  ]);
+
+  /*
+   * Ord som PRECISERAR platsen: byggnaden, macken, entrén, kedjan på skylten.
+   *
+   * De är det enda innehåll utöver själva ortnamnet som ett inlägg får bära.
+   * Listan är POSITIV med flit, och den är den andra halvan av krav 5. En
+   * negativ ämneslista prövades först ('kö', 'olycka', 'vägarbete'...) och den
+   * mätte fel: den släppte igenom "Bra pizza på Dillos igår", "Hej alla i
+   * Skultuna" och — värst av allt — "Irsta sållning", eftersom inget av de
+   * orden stod på listan. Ett negativt filter kan bara vägra det någon redan
+   * tänkt på, och det är precis den svagheten som gör extractPlace opålitlig.
+   *
+   * Med den positiva vändningen gäller i stället: ALLT i texten måste peka på
+   * platsen. Ett enda ord vi inte känner igen räcker för att avstå. Regeln
+   * felar därmed åt rätt håll — den tappar tolkningar, den hittar aldrig på
+   * dem — och listan växer när nya inlägg mätts, inte när nya risker gissats.
+   */
+  const PLATSPRECISERING = new Set([
+    // Delar av en plats
+    'entré', 'entrén', 'entren', 'ingången', 'ingång', 'utgången', 'utfarten',
+    'parkeringen', 'parkering', 'parkeringsplatsen', 'hållplatsen', 'busshållplatsen',
+    'viadukten', 'tunneln', 'gångbron', 'övergångsstället', 'refugen',
+    // Anläggningar
+    'macken', 'mack', 'bensinmacken', 'laddstationen', 'golfklubb', 'golfklubben',
+    'golfbanan', 'skolan', 'förskolan', 'gymnasiet', 'kyrkan', 'badet', 'simhallen',
+    'ishallen', 'sporthallen', 'idrottsplatsen', 'torget', 'köpcentret', 'köpcentrum',
+    'centrum', 'gallerian', 'affären', 'butiken', 'restaurangen', 'pizzerian',
+    'kiosken', 'vårdcentralen', 'industriområdet', 'återvinningen', 'ip',
+    // Skyltarna folk går efter
+    'hemköp', 'ica', 'coop', 'willys', 'lidl', 'netto', 'maxi', 'city', 'gross',
+    'preem', 'circle', 'shell', 'okq8', 'ingo', 'st1', 'tanka', 'biltema', 'jula',
+    'systembolaget', 'mcdonalds', 'burger', 'king', 'sibylla', 'max',
+  ]);
+
+  /*
+   * Färdriktningar som gruppen skriver ut. DIRECTION_HINTS ovan har bara
+   * -ut-formerna; konventionen i den här gruppen är -gående. Orden räknas som
+   * STÖD för tolkningen (de beskriver en observation i rörelse) och aldrig som
+   * ett okänt innehållsord.
+   */
+  const FARDRIKTNING = new Set(['norrgående', 'södergående', 'östergående', 'västergående',
+    'norrgaende', 'sodergaende', 'ostergaende', 'vastergaende']);
+
+  /*
+   * Småord som binder ihop en plats med sin precisering, plus tidsorden.
+   *
+   * Listan är EGEN och kort med flit, och det är hela skillnaden mot den
+   * version som mättes 2026-08-22. Då lydde krav 5 "STOPWORDS eller
+   * KLAUSULORD eller PLATS_SMAORD", alltså tre listor byggda för andra
+   * ändamål, och summan av dem godkände i praktiken vilken vardaglig mening
+   * som helst (se VERB_OCH_PRONOMEN). En godkännandelista måste skrivas för
+   * att vara godkännandelista: varje ord här ska gå att läsa som "det här
+   * ordet pekar på platsen", ingenting annat.
+   *
+   * Vad som medvetet INTE står här:
+   *   - Verb och pronomen. De diskvalificerar i stället, se VERB_OCH_PRONOMEN.
+   *   - Bisatsorden (KLAUSULORD: om, när, som, men). Efter dem beskriver
+   *     meningen något ANNAT än var polisen står — det är själva skälet till
+   *     att extractPlace bryter på dem — och en lapp har ingen bisats.
+   *   - Satsglue: så, att, än, här, där, eller. Samma sak: de bygger meningar.
+   */
+  const PLATS_BINDEORD = new Set([
+    // Var i förhållande till platsen
+    'vid', 'på', 'i', 'utanför', 'innanför', 'mot', 'runt', 'kring', 'nere', 'uppe',
+    'bakom', 'framför', 'bredvid', 'mellan', 'över', 'under', 'efter', 'före',
+    'ner', 'upp', 'in', 'ut', 'till', 'från',
+    // Bindeord mellan två platsled
+    'och', 'samt', 'plus', 'med',
+    // Tiden. Klockslagen är nakna tal efter normalize(); orden står här.
+    'nu', 'just', 'precis', 'idag', 'ikväll', 'inatt', 'imorgon', 'kl', 'klockan',
+    'fortfarande', 'kvar', 'hela',
+  ]);
+
+  // Klockslag i RÅtexten. normalize() byter ':' och '.' mot blanksteg, så
+  // tidsangivelsen är redan sönderdelad när parsern ser den.
+  const TID_RE = /\d{1,2}[.:]\d{2}/;
+
+  // Bindestreck överlever normalize(). "Mälarstrand-" måste matcha nyckeln
+  // "mälarstrand", annars faller "Hemköp Öster Mälarstrand- 16:15" på ett
+  // skiljetecken.
+  const utanBindestreck = w => w.replace(/^-+|-+$/g, '');
+
+  /**
+   * Hittar det längsta kända platsnamnet i ordföljden.
+   * @returns {null | {namn: string, i: number, n: number}} namn = aliasnyckeln,
+   *          i = första ordets index, n = antal ord platsen tar upp.
+   */
+  function hittaKandPlats(words) {
+    const rena = words.map(utanBindestreck);
+    // Längst först: "öster mälarstrand" ska vinna över ett ensamt led.
+    for (let n = Math.min(PLATS_MAX_LED, rena.length); n >= 1; n--) {
+      for (let i = 0; i + n <= rena.length; i++) {
+        const fras = rena.slice(i, i + n).join(' ');
+        if (PLATSORD_SET.has(fras)) return { namn: fras, i, n };
+      }
+    }
+    /*
+     * Sammansättningen prövas SIST och bara när inget helt namn hittats.
+     * Namnet som returneras är BASEN, inte hela ordet: "vallbyrondellen" finns
+     * inte i aliasfilen, men "vallby" gör det. Nålen hamnar då i stadsdelen i
+     * stället för vid rondellen — några hundra meter fel, och ändå oändligt
+     * mycket bättre än ingen nål alls.
+     *
+     * "Irstamacken" var exemplet här tills macken slogs upp och lades in i
+     * data/aliases.vasteras.json med en provad söksträng ("Circle K, Irsta").
+     * Den vägen är alltid bättre: ett inlagt namn ger rätt koordinat, medan
+     * basen bara ger rätt trakt. Faller ett efterled ofta i loggen är svaret
+     * att lägga in platsen, inte att bredda den här listan.
+     */
+    for (let i = 0; i < rena.length; i++) {
+      const w = rena[i];
+      for (const namn of PLATSORD) {
+        if (namn.includes(' ') || namn.length < ORTSLED_MINLANGD) continue;
+        if (w.length <= namn.length || !w.startsWith(namn)) continue;
+        const efterled = w.slice(namn.length).replace(/^s/, '');   // foge-s
+        if (ORTSLED.has(efterled)) return { namn, i, n: 1 };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Gruppens konvention som en syntetisk typordsträff, eller null.
+   *
+   * Formen är med flit densamma som findType returnerar, så att allt nedanför
+   * kroken i parseReportText kan köras oförändrat. Två fält är nya:
+   *   plats — aliasnyckeln som matchade. Måste användas i stället för
+   *           extractPlace, se motiveringen vid anropet.
+   *   stod  — texten bär också ett klockslag eller en färdriktning. Det gör
+   *           tolkningen säkrare (någon rapporterar ett ögonblick), och
+   *           avdraget på tilliten blir mindre.
+   */
+  function platsEnsamSomTyp(raw, text, words) {
+    if (words.length > PLATS_MAX_ORD) return null;
+    if (String(raw).includes('?')) return null;
+
+    // Frågeorden prövas FÖRE allt annat, och första ordet prövas mot en egen
+    // lista: en sats som inleds med ett finit verb eller ett frågeord är på
+    // svenska nästan alltid en fråga, med eller utan frågetecken. Se
+    // FRAGEINLEDNING — alla tre mätta fallen saknade frågetecken.
+    if (FRAGEINLEDNING.has(utanBindestreck(words[0]))) return null;
+    for (const w of words) {
+      if (FRAGEORD.has(utanBindestreck(w))) return null;
+    }
+
+    /*
+     * ETT VERB ELLER ETT PRONOMEN BETYDER ATT NÅGON SKREV EN MENING, och
+     * konventionen gäller lappar. Kontrollen står här uppe, före både
+     * platsuppslaget och krav 5, av två skäl: den är den billigaste av alla
+     * (en mängduppslagning per ord), och den ska gälla ORD FÖR ORD i hela
+     * texten — även de ord som något annat filter längre ner råkar godkänna.
+     */
+    for (const w of words) {
+      if (VERB_OCH_PRONOMEN.has(utanBindestreck(w))) return null;
+    }
+
+    /*
+     * Delsträng, inte matchaOrd — och riktningen är hela poängen.
+     *
+     * Vi står här bara därför att findType redan sagt nej. Står ett typord ändå
+     * i texten betyder det att matchningen AKTIVT valde bort ordet:
+     * "kameraövervakning" och "polisanmälan" har listordet först och betyder
+     * något annat, "kontrollerna" och "parkeringskontrollen" stoppas av
+     * INGEN_SAMMANSATTNING. Alla tre försvann tyst av goda skäl, och
+     * konventionsargumentet gäller inte dem: en text som faktiskt handlar om en
+     * kontroll av matlådor blir inte en polisobservation av att den nämner
+     * Bäckby. Hade skribenten menat polis hade hen skrivit ett ord vi tar emot.
+     *
+     * Delsträngen är trubbig med flit. Den felar bara åt ett håll — färre
+     * platstolkningar, aldrig fler — och en fras som "matkasse" (som råkar bära
+     * 'atk') kostar oss en tolkning vi ändå bara gissade oss till.
+     */
+    if (ALLA_TYPORD.some(w => text.includes(w))) return null;
+
+    const traff = hittaKandPlats(words);
+    if (!traff) return null;
+
+    /*
+     * ALLT ÖVRIGT I TEXTEN MÅSTE PEKA PÅ PLATSEN. Ett enda ord vi inte känner
+     * igen räcker för att avstå — inte "högst två", som en tidigare version
+     * tillät. Taket mättes och var för generöst: "Bra pizza på Dillos igår",
+     * "Hej alla i Skultuna" och "Irsta sållning" hade alla högst två okända ord
+     * och blev polisvarningar. Det sista är det allvarliga: 'sållning' ensamt
+     * står inte i nykterhetsspärrens ordlistor, och regeln hade då gjort en
+     * nykterhetskontroll till en publicerad polisnål. Nollkravet stänger det
+     * hålet utan att röra säkerhetsfiltret.
+     *
+     * Godtagbart är: stoppord och bisatsord, avblåsningsord (så att "Rocklunda
+     * fritt nu" kan bli en AVBLÅSNING i stället för att tystna), riktningar,
+     * bindeord, klockslag — och ord som preciserar platsen.
+     *
+     * NOT_A_PLACE i sin helhet duger INTE som godkännandelista, trots att den
+     * ligger nära till hands: den innehåller hälsningsord och bilfärger, och
+     * med dem hade "Hej Skultuna" blivit en varning.
+     *
+     * STOPWORDS duger inte heller, och det var det MÄTTA felet 2026-08-22:
+     * den listan är byggd för platsuttaget, där ett extra ord bara kortar
+     * frasen. Som godkännandelista släppte den igenom pronomen och verb och
+     * gjorde 13 av 30 vardagsmeningar till polisvarningar. Se PLATS_BINDEORD.
+     */
+    for (let i = 0; i < words.length; i++) {
+      if (i >= traff.i && i < traff.i + traff.n) continue;   // platsen själv
+      const w = utanBindestreck(words[i]);
+      if (!w) continue;
+      if (PLATS_BINDEORD.has(w)) continue;
+      if (CLEAR_WORDS.includes(w)) continue;
+      if (DIRECTION_HINTS.has(w) || FARDRIKTNING.has(w)) continue;
+      if (PLATSPRECISERING.has(w)) continue;
+      // Klockslagen är nakna tal efter normalize(), se TID_RE.
+      if (/^\d+$/.test(w)) continue;
+      return null;
+    }
+
+    const stod = TID_RE.test(String(raw)) || words.includes('kl') || words.includes('klockan') ||
+                 words.some(w => FARDRIKTNING.has(w) || DIRECTION_HINTS.has(w));
+
+    // Typen blir 'police': det är vad konventionen betyder. Inte 'control' —
+    // inlägget säger inte att det är en hastighetsmätning, bara att polisen
+    // står där.
+    return { type: 'police', word: null, traff: 'plats', gi: 99, idx: -1, plats: traff.namn, stod };
+  }
 
   const normalize = s => (s || '').toLowerCase()
     .replace(/[^\wåäöéèü\s-]/g, ' ')
@@ -865,15 +1337,75 @@
   const arTypord = ord => ALLA_TYPORD.some(w => matchaOrd(ord, w) !== null);
 
   /*
+   * Svaga platsled: ord som säger VAR VID platsen något står, inte VILKEN
+   * plats det är. De står här och inte bland stopporden, för ett stoppord
+   * försvinner helt. Ett svagt platsled sparas undan och används när
+   * ingenting annat blev kvar: "Rondellen norrut" och "Polis mot stan" är
+   * sämre platser än ett ortnamn men oändligt mycket bättre än tom sträng,
+   * för utan plats faller rapporten på tröskeln 0,65.
+   */
+  const SVAGA_PLATSLED = new Set([
+    ...DIRECTION_HINTS, ...FARDRIKTNING,
+    'stan', 'entrén', 'entren', 'entré', 'entre', 'parkeringen', 'parkering',
+  ]);
+
+  /*
+   * Vilka ord är ett klockslag?
+   *
+   * normalize() byter ':' och '.' mot blanksteg INNAN parsern ser texten, så
+   * "13.45" är två ord — "13" och "45" — när rensningen når dem. Regeln som
+   * stod här förut, /^\d{1,2}[:.]\d{2}$/, kunde därför aldrig träffa något:
+   * den letade efter ett tecken som redan var borta.
+   *
+   * Paret måste vara ett GILTIGT klockslag, inte vilka två tal som helst.
+   * Annars försvinner vägnumret ur "riksväg 66 11.15": 66 följt av 11 ser ut
+   * som ett par, och timmen 66 finns inte. Ett ENSAMT tal rörs inte —
+   * "Vasagatan 12" är ett husnummer och hjälper geokodningen.
+   */
+  function klockslagsindex(words) {
+    const arKlockslag = new Array(words.length).fill(false);
+    for (let i = 0; i < words.length - 1; i++) {
+      if (!/^\d{1,2}$/.test(words[i]) || Number(words[i]) > 23) continue;
+      if (!/^\d{2}$/.test(words[i + 1]) || Number(words[i + 1]) > 59) continue;
+      arKlockslag[i] = true;
+      arKlockslag[i + 1] = true;
+      i++;
+    }
+    return arKlockslag;
+  }
+
+  /*
    * Vägorden (rondellen, avfarten, rampen) räknas inte som plats — det stod
    * redan i kommentaren vid DIRECTION_HINTS, men rensningen gjorde det inte
    * förrän nu. De sparas ändå undan: är de allt vi har är "rondellen norrut"
    * bättre än ingen plats, för utan plats faller rapporten på tröskeln.
+   *
+   * SIST PRÖVAS DELFRASERNA MOT DE KÄNDA NAMNEN, och det är den delen som
+   * löser de mätta bortfallen. Rensningen är ett NEGATIVT filter: den kan
+   * bara ta bort ord den känner igen och antar att allt annat är ett
+   * platsnamn. "Laser vid Hammarby- korsningen vid la pizza" blir därför
+   * "hammarby la pizza", och ingen ordlista kommer att innehålla "la pizza".
+   * hittaKandPlats vänder på frågan och letar POSITIVT efter det längsta
+   * kända namnet någonstans i frasen, så delfrasen "hammarby" vinner.
+   *
+   * Det väger extra tungt HÄR: bryggans geokodare gör ETT Nominatim-anrop med
+   * hela frasen, utan aliaslista och utan att korta den. Appen har en
+   * prefixkortning som ibland räddar en skräpig fras; bryggan har ingenting.
+   *
+   * Priset, uttalat: hittas ett känt namn kastas resten av frasen. "Polis på
+   * Vasagatan 12" geokodas som "vasagatan" och nålen hamnar på gatan i
+   * stället för vid huset — ett känt namn har en provad söksträng, ett
+   * husnummer har ingen.
    */
   function extractPlace(words) {
     const kept = [];
     const medVagord = [];
-    for (const w of words) {
+    const arKlockslag = klockslagsindex(words);
+    for (let i = 0; i < words.length; i++) {
+      // Bindestrecket överlever normalize() för gatunamnens skull, men i
+      // kanten av ett ord är det skiljetecken: "Hammarby-" är Hammarby.
+      const w = utanBindestreck(words[i]);
+      if (!w) continue;
       if (KLAUSULORD.has(w)) {
         /*
          * Bryt bara när vi har ett RIKTIGT platsled, alltså kept och inte
@@ -890,23 +1422,67 @@
       if (arTypord(w)) continue;
       if (STOPWORDS.has(w)) continue;
       if (NOT_A_PLACE.has(w)) continue;
-      if (/^\d{1,2}[:.]\d{2}$/.test(w)) continue;
-      if (/^\d+$/.test(w) && w.length > 3) continue;
+      if (arKlockslag[i]) continue;                    // klockslag, se ovan
+      if (/^\d+$/.test(w) && w.length > 3) continue;   // långa sifferklumpar
       medVagord.push(w);
-      if (DIRECTION_HINTS.has(w)) continue;
+      if (SVAGA_PLATSLED.has(w)) continue;
       kept.push(w);
     }
-    return (kept.length ? kept : medVagord).join(' ').trim();
+    const ord = kept.length ? kept : medVagord;
+    // Samma uppslag som platsregeln använder, med flit: två listor över kända
+    // platser i samma fil hade drivit isär, och den som glömdes bort hade
+    // blivit ett tyst bortfall igen.
+    const kand = hittaKandPlats(ord);
+    return (kand ? kand.namn : ord.join(' ')).trim();
   }
 
-  function parseReportText(raw) {
+  /*
+   * @param {{platsKonvention?: boolean}} [val]
+   *   platsKonvention — får ett kort inlägg som bara pekar ut ett känt
+   *   platsnamn läsas som "polis här"? Se PLATSORD.
+   *
+   *   FLAGGAN ÄR AV SOM STANDARD, OCH DET ÄR HELA POÄNGEN. Regeln är en
+   *   GRUPPREGEL: "Här Står Polisen - Västerås" har på sin om-sida att man
+   *   skriver enbart när man ser en poliskontroll. Ingen sådan konvention
+   *   finns för rösten eller appens egna fält, och js/parser.js är samma
+   *   funktion där. Bryggan läser bara gruppen och sätter därför flaggan vid
+   *   anropet i skanningen — inte här.
+   */
+  function parseReportText(raw, val = {}) {
+    const { platsKonvention = false } = val;
     const text = normalize(raw);
     if (!text || text.length < 3) return null;
 
     if (isSobrietyCheck(text)) return { intent: 'refused', reason: 'sobriety' };
 
     const words = text.split(' ');
-    const t = findType(text, words);
+    let t = findType(text, words);
+
+    /*
+     * PLATSEN ENSAM ÄR EN VARNING. Inget typord — men gruppens konvention är
+     * att man skriver ENBART när man ser polis, så ett kort inlägg som pekar
+     * ut en känd plats betyder polis där. Se motiveringen vid PLATSORD.
+     *
+     * Kroken sitter PÅ DEN HÄR RADEN med flit, inte som ett eget tidigt
+     * return längre upp. Placeringen är hela skillnaden mellan rätt och fel
+     * svar:
+     *   - Nykterhetsspärren ovan har redan kört, och kör alltså också för den
+     *     här vägen. Säkerhetsregeln kan inte kringgås av en platsregel.
+     *   - Brusfiltren, gruppmetafiltret, avblåsningsraden, platsuttaget och
+     *     tilliten nedanför körs oförändrat. Det är därför "Rocklunda fritt
+     *     nu" blir en AVBLÅSNING och inte en varning: raden med CLEAR_WORDS
+     *     nås. Ett tidigt return hade lagt en polisnål på en plats som nyss
+     *     blivit fri — den naturliga första implementationen, och den farliga.
+     *   - Kamerablocket nedanför frågar bara efter type === 'camera' och rör
+     *     alltså inte den syntetiska träffen.
+     *   - Raden nås bara när dagens kod redan svarar null, så inget befintligt
+     *     fall kan byta svar.
+     *
+     * Flaggan gör regeln till det den är: en GRUPPREGEL. Rösten och appens
+     * egna fält har ingen sådan konvention, och där är ett ensamt platsnamn
+     * oftast en avhuggen mening. Se motiveringen vid parametern.
+     */
+    if (!t && platsKonvention) t = platsEnsamSomTyp(raw, text, words);
     if (!t) return null;
 
     /*
@@ -942,9 +1518,19 @@
 
     if (hasAnyPhrase(text, NOISE_PHRASES)) return null;
     if (hasAnyWord(words, NOISE_WORDS) && words.length < 5) return null;
+    // Gruppens eget prat, oavsett längd. Se GRUPPMETA_ORD: gruppnamnet
+    // innehåller ett typord, så varje metainlägg får en typordsträff gratis.
+    if (hasAnyWord(words, GRUPPMETA_ORD)) return null;
 
     const intent = hasAnyWord(words, CLEAR_WORDS) ? 'clear' : 'report';
-    const place = extractPlace(words);
+    /*
+     * Platsen kommer från platsregeln när det var den som bar inlägget.
+     * extractPlace duger inte där: utan typord rensar arTypord ingenting, och
+     * "Vallby vid entrén till Golfklubb" hade gett platsfrasen "vallby entrén
+     * till golfklubb" — hela skräpfras-problemet ärvt rakt in i den nya vägen.
+     * Aliasnyckeln är dessutom det enda som säkert går att geokoda.
+     */
+    const place = t.plats !== undefined ? t.plats : extractPlace(words);
 
     let confidence = 0.5;
     if (place.length >= 3) confidence += 0.3;
@@ -956,7 +1542,21 @@
     // En osäkrare matchning ska ge en osäkrare rapport. Avdraget är litet med
     // flit: det ska rangordna rapporter mot varandra, inte ensamt fälla dem
     // under tröskeln 0,65.
-    if (t.traff === 'sammansatt') confidence -= 0.1;
+    /*
+     * Platsregeln är en TOLKNING AV EN KONVENTION, inte av ett uttalat
+     * påstående. Ingen har skrivit "polis" — vi läser in det ur att någon
+     * över huvud taget skrev i gruppen. Avdraget är därför det största av
+     * alla, och ordningen på grenarna gör platsträffen till lägsta klassen:
+     *   "Polis vid Vallby"                  0,90   exakt typord
+     *   "Trafikpolisen vid Vallby"          0,80   sammansatt typord
+     *   "Dillos norrgående 11.15"           0,75   plats + klockslag/riktning
+     *   "Vallby vid entrén till Golfklubb"  0,70   plats ensam
+     * Nivåerna når fortfarande över tröskeln 0,65 (CONFIG.minConfidence) —
+     * under den kastas inlägget och regeln vore död — men ligger tydligt
+     * under varje rapport med ett utskrivet typord.
+     */
+    if (t.traff === 'plats') confidence -= (t.stod ? 0.15 : 0.2);
+    else if (t.traff === 'sammansatt') confidence -= 0.1;
     else if (t.traff === 'bojning') confidence -= 0.05;
 
     const svar = {
@@ -1688,6 +2288,142 @@
     return ut;
   }
 
+  /*
+   * Aliaslistan: platsnamn som gruppen skriver -> söksträng som går att slå
+   * upp. Samma tabell som data/aliases.vasteras.json, ord för ord.
+   *
+   * VARFÖR EN KOPIA OCH INTE FILEN. Sidan kör på facebook.com. Den kan inte
+   * läsa en fil ur appen, och ett nätanrop till polisvakt.pages.dev härifrån
+   * vore precis den trafik läsdelen inte får ha. Tabellen måste finnas i
+   * koden.
+   *
+   * VARFÖR HÄR OCH INTE I GEOKODNINGSAVSNITTET. Allt före rubriken
+   * "Geokodning" är LÄSDELEN, och läsdelen är det tools/brygg-daemon.ps1
+   * jämför tecken för tecken mellan den här filen och Chrome-tilläggets
+   * kopia. En aliasrad som glidit isär mellan de två filerna ger en nål på
+   * fel plats i den ena — exakt den sortens tysta fel jämförelsen finns för.
+   * Ligger tabellen innanför läsdelen kan den inte glida isär utan att
+   * daemonen vägrar starta.
+   *
+   * MÄTT 2026-08-22, och det är därför den här listan finns: bryggan skickade
+   * parserns platsnyckel rakt till uppslagstjänsten, i ett enda anrop.
+   * 'irstamacken, Västerås' gav noll träffar, alltså publicerades inlägget
+   * "Irstamacken" aldrig — och nollsvaret cachades dessutom utan TTL, så
+   * platsen var död även efter att aliasfilen lagats. 'apalby ip, Västerås'
+   * gav Apalbyvägen i Norrmalm, 1,7 km från Apalby IP, med tilliten 0,95.
+   * Appen klarade båda, eftersom js/geocode.js slår i aliasfilen först.
+   * Vinsten av nya namn i aliasfilen landade alltså bara i appen och inte i
+   * den kanal som faktiskt läser gruppen.
+   *
+   * Nycklarna är gemener utan skiljetecken, precis som i filen: samma form
+   * som normalize() ger. Tabellen gäller VÄSTERÅS och används därför bara för
+   * grupper med den orten — se uppslaget i geocode().
+   */
+  const ALIAS_VASTERAS = {
+    'dillos': 'Dillos, Västerås',
+    'dillos pizzeria': 'Dillos, Västerås',
+    'erikslund': 'Erikslunds köpcentrum, Västerås',
+    'erikslundsrondellen': 'Erikslund, Västerås',
+    'hälla': 'Hälla, Västerås',
+    'hälla köpcentrum': 'Hälla köpcentrum, Västerås',
+    'gallerian': 'Punkt Västerås',
+    'punkt': 'Punkt Västerås',
+    'resecentrum': 'Västerås centralstation',
+    'centralen': 'Västerås centralstation',
+    'stationen': 'Västerås centralstation',
+    'flygplatsen': 'Stockholm Västerås Airport',
+    'hamnen': 'Västerås hamn',
+    'abb': 'ABB, Västerås',
+    'sjukhuset': 'Västmanlands sjukhus Västerås',
+    'lasarettet': 'Västmanlands sjukhus Västerås',
+    'mdh': 'Mälardalens universitet, Västerås',
+    'mdu': 'Mälardalens universitet, Västerås',
+    'bombardier': 'Hallstahammarsvägen, Västerås',
+    'rocklunda': 'Rocklunda, Västerås',
+    'arenan': 'ABB Arena, Västerås',
+    'abb arena': 'ABB Arena Nord, Västerås',
+    'djurgårdsvägen': 'Djurgårdsvägen, Västerås',
+    'apalby': 'Apalby, Västerås',
+    'apalby ip': 'Apalby, Västerås',
+    'irstamacken': 'Circle K, Irsta',
+    'emausskolan': 'Emausskolan, Västerås',
+    'hemköp öster mälarstrand': 'Hemköp Västerås Öster Mälarstrand',
+    'vallby golfklubb': 'Västerås golfklubb, Vallby',
+    'vallby golfklubben': 'Västerås golfklubb, Vallby',
+    'västerås golfklubb': 'Västerås golfklubb, Vallby',
+    'hammarby': 'Hammarby, Västerås',
+    'hammarbyrampen': 'Hammarby, Västerås',
+    'bäckby': 'Bäckby, Västerås',
+    'backby': 'Bäckby, Västerås',
+    'vallby': 'Vallby, Västerås',
+    'pettersberg': 'Pettersberg, Västerås',
+    'råby': 'Råby, Västerås',
+    'raby': 'Råby, Västerås',
+    'bjurhovda': 'Bjurhovda, Västerås',
+    'skiljebo': 'Skiljebo, Västerås',
+    'malmaberg': 'Malmaberg, Västerås',
+    'viksäng': 'Viksäng, Västerås',
+    'viksang': 'Viksäng, Västerås',
+    'gideonsberg': 'Gideonsberg, Västerås',
+    'skallberget': 'Skallberget, Västerås',
+    'jakobsberg': 'Jakobsberg, Västerås',
+    'blåsbo': 'Blåsbo, Västerås',
+    'emaus': 'Emaus, Västerås',
+    'nordanby': 'Nordanby, Västerås',
+    'önsta': 'Önsta-Gryta, Västerås',
+    'gryta': 'Önsta-Gryta, Västerås',
+    'hökåsen': 'Hökåsen, Västerås',
+    'hokasen': 'Hökåsen, Västerås',
+    'skultuna': 'Skultuna',
+    'irsta': 'Irsta',
+    'barkarö': 'Barkarö',
+    'tillberga': 'Tillberga',
+    'dingtuna': 'Dingtuna',
+    'badelunda': 'Badelunda',
+    'tortuna': 'Tortuna',
+    'kungsåra': 'Kungsåra',
+    'romfartuna': 'Romfartuna',
+    'lillhärad': 'Lillhärad',
+    'gäddeholm': 'Gäddeholm, Västerås',
+    'johannisberg': 'Johannisberg, Västerås',
+    'öster mälarstrand': 'Öster Mälarstrand, Västerås',
+    'lillåudden': 'Lillåudden, Västerås',
+    'stora gatan': 'Stora gatan, Västerås',
+    'vasagatan': 'Vasagatan, Västerås',
+    'kopparbergsvägen': 'Kopparbergsvägen, Västerås',
+    'björnövägen': 'Björnövägen, Västerås',
+    'bjornovagen': 'Björnövägen, Västerås',
+    'norrleden': 'Norrleden, Västerås',
+    'österleden': 'Österleden, Västerås',
+    'västerleden': 'Västerleden, Västerås',
+    'bergslagsvägen': 'Bergslagsvägen, Västerås',
+    'köpingsvägen': 'Köpingsvägen, Västerås',
+    'surahammarsvägen': 'Surahammarsvägen, Västerås',
+    'pilgatan': 'Pilgatan, Västerås',
+    'sigurdsgatan': 'Sigurdsgatan, Västerås',
+    'ängsgärdsgatan': 'Ängsgärdsgatan, Västerås',
+    'e18': 'E18, Västerås',
+    'e18 västerut': 'E18, Västerås',
+    'e18 österut': 'E18, Västerås',
+    'riksväg 66': 'Riksväg 66, Västmanland',
+    'rv66': 'Riksväg 66, Västmanland',
+    '66an': 'Riksväg 66, Västmanland',
+    'riksväg 56': 'Riksväg 56, Västmanland',
+    'rv56': 'Riksväg 56, Västmanland',
+    '56an': 'Riksväg 56, Västmanland',
+    'räta linjen': 'Riksväg 56, Västmanland',
+    'sala': 'Sala',
+    'köping': 'Köping',
+    'arboga': 'Arboga',
+    'fagersta': 'Fagersta',
+    'hallstahammar': 'Hallstahammar',
+    'surahammar': 'Surahammar',
+    'kungsör': 'Kungsör',
+    'norberg': 'Norberg',
+    'skinnskatteberg': 'Skinnskatteberg',
+    'kvicksund': 'Kvicksund',
+  };
+
   /* ================= Geokodning ================= */
 
   let lastGeocode = 0;
@@ -1746,8 +2482,28 @@
     // Västerås" bara sämre att slå upp. Annars hjälper suffixet Nominatim
     // att välja rätt av tjugo gator med samma namn.
     const lagt = normalize(place);
+
+    /*
+     * ALIASNYCKELN FÖRST, precis som js/geocode.js gör innan den frågar
+     * uppslagstjänsten. Parsern lägger numera medvetet ut EXAKTA
+     * aliasnycklar ("irstamacken", "apalby ip"), och just de nycklarna är
+     * sådana OSM inte känner igen i rå form — se motiveringen vid
+     * ALIAS_VASTERAS. Utan uppslaget blev vinsten av varje nytt namn i
+     * aliasfilen appens ensam, medan bryggan fick noll träffar eller fel
+     * koordinat.
+     *
+     * Tabellen är Västerås, alltså används den bara för Västeråsgrupper. En
+     * Stockholmsgrupp som slog upp "vasagatan" ur den här listan hade fått
+     * Västerås koordinat — samma fel som cachenyckeln per grupp redan
+     * skyddar mot, och det värsta utfall den här appen har.
+     */
+    const forVasterAs = normalize(grupp.ort) === 'västerås';
+    const alias = forVasterAs
+      ? (ALIAS_VASTERAS[lagt] || ALIAS_VASTERAS[lagt.replace(/\s+/g, '')])
+      : null;
+
     const harOrt = grupp.orter.some(o => o && lagt.includes(o));
-    const fraga = (harOrt || !grupp.ort) ? place : place + ', ' + grupp.ort;
+    const fraga = alias || ((harOrt || !grupp.ort) ? place : place + ', ' + grupp.ort);
 
     const u = new URL('https://nominatim.openstreetmap.org/search');
     u.searchParams.set('q', fraga);
@@ -1924,7 +2680,10 @@
         const { stable, externalId } = keysFor(post, grupp);
         if (isHandled(stable)) continue;
 
-        const parsed = parseReportText(post.text);
+        // platsKonvention: bryggan läser bara gruppflödet, och där gäller
+        // gruppens egen regel — man skriver enbart när man ser en
+        // poliskontroll. Samma flagga sätts i js/facebook.js.
+        const parsed = parseReportText(post.text, { platsKonvention: true });
 
         // Nykterhetskontroller och fartkameror kastas tyst. Inget skickas,
         // ingenting loggas av texten. Det är en produktregel, inte en filter-

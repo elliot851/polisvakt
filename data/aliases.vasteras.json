@@ -25,6 +25,16 @@
   "abb arena": "ABB Arena Nord, Västerås",
   "djurgårdsvägen": "Djurgårdsvägen, Västerås",
 
+  "_kommentar_platser_ur_gruppen": "Nedan: platser som gruppen faktiskt skrev men som saknades här, så inlägget kastades med 'okänd-plats'. Varje söksträng är provad mot Nominatim 2026-08-22 och gav EN träff på rätt ställe. Gatuadressen står inte i söksträngen där OSM hittar namnet direkt — ett husnummer OSM inte känner igen faller tillbaka på hela gatan, och Vasagatan är tre kilometer lång.",
+  "apalby": "Apalby, Västerås",
+  "apalby ip": "Apalby, Västerås",
+  "irstamacken": "Circle K, Irsta",
+  "emausskolan": "Emausskolan, Västerås",
+  "hemköp öster mälarstrand": "Hemköp Västerås Öster Mälarstrand",
+  "vallby golfklubb": "Västerås golfklubb, Vallby",
+  "vallby golfklubben": "Västerås golfklubb, Vallby",
+  "västerås golfklubb": "Västerås golfklubb, Vallby",
+
   "hammarby": "Hammarby, Västerås",
   "hammarbyrampen": "Hammarby, Västerås",
   "bäckby": "Bäckby, Västerås",
