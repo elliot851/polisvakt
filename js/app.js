@@ -3808,7 +3808,19 @@ function plateInst() {
          * det var precis så det lästes vid provkörningen. Siffran tillför
          * ingenting när den är noll, så då står den inte där.
          */
-        const proc = Math.round((d.sakerhet || 0) * 100);
+        /*
+         * INGEN multiplikation med 100. js/plate.js lämnar redan säkerheten
+         * som 0–100 — det är Tesseracts egen skala och den skickas vidare
+         * orörd. Raden gjorde 92 till 9200, och provläget visade "9200 %".
+         *
+         * Att det aldrig upptäcktes har en egen förklaring: fram till
+         * ombyggnaden av sökaren var säkerheten på normalt avstånd faktiskt
+         * NOLL, eftersom Otsu-tröskeln räknades inklusive det mörka
+         * EU-bandet. Grenen som skriver ut procenten kördes alltså i princip
+         * aldrig. En bugg som göms av en annan bugg syns först när den
+         * första lagas.
+         */
+        const proc = Math.round(d.sakerhet || 0);
         $('plProvStatus').textContent = proc > 0
           ? `Provläge — läste ${visaPlat(d.plat)} (${proc} %). Inte ditt fordon, inget sparat.`
           : `Provläge — läste ${visaPlat(d.plat)}. Inte ditt fordon, inget sparat.`;
