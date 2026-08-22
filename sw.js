@@ -9,7 +9,7 @@
 // lugnt. Föraren behöver aldrig göra något — och blir aldrig avbruten mitt i
 // en körning, eftersom omladdningen väntar tills bilen står still.
 
-const VERSION = '2026-08-22-76';
+const VERSION = '2026-08-22-77';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -66,6 +66,14 @@ const SHELL = [
   './js/kvalitet.js',
   './js/betalning.js',
   './js/behorigheter.js',
+  // Uppstartsguiden och pekaren. De MÅSTE ligga här: guiden är det enda som
+  // ser till att notiser och plats blir påslagna, och en app som startas
+  // utan nät medan just de två filerna saknas i cachen startar utan guide —
+  // alltså tyst utan varningar, vilket är exakt det tillståndet guiden finns
+  // för att upptäcka.
+  './js/uppstart.js',
+  './js/peka.js',
+  './js/platsstart.js',
   './js/push.js',
   './js/groups.js',
   './js/config.js',

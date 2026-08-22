@@ -328,6 +328,7 @@ export async function notisStatus({ snabb = false } = {}) {
     ok,
     verifierad: true,               // Notification.permission är alltid sant nu
     kanFraga: perm === 'default',
+    fragad: notisFragad(),
     prenumererad,
     fix: perm === 'denied' ? 'installningar' : (ok ? null : cap.fix),
     apple: cap.apple,
@@ -399,6 +400,65 @@ export async function begarNotiser({ deviceId, habits, minCount = 3 } = {}) {
       ? 'Notiser är påslagna. Påminnelser när appen är stängd är inte igång i den här versionen än.'
       : '',
   };
+}
+
+/**
+ * Har appen någon gång ställt notisfrågan på den här enheten?
+ *
+ * Samma tanke som platsFragad(), men skillnaden mot plats är viktig: notis-
+ * frågan får bara ställas EN gång. Säger föraren nej stänger webbläsaren
+ * dörren för alltid, och då finns ingen ruta kvar att visa — bara en menyväg.
+ * Därför måste appen veta om frågan är förbrukad eller obegagnad innan den
+ * lovar att en knapp ska hjälpa.
+ *
+ * Nyckeln bor här och inte i den fil som råkar rita frågan. Samma skäl som
+ * gör att js/platsstart.js saknar egen nyckel: det ska finnas exakt en
+ * uppfattning om vad som hänt, annars börjar två filer minnas olika saker.
+ */
+export function notisFragad() {
+  return !!load().notisFragad?.at;
+}
+
+/** Kom ihåg att frågan visats, oavsett vad föraren svarade. */
+export function markeraNotisFragad() {
+  const st = load();
+  if (st.notisFragad?.at) return;
+  st.notisFragad = { at: Date.now() };
+  save(st);
+}
+
+/**
+ * Tillståndet finns, men prenumerationen saknas — laga tyst.
+ *
+ * Det här är inte ett påhittat läge. Det uppstår varje gång någon tryckt på en
+ * knapp som bara körde Notification.requestPermission() utan att prenumerera,
+ * och varje gång webbläsaren kastat prenumerationen (den gör det vid rensad
+ * lagring, ny service worker eller utgången nyckel). Utfallet är det värsta
+ * tänkbara: appen ser påslagen ut, föraren tror att telefonen säger till, och
+ * servern har ingen rad att skicka till.
+ *
+ * Ingen gest behövs. Notification.requestPermission() inne i push.enable()
+ * returnerar direkt när svaret redan är 'granted' — ingen ruta visas, och
+ * därför får den här funktionen köras vid start utan att någon tryckt på
+ * något. Är tillståndet inte redan givet gör vi ingenting: en notisruta som
+ * poppar upp av sig själv vid start är precis det som lär folk trycka nej.
+ *
+ * @param {{deviceId?:string, habits?:object}} opts
+ */
+export async function lagaNotiser({ deviceId, habits } = {}) {
+  if (!deviceId) return { ok: false, reason: 'Saknar enhets-id.' };
+
+  const cap = push.capabilities();
+  if (!cap.supported) return { ok: false, reason: cap.reason, fix: cap.fix };
+  if (push.permission() !== 'granted') return { ok: false, reason: 'Tillstånd saknas — får bara frågas om i ett fingertryck.' };
+
+  let redan = false;
+  try { redan = (await push.status()).subscribed; } catch {}
+  if (redan) return { ok: true, redan: true };
+
+  const res = await push.enable({ deviceId, habits });
+  larma('notiser', { ok: res.ok });
+  return { ...res, lagad: res.ok };
 }
 
 /* ========================== FOKUS / STÖR EJ ========================= */
@@ -686,3 +746,145 @@ export async function status({ snabb = false } = {}) {
 
 /** Snabb koll utan att vänta på service workern. Samma form som status(). */
 export const snabbStatus = () => status({ snabb: true });
+
+/* ============================ PÅMINNELSE ============================ */
+/*
+ * Vad appen kan göra åt en behörighet som saknas — och vad den absolut inte
+ * kan göra.
+ *
+ * En webbsida kan inte bevilja sig själv något, och den kan inte öppna
+ * telefonens inställningar åt någon. Det finns exakt fyra utfall, och hela
+ * poängen med atgard() är att UI:t ska välja knapptext och knapphandling ur
+ * den listan i stället för att gissa:
+ *
+ *   'fraga'          — webbläsarens egen ruta går fortfarande att visa. Ett
+ *                      fingertryck räcker. Det här är det enda läget där appen
+ *                      faktiskt kan lösa något.
+ *   'hemskarm'       — iPhone i en vanlig Safari-flik. Notis-API:t finns inte
+ *                      alls där, så en fråga skulle misslyckas tyst. Enda
+ *                      vägen är Dela → Lägg till på hemskärmen.
+ *   'installningar'  — föraren har sagt nej en gång, eller blockerat i
+ *                      webbläsaren. Rutan är förbrukad. Kvar finns bara den
+ *                      exakta menyvägen, och den vet instruktioner().
+ *   'omojligt'       — enheten saknar GPS, iOS är för gammalt, webbläsaren
+ *                      stödjer inte push. Ingen knapp i världen hjälper, och
+ *                      då ska ingen knapp visas heller.
+ *
+ * Funktionen är ren: den tar ett statusobjekt och returnerar text. Den rör
+ * varken DOM, localStorage eller webbläsarens API:er, så den går att anropa
+ * hur ofta som helst.
+ *
+ * @param {object} st  ett svar från platsStatus() eller notisStatus()
+ * @returns {{typ:string, knapp:string, rubrik:string, forklaring:string}}
+ */
+export function atgard(st) {
+  if (!st) return { typ: 'omojligt', knapp: '', rubrik: '', forklaring: '' };
+  if (st.ok) return { typ: 'klart', knapp: '', rubrik: '', forklaring: st.text || '' };
+
+  const plats = st.nyckel === 'plats';
+
+  // Ingen hårdvara, för gammal telefon, fel webbläsare. Det finns inget att
+  // trycka på, och en knapp som inte gör något är sämre än ingen knapp.
+  if (st.state === 'saknas' && (plats || (st.fix !== 'hemskarm' && st.fix !== 'installningar'))) {
+    return {
+      typ: 'omojligt',
+      knapp: '',
+      rubrik: plats ? 'Enheten saknar GPS' : 'Notiser går inte här',
+      forklaring: st.reason || st.text || '',
+    };
+  }
+
+  // iPhone i Safari-flik. EN instruktion, inte en fråga som ändå misslyckas.
+  if (!plats && st.fix === 'hemskarm') {
+    return {
+      typ: 'hemskarm',
+      knapp: 'Visa hur',
+      rubrik: 'Lägg Polisvakt på hemskärmen',
+      forklaring: 'iPhone släpper bara igenom notiser till appar som ligger på hemskärmen. Det är Apples begränsning, inte vår.',
+    };
+  }
+
+  // Rutan går fortfarande att visa. Enda läget där ett tryck löser saken.
+  if (st.kanFraga) {
+    return {
+      typ: 'fraga',
+      knapp: plats
+        ? (st.state === 'okand' ? 'Kontrollera plats' : 'Tillåt plats')
+        : 'Slå på notiser',
+      rubrik: plats ? 'Slå på plats' : 'Slå på notiser',
+      forklaring: plats
+        ? 'Telefonen frågar om lov när du trycker. Svara Tillåt.'
+        : 'Telefonen frågar om lov när du trycker. Svara Tillåt.',
+    };
+  }
+
+  // Kvar: nekad eller blockerad. Bara menyvägen hjälper härifrån.
+  return {
+    typ: 'installningar',
+    knapp: 'Så slår du på',
+    rubrik: plats ? 'Plats är blockerad' : 'Notiser är blockerade',
+    forklaring: st.reason
+      || 'Webbläsaren frågar inte igen när man sagt nej en gång. Det måste slås på i inställningarna.',
+  };
+}
+
+/**
+ * Vad påminnelseraden ska säga just nu — eller att den inte ska synas alls.
+ *
+ * Fokus räknas medvetet INTE med här. Det går inte att läsa av, så en rad om
+ * Fokus skulle ligga kvar för evigt hos alla som aldrig tryckt på bekräfta-
+ * knappen — och en varning som aldrig försvinner slutar man se efter en dag.
+ * Fokus hör hemma i guiden, där den kan förklaras, inte i en rad som pockar.
+ *
+ * Det finns ingen "dölj"-knapp och ingen väntetid mellan påminnelserna, med
+ * flit. Ägarens krav är att det inte får glömmas bort. En rad som går att
+ * trycka bort blir bortryckt första gången och sedan aldrig mer sedd.
+ *
+ * @param {{snabb?:boolean, hoppaOver?:string[]}} opts
+ *        snabb     hoppar över kollen av prenumerationen (väntar på service
+ *                  workern och kan ta sekunder)
+ *        hoppaOver nycklar som någon annan redan varnar om. Finns för att
+ *                  js/platsstart.js ritar en egen röd remsa när plats saknas,
+ *                  och två rader som säger samma sak är samma sak som ingen
+ *                  rad alls — man slutar läsa båda.
+ * @returns {Promise<{visa:boolean, saknas:string[], rubrik:string, text:string,
+ *                    knapp:string, lista:object[], plats:object, notiser:object}>}
+ */
+export async function paminnelse({ snabb = false, hoppaOver = [] } = {}) {
+  const [plats, notiser] = await Promise.all([
+    platsStatus(),
+    notisStatus({ snabb }),
+  ]);
+
+  const brister = [plats, notiser].filter(x => !x.ok && !hoppaOver.includes(x.nyckel));
+  const nycklar = brister.map(x => x.nyckel);
+
+  if (!nycklar.length) {
+    return { visa: false, saknas: [], lista: [], plats, notiser, rubrik: '', text: '', knapp: '' };
+  }
+
+  // Saknar enheten både GPS och notisstöd finns det ingenting att fixa. Då
+  // ska raden vara tyst — den skulle bara skälla på en telefon för att den är
+  // en telefon.
+  const nagotGarAttGora = brister.some(x => atgard(x).typ !== 'omojligt');
+
+  const badeOch = nycklar.length === 2;
+  const rubrik = badeOch ? 'Plats och notiser är inte påslagna'
+    : nycklar[0] === 'plats' ? 'Plats är inte påslagen'
+    : 'Notiser är inte påslagna';
+
+  const text = badeOch
+    ? 'Polisvakt kan varken varna för något framför dig eller nå dig när appen är stängd.'
+    : nycklar[0] === 'plats'
+      ? 'Polisvakt kan inte varna för något framför dig.'
+      : 'Ingenting når dig när appen är stängd.';
+
+  return {
+    visa: brister.length > 0 && nagotGarAttGora,
+    saknas: nycklar,
+    lista: brister,
+    plats, notiser,
+    rubrik, text,
+    knapp: 'Fixa det',
+  };
+}

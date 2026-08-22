@@ -332,6 +332,10 @@ async function boot() {
   wireVakthund();
   wireVarmevakt();
   wirePermissions();
+  // Läser av läget vid varje start och lägger en rad högst upp om plats eller
+  // notiser saknas. Väntas inte in: den har en egen fördröjning som låter
+  // startfrågorna gå först, och boot() ska inte stå still för den.
+  wireBehorigheter();
   wireDemos();
   lockZoom();
 
@@ -1075,6 +1079,649 @@ function wireVarmevakt() {
 function wirePermissions() {
   try { Behorigheter.koppla(geo); } catch {}
   try { Push.configure({ vapidPublicKey: CONFIG.vapidPublicKey || '' }); } catch {}
+}
+
+/* ================= Påminnelsen: plats och notiser ================= */
+/*
+ * Ägarens krav, ordagrant: "man får inte glömma det".
+ *
+ * Bakgrunden är en mätning, inte en känsla: det fanns EN enda push-
+ * prenumeration i hela databasen, två dagar gammal. Appen hade öppnats om och
+ * om igen utan att en enda ny registrerats. Alltså kom ingen förbi
+ * notisfrågan — och ingenting i appen sa till om det. Notisfrågan ställdes
+ * bara inne i introduktionsguiden, och guiden visas en gång.
+ *
+ * Vad den här delen gör:
+ *   1. Läser av läget vid VARJE start, inte bara den första.
+ *   2. Saknas plats eller notiser ska en rad synas högst upp och ligga kvar
+ *      tills det är löst. Ingen dölj-knapp och ingen tyst prick — skälet står
+ *      i paminnelse() i js/behorigheter.js. Den raden ritas av js/uppstart.js;
+ *      den här filen har en likadan som reserv för det fall modulen inte
+ *      finns, och bara då.
+ *   3. Knappen navigerar: öppnar Inställningar, rullar till kortet "Plats och
+ *      notiser" och pekar på rätt knapp med js/peka.js. Det är den vägen som
+ *      bor här, och den går att nå utifrån — se hooken i wireBehorigheter().
+ *   4. Sitter blockeringen i webbläsaren kan appen inte lösa den. Då visas den
+ *      exakta menyvägen för just den telefonen och den webbläsaren, hämtad ur
+ *      behorigheter.instruktioner(), och sedan pekas det på knappen där man
+ *      provar igen.
+ *
+ * Vad den ALDRIG gör: påstår att appen kan slå på något åt användaren. En
+ * webbsida kan inte bevilja sig själv behörigheter, och den kan inte öppna
+ * telefonens inställningar. Varje mening här är skriven för att hålla även
+ * efter att föraren märkt det.
+ *
+ * Fokus/Stör ej finns medvetet inte med. Det går inte att läsa av, så en rad
+ * om Fokus skulle ligga kvar för evigt hos alla som aldrig tryckt på
+ * bekräfta-knappen i guiden — och en varning som aldrig går att bli av med
+ * slutar man se efter en dag. Då är även den om plats och notiser förlorad.
+ */
+
+/*
+ * Vad pekaren siktar på. Id:na står i index.html i kortet "Plats och notiser".
+ * Ändras de där måste de ändras här — det står som kommentar även på det
+ * stället.
+ */
+const BEH_MAL = { plats: 'btnBehPlats', notiser: 'btnBehNotiser' };
+const BEH_AVSNITT = 'behRubrik';
+
+/*
+ * TVÅ MODULER SOM DEN HÄR DELEN SAMARBETAR MED, och exakt vad som används.
+ *
+ * js/peka.js
+ *   peka(mal, text, { forbered, plats, visaMs })  →  { visad, skal }
+ *     mal       id, css-väljare eller elementet. Vi skickar id.
+ *     text      EN mening. Pekaren äger mörkläggning, ring och pil.
+ *     forbered  körs först — det är här vyn byts och rullningen startas.
+ *               peka() väntar sedan själv in elementet och att rullningen
+ *               landat, vilket är bättre än en fast fördröjning: sträckan ner
+ *               till notisknappen är över tusen pixlar och en mjuk rullning
+ *               tar längre tid ju längre den är.
+ *     Misslyckas den är den tyst och svarar visad:false. Då märker vi
+ *     elementet på egen hand i stället, se pekaPaBehorighet().
+ *
+ * js/uppstart.js
+ *   oppna(status?)  öppnar startguiden igen. Används bara som nödutgång, när
+ *                   kortet i inställningarna inte finns att peka på.
+ *
+ * RADEN HÖGST UPP ÄGS AV js/uppstart.js. Den ritar '.pv-up-rad' med samma
+ * placering och samma uppgift som raden här nedanför, och två rader som säger
+ * samma sak är samma sak som ingen rad alls. Vår rad är därför en reserv: den
+ * ritas bara när uppstart.js inte finns eller inte gick att ladda. Se
+ * ritaBehRadNu().
+ *
+ * Båda modulerna är frivilliga. Saknas de gör den här filen samma sak själv —
+ * sämre, men aldrig trasigt. En app som slutar fungera för att en hjälpmodul
+ * saknas är en app som slutar varna.
+ *
+ * De laddas i FÖRVÄG, aldrig inne i ett klick. Ett await import() i en
+ * klickhanterare hinner döda gesten, och då visar Safari varken plats- eller
+ * notisrutan: man trycker, och ingenting händer.
+ */
+let Peka = null;
+let Uppstart = null;
+let behModulerKlara = null;
+
+function forladdaBehModuler() {
+  if (behModulerKlara) return behModulerKlara;
+  behModulerKlara = Promise.all([
+    import('./peka.js').then(m => { Peka = m; }).catch(() => { Peka = false; }),
+    import('./uppstart.js').then(m => { Uppstart = m; }).catch(() => { Uppstart = false; }),
+  ]);
+  return behModulerKlara;
+}
+
+const behPaus = ms => new Promise(r => setTimeout(r, ms));
+
+/*
+ * Egen stil i en egen <style>, precis som js/platsstart.js gör.
+ *
+ * Skälet är detsamma: css/app.css ändras av flera händer, och en ny regel där
+ * som bara den här raden använder är en regel som ingen vågar ta bort sedan.
+ *
+ * z-index 889 är valt med omsorg: över tabbaren (800) och versionsbannern
+ * (880), men UNDER platsremsan (890), varningsbannern och mörkt körläge (900),
+ * modalerna (1000), fordonslarmet (1500) och rundturen (3000). Raden är en
+ * påminnelse om något som saknas — den får aldrig lägga sig över något som
+ * varnar för verkligheten just nu.
+ *
+ * Färgen är gul och inte röd, också med flit. Rött är redan taget av
+ * platsremsan och av varningsbannern som betyder "polis framför dig". Två
+ * röda remsor med helt olika allvar lär föraren att strunta i båda.
+ */
+const BEH_CSS = `
+#pv-beh-rad {
+  position: fixed; z-index: 889; left: 0; right: 0; top: 0;
+  padding: calc(env(safe-area-inset-top, 0px) + 9px) 12px 9px;
+  background: rgba(40,28,6,.94);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255,176,32,.5);
+  display: flex; align-items: center; gap: 10px;
+  color: #ffe9c2;
+  font: 13.5px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+}
+#pv-beh-rad b { display: block; color: #fff; font-weight: 650; }
+#pv-beh-rad .pv-beh-text { flex: 1; min-width: 0; }
+#pv-beh-rad button {
+  flex: none; border: 1px solid var(--warn, #ffb020); border-radius: 11px;
+  padding: 9px 13px; font-size: 13.5px; font-weight: 650; font-family: inherit;
+  background: var(--warn, #ffb020); color: #2a1a02; cursor: pointer;
+}
+/* Reservmarkering när js/peka.js inte finns. Ingen pil, men elementet ska
+   ändå gå att hitta med blicken efter en rullning. */
+.pv-beh-blink { animation: pvBehBlink 1.15s ease-out 3; border-radius: 12px; }
+@keyframes pvBehBlink {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(61,157,255,0); }
+  35%      { box-shadow: 0 0 0 4px rgba(61,157,255,.55), 0 0 22px rgba(61,157,255,.5); }
+}
+`;
+
+function behCss() {
+  if (document.getElementById('pv-beh-stil')) return;
+  const s = document.createElement('style');
+  s.id = 'pv-beh-stil';
+  s.textContent = BEH_CSS;
+  document.head.appendChild(s);
+}
+
+/* ---- Raden högst upp ---- */
+
+let behRadEl = null;
+let behRadRitas = false;
+let behKortStatus = null;       // senaste fulla avläsningen, se behKnapp()
+
+function stangBehRad() {
+  behRadEl?.remove();
+  behRadEl = null;
+}
+
+async function ritaBehRad() {
+  if (typeof document === 'undefined') return;
+  // paminnelse() är asynkron och två anrop kan komma tätt (ett tillstånd som
+  // ändras samtidigt som appen kommer i förgrunden). Utan spärren hinner båda
+  // se att raden saknas, och då ritas den två gånger.
+  if (behRadRitas) return;
+  behRadRitas = true;
+  try { await ritaBehRadNu(); } finally { behRadRitas = false; }
+}
+
+async function ritaBehRadNu() {
+  /*
+   * Raden är en RESERV. js/uppstart.js ritar '.pv-up-rad' på samma plats, med
+   * samma z-index och samma uppgift, och den filen äger frågan. Finns den
+   * modulen håller vi tyst — annars står två gula rader ovanpå varandra och
+   * säger nästan samma sak, vilket lär föraren att ingen av dem betyder något.
+   *
+   * Villkoret är på modulen och inte bara på elementet, med flit: uppstart.js
+   * ritar sin rad först när dess egen ruta stängts, och under de sekunderna
+   * skulle en kontroll av bara elementet släppa fram vår rad för att sedan
+   * behöva ta bort den igen.
+   */
+  if (Uppstart || document.querySelector('.pv-up-rad')) { stangBehRad(); return; }
+
+  /*
+   * Plats som saknas har redan en egen röd remsa från js/platsstart.js. Två
+   * rader som säger samma sak är samma sak som ingen rad alls — man slutar
+   * läsa båda. Ligger den uppe tar den hand om plats, och vi säger bara det
+   * den inte täcker. Är notiser då det enda som fattas blir det en rad om
+   * notiser; fattas ingenting mer försvinner vår rad helt.
+   */
+  const remsa = document.querySelector('.pv-ps-remsa');
+  const remsanUppe = !!remsa?.getClientRects().length;
+
+  const p = await Behorigheter.paminnelse({
+    snabb: true,
+    hoppaOver: remsanUppe ? ['plats'] : [],
+  });
+
+  if (!p.visa) { stangBehRad(); return; }
+
+  behCss();
+  if (!behRadEl) {
+    behRadEl = document.createElement('div');
+    behRadEl.id = 'pv-beh-rad';
+    behRadEl.setAttribute('role', 'status');
+    behRadEl.innerHTML =
+      '<div class="pv-beh-text"><b></b><span></span></div><button type="button"></button>';
+    document.body.appendChild(behRadEl);
+  }
+
+  behRadEl.querySelector('b').textContent = p.rubrik;
+  behRadEl.querySelector('span').textContent = p.text;
+
+  const knapp = behRadEl.querySelector('button');
+  knapp.textContent = p.knapp;
+  // Den som saknar både plats och notiser tas till plats först: utan position
+  // gör resten av appen ingen nytta ändå.
+  knapp.onclick = () => fixaBehorighet(p.saknas[0]);
+
+  stallInBehRadTopp();
+}
+
+let behRemsaObs = null;
+let behRemsaObserverad = null;
+
+/**
+ * Ligger platsremsan uppe lägger vi oss under den i stället för över. Den är
+ * rödare och allvarligare, och den ska synas först.
+ *
+ * Höjden måste mätas om, inte bara en gång. Remsan radbryts olika i stående
+ * och liggande läge och på olika telefonbredder — en enda mätning lämnar vår
+ * rad svävande med ett glapp under sig, eller ovanpå remsan så att den täcker
+ * just det som är allvarligast.
+ */
+function stallInBehRadTopp() {
+  if (!behRadEl) return;
+
+  const remsa = document.querySelector('.pv-ps-remsa');
+  const synlig = !!remsa?.getClientRects().length;
+  const topp = synlig ? remsa.offsetHeight : 0;
+
+  behRadEl.style.top = topp + 'px';
+  // Egen säkerhetsmarginal behövs bara när vi ligger högst upp. Under remsan
+  // är den redan avklarad av remsan själv.
+  behRadEl.style.paddingTop = topp ? '9px' : '';
+
+  if (!synlig || typeof ResizeObserver !== 'function') {
+    behRemsaObs?.disconnect();
+    behRemsaObs = null;
+    behRemsaObserverad = null;
+    return;
+  }
+  if (behRemsaObserverad === remsa) return;
+  behRemsaObs?.disconnect();
+  behRemsaObs = new ResizeObserver(() => stallInBehRadTopp());
+  behRemsaObs.observe(remsa);
+  behRemsaObserverad = remsa;
+}
+
+/* ---- Navigeringen: "Fixa det" ---- */
+
+/**
+ * Öppnar Inställningar, rullar till kortet "Plats och notiser" och pekar på
+ * knappen.
+ *
+ * Frågan om behörighet ställs INTE härifrån, med flit. Dels måste gesten vara
+ * levande i det ögonblick webbläsarens ruta ska visas, och den här vägen har
+ * både en vy-växling och en mjuk rullning i sig. Dels är det halva poängen att
+ * föraren ska se VAR reglaget sitter, så att hen hittar tillbaka själv nästa
+ * gång i stället för att leta efter en gul rad som förhoppningsvis dyker upp.
+ */
+async function fixaBehorighet(nyckel = 'plats') {
+  await pekaPaBehorighet(nyckel, {
+    forbered: async () => {
+      showView('settings');
+      $(BEH_AVSNITT)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      // Snabb ritning här, med flit. Den fulla frågar service workern om
+      // prenumerationen och den kollen får ta upp till tio sekunder — knappen
+      // ska ha rätt text när pilen kommer, inte när servern svarat.
+      // showView() ovanför har redan startat den fulla ritningen i bakgrunden.
+      await ritaBehKort({ snabb: true });
+    },
+  });
+}
+
+/**
+ * Peka ut knappen. Bubbeltexten säger vad som händer när man trycker, och den
+ * skiljer sig åt: ibland visar telefonen en ruta, ibland kan appen bara visa
+ * en menyväg. Att lova det första när det andra gäller är precis den sortens
+ * löfte den här filen inte får ge.
+ */
+async function pekaPaBehorighet(nyckel, { forbered = null } = {}) {
+  const mal = BEH_MAL[nyckel];
+  const s = nyckel === 'plats' ? behKortStatus?.plats : behKortStatus?.notiser;
+  const a = Behorigheter.atgard(s);
+
+  // EN mening, och den lovar bara det som faktiskt händer när man trycker.
+  // Att skriva "svara Tillåt" när rutan är förbrukad vore att skicka föraren
+  // att vänta på något som aldrig kommer.
+  const text =
+    a.typ === 'fraga' ? 'Tryck här. Telefonen frågar sedan om lov — svara Tillåt.'
+    : a.typ === 'hemskarm' ? 'Tryck här, så visar vi hur du lägger Polisvakt på hemskärmen.'
+    : a.typ === 'installningar' ? 'Appen kan inte slå på det åt dig. Tryck här, så visar vi exakt var inställningen sitter i din telefon.'
+    : nyckel === 'plats' ? 'Här sitter platsinställningen.' : 'Här sitter notisinställningen.';
+
+  if (typeof Peka?.peka === 'function') {
+    // peka() öppnar vyn via forbered, väntar in elementet och rullar fram det
+    // själv. Den är tyst när den misslyckas, så svaret måste läsas.
+    const res = await Peka.peka(mal, text, { forbered, visaMs: 10000 }).catch(() => null);
+    if (res?.visad) return;
+  } else if (forbered) {
+    try { await forbered(); } catch {}
+  }
+
+  const el = $(mal);
+  if (!el) {
+    // Kortet finns inte i den här versionen av index.html. Då är det bättre
+    // att låta uppstart.js ställa frågan i sin egen ruta än att peka på tomma
+    // luften.
+    if (typeof Uppstart?.oppna === 'function') Uppstart.oppna();
+    return;
+  }
+
+  // Reserv utan pil: rulla fram knappen och blinka till om den. Sämre, men
+  // föraren står inte utan väg.
+  behCss();
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('pv-beh-blink');
+  void el.offsetWidth;                       // tvinga om animationen
+  el.classList.add('pv-beh-blink');
+  setTimeout(() => el.classList.remove('pv-beh-blink'), 4200);
+}
+
+/* ---- Kortet i inställningarna ---- */
+
+/**
+ * Ritar om raderna för plats och notiser.
+ *
+ * Full status, inte snabb: prenumerationen räknas här. Ett "Påslaget" som
+ * bygger på snabbStatus() skulle visa en fungerande prenumeration som
+ * avstängd — se kommentaren vid snabb i notisStatus().
+ */
+async function ritaBehKort({ snabb = false } = {}) {
+  const platsKnapp = $('btnBehPlats');
+  const notisKnapp = $('btnBehNotiser');
+  if (!platsKnapp || !notisKnapp) return;
+
+  const st = await Behorigheter.status({ snabb });
+  // Märk avläsningen. En snabb status sätter prenumererad: false utan att ha
+  // kollat, och utan märket skulle behAtgard() läsa det som en trasig
+  // prenumeration och erbjuda att laga något som inte är sönder.
+  st.notiser.snabbLast = snabb;
+  behKortStatus = st;
+
+  sattBehRadIKort('plats', st.plats, platsKnapp, $('behPlatsText'));
+  sattBehRadIKort('notiser', st.notiser, notisKnapp, $('behNotisText'));
+}
+
+/** Vilken åtgärd knappen står för just nu. Läses även av behKnapp(). */
+function behAtgard(nyckel, s) {
+  const a = Behorigheter.atgard(s);
+
+  /*
+   * Ett läge till som atgard() inte kan se, eftersom det inte är ett
+   * behörighetsläge: tillståndet finns, men servern har ingen rad för den här
+   * telefonen. Då ser allt påslaget ut och ingenting kommer fram när appen är
+   * stängd. Det är det enda tillfället då en grön punkt ljuger, och därför får
+   * det en egen knapp.
+   */
+  if (nyckel === 'notiser' && a.typ === 'klart' && s?.prenumererad === false
+      && !s.snabbLast && Push.capabilities().fix !== 'server') {
+    return {
+      typ: 'laga',
+      knapp: 'Registrera telefonen',
+      rubrik: 'Notiser når inte fram',
+      forklaring: 'Tillståndet finns, men servern har ingen rad för den här telefonen. Då kommer ingenting fram när appen är stängd.',
+    };
+  }
+  return a;
+}
+
+function sattBehRadIKort(nyckel, s, knapp, text) {
+  const a = behAtgard(nyckel, s);
+
+  if (text) text.textContent = behKortText(nyckel, s, a);
+
+  /*
+   * En snabb avläsning får aldrig gömma knappen.
+   *
+   * fixaBehorighet() ritar kortet snabbt i sitt forbered-steg för att pilen
+   * ska komma fram utan att vänta in service workern. Snabb status sätter
+   * prenumererad: false utan att ha kollat, så notiser såg ut som "klart" —
+   * och då gömdes just den knapp peka.js sedan letade efter. Resultatet var
+   * det värsta möjliga i precis det läge mätningen visade (tillstånd men ingen
+   * prenumeration): Inställningar utan pil, utan blinkning och utan knapp.
+   *
+   * "omojligt" gömmer vi ändå: att stödet saknas i telefonen är inget en full
+   * avläsning kan ändra på.
+   */
+  const snabbtKlart = a.typ === 'klart' && !!s?.snabbLast;
+  if (a.typ === 'omojligt') knapp.hidden = true;
+  else if (!snabbtKlart) knapp.hidden = a.typ === 'klart';
+
+  knapp.disabled = false;
+  // Texten står kvar som den var när läget är "klart" enligt en snabb
+  // avläsning: a.knapp är tom då, och en knapp utan text är inget att peka på.
+  if (!knapp.hidden && !snabbtKlart) knapp.textContent = a.knapp;
+}
+
+function behKortText(nyckel, s, a) {
+  if (a.typ === 'klart') {
+    if (nyckel !== 'notiser') return s.text;
+    // s.reason är satt av notisStatus() när tillståndet finns men servern inte
+    // kan skicka något. Den texten är redan ärlig — skriv ingen egen.
+    if (s.reason) return s.reason;
+    return s.prenumererad
+      ? 'Påslaget. Du kan få en notis även när appen är stängd. Appen varnar däremot aldrig i bakgrunden — den måste vara öppen för det.'
+      : 'Notiser är tillåtna.';
+  }
+  return a.forklaring || s?.text || '';
+}
+
+/**
+ * Knappen i kortet. Här sitter gesten.
+ *
+ * Läget läses ur den senaste ritningen (behKortStatus) i stället för att
+ * hämtas om på nytt. Ett await här skulle döda gesten, och då visar Safari
+ * ingen ruta alls — man trycker, och ingenting händer. Ritningen är färsk:
+ * kortet ritas om varje gång inställningarna öppnas, varje gång något
+ * tillstånd ändras och varje gång appen kommer i förgrunden.
+ */
+function behKnapp(nyckel) {
+  const s = nyckel === 'plats' ? behKortStatus?.plats : behKortStatus?.notiser;
+  const a = behAtgard(nyckel, s);
+
+  if (a.typ === 'hemskarm' || a.typ === 'installningar') { visaMenyvag(nyckel); return; }
+  if (a.typ === 'omojligt' || a.typ === 'klart') return;
+
+  if (nyckel === 'plats') {
+    Behorigheter.markeraPlatsFragad();
+    // INGET await ovanför den här raden.
+    Behorigheter.begarPlats().then(res => efterBehSvar('plats', res));
+    return;
+  }
+
+  Behorigheter.markeraNotisFragad();
+  let id = null;
+  try { id = deviceId(); } catch {}
+  // Samma sak här: begarNotiser() ber om lov som första sak den gör.
+  Behorigheter.begarNotiser({ deviceId: id, habits: driving.habits })
+    .then(res => efterBehSvar('notiser', res));
+}
+
+async function efterBehSvar(nyckel, res) {
+  /*
+   * Snabb ritning först, full efteråt utan att vänta.
+   *
+   * Den fulla frågar service workern om prenumerationen, och den kollen har
+   * tio sekunders tak. Föraren har just tryckt på en knapp och ska få ett svar
+   * nu, inte när service workern vaknat.
+   */
+  await ritaBehKort({ snabb: true });
+  ritaBehKort();
+  ritaBehRad();
+
+  if (res?.ok && nyckel === 'notiser') {
+    // Visa direkt att kedjan går hela vägen. En påminnelse man sett en gång
+    // är en påminnelse man känner igen klockan sex på morgonen.
+    try { driving.notify('Polisvakt', 'Så här ser en påminnelse ut när du brukar köra.'); } catch {}
+  }
+  if (res?.ok) { toast(nyckel === 'plats' ? 'Plats är påslagen.' : 'Notiser är påslagna.'); return; }
+
+  // Nekat: webbläsaren frågar aldrig igen. Gå direkt vidare till menyvägen i
+  // stället för att lämna föraren med en knapp som inte längre gör något.
+  if (res?.fix === 'installningar') { visaMenyvag(nyckel); return; }
+  if (res?.reason) toast(res.reason, 6000);
+}
+
+/* ---- Menyvägen, när blockeringen sitter i webbläsaren ---- */
+
+/**
+ * Exakta steg för just den här webbläsaren och telefonen.
+ *
+ * Texten kommer från behorigheter.instruktioner(). Appen får aldrig ha en
+ * andra uppsättning menyvägar — de glider isär, och en felaktig menyväg är
+ * sämre än ingen alls: föraren letar, hittar inte, och drar slutsatsen att
+ * appen ljuger. Av samma skäl går iPhone-fallet hit och inte till
+ * installationsguidens egen text om hemskärmen.
+ *
+ * Rutan får klassen .modal av två skäl: den ärver appens egen modalstil, och
+ * js/platsstart.js väntar på just den selektorn innan den ritar sin egen ruta
+ * ovanpå.
+ */
+function visaMenyvag(nyckel) {
+  const info = Behorigheter.instruktioner(nyckel);
+
+  const skarm = document.createElement('div');
+  skarm.className = 'modal';
+  skarm.innerHTML = `
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <h2></h2>
+      <p class="pv-beh-inled"></p>
+      <ol class="guide-steps"></ol>
+      <p class="hint guide-note"></p>
+      <div class="modal-actions">
+        <button class="btn-primary" type="button">Jag har slagit på det</button>
+        <button class="btn-ghost" type="button">Stäng</button>
+      </div>
+    </div>`;
+
+  skarm.querySelector('h2').textContent = info.rubrik;
+  skarm.querySelector('.pv-beh-inled').textContent =
+    'Appen kan inte ändra det här åt dig. Ingen webbsida får öppna telefonens inställningar — de här stegen måste du göra själv.';
+
+  const lista = skarm.querySelector('.guide-steps');
+  info.steg.forEach((steg, i) => {
+    const li = document.createElement('li');
+    const nr = document.createElement('span');
+    nr.className = 'g-ico';
+    nr.textContent = String(i + 1);
+    const txt = document.createElement('span');
+    txt.textContent = steg;
+    li.append(nr, txt);
+    lista.appendChild(li);
+  });
+
+  const not = skarm.querySelector('.guide-note');
+  if (info.not) not.textContent = info.not;
+  else not.remove();
+
+  const stang = () => skarm.remove();
+
+  const efterat = async () => {
+    stang();
+    // Snabb ritning, av samma skäl som i efterBehSvar(): pilen ska upp direkt.
+    await ritaBehKort({ snabb: true });
+    ritaBehKort();
+    ritaBehRad();
+    const s = nyckel === 'plats' ? behKortStatus?.plats : behKortStatus?.notiser;
+    // Fortfarande inte löst: peka på knappen där man provar igen, i stället
+    // för att bara stänga rutan och lämna föraren där hen började.
+    if (!s?.ok) pekaPaBehorighet(nyckel);
+    else toast(nyckel === 'plats' ? 'Plats är påslagen.' : 'Notiser är påslagna.');
+  };
+
+  skarm.querySelector('.btn-primary').onclick = () => {
+    /*
+     * Plats går att verifiera på riktigt, och i Safari är det enda sättet:
+     * svarar telefonen med en position finns tillståndet. Anropet ligger direkt
+     * i klicket av samma skäl som överallt annars.
+     *
+     * Notiser går inte att fråga om igen efter ett nej — där kan vi bara läsa
+     * av Notification.permission på nytt, vilket ritningen gör.
+     */
+    if (nyckel === 'plats') Behorigheter.begarPlats().then(efterat);
+    else efterat();
+  };
+  skarm.querySelector('.btn-ghost').onclick = stang;
+
+  document.body.appendChild(skarm);
+}
+
+/* ---- Start ---- */
+
+/**
+ * Tillståndet finns men prenumerationen saknas — laga tyst vid start.
+ *
+ * Ingen ruta visas: push.enable() frågar om lov, och när svaret redan är
+ * 'granted' returnerar webbläsaren direkt utan att visa något. Det här är
+ * halva förklaringen till den enda prenumerationen i databasen — knappen i
+ * inställningarna bad förut bara om tillstånd, utan att prenumerera.
+ */
+async function lagaNotisprenumeration() {
+  let id = null;
+  try { id = deviceId(); } catch {}
+  if (!id) return;
+  try {
+    const res = await Behorigheter.lagaNotiser({ deviceId: id, habits: driving.habits });
+    if (res?.lagad) ritaBehKort();
+  } catch {}
+}
+
+/**
+ * Vänta innan reservraden ritas.
+ *
+ * Under de första sekunderna ställer js/uppstart.js frågorna själv och
+ * js/platsstart.js sin. Att lägga en påminnelse ovanpå någon som just håller
+ * på att göra precis det vi ber om är att tjata. Fyra sekunder räcker för att
+ * hjälpmodulerna ska hinna säga ifrån att de finns — sedan avgör
+ * ritaBehRadNu() om raden alls hör hemma här.
+ */
+const vantaInnanRad = () => behPaus(4000);
+
+async function wireBehorigheter() {
+  behCss();
+  forladdaBehModuler();
+
+  $('btnBehPlats')?.addEventListener('click', () => behKnapp('plats'));
+  $('btnBehNotiser')?.addEventListener('click', () => behKnapp('notiser'));
+
+  const ritaOm = () => { ritaBehRad(); ritaBehKort(); };
+
+  Behorigheter.events.addEventListener('andrad', ritaOm);
+
+  // Föraren kan ha varit inne i telefonens inställningar och löst det. Då ska
+  // raden vara borta när hen kommer tillbaka, inte stå kvar och ha fel.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ritaOm();
+  });
+
+  // Bredden ändras när telefonen vrids, och då byter platsremsan höjd.
+  addEventListener('resize', stallInBehRadTopp);
+  addEventListener('orientationchange', stallInBehRadTopp);
+
+  /*
+   * En långsam puls utöver händelserna. Två saker fångas bara här: att
+   * platsremsan i js/platsstart.js dykt upp eller försvunnit (den skickar
+   * ingen händelse), och att en modal eller guiden legat i vägen när vi ville
+   * rita. Åtta sekunder är billigt — kollen är ett permissions.query och en
+   * läsning av Notification.permission, inget nätanrop.
+   */
+  setInterval(() => {
+    if (document.visibilityState === 'visible') ritaBehRad();
+  }, 8000);
+
+  /*
+   * Navigeringen som en seam utåt.
+   *
+   * Raden högst upp ägs av js/uppstart.js, och den filen känner inte till den
+   * här funktionen. Hooken finns så att den — eller vad som helst annat i
+   * appen — ska kunna skicka föraren till rätt reglage utan att importera
+   * app.js, vilket inte går: app.js importerar allt annat, inte tvärtom.
+   *
+   *   window.polisvakt.fixaBehorighet('notiser')
+   *   dispatchEvent(new CustomEvent('polisvakt:fixa', { detail: { nyckel: 'plats' } }))
+   */
+  window.polisvakt = Object.assign(window.polisvakt || {}, { fixaBehorighet });
+  addEventListener('polisvakt:fixa', e => fixaBehorighet(e.detail?.nyckel || 'plats'));
+
+  ritaBehKort();
+
+  await forladdaBehModuler();
+  await vantaInnanRad();
+  ritaBehRad();
+  lagaNotisprenumeration();
 }
 
 function renderWinterStatus() {
@@ -2885,7 +3532,7 @@ function showView(name) {
 
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
-  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); }
+  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); ritaBehKort(); }
 }
 
 function renderStatus() {
@@ -4050,8 +4697,24 @@ function wireSettingsUI() {
   const notisLage = () => {
     const p = driving.permission;
     if (p === 'granted') {
+      /*
+       * Tillstånd är inte samma sak som att en notis kommer fram. Saknas
+       * prenumerationen har servern ingen rad att skicka till, och då når
+       * ingenting telefonen när appen är stängd. Att skriva "Notiser tillåtna.
+       * Appen kan påminna dig" i det läget är ett löfte appen inte kan hålla —
+       * det var precis så det såg ut medan det bara fanns en enda
+       * prenumeration i hela databasen.
+       *
+       * prenumererad kommer från den senaste ritningen av kortet "Plats och
+       * notiser" (behKortStatus). Är den inte läst än säger vi ingenting om
+       * saken i stället för att gissa.
+       */
+      const n = behKortStatus?.notiser;
+      const pren = n && !n.snabbLast ? n.prenumererad : null;   // snabb avläsning vet inte
       return { kanFraga: false, blockerad: false,
-        text: 'Notiser tillåtna. Appen kan påminna dig innan du brukar köra.' };
+        text: pren === false
+          ? 'Notiser är tillåtna, men den här telefonen är inte registrerad hos servern. Tryck "Registrera telefonen" under Plats och notiser högst upp.'
+          : 'Notiser tillåtna. Appen kan påminna dig innan du brukar köra.' };
     }
     if (p === 'denied') {
       return { kanFraga: false, blockerad: true,
@@ -4067,17 +4730,45 @@ function wireSettingsUI() {
   const renderNotify = () => {
     const l = notisLage();
     $('notifyStatus').textContent = l.text;
-    $('btnNotify').hidden = !l.kanFraga;
+
+    /*
+     * Knappen döljs inte längre när frågan är förbrukad.
+     *
+     * Förut försvann den så fort kanFraga blev false, samtidigt som texterna
+     * runtomkring — och gruppnotisrutan längre ner — fortsatte hänvisa till
+     * "knappen ovanför". Föraren satt med en instruktion om att trycka på
+     * något som inte fanns. Går det inte att fråga leder knappen i stället
+     * till menyvägen för just den telefonen, och det är alltid något.
+     */
+    const btn = $('btnNotify');
+    btn.hidden = false;
+    btn.disabled = !l.kanFraga && !l.blockerad;       // redan påslaget
+    btn.textContent = l.kanFraga ? 'Tillåt notiser'
+      : l.blockerad ? 'Så slår du på'
+      : 'Notiser är på';
+
     renderGruppnotis();
   };
-  $('btnNotify').onclick = async () => {
-    const ok = await driving.requestPermission();
-    renderNotify();
-    if (ok) {
-      driving.notify('Polisvakt', 'Så här ser en påminnelse ut när du brukar köra.');
-    }
-  };
+  /*
+   * Går via samma väg som kortet "Plats och notiser" högst upp, inte via
+   * driving.requestPermission().
+   *
+   * Den gamla vägen bad bara om tillstånd. Ingen prenumeration skapades, ingen
+   * rad hamnade på servern, och ändå skrev appen "Notiser tillåtna. Appen kan
+   * påminna dig innan du brukar köra." Det är sannolikt en stor del av
+   * förklaringen till att det bara fanns en enda prenumeration i databasen:
+   * den här knappen såg ut att göra jobbet och gjorde det inte.
+   *
+   * behKnapp() frågar synkront i klicket, så gesten överlever.
+   */
+  $('btnNotify').onclick = () => behKnapp('notiser');
   renderNotify();
+
+  /* Ritas om när tillståndet eller prenumerationen ändrats någon annanstans i
+     appen — annars står texten här kvar och har fel tills vyn öppnas igen. */
+  Behorigheter.events.addEventListener('andrad', e => {
+    if (e.detail?.vad === 'notiser') renderNotify();
+  });
 
   /* ---- Notiser från Facebook-gruppen ----
    *

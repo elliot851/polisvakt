@@ -579,8 +579,35 @@
     </div>
   </section>
 
+  <!-- Plats och notiser ligger först, före allt annat man kan ställa in.
+       Inget nedanför fungerar utan dem: utan plats vet appen inte var du är,
+       utan notiser når den dig aldrig när den är stängd.
+
+       Det här är också hamnen för påminnelseraden högst upp i appen. Trycker
+       föraren "Fixa det" öppnas den här vyn, rullar hit och pekar på knappen
+       nedanför — därför måste id:na stå kvar. Byt aldrig behRubrik,
+       btnBehPlats eller btnBehNotiser utan att ändra BEH_MAL i js/app.js. -->
+  <section class="card" id="behKort">
+    <h3 id="behRubrik">Plats och notiser</h3>
+    <p class="hint">Två tillstånd som telefonen äger, inte appen. Polisvakt kan
+      fråga, men bara du kan svara ja — och sedan ligger svaret kvar tills du
+      ändrar det.</p>
+
+    <div class="row" id="behPlatsRad">
+      <span>Plats</span>
+      <button class="btn-ghost small" id="btnBehPlats" type="button">Tillåt plats</button>
+    </div>
+    <p class="hint" id="behPlatsText"></p>
+
+    <div class="row" id="behNotisRad">
+      <span>Notiser</span>
+      <button class="btn-ghost small" id="btnBehNotiser" type="button">Slå på notiser</button>
+    </div>
+    <p class="hint" id="behNotisText"></p>
+  </section>
+
   <section class="card">
-    <h3>Varningar</h3>
+    <h3 id="varningarRubrik">Varningar</h3>
     <label class="row"><span>Läs upp varningar</span><input type="checkbox" id="setTts" checked></label>
     <p class="hint">Volymen följer telefonens, och varningen kommer som ett
       trafikmeddelande — musiken dämpas och kommer tillbaka efteråt.</p>
@@ -599,7 +626,8 @@
          ihop: "Var vill du bli varnad?" längre ner styr vad som ritas på
          kartan medan du kör. Det här styr vad som väcker telefonen när du
          inte kör. Samma ord, olika rätt svar, därför två reglage. -->
-    <h4 class="sub-head">Notiser när appen är stängd</h4>
+    <!-- id:t finns för att påminnelseraden ska kunna rulla hit. -->
+    <h4 class="sub-head" id="notisOmfangRubrik">Notiser när appen är stängd</h4>
     <!-- "Nära mig" är förvalt, och selected står utskrivet fastän alternativet
          redan ligger först. En webbläsare väljer nämligen första alternativet
          av sig själv, men den som flyttar en rad i listan i framtiden ska
@@ -660,7 +688,7 @@
   </section>
 
   <section class="card">
-    <h3>Påminnelse när du kör</h3>
+    <h3 id="paminnelseRubrik">Påminnelse när du kör</h3>
     <p class="hint">Appen lär sig när du brukar köra och påminner dig att slå på den. Börjar bilen rulla med appen öppen men ljudet av säger den till direkt.</p>
     <label class="row"><span>Påminn mig</span><input type="checkbox" id="setDriveReminder" checked></label>
     <p class="hint" id="driveStatus"></p>
@@ -1214,6 +1242,31 @@
   </div>
 </div>
 
+<!-- Uppstartsguiden: det som måste vara påslaget innan appen gör någon nytta.
+     Visas vid varje start tills plats och notiser är lösta, ett steg i taget.
+     Allt innehåll ritas av js/uppstart.js — här står bara skalet.
+     Klassen "modal" är inte bara stil: js/platsstart.js väntar på .modal innan
+     den visar sin egen platsruta, så de två kan aldrig krocka. -->
+<div class="modal" id="uppstart" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="uppstartTitel">
+    <button class="pv-up-stang" id="uppstartStang" type="button" aria-label="Stäng">×</button>
+    <ol class="pv-up-spar" id="uppstartSpar"></ol>
+    <div class="pv-up-ikon" id="uppstartIkon" aria-hidden="true"></div>
+    <h2 id="uppstartTitel"></h2>
+    <p id="uppstartText"></p>
+    <p class="pv-up-fin" id="uppstartFin" hidden></p>
+    <div class="pv-up-lage" id="uppstartLage" role="status"></div>
+    <p class="pv-up-fel" id="uppstartFel" hidden></p>
+    <p class="pv-up-vagrubrik" id="uppstartVagRubrik" hidden></p>
+    <ol class="pv-up-steg" id="uppstartVag" hidden></ol>
+    <p class="pv-up-not" id="uppstartNot" hidden></p>
+    <div class="modal-actions column">
+      <button class="btn-primary" id="uppstartJa" type="button"></button>
+      <button class="btn-ghost" id="uppstartSen" type="button">Inte nu</button>
+    </div>
+  </div>
+</div>
+
 <!-- Introduktionsguide: mörkläggning med hål över det som förklaras -->
 <div class="tour" id="tour" hidden>
   <svg class="tour-mask" id="tourMask" aria-hidden="true">
@@ -1314,5 +1367,10 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module" src="./js/app.js"></script>
+<!-- Efter app.js med flit: uppstartsguiden läser push-nyckeln som app.js
+     ställer in, och den ska aldrig hinna före ansvarsfriskrivningen. Egen
+     script-tagg, inte en import i app.js, så att frågorna om plats och notiser
+     ställs även om något annat i uppstarten skulle gå sönder. -->
+<script type="module" src="./js/uppstart.js"></script>
 </body>
 </html>
