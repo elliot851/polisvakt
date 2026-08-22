@@ -38,7 +38,7 @@
 // framtida väg förbi parsern inte tyst öppnar hålet.
 
 import { distance, bearing, clamp, normalize, spokenDistance } from './util.js';
-import { isSobrietyCheck, TYPE_SPOKEN } from './parser.js';
+import { isSobrietyCheck, TYPE_SPOKEN, parseReportText } from './parser.js';
 import { TTL_MINUTES } from './store.js';
 
 /* ==================== Vad modulen kan svara ========================== */
@@ -558,6 +558,64 @@ export function bedomRapport(rapport, kontext = {}, opts = {}) {
     });
   }
 
+  /*
+   * PLATSEN ENSAM FÅR SYNAS, INTE HÖRAS.
+   *
+   * parser.js läser ett kort gruppinlägg som bara pekar ut ett känt platsnamn
+   * ("Bäckby", "Dillos norrgående 11.15") som en polisobservation. Det är
+   * gruppens egen konvention och den är oftast rätt, men ingen har skrivit
+   * VAD som står där — vi läser in det. Två saker följer av det:
+   *
+   *   1. Den medvetet kvarlämnade nykterhetsrisken. Står ordet
+   *      "nykterhetskontroll" i BILDEN eller i kommentarerna innehåller
+   *      texten ingenting för isSobrietyCheck att gå på, varken i parsern
+   *      eller i vetot ovan. Läser appen då upp "Polis vid Bäckby" har den
+   *      varnat för en nykterhetskontroll, och det är den enda regel i det
+   *      här projektet som aldrig får brytas.
+   *   2. Även utan nykterhet är tolkningen svagare än allt annat: den bygger
+   *      på en konvention, inte på ett påstående.
+   *
+   * ETT TAK, INTE ETT AVDRAG. Samma skäl som står vid soloTak ovan: ett
+   * avdrag går att kompensera bort. Det MÄTTA felet var precis det — parsern
+   * drar redan av 0,20 på tilliten, men avdraget i texttolkning-grenen räknar
+   * clamp((0,70 − 0,70) · 0,25) = exakt noll vid en bar platsträff, alltså
+   * ingen effekt alls där den behövdes. Inlägget passerade gransAnnonsera och
+   * blev uppläst.
+   *
+   * VARFÖR TEXTEN LÄSES OM I STÄLLET FÖR ATT BÄRA ETT FÄLT: rapporten har
+   * ingen kolumn för hur den tolkades, och att lägga till en hade krävt en
+   * migration i hela ingest-kedjan (PostgREST avvisar HELA raden för en okänd
+   * kolumn — se js/store.js). Men note BÄR redan inläggets text hela vägen
+   * genom databasen, och parsern äger regeln. Det här är alltså samma regel
+   * körd en gång till på samma text, precis som nykterhetskontrollen i
+   * grundlaggandeVeto — inte en andra ordlista som kan glida isär.
+   */
+  /*
+   * FLAGGAN SÄTTS ALLTID, NEDGRADERINGEN BARA IBLAND.
+   *
+   * Tidigare låg flaggpushen inne i niva-villkoret, och då bar bara de
+   * rapporter flaggan som var för BRA för att tystas av sig själva. En ensam
+   * gruppost utan geokod-fält var redan LAG när villkoret prövades och kom
+   * alltså ut helt oflaggad — trots att den är exakt den sortens post
+   * flaggan finns för att märka. Den som läste flaggan utifrån fick därmed
+   * "nej" på precis de rapporter frågan gällde.
+   *
+   * Nedgraderingen är fortfarande villkorad: LAG och SVAG kan inte sänkas
+   * mer, och taket ska inte kunna lyfta något.
+   */
+  if (arPlatskonvention(rapport)) {
+    flaggor.push('platskonvention');
+    if (niva === NIVA.HOG || niva === NIVA.MEDEL) {
+      niva = NIVA.LAG;
+      skal.push({
+        namn: 'platskonvention',
+        delta: 0,
+        varfor: 'Inlägget var bara ett platsnamn. Gruppens konvention säger polis, ' +
+                'men ingen har skrivit vad som står där — visas på kartan, läses inte upp.',
+      });
+    }
+  }
+
   const behandling = niva === NIVA.HOG ? BEHANDLING.ANNONSERA
     : niva === NIVA.MEDEL ? BEHANDLING.HEDGA
     : niva === NIVA.LAG ? BEHANDLING.TYST
@@ -576,6 +634,50 @@ export function bedomRapport(rapport, kontext = {}, opts = {}) {
     skal,
     flaggor,
   };
+}
+
+/*
+ * Källor där texten är ett INLÄGG som någon annan skrev.
+ *
+ * Bara för dem gäller gruppens platskonvention, och bara för dem får taket
+ * ovan slå till. En knapptryckning i bilen ('app', 'voice') har ofta ett
+ * platsnamn som label — "Vallby" — och att läsa OM den texten och kalla den
+ * en konventionstolkning hade tystat varje förare som rapporterar från en
+ * plats med ett känt namn. js/telegram.js och js/fbmejl.js sätter båda
+ * source 'facebook': det är samma grupp, speglad genom en annan kanal.
+ */
+const KONVENTIONSKALLOR = ['facebook', 'import'];
+
+/**
+ * Kom rapporten till bara för att någon skrev ett platsnamn?
+ *
+ * Läser om inläggets text med parsern, i gruppläge. Fältet 'note' bär
+ * inläggets text hela vägen genom databasen (se js/facebook.js byggRapport),
+ * så frågan går att ställa också om en rapport som kom från någon annans
+ * telefon — vilket är hela poängen: bryggan skriver till databasen, taket
+ * måste gälla i den app som läser den.
+ */
+/*
+ * Exporterad, och det är inte en bekvämlighet.
+ *
+ * FLAGGAN 'platskonvention' GÅR INTE ATT FRÅGA EFTER. Den pushas bara inne i
+ * grenen nedan, alltså bara på rapporter som var MEDEL eller HÖG innan taket
+ * slog till. En ensam Facebook-rapport som bara är ett platsnamn och saknar
+ * geokod-fält ligger redan på LAG av andra skäl när grenen prövas — grenen
+ * körs aldrig, och flaggan sätts aldrig. Den som senare frågar "bär den här
+ * rapporten platskonvention?" och litar på flaggan får alltså nej på precis
+ * de rapporter frågan gällde. De två mängderna är disjunkta.
+ *
+ * Kvalitetslyftet i app.js ställer den frågan (inkommandeKvalitetslyft), och
+ * svaret avgör om en rapport som ingen skrivit VAD den gäller får läsas upp.
+ * Därför kör lyftet predikatet i stället för att läsa flaggan, och därför
+ * bor predikatet här — samma rad, samma parser, ett ställe.
+ */
+export function arPlatskonvention(rapport) {
+  if (!KONVENTIONSKALLOR.includes(rapport.source)) return false;
+  const text = String(rapport.note || '').trim();
+  if (!text) return false;
+  return parseReportText(text, { platsKonvention: true })?.traff === 'plats';
 }
 
 /**

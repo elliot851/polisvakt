@@ -273,7 +273,11 @@ export async function ingest(posts, options = {}) {
     const { stable, externalId } = keysFor(post, now);
     if (seen[stable]) { summary.duplicates++; continue; }
 
-    const parsed = parseReportText(post.text);
+    // platsKonvention: gruppens om-sida säger "Man skriver enbart när man ser
+    // en poliskontroll", så ett kort inlägg som bara pekar ut en känd plats
+    // betyder polis där. Flaggan sätts BARA här och i de andra grupp-
+    // kanalerna — rösten och knapparna har ingen sådan konvention.
+    const parsed = parseReportText(post.text, { platsKonvention: true });
 
     // Nykterhetskontroller och fartkameror kastas tyst. Ingen rapport, ingen
     // notis, ingenting sparat av texten — inte ens i sammanfattningen. Regeln

@@ -44,6 +44,22 @@ const DEFAULTS = {
    * alltid en färsk fix i handen, den körs ur 'position'-lyssnaren.
    */
   fixFarskMs: 12000,
+  /*
+   * Hur länge motorn håller tyst om något en ANNAN kanal nyss läst upp.
+   *
+   * Nittio sekunder, och talet är valt mot förarens minne, inte mot
+   * geometrin. Kriteriet står vid agerFaran nedan: hör föraren samma polis
+   * två gånger på tio sekunder slutar hen lyssna på båda. En och en halv
+   * minut är väl över det, och kort nog att den varning som verkligen
+   * betyder något — "du är nu 300 meter från den" — hinner komma medan den
+   * fortfarande är sann.
+   *
+   * Det här är alltså en UPPSKJUTNING, inte en avbockning. warnedAt hade
+   * varit fel verktyg: den låser i repeatAfterMs (åtta minuter) och tar
+   * därmed bort förbikörningsvarningen helt. Se resonemanget vid
+   * "DET OMVÄNDA VALDES BORT".
+   */
+  annanSadeMs: 90000,
 };
 
 export class AlertEngine extends EventTarget {
@@ -52,12 +68,79 @@ export class AlertEngine extends EventTarget {
     this.speaker = speaker;
     this.opts = { ...DEFAULTS, ...opts };
     this.state = new Map();   // hazardId -> { warnedAt, insideRadius, closest }
+    /*
+     * Faror som en annan kanal nyss läst upp: id -> tidpunkt.
+     *
+     * Ligger utanför state med flit. state är motorns bokföring över vad den
+     * själv gjort, och den får inte innehålla påståenden om varningar den
+     * aldrig sagt — då börjar rearm-logiken och repeatAfterMs räkna på fel
+     * underlag. Det här är en separat, kortlivad fråga: "har någon annan
+     * redan sagt det här nyss?"
+     */
+    this.nyssSagtAvAnnan = new Map();
     this.enabled = true;
   }
 
   setOptions(o) { this.opts = { ...this.opts, ...o }; }
 
-  reset() { this.state.clear(); }
+  reset() { this.state.clear(); this.nyssSagtAvAnnan.clear(); }
+
+  /**
+   * En annan kanal har just läst upp den här faran.
+   *
+   * Anropas av uppläsningen vid inkommande rapport i app.js. Motorn skjuter
+   * då upp sin egen närhetsvarning i annanSadeMs i stället för att säga samma
+   * polis en gång till — men glömmer den sedan, så förbikörningsvarningen
+   * kommer när föraren verkligen är nära.
+   *
+   * ALLA id:n i klustret måste med. Faran bär klusterledarens id, och motorn
+   * kan mycket väl möta samma patrull under en annan medlems id.
+   *
+   * @param {string} id
+   * @param {string[]|null} ids  övriga id:n i klustret
+   */
+  annanSade(id, ids = null) {
+    const now = Date.now();
+    for (const x of [id, ...(Array.isArray(ids) ? ids : [])]) {
+      if (x) this.nyssSagtAvAnnan.set(x, now);
+    }
+    // Kartan får inte växa under en lång körning. Allt äldre än fönstret är
+    // ändå utan verkan.
+    for (const [x, t] of this.nyssSagtAvAnnan) {
+      if (now - t > this.opts.annanSadeMs) this.nyssSagtAvAnnan.delete(x);
+    }
+  }
+
+  /** Har en annan kanal nyss sagt det här? Frågas av triggarna. */
+  #annanSadeNyss(h, now) {
+    const t = this.nyssSagtAvAnnan.get(h.id);
+    return Number.isFinite(t) && now - t < this.opts.annanSadeMs;
+  }
+
+  /**
+   * HAR motorn redan varnat för den här faran? Bara regel 1 ur agerFaran.
+   *
+   * Frågan finns separat därför att agerFarans regel 2 — "motorn KOMMER att
+   * säga det vid nästa fix" — är ett löfte som bara gäller faror motorn
+   * faktiskt har i sin lista. En kvalitetslyft rapport ligger per definition
+   * inte där (motorn matas med forRost; lyftet plockar upp det som är TYST),
+   * men agerFaran svarar ändå ja på ren geometri så fort bilen rullar inom
+   * hazardRadiusM. Den som frågar om en lyft rapport måste alltså fråga det
+   * HÄR, annars tystas rapporten av ett löfte ingen tänker hålla.
+   *
+   * @param {{id}} h
+   * @param {string[]|null} ids  övriga id:n i klustret
+   */
+  harVarnat(h, ids = null) {
+    if (!h) return false;
+    const now = Date.now();
+    for (const id of [h.id, ...(Array.isArray(ids) ? ids : [])]) {
+      if (!id) continue;
+      const st = this.state.get(id);
+      if (st?.warnedAt && now - st.warnedAt < this.opts.repeatAfterMs) return true;
+    }
+    return false;
+  }
 
   /**
    * @param {{lat,lon,headingSmoothed,speedKmh,moving}} fix
@@ -106,6 +189,8 @@ export class AlertEngine extends EventTarget {
   }
 
   #cameraTrigger(fix, h, d, speed, heading, st, now) {
+    // En annan kanal hann före. Se annanSade() — uppskjutning, inte avbockning.
+    if (this.#annanSadeNyss(h, now)) return false;
     if (speed < this.opts.minSpeedKmh) return false;
     if (st.insideRadius) return false;
     if (now - st.warnedAt < this.opts.repeatAfterMs) return false;
@@ -130,6 +215,19 @@ export class AlertEngine extends EventTarget {
   }
 
   #hazardTrigger(fix, h, d, speed, st, now) {
+    /*
+     * Har uppläsningen vid inkommande rapport nyss sagt det här, håller
+     * motorn tyst en stund.
+     *
+     * MÄTT FALL: rapport 900 m bort, bilen står still i en rödljuskö.
+     * agerFaran svarar nej (farten är noll), inkommande läser upp "Polis vid
+     * Skultuna…". Tio sekunder senare blir det grönt, fixen säger 20 km/h och
+     * den här triggern fyrade — två röster och två pling om samma patrull.
+     * Omkörningen i inkommandeSag skyddar bara fram till att den själv talar;
+     * efter det fanns ingen spärr alls, eftersom uppläsningen med flit inte
+     * bokför något hos motorn.
+     */
+    if (this.#annanSadeNyss(h, now)) return false;
     if (st.insideRadius) return false;
     if (now - st.warnedAt < this.opts.repeatAfterMs) return false;
     if (d > this.opts.hazardRadiusM) return false;
@@ -166,6 +264,15 @@ export class AlertEngine extends EventTarget {
    * förbikörningsvarning en stund senare. Den varningen är den som betyder
    * något; inkommande-uppläsningen är bara trevlig att ha. Den som yielder
    * ska vara den som betyder minst.
+   *
+   * DET SOM VALDES I STÄLLET: annanSade() ovan. Uppläsningen bockar inte av
+   * faran, den skjuter upp motorn i annanSadeMs. Efter det säger motorn sitt
+   * som vanligt — men då är föraren nära, och det är en annan mening.
+   *
+   * FRÅGAN GÄLLER BARA FAROR MOTORN HAR I SIN LISTA. Regel 2 är en
+   * förutsägelse om vad motorn kommer att göra vid nästa fix, och den kan
+   * bara hållas för det som faktiskt matas in i evaluate(). Den som frågar om
+   * en kvalitetslyft rapport ska använda harVarnat() i stället.
    *
    * @param {{id,type,lat,lon}} h
    * @param {{lat,lon,speedKmh}|null} fix

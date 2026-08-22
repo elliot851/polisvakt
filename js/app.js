@@ -41,7 +41,7 @@ import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
 import * as Korvanor from './korvanor.js';
 import { Navigering, tolkaOsrmRutt } from './navigering.js';
-import { beskrivning, sammanfattaKort, sammanfattaTal } from './sammanfattning.js';
+import { beskrivning, sammanfattaKort, sammanfattaTal, farBeskrivas } from './sammanfattning.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -265,7 +265,29 @@ const store = new ReportStore({
 // de två delar upp sträckan mellan sig vid exakt det avståndet, så att samma
 // polis aldrig läses upp av båda. Ändras det ena måste det andra följa med,
 // annars får föraren antingen dubbla varningar eller inga alls.
-const routeGuide = new RouteGuide(store, { handoffM: settings.hazardRadiusM });
+const routeGuide = new RouteGuide(store, {
+  handoffM: settings.hazardRadiusM,
+  /*
+   * ETT STÄLLE AVGÖR VAD APPEN FÅR SÄGA.
+   *
+   * Ruttvakten läste tidigare store.active() rått och var därmed den enda
+   * talande kanalen som inte passerat produktreglerna, kvalitetsgraderingen,
+   * täckningsfiltret eller förarens notisval. Det var mätbart: en rapport med
+   * label "Nykterhetskontroll Skultuna" undanhölls av kvalitet.js, saknades
+   * både i forRost och i inkommande-listan — och lästes ändå upp på rutten.
+   *
+   * forRost, inte forKarta: ruttvarningen säger AVSTÅND ("om fyra kilometer
+   * på rutten"), och det påståendet kräver en punkt man kan lita på. Det
+   * kvalitetslyftet i inkommande-uppläsningen gör gäller därför inte här —
+   * lyftet byter ut ett avståndspåstående mot ett referat, och ruttvakten har
+   * inget referat att ge. Grinden i inkommandeSok tar hänsyn till det: en
+   * lyft rapport lämnas aldrig åt ruttvakten, för den kan inte säga den.
+   *
+   * Funktionen är hoistad, alltså definierad långt nedanför men fullt giltig
+   * här — och den anropas ändå aldrig förrän en rutt är igång.
+   */
+  haemtaFaror: () => graderadeFaror().forRost,
+});
 const winter = new WinterService();
 const groups = new Groups();
 const vakthund = new Vakthund();
@@ -293,7 +315,23 @@ let currentAlert = null;
 
 /* ================= Start ================= */
 
-boot();
+/*
+ * Starten går att stänga av — och bara av ett prov.
+ *
+ * inkommande-test.html importerar den här filen för att köra den RIKTIGA
+ * uppläsningskedjan i stället för en kopia av den. Ett prov som testar en
+ * kopia bevisar bara att kopian fungerar; det var precis så felet den 23
+ * augusti kunde ligga kvar. Utan flaggan hade importen dragit igång GPS,
+ * pollning mot servern och hela gränssnittet — inget av det finns i ett
+ * provdokument, och proven hade blivit ett test av vilka DOM-fel boot()
+ * kastar.
+ *
+ * Allt ovanför den här raden är instanser utan sidoeffekter: ingen fetch,
+ * ingen DOM, ingen timer. Flaggan hoppar alltså bara över uppstarten, inte
+ * över konstruktionen — det är därför provet kan tala med samma store,
+ * samma speaker och samma engine som appen kör med.
+ */
+if (!globalThis.PV_INGEN_BOOT) boot();
 
 async function boot() {
   speaker.enabled = settings.tts;
@@ -2677,9 +2715,27 @@ function harledKvalitet(r) {
   return r;
 }
 
-function allHazards({ forAlerts = false } = {}) {
+/**
+ * Hela det graderade flödet, uppdelat i det som får höras och det som får
+ * synas.
+ *
+ * Fanns förut bara som insidan av allHazards(). Den är utbruten därför att
+ * inkommande-uppläsningen behöver BÅDA listorna ur SAMMA gradering för att
+ * kunna svara på frågan "varför hamnade den här bara på kartan?". Två anrop
+ * till allHazards() hade gett två graderingar av samma flöde i samma
+ * ögonblick — dubbelt arbete, och två svar som i teorin kan skilja sig åt.
+ *
+ * `undanhallna` är det graderingen kastade ut helt. Ingen ser dem, och det är
+ * meningen — men något måste kunna SÄGA att de kastades ut, annars går det
+ * inte att skilja "ingen rapport kom in" från "en rapport kom in och sållades
+ * bort". Se spåret i inkommande-uppläsningen.
+ *
+ * @returns {{forRost: Array, forKarta: Array, undanhallna: Array}}
+ */
+function graderadeFaror() {
   const me = geo.position;
   const aktiva = coverage.filter(store.active(), me);
+  const undanhallna = [];
 
   let graderade = aktiva;
   try {
@@ -2707,7 +2763,13 @@ function allHazards({ forAlerts = false } = {}) {
          */
         klusterIds: (g.kluster.medlemmar || []).map(m => m.id),
       }))
-      .filter(h => h.bedomning?.behandling !== Kvalitet.BEHANDLING.UNDANHALL);
+      // Undanhållet plockas ut i stället för att bara försvinna. Listan är
+      // ingen väg tillbaka in i flödet — den används enbart av spåret.
+      .filter(h => {
+        if (h.bedomning?.behandling !== Kvalitet.BEHANDLING.UNDANHALL) return true;
+        undanhallna.push(h);
+        return false;
+      });
   } catch {
     // Graderingen får aldrig kunna släcka varningarna. Går något fel faller
     // vi tillbaka på ograderade rapporter — hellre en osäker varning än ingen.
@@ -2724,8 +2786,14 @@ function allHazards({ forAlerts = false } = {}) {
    * Kamerorna måste gå genom samma anrop, annars går camera-inställningen
    * inte att använda.
    */
-  const { forRost, forKarta } =
-    Notiser.delaUppFaror([...graderade, ...coverage.filter(cameras, me)], settings);
+  return {
+    ...Notiser.delaUppFaror([...graderade, ...coverage.filter(cameras, me)], settings),
+    undanhallna,
+  };
+}
+
+function allHazards({ forAlerts = false } = {}) {
+  const { forRost, forKarta } = graderadeFaror();
   return forAlerts ? forRost : forKarta;
 }
 
@@ -3331,6 +3399,51 @@ window.polisvakt = {
   // dem går appens verkliga tillstånd inte att granska utifrån, och då blir
   // varje test ett test av en kopia istället för av det som faktiskt kör.
   store, geo, speaker, dashcam, vakthund, varmevakt, routeGuide, map, coverage,
+  // engine och billing ligger här av samma skäl, och för att inkommande-test.html
+  // ska kunna byta ut agerFaran och abonnemangssvaret mot kända värden i stället
+  // för att vänta på att en bil ska röra sig.
+  engine, billing,
+  get settings() { return settings; },
+
+  /*
+   * Inkommande-uppläsningen utifrån.
+   *
+   * spar/sparText är svaret på "varför var den tyst?" — se blocket
+   * "Uppläsning vid inkommande rapport" längre ner. Resten finns för
+   * inkommande-test.html, som kör den RIKTIGA kedjan i stället för en kopia
+   * av den. En kopia hade bara bevisat att kopian fungerar, och det var
+   * precis så felet den 23 augusti 2026 kunde ligga kvar oupptäckt.
+   *
+   * Getters och inte värden: objektet här byggs medan modulen laddas, och
+   * konstanterna längre ner i filen finns inte än i det ögonblicket.
+   */
+  inkommande: {
+    spar: () => [...inkommandeSpar],
+    sparText: () => inkommandeSparText(),
+    sok: () => inkommandeSok(),
+    sag: () => inkommandeSag(),
+    flode: () => inkommandeFlode(),
+    farsk: (h, nu) => inkommandeArFarsk(h, nu),
+    lyft: h => inkommandeKvalitetslyft(h),
+    nollstall: o => inkommandeNollstall(o),
+    get sedda() { return inkommandeSedda; },
+    get ko() { return inkommandeKo; },
+    get omgangar() { return inkommandeOmgangar; },
+    /*
+     * Provdokumenten sätter omgangar för att välja läge: 0 = utgångsläget,
+     * 2 = "appen har varit igång ett tag". Utgångsläget avgörs numera av
+     * datan och inte av räknaren (se inkommandeUtgangslagetBokfort), så
+     * flaggan måste följa med — annars ställer provet in ett läge koden inte
+     * längre läser, och mäter något annat än det tror.
+     */
+    set omgangar(v) {
+      inkommandeOmgangar = v;
+      inkommandeUtgangslagetBokfort = v >= 2;
+    },
+    get utgangslagetBokfort() { return inkommandeUtgangslagetBokfort; },
+    set utgangslagetBokfort(v) { inkommandeUtgangslagetBokfort = !!v; },
+    get samlaMs() { return INKOMMANDE_SAMLA_MS; },
+  },
   // Läsaren skapas först när läget väljs, så den måste hämtas vid anrop.
   get plate() { return plate; },
   chatt, ljud, korvanor,
@@ -6373,6 +6486,230 @@ const inkommandeKo = new Map();        // id -> { h, talat, avstand }, väntar p
 let inkommandeOmgangar = 0;
 let inkommandeTimer = null;
 
+/*
+ * Är utgångsläget bokfört?
+ *
+ * DET HÄR ERSATTE EN RÄKNARE, OCH SKÄLET ÄR MÄTT.
+ *
+ * Förr löd regeln "de två första omgångarna är tysta". Vilken genomgång som
+ * blev nummer två avgjordes då av en kapplöpning i boot(): store.start() på
+ * rad 328 drar igång en refresh som ingen inväntar, sedan ligger
+ * await billing.sync() emellan, och först därefter kopplas lyssnaren på i
+ * wireInkommandeUpplasning(). Vann serverhämtningen loppet var hela trakten
+ * redan bokförd i omgång 1 — och omgång 2 blev en LEVANDE pollning trettio
+ * sekunder senare. Mätt: tjugo genuint nya, färska polisrapporter som anlände
+ * i omgång 2 gav noll pling och noll yttringar, och enda spåret var en rad
+ * som påstod att de "fanns redan när appen öppnades". De kom efter.
+ *
+ * Frågan ställs därför om DATAN i stället för om räknaren: utgångsläget är
+ * bokfört när servern svarat en gång. Då är det som ligger i flödet per
+ * definition det appen HITTADE när den vaknade, aldrig en levande pollning.
+ *
+ * Andra ledet i villkoret finns för lokalt läge och för en telefon utan
+ * täckning: svarar servern aldrig får utgångsläget inte gälla för evigt,
+ * för då blir spåret aldrig detaljerat igen.
+ */
+let inkommandeUtgangslagetBokfort = false;
+
+/*
+ * Id:n vi redan skrivit en spårrad för i klassen "kvaliteten tystade den".
+ *
+ * Det här är INTE en spärr. Den finns bara för att spåret inte ska fyllas med
+ * samma rad var trettionde sekund så länge rapporten ligger kvar i flödet.
+ * Skulle samma rapport senare få stöd av en andra rapportör och därmed lyftas
+ * över kvalitetströskeln går den den vanliga vägen — dess id ligger inte i
+ * inkommandeSedda, och därför räknas den då som ny. Att bokföra den som
+ * "sedd" här hade tystat den för alltid, vilket är exakt den sortens fälla
+ * det här spåret finns för att upptäcka.
+ */
+const inkommandeTystade = new Set();
+
+/* ---------------- Spåret: varför var den tyst? ------------------------
+ *
+ * DET HÄR ÄR HALVA FIXEN, INTE EN LOGGRAD.
+ *
+ * Felet den 23 augusti 2026 kunde ligga kvar i drift därför att ingenting
+ * någonstans sa att tre rapporter kom in och INTE lästes upp. Appen betedde
+ * sig precis likadant som en app utan rapporter: tyst. Det gick alltså inte
+ * att skilja "inget hände" från "något hände och tolv grindar teg om varför",
+ * och den enda vägen till svaret var en brytpunkt i en telefon som redan
+ * hunnit vidare.
+ *
+ * Därför bokförs VARJE beslut den här kedjan tar — både det som sades och
+ * det som inte sades — med en orsakskod och en mening på svenska. Spåret
+ * ligger i localStorage och överlever en omladdning, syns i Inställningar
+ * och går att läsa utifrån med polisvakt.inkommande.sparText().
+ *
+ * NYKTERHETSREGELN GÄLLER SPÅRET OCKSÅ. En rad i spåret är en rad någon
+ * läser, alltså samma sak som att rapportera. Därför tvättas plats och text
+ * bort ur raden så fort rapporten inte får beskrivas — koden står kvar så att
+ * det syns ATT något stoppades, men aldrig VAD.
+ */
+
+const INKOMMANDE_SPAR_TAK = 60;
+const INKOMMANDE_SPAR_NYCKEL = 'pv.inkommande.spar.v1';
+
+/*
+ * Hur många rader av samma tråkiga sort en enda omgång får skriva.
+ *
+ * Ett spår som svämmar över är lika oläsbart som inget spår alls. Beslutet om
+ * en enskild rapport som SADES eller som tystades av en GRIND skrivs alltid —
+ * det är dem man letar efter. Massan kapas här och redovisas som en siffra.
+ *
+ * TAKET GÄLLDE LÄNGE BARA HÄLFTEN AV MASSAN, och ringbufferten är bara 60
+ * rader. Mätt: en burst med tjugo rapporter gav tjugo rader (en uppläst,
+ * nitton "raknad-i-bursten"); hade föraren tryckt "Tyst i 15 minuter" gav
+ * samma tjugo rapporter tjugo identiska "foraren-tystade". Tre sådana
+ * omgångar i rad räckte för att fylla hela bufferten med utfyllnad och radera
+ * allt äldre — alltså slogs spåret ut i precis det läge det byggdes för:
+ * "det kom in massor och jag hörde ingenting". Därför går alla fyra
+ * massorsakerna genom sparKapare nu.
+ */
+const INKOMMANDE_SPAR_PER_OMGANG = 5;
+
+/**
+ * Skriver högst INKOMMANDE_SPAR_PER_OMGANG rader av en och samma orsak och
+ * sammanfattar resten som en siffra.
+ *
+ * Skapas per omgång — burst, synk, genomgång — så att taket gäller omgången
+ * och inte appens livstid.
+ *
+ * @param {'sagd'|'raknad'|'tyst'} beslut
+ * @param {string} orsak
+ */
+function sparKapare(beslut, orsak) {
+  let skrivna = 0, kapade = 0;
+  return {
+    skriv(h, varfor, extra) {
+      if (skrivna < INKOMMANDE_SPAR_PER_OMGANG) {
+        sparaInkommande(h, beslut, orsak, varfor, extra);
+        skrivna++;
+      } else {
+        kapade++;
+      }
+    },
+    /** Skriv sammanfattningsraden. Returnerar hur många det gällde totalt. */
+    klar() {
+      if (kapade) {
+        sparaInkommande(null, beslut, orsak,
+          `Och ${kapade} till i samma omgång, av samma skäl.`);
+      }
+      return skrivna + kapade;
+    },
+  };
+}
+
+/** Klartext för orsakskoderna. Samma ordlista i gränssnitt och konsol. */
+const INKOMMANDE_BESLUT_ETIKETT = {
+  sagd: 'Läst upp',
+  raknad: 'Räknad',
+  tyst: 'Tyst',
+};
+
+let inkommandeSpar = (() => {
+  const rader = readJSON(INKOMMANDE_SPAR_NYCKEL, []);
+  return Array.isArray(rader) ? rader.slice(-INKOMMANDE_SPAR_TAK) : [];
+})();
+
+/**
+ * Skriv en rad i spåret.
+ *
+ * @param {Object|null} h        faran beslutet gällde, eller null för en rad
+ *                               som handlar om omgången i stort
+ * @param {'sagd'|'raknad'|'tyst'} beslut
+ * @param {string} orsak         kort kod, stabil nog att söka på
+ * @param {string} varfor        en mening som svarar på frågan
+ * @param {Object} [extra]       fält som bara vissa orsaker har
+ */
+function sparaInkommande(h, beslut, orsak, varfor, extra = {}) {
+  const b = h?.bedomning || null;
+
+  /*
+   * Får rapporten inte beskrivas får den inte heller stå i spåret med namn.
+   * Se modulkommentaren ovan: en spårrad är något en människa läser.
+   *
+   * Flaggan räknas med i frågan, inte bara texten. En nykterhetskontroll som
+   * parsern flaggat men vars text är för kort för isSobrietyCheck hade annars
+   * fått ordet "nykterhetskontroll" utskrivet i flaggkolumnen — alltså läckt
+   * genom precis det fält som fanns för att stoppa den.
+   */
+  const flaggad = Array.isArray(b?.flaggor) && b.flaggor.includes('nykterhetskontroll');
+  const oppen = !h || (farBeskrivas(h) && !flaggad);
+  const plats = oppen && typeof h?.label === 'string' ? h.label : '';
+
+  const post = {
+    tid: Date.now(),
+    id: h?.id ?? null,
+    typ: oppen ? (h?.type ?? null) : null,
+    plats,
+    kalla: h?.source ?? null,
+    beslut,
+    orsak,
+    varfor: oppen ? varfor : 'Rapporten får inte beskrivas. Inget mer sparas om den.',
+    poang: b?.poang ?? null,
+    niva: b?.niva ?? null,
+    behandling: b?.behandling ?? null,
+    osakerhetM: b?.osakerhetM ?? null,
+    flaggor: oppen && Array.isArray(b?.flaggor) ? [...b.flaggor] : [],
+    omgang: inkommandeOmgangar,
+    ...extra,
+  };
+
+  inkommandeSpar.push(post);
+  if (inkommandeSpar.length > INKOMMANDE_SPAR_TAK) {
+    inkommandeSpar.splice(0, inkommandeSpar.length - INKOMMANDE_SPAR_TAK);
+  }
+  writeJSON(INKOMMANDE_SPAR_NYCKEL, inkommandeSpar);
+
+  // Konsolen är kvar vid sidan av rutan: den som felsöker på en telefon via
+  // USB ser raden i samma sekund den skrivs, utan att behöva byta vy.
+  console.info(`[inkommande] ${beslut} · ${orsak} · ${post.plats || post.id || '—'} — ${post.varfor}`);
+
+  renderInkommandeSpar();
+  return post;
+}
+
+/** Spåret som läsbara rader. polisvakt.inkommande.sparText() i konsolen. */
+function inkommandeSparText() {
+  if (!inkommandeSpar.length) return 'Inget inkommande har bedömts än.';
+  return inkommandeSpar.map(p => {
+    const tid = new Date(p.tid).toLocaleTimeString('sv-SE');
+    const grad = p.poang != null ? ` [${p.niva} ${p.poang}` +
+      (p.osakerhetM != null ? ` ±${p.osakerhetM} m` : '') +
+      (p.flaggor?.length ? ` ${p.flaggor.join(',')}` : '') + ']' : '';
+    return `${tid}  ${p.beslut.padEnd(6)} ${p.orsak.padEnd(22)} ` +
+           `${p.plats || p.id || '—'}${grad}\n${' '.repeat(10)}${p.varfor}`;
+  }).join('\n');
+}
+
+/**
+ * Rutan i Inställningar.
+ *
+ * Den finns för föraren, inte bara för den som felsöker. Frågan "varför sa
+ * den ingenting?" ställs av den som satt i bilen, och svaret ska gå att läsa
+ * där appen är — inte i en utvecklarkonsol på en dator.
+ */
+function renderInkommandeSpar() {
+  const el = $('inkommandeSpar');
+  if (!el) return;
+
+  if (!inkommandeSpar.length) {
+    el.innerHTML = '<p class="hint">Inget har kommit in medan appen varit öppen än.</p>';
+    return;
+  }
+
+  el.innerHTML = [...inkommandeSpar].reverse().slice(0, 12).map(p => {
+    const tid = new Date(p.tid).toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+    // Ett avhugget id säger ingenting till den som läser. Saknas plats — och
+    // det gör den för allt som inte får beskrivas — räcker "En rapport".
+    const rubrik = p.plats || (p.typ && TYPE_LABEL[p.typ]) || (p.id ? 'En rapport' : 'Omgången');
+    const etikett = INKOMMANDE_BESLUT_ETIKETT[p.beslut] || p.beslut;
+    return `<div class="row"><span>${escapeHtml(tid)} · ${escapeHtml(rubrik)}</span>` +
+           `<span>${escapeHtml(etikett)}</span></div>` +
+           `<p class="hint">${escapeHtml(p.varfor)}</p>`;
+  }).join('');
+}
+
 /**
  * Är rapporten färsk nog att läsas upp?
  *
@@ -6395,23 +6732,149 @@ function inkommandeArFarsk(h, nu = Date.now()) {
 }
 
 /**
+ * Fick kvalitetsgraderingen ensam tysta rapporten?
+ *
+ * DET HÄR ÄR FELET SOM LAGADES DEN 23 AUGUSTI 2026.
+ *
+ * Tre rapporter från Facebook-gruppen nådde appen, hamnade i lagringen, ritades
+ * på kartan — och sades aldrig. Skälet var inte uppläsningen, inte ljudet och
+ * inte rösten. Kedjan såg ut så här:
+ *
+ *   kvalitet.js gav en ensam Facebook-rapport utan geokod-fält 0,37 av 1.
+ *   Under gransHedga 0,48 blir det NIVA.LAG, som blir BEHANDLING.TYST.
+ *   notiser.js översätter TYST till "får synas, får inte höras".
+ *   allHazards({ forAlerts: true }) lämnade därmed tillbaka en lista som
+ *   rapporten aldrig fanns i, och den här filen loopade över en lista som
+ *   redan var tömd på det den letade efter.
+ *
+ * Poängen 0,37 är inte ett räknefel. Den är korrekt: ursprung facebook +0,42,
+ * geokod okänd −0,15, ingen som bekräftat, färsk +0,05. En ensam rapport från
+ * ett gruppinlägg vars position vi inte vet hur den togs fram KAN inte nå
+ * 0,48 på egen hand. Att skruva på trösklarna eller att gissa en bättre
+ * geokod åt rapporten hade varit att ljuga om hur säker appen är.
+ *
+ * DÄRFÖR SKILJS DE TVÅ TALHANDLINGARNA ÅT I STÄLLET:
+ *
+ *   Varningsmotorn säger AVSTÅND: "Polis om 300 meter." Det påståendet kräver
+ *   att punkten går att lita på. En rapport med drygt en kilometers
+ *   positionsosäkerhet kan trigga var som helst inom varningsradien, och då
+ *   säger varningen inte längre var — bara att. TYST är rätt svar där, och
+ *   den grinden rörs inte.
+ *
+ *   Den här vägen säger NYHET, med NAMN och utan avstånd: "Polis vid Halla.
+ *   Någon i Facebook-gruppen varnade för en minut sedan. Rapporten är färsk.
+ *   Ingen annan har bekräftat den än." Varenda osäkerhet står med i meningen.
+ *   Det är inte ett anspråk på att veta var patrullen står — det är ett
+ *   referat av vad någon skrivit, och att hålla tyst om det är att inte vara
+ *   appen.
+ *
+ * TRE SAKER FÅR ALDRIG LYFTAS, OCH GÖR DET INTE HELLER:
+ *
+ *   1. UNDANHALL. Den kommer aldrig ens hit — allHazards() filtrerar bort den
+ *      före uppdelningen. Villkoret nedan kräver dessutom TYST uttryckligen.
+ *
+ *   2. platskonvention. Ett inlägg som bara är ett platsnamn ("Bäckby") tolkas
+ *      som polis genom gruppens konvention, men ingen har skrivit VAD som står
+ *      där. Står ordet nykterhetskontroll i bilden eller i kommentarerna finns
+ *      det ingenting för isSobrietyCheck att gå på, och en uppläsning hade
+ *      brutit den enda regel i det här projektet som aldrig får brytas. Taket
+ *      i kvalitet.js sattes för det, och det står kvar orört.
+ *
+ *      FRÅGAN STÄLLS TILL PREDIKATET, INTE TILL FLAGGAN. Mätt den 23 augusti
+ *      2026: en gruppost som bara var ordet "Bäckby", utan geokod-fält, fick
+ *      poäng 0,32 och var alltså LAG redan innan taket prövades. Flaggpushen
+ *      i kvalitet.js låg då inne i niva-villkoret och kördes aldrig, så
+ *      rapporten kom hit med flaggor ['osaker-plats'] — och lyftet, som bara
+ *      läste flaggan, släppte den till högtalaren. Flaggan fanns bara på det
+ *      som var för BRA för att tystas av sig självt; frågan ställdes om det
+ *      som var för dåligt. Nu körs Kvalitet.arPlatskonvention() i stället, och
+ *      flaggan är kvar som bälte vid sidan av hängslet.
+ *
+ *   3. Produktreglerna och förarens egna notisval. Frågan ställs om via
+ *      Notiser.skaAnnonseras med ENDAST kvalitetstaket neutraliserat. Allt
+ *      annat i notiser.js svarar likadant som förut: nykterhet är fortfarande
+ *      av, en handmarkerad fartkamera är fortfarande av, och det föraren
+ *      ställt på "bara kartan" stannar på kartan.
+ */
+function inkommandeKvalitetslyft(h) {
+  const b = h?.bedomning;
+  if (!b) return false;                                   // ograderad låg redan i forRost
+  if (b.behandling !== Kvalitet.BEHANDLING.TYST) return false;
+
+  const flaggor = Array.isArray(b.flaggor) ? b.flaggor : [];
+  if (flaggor.includes('platskonvention')) return false;
+  if (flaggor.includes('nykterhetskontroll')) return false;
+
+  /*
+   * Samma fråga en gång till, ställd till regeln i stället för till flaggan.
+   * Se punkt 2 ovan: flaggan saknas på precis de rapporter den skulle märka,
+   * så raden ovanför är en nolloperation för dem. Den här raden är den som
+   * faktiskt håller — och den kan inte glida isär från kvalitet.js, för det
+   * är kvalitet.js egen funktion som körs.
+   */
+  if (Kvalitet.arPlatskonvention(h)) return false;
+
+  /*
+   * Bedömningen behålls i sin helhet och bara behandlingen byts ut. Att
+   * skicka in rapporten helt utan bedomning hade sett enklare ut, men då
+   * försvinner också nykterhetsflaggan som notiser.js läser — alltså hade
+   * genvägen tagit bort en av spärrarna i samma rörelse som den lyfte taket.
+   */
+  const utanKvalitetstak = { ...h, bedomning: { ...b, behandling: Kvalitet.BEHANDLING.HEDGA } };
+  return Notiser.skaAnnonseras(utanKvalitetstak, settings);
+}
+
+/**
+ * Flödet den inkommande uppläsningen arbetar på.
+ *
+ * @returns {{lista: Array, lyfta: Set<string>, tystade: Array, undanhallna: Array}}
+ *   lista        det som får sägas: röstflödet plus de kvalitetstystade som
+ *                lyfts enligt inkommandeKvalitetslyft
+ *   lyfta        id:n som kom in via lyftet, så spåret kan säga det högt
+ *   tystade      det som stannade på kartan, för spårets skull och inget annat
+ *   undanhallna  det graderingen kastade ut helt, likaså bara för spåret
+ */
+function inkommandeFlode() {
+  const { forRost, forKarta, undanhallna } = graderadeFaror();
+  const rostIds = new Set(forRost.map(h => h.id));
+
+  const lyfta = new Set();
+  const tystade = [];
+  const lista = [...forRost];
+
+  for (const h of forKarta) {
+    if (rostIds.has(h.id)) continue;
+    if (inkommandeKvalitetslyft(h)) {
+      lyfta.add(h.id);
+      lista.push(h);
+    } else {
+      tystade.push(h);
+    }
+  }
+  return { lista, lyfta, tystade, undanhallna: undanhallna || [] };
+}
+
+/**
  * Går igenom flödet, bokför vad som setts och plockar ut det som ska sägas.
  *
- * Flödet hämtas via allHazards({ forAlerts: true }) och inte ur store direkt.
- * Det är avgörande: den vägen har redan passerat produktreglerna (nykterhet
- * finns inte), kvalitetsgraderingen (undanhållet stannar undanhållet),
- * täckningsfiltret och förarens egna notisinställningar. En rapport som
- * föraren ställt på "bara kartan" ska inte kunna smyga ut genom högtalaren
- * bara för att den kom in via en annan dörr. Ruttvakten får säga sitt av
- * samma skäl som motorn får det — den har redan claimat delar av sträckan.
+ * Flödet hämtas via inkommandeFlode() och inte ur store direkt. Det är
+ * avgörande: den vägen har redan passerat produktreglerna (nykterhet finns
+ * inte), täckningsfiltret och förarens egna notisinställningar. En rapport
+ * som föraren ställt på "bara kartan" ska inte kunna smyga ut genom
+ * högtalaren bara för att den kom in via en annan dörr. Ruttvakten får säga
+ * sitt av samma skäl som motorn får det — den har redan claimat delar av
+ * sträckan.
+ *
+ * Kvalitetsgraderingen är den enda av taken som får lyftas här, och bara på
+ * de villkor som står i inkommandeKvalitetslyft.
  */
 function inkommandeSok() {
   const fix = geo.position;
   const nu = Date.now();
 
-  let lista, ruttensKvar;
+  let lista, lyfta, tystade, undanhallna, ruttensKvar;
   try {
-    lista = allHazards({ forAlerts: true });
+    ({ lista, lyfta, tystade, undanhallna } = inkommandeFlode());
     /*
      * Bokföringen går på hela flödet, urvalet på det ruttvakten lämnat kvar.
      *
@@ -6422,37 +6885,147 @@ function inkommandeSok() {
      * just parkerat.
      */
     ruttensKvar = new Set(routeGuide.filterHazards(lista).map(h => h.id));
-  } catch {
+  } catch (e) {
     // Uppläsningen får aldrig kunna välta en pollning. Kan vi inte bygga
-    // listan säger vi ingenting den här omgången.
+    // listan säger vi ingenting den här omgången — men vi säger att vi inte
+    // kunde, annars ser det ut som att inget kom in.
+    sparaInkommande(null, 'tyst', 'listan-brast',
+      `Flödet gick inte att bygga den här omgången: ${e?.message || e}`);
     return;
   }
+
+  /*
+   * Utgångsläget: det appen HITTAR när den vaknar.
+   *
+   * Se inkommandeUtgangslagetBokfort. Två saker skiljer det här från
+   * räknaren det ersatte:
+   *
+   *   1. Det är en fråga om datan (har servern svarat?), inte om vilket varv
+   *      vi råkar vara på — alltså finns kapplöpningen i boot() inte längre.
+   *   2. Uppvärmningen SVÄLJER ingenting längre. Den dämpar bara spåret.
+   *      Förr låg "if (uppvarmning) continue" före alla grindar, samtidigt
+   *      som id:t redan bokförts som sett — en rapport som skrevs för trettio
+   *      sekunder sedan och kom med i första hämtningen var därmed permanent
+   *      tystad, utan att en enda grind ställt en fråga om den, och utan en
+   *      spårrad som bar dess id. Nu avgör ÅLDERN: hela trakten vid start är
+   *      per definition gammal och faller på inkommandeArFarsk, medan en
+   *      rapport från en minut sedan går hela vägen fram och hörs.
+   */
+  const uppvarmning = !inkommandeUtgangslagetBokfort;
+  let uppvarmda = 0;
+
+  /*
+   * Under utgångsläget dämpas de enskilda raderna till en siffra: hela
+   * trakten ligger i flödet och en rad per rapport hade dränkt spåret i just
+   * den omgång som aldrig är intressant. Beslutet i sig tas ändå, av samma
+   * grind som annars.
+   */
+  const tystaMed = (h, orsak, varfor, extra) => {
+    if (uppvarmning) { uppvarmda++; return; }
+    sparaInkommande(h, 'tyst', orsak, varfor, extra);
+  };
+
+  // Taket på massraden. Grindarnas egna rader står okapade — det är dem man
+  // letar efter — men "samma händelse igen" kan komma i fyrtiotal.
+  const sammaSom = sparKapare('tyst', 'samma-som-redan-sedd');
 
   for (const h of lista) {
     // Faran bär klusterledarens id. Alla id:n i klustret måste bokföras,
     // annars räknas samma polis som ny igen så fort ledarskapet byter hand.
     const ids = [h.id, ...(h.klusterIds || [])].filter(Boolean);
-    const sedd = ids.some(id => inkommandeSedda.has(id));
+    const redan = ids.find(id => inkommandeSedda.has(id));
     for (const id of ids) inkommandeSedda.add(id);
 
-    if (sedd) continue;
+    if (redan) {
+      /*
+       * Rapporten är ny men händelsen är det inte.
+       *
+       * redan !== h.id betyder att just den här raden aldrig setts förut, men
+       * att den slagits ihop med en rapport vi redan tagit ställning till.
+       * Det är en andra person som rapporterar samma patrull, och att läsa upp
+       * den igen vore att säga samma sak två gånger. Grinden är alltså rätt —
+       * men den var osynlig, och det var den som tystade den tredje av de tre
+       * rapporterna den 23 augusti. Nu står det i spåret i stället för att
+       * behöva letas fram med en brytpunkt.
+       *
+       * Villkoret gör raden engångs: nästa omgång är h.id självt sett, och då
+       * är redan === h.id.
+       */
+      if (redan !== h.id && !uppvarmning) {
+        sammaSom.skriv(h,
+          `Rapporten är ny, men den slogs ihop med ${redan} som appen redan tagit ` +
+          'ställning till. Samma händelse, inte en ny.', { klustradMed: redan });
+      } else if (redan !== h.id) {
+        uppvarmda++;
+      }
+      continue;
+    }
 
+    if (h.fixed) {                               // fasta kameror händer inte
+      tystaMed(h, 'fast-punkt',
+        'Fast kamera. Den står där den stod och är ingen nyhet.');
+      continue;
+    }
+    if (arMin(h)) {                              // det man själv nyss skrev in
+      tystaMed(h, 'egen-rapport',
+        'Du rapporterade den själv. Appen läser aldrig upp ditt eget knapptryck.');
+      continue;
+    }
+    if (!inkommandeArFarsk(h, nu)) {             // gammalt är brus, inte varning
+      const min = Number.isFinite(Number(h.createdAt))
+        ? Math.round((nu - Number(h.createdAt)) / 60000) : null;
+      const tak = Math.round(Math.min(TTL_MINUTES[h.type] ?? 45, INKOMMANDE_TTL_TAK)
+                             * INKOMMANDE_MAX_ANDEL);
+      /*
+       * ÅLDERSGRINDEN ÄR DEN SOM BÄR UTGÅNGSLÄGET.
+       *
+       * Hela trakten som ligger i flödet när appen öppnas faller här, och det
+       * är rätt skäl: den är gammal. En rapport som skrevs för en minut sedan
+       * och råkade komma med i första hämtningen faller inte — och ska inte
+       * göra det. Föraren som startar appen inomhus, utan GPS-fix, medan det
+       * står polis där hen ska köra, ska höra det.
+       */
+      tystaMed(h, 'for-gammal',
+        min == null
+          ? 'Tidsstämpeln går inte att tolka, så åldern går inte att avgöra.'
+          : `${min} minuter gammal. Gränsen för att räknas som en nyhet är ${tak} minuter.`);
+      continue;
+    }
     /*
-     * De två första omgångarna är tysta.
+     * Ruttvakten och motorn frågas BARA om faror de faktiskt kan säga.
      *
-     * Den första är det som redan låg i telefonens lagring när appen
-     * startade. Den andra är serverns första hämtning — hela trakten på en
-     * gång. Ingetdera är en händelse; det är ett utgångsläge. Utan den här
-     * raden möts föraren av "Ytterligare nio rapporter kom in" i samma
-     * sekund som appen öppnas.
+     * Båda matas med forRost (app.js rad 466 respektive haemtaFaror i
+     * RouteGuide-konstruktorn). En kvalitetslyft rapport ligger per definition
+     * inte där — den är TYST och kommer bara med via inkommandeFlode(). Att
+     * ändå fråga dem är att låta någon annan lova något ingen tänker hålla:
+     *
+     *   MÄTT: Facebook-rapport 900 m bort, förare i 50 km/h med färsk fix.
+     *   Lyftet fungerade (poäng 0,32, behandling tyst, lyft=true), men
+     *   agerFaran svarade true på ren geometri trots att rapporten inte fanns
+     *   i motorns lista. Resultat: total tystnad, och en spårrad som påstod
+     *   att "varningsmotorn har redan varnat för den". Osant. För en förare
+     *   som kör blev det raka motsatsen till avsikten: en lyft rapport LÅNGT
+     *   bort lästes upp, en NÄRA tystades.
+     *
+     * Regel 1 — motorn HAR redan varnat — gäller fortfarande alla, och den
+     * frågan ställs för sig via harVarnat().
      */
-    if (inkommandeOmgangar < 2) continue;
-
-    if (h.fixed) continue;                       // fasta kameror händer inte
-    if (arMin(h)) continue;                      // det man själv nyss skrev in
-    if (!inkommandeArFarsk(h, nu)) continue;     // gammalt är brus, inte varning
-    if (!ruttensKvar.has(h.id)) continue;        // ruttvakten har claimat den
-    if (engine.agerFaran(h, fix, h.klusterIds)) continue;   // motorn tar den
+    const lyftDenna = lyfta.has(h.id);
+    if (!lyftDenna && !ruttensKvar.has(h.id)) {  // ruttvakten har claimat den
+      tystaMed(h, 'ruttvakten',
+        'Ruttvakten har hand om den här — den ligger på din beräknade rutt och ' +
+        'sägs där i stället, vid rätt tidpunkt.');
+      continue;
+    }
+    if (lyftDenna ? engine.harVarnat(h, h.klusterIds)
+                  : engine.agerFaran(h, fix, h.klusterIds)) {
+      tystaMed(h, 'motorn-tar-den', lyftDenna
+        ? 'Varningsmotorn har redan varnat för den. Två röster om samma polis ' +
+          'är en för mycket.'
+        : 'Varningsmotorn har redan varnat för den, eller är på väg att göra det. ' +
+          'Två röster om samma polis är en för mycket.');
+      continue;
+    }
 
     /*
      * Tom sträng får aldrig bli en yttring. sammanfattaTal() svarar tomt för
@@ -6462,17 +7035,104 @@ function inkommandeSok() {
      * annan fil än den som bryter mot den.
      */
     const talat = sammanfattaTal(h, { egen: false });
-    if (!talat) continue;
+    if (!talat) {
+      tystaMed(h, 'far-inte-beskrivas',
+        'Rapporten går inte att formulera i klartext.');
+      continue;
+    }
 
     inkommandeKo.set(h.id, {
       h, talat,
       avstand: fix ? haversineFix(fix, h) : Infinity,
+      lyft: lyftDenna,
     });
+  }
+  sammaSom.klar();
+
+  /*
+   * Det som aldrig ens kom fram till grindarna ovanför.
+   *
+   * Två klasser, och båda var helt osynliga före den 23 augusti 2026:
+   * kvaliteten satte rapporten på kartnivå (och lyftet gällde inte den), eller
+   * kvaliteten kastade ut den helt. En rapport som försvinner utan ett ord
+   * ser likadan ut som en rapport som aldrig kom, och då går felet inte att
+   * hitta annat än med en brytpunkt i en telefon som redan kört vidare.
+   *
+   * Raderna spärrar ingenting — se inkommandeTystade.
+   */
+  const bokforTyst = (faror, orsak, text) => {
+    // En synk som drar in fyrtio gamla rader får inte trycka ut de rader
+    // någon faktiskt letar efter. Fem räcker för att se mönstret, resten blir
+    // en siffra. Samma kapare som massorsakerna i inkommandeSag använder.
+    const kapare = sparKapare('tyst', orsak);
+    let n = 0;
+    for (const h of faror || []) {
+      if (!h?.id || inkommandeTystade.has(h.id)) continue;
+      if (inkommandeSedda.has(h.id)) continue;      // redan avgjord någon annan väg
+      inkommandeTystade.add(h.id);
+      n++;
+      // Under utgångsläget räknas de bara. Hela trakten ligger i flödet vid
+      // start, och en rad per rapport hade dränkt spåret i just den omgång
+      // som aldrig är intressant.
+      if (uppvarmning) continue;
+      kapare.skriv(h, text(h));
+    }
+    if (!uppvarmning) kapare.klar();
+    return n;
+  };
+
+  const b2 = h => h.bedomning;
+  const holls = bokforTyst(tystade, 'kvaliteten-holl-emot', h => {
+    const b = b2(h);
+    const flagg = Array.isArray(b?.flaggor) && b.flaggor.length
+      ? ` Flaggor: ${b.flaggor.join(', ')}.` : '';
+    return `Visas på kartan men läses inte upp. Kvalitetspoäng ${b?.poang ?? '?'} ` +
+           `(${b?.niva ?? 'okänd'}), och lyftet gäller inte den här.${flagg}`;
+  });
+  const utkastade = bokforTyst(undanhallna, 'undanhallen', h => {
+    const b = b2(h);
+    const skal = b?.skal?.length ? ` ${b.skal.at(-1).varfor}` : '';
+    return `Kvaliteten undanhöll rapporten helt — den visas inte ens på kartan. ` +
+           `Poäng ${b?.poang ?? '?'}.${skal}`;
+  });
+
+  /*
+   * Utgångsläget som EN rad, inte hundrafyrtio.
+   *
+   * Texten påstår inte längre NÄR rapporterna kom in — koden vet inte det.
+   * Den gamla lydelsen ("fanns redan när appen öppnades") pekade åt fel håll
+   * i precis det fall man felsökte: tjugo rapporter som anlände i omgång två
+   * redovisades som om de legat där hela tiden.
+   */
+  if (uppvarmning && (uppvarmda || holls || utkastade)) {
+    sparaInkommande(null, 'tyst', 'uppvarmning',
+      `${uppvarmda + holls + utkastade} rapporter låg i flödet när utgångsläget ` +
+      `bokfördes och tystades var för sig av sina vanliga grindar — nästan alla ` +
+      `på åldern (${uppvarmda} i röstflödet, ${holls} bara på kartan, ` +
+      `${utkastade} undanhållna). Bara spårraderna hölls tillbaka, inte besluten: ` +
+      'är något i högen färskt nog att vara en nyhet läses det upp.');
   }
 
   inkommandeStadaMinnet(lista);
 
   if (inkommandeOmgangar < 2) inkommandeOmgangar++;
+
+  /*
+   * Utgångsläget är bokfört när servern svarat en gång.
+   *
+   * store.lastSync sätts först när en hämtning faktiskt lyckats, så den här
+   * raden är oberoende av kapplöpningen mellan store.start() och
+   * wireInkommandeUpplasning() i boot(): vilken genomgång som råkar vara
+   * nummer ett spelar ingen roll, det är serverns svar som är utgångsläget.
+   *
+   * Andra ledet är för lokalt läge och för en telefon utan täckning. Utan det
+   * hade spåret aldrig blivit detaljerat igen på en app som aldrig når nätet.
+   */
+  if (!inkommandeUtgangslagetBokfort &&
+      (store.lastSync != null || inkommandeOmgangar >= 2)) {
+    inkommandeUtgangslagetBokfort = true;
+  }
+
   if (!inkommandeKo.size || inkommandeTimer) return;
   inkommandeTimer = setTimeout(inkommandeSag, INKOMMANDE_SAMLA_MS);
 }
@@ -6488,6 +7148,10 @@ function inkommandeSok() {
  * behöver ge.
  */
 function inkommandeStadaMinnet(lista) {
+  // Spårminnet töms först och separat. Det är inte en spärr, så det kostar
+  // ingenting att bygga om det — på sin höjd en extra spårrad.
+  if (inkommandeTystade.size > INKOMMANDE_MINNE_TAK) inkommandeTystade.clear();
+
   if (inkommandeSedda.size <= INKOMMANDE_MINNE_TAK) return;
   inkommandeSedda.clear();
   for (const h of lista) {
@@ -6513,9 +7177,16 @@ function inkommandeSag() {
    * GRINDARNA KÖRS OM, HÄR, MOT EN FÄRSK FIX.
    *
    * Frågan "tar varningsmotorn den här?" ställdes vid inläggningen i kön, och
-   * mellan den och det här ögonblicket ligger INKOMMANDE_SAMLA_MS plus 380 ms
-   * till say(). På nästan två sekunder hinner världen ändras: AlertEngine
-   * körs på VARJE GPS-fix och ruttvakten claimar löpande.
+   * mellan den och det här ögonblicket ligger INKOMMANDE_SAMLA_MS. På ett och
+   * ett halvt sekund hinner världen ändras: AlertEngine körs på VARJE GPS-fix
+   * och ruttvakten claimar löpande.
+   *
+   * De 380 ms som ligger mellan beslutet och say() täcks INTE av en omkörning
+   * — där hjälper ingen kontroll, för motorn kan fyra mitt i glappet. Det
+   * fönstret stängs i stället genom att avbockningen skrivs till motorn
+   * omedelbart efter att beslutet tagits, se engine.annanSade() nedan. En
+   * sista kontroll ligger ändå i setTimeout-callbacken, för ruttvakten
+   * claimar utan att fråga någon.
    *
    * Fallet som gjorde det här nödvändigt: bilen står i en rödljuskö, farten är
    * noll, en polisrapport 800 m bort kommer in. agerFaran svarar nej — motorn
@@ -6534,19 +7205,51 @@ function inkommandeSag() {
    */
   const nu = Date.now();
   const fix = geo.position;
-  const poster = raposter.filter(p => {
-    if (arMin(p.h)) return false;
-    if (!inkommandeArFarsk(p.h, nu)) return false;          // hann bli gammalt i kön
-    if (routeGuide.isClaimed(p.h.id)) return false;         // ruttvakten hann claima
-    if (engine.agerFaran(p.h, fix, p.h.klusterIds)) return false;  // motorn hann ta den
-    return true;
-  });
+  const poster = [];
+  for (const p of raposter) {
+    if (arMin(p.h)) {
+      sparaInkommande(p.h, 'tyst', 'egen-rapport',
+        'Visade sig vara din egen rapport när den skulle sägas.');
+      continue;
+    }
+    if (!inkommandeArFarsk(p.h, nu)) {                      // hann bli gammalt i kön
+      sparaInkommande(p.h, 'tyst', 'for-gammal',
+        'Hann passera åldersgränsen medan bursten samlades ihop.');
+      continue;
+    }
+    // Samma åtskillnad som i inkommandeSok: en lyft rapport ligger varken i
+    // ruttvaktens eller i motorns lista, så de två kan inte lova att säga
+    // den. Bara frågan "HAR motorn redan varnat?" är meningsfull för dem.
+    if (!p.lyft && routeGuide.isClaimed(p.h.id)) {          // ruttvakten hann claima
+      sparaInkommande(p.h, 'tyst', 'ruttvakten',
+        'Ruttvakten claimade den under den och en halv sekund kön samlades.');
+      continue;
+    }
+    if (p.lyft ? engine.harVarnat(p.h, p.h.klusterIds)
+               : engine.agerFaran(p.h, fix, p.h.klusterIds)) {
+      sparaInkommande(p.h, 'tyst', 'motorn-tar-den',
+        'Varningsmotorn hann varna för den under tiden kön samlades. ' +
+        'Den sista som kör avgör, och det är den här vägen.');
+      continue;
+    }
+    poster.push(p);
+  }
   if (!poster.length) return;
 
   // Samma grind som varningsmotorn står bakom. Utan giltigt abonnemang är
   // hela varningssidan avstängd, och den här vägen ska inte vara en bakdörr
   // in i den.
-  if (!billing.allowed) return;
+  if (!billing.allowed) {
+    // Kapad: tjugo rapporter i en burst gav förut tjugo identiska rader, och
+    // tre sådana omgångar räckte för att radera hela ringbufferten.
+    const kapare = sparKapare('tyst', 'abonnemang');
+    for (const p of poster) {
+      kapare.skriv(p.h,
+        'Prenumerationen gäller inte, och då är hela varningssidan avstängd.');
+    }
+    kapare.klar();
+    return;
+  }
 
   /*
    * Tyst är tyst — även plinget.
@@ -6556,7 +7259,15 @@ function inkommandeSag() {
    * gäller motsatsen: har föraren tryckt "Tyst i 15 minuter" eller slagit av
    * uppläsningen är ett pling ur ingenstans precis det hen bad om att slippa.
    */
-  if (!speaker.enabled || speaker.muted) return;
+  if (!speaker.enabled || speaker.muted) {
+    const kapare = sparKapare('tyst', 'foraren-tystade');
+    const varfor = speaker.muted
+      ? 'Du tryckte "Tyst i 15 minuter". Ingen uppläsning, inget pling.'
+      : 'Uppläsning av varningar är avslagen i Inställningar.';
+    for (const p of poster) kapare.skriv(p.h, varfor);
+    kapare.klar();
+    return;
+  }
 
   // Närmast först. Utan GPS är alla lika långt bort, då får den nyaste gå
   // först — det är den föraren senast hade kunnat påverkas av.
@@ -6564,7 +7275,47 @@ function inkommandeSag() {
                      || (Number(b.h.createdAt || 0) - Number(a.h.createdAt || 0)));
 
   const forst = poster[0];
+
+  /*
+   * AVBOCKNINGEN SKRIVS FÖRST, FÖRE PLINGET.
+   *
+   * MÄTT FALL: rapport i röstflödet 900 m bort, bilen står still. agerFaran
+   * svarar nej, den här vägen läser upp "Polis vid Skultuna…". Nästa fix
+   * säger 20 km/h, motorn triggar och säger "Polis rapporterad vid Skultuna,
+   * om 900 meter klockan 12." Två röster och två pling om samma patrull —
+   * exakt det alerts.js själv kallar kriteriet: hör föraren samma polis två
+   * gånger på tio sekunder slutar hen lyssna på båda.
+   *
+   * annanSade() är en UPPSKJUTNING i annanSadeMs, inte warnedAt. Motorn
+   * glömmer den efteråt, så förbikörningsvarningen — den som betyder något —
+   * kommer ändå, då när föraren verkligen är nära.
+   *
+   * Alla id:n i klustret skrivs, inte bara ledarens: motorn kan mycket väl
+   * möta samma patrull under en annan medlems id.
+   *
+   * Att raden ligger FÖRE chime och say är hela poängen. Uppläsningen är
+   * beslutad i och med den här punkten, och motorn får inte hinna fyra i de
+   * 380 ms som ligger mellan plinget och rösten.
+   */
+  engine.annanSade(forst.h.id, forst.h.klusterIds);
+
   speaker.chime('alert');
+
+  sparaInkommande(forst.h, 'sagd', forst.lyft ? 'uppläst-efter-lyft' : 'uppläst',
+    forst.lyft
+      ? `Läses upp fast kvaliteten satte den på kartnivå: "${forst.talat}"`
+      : `Läses upp: "${forst.talat}"`,
+    { talat: forst.talat, avstandM: Number.isFinite(forst.avstand) ? Math.round(forst.avstand) : null });
+
+  // Kapad av samma skäl som massorsakerna ovan: en burst med tjugo rapporter
+  // skrev förut nitton rader här och tryckte ut allt annat ur spåret.
+  const raknade = sparKapare('raknad', 'raknad-i-bursten');
+  for (const p of poster.slice(1)) {
+    raknade.skriv(p.h,
+      'Kom in i samma omgång och räknas i "ytterligare N rapporter". ' +
+      'Tio uppläsningar i rad är brus, inte information.');
+  }
+  raknade.klar();
 
   /*
    * Prioritet 1 utan avbrott, och bara en gång.
@@ -6579,6 +7330,21 @@ function inkommandeSag() {
    * innan rösten börjar, annars hörs varken det ena eller det andra.
    */
   setTimeout(() => {
+    /*
+     * Sista kontrollen, efter de 380 ms och inte före dem.
+     *
+     * Motorn kan inte ha hunnit tala — avbockningen skrevs innan plinget —
+     * men ruttvakten frågar ingen om lov. Claimar den under glappet är det
+     * den som säger det, med avstånd längs vägen, och då ska den här rösten
+     * hålla tyst. Plinget har redan hörts, och det är rätt: något SKA sägas,
+     * frågan är bara av vem.
+     */
+    if (!forst.lyft && routeGuide.isClaimed(forst.h.id)) {
+      sparaInkommande(forst.h, 'tyst', 'ruttvakten',
+        'Ruttvakten claimade den under de 380 millisekunderna mellan plinget ' +
+        'och rösten. Den säger den i stället, med avstånd längs vägen.');
+      return;
+    }
     speaker.say(forst.talat, { priority: 1, ganger: 1 });
     if (poster.length > 1) {
       const kvar = poster.length - 1;
@@ -6589,8 +7355,34 @@ function inkommandeSag() {
   }, 380);
 }
 
+/** Nollställ hela kedjan. Bara för prov — se inkommande-test.html. */
+function inkommandeNollstall({ spar = true } = {}) {
+  if (inkommandeTimer) { clearTimeout(inkommandeTimer); inkommandeTimer = null; }
+  inkommandeSedda.clear();
+  inkommandeTystade.clear();
+  inkommandeKo.clear();
+  inkommandeOmgangar = 0;
+  inkommandeUtgangslagetBokfort = false;
+  if (spar) {
+    inkommandeSpar = [];
+    writeJSON(INKOMMANDE_SPAR_NYCKEL, inkommandeSpar);
+    renderInkommandeSpar();
+  }
+}
+
 function wireInkommandeUpplasning() {
-  // Första genomgången bokför det som redan finns utan att säga något.
+  renderInkommandeSpar();
+  /*
+   * Första genomgången bokför utgångsläget: det som redan låg i telefonens
+   * lagring, plus det servern hunnit svara med om hämtningen i store.start()
+   * vann kapplöpningen mot billing.sync().
+   *
+   * Att den kapplöpningen finns spelar inte längre någon roll — utgångsläget
+   * avgörs av store.lastSync, inte av vilket varv vi är på — och genomgången
+   * tystar ingenting av sig själv. Allt som ligger här passerar sina vanliga
+   * grindar, och nästan allt faller på åldern. Det som ändå är färskt nog att
+   * vara en nyhet hörs, precis som det ska.
+   */
   inkommandeSok();
   store.addEventListener('change', inkommandeSok);
 }

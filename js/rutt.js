@@ -38,7 +38,7 @@
 import {
   distance, bearing, clamp, spokenDistance, spokenAge, shortDistance,
 } from './util.js';
-import { TYPE_SPOKEN } from './parser.js';
+import { TYPE_SPOKEN, isSobrietyCheck } from './parser.js';
 import { searchPlaces, localSuggestions } from './geocode.js';
 
 /**
@@ -389,6 +389,34 @@ export class RouteGuide extends EventTarget {
     this.store = store;
     this.opts = { ...DEFAULTS, ...opts };
     this.enabled = true;
+
+    /*
+     * VAD RUTTVAKTEN FÅR SÄGA NÅGOT OM — samma källa som de andra två.
+     *
+     * Ruttvakten var länge den enda talande kanalen som läste store.active()
+     * rått. Motorn får forRost (app.js), inkommande-uppläsningen får
+     * inkommandeFlode(), och båda har då passerat produktreglerna i
+     * notiser.js, kvalitetsgraderingen, täckningsfiltret och förarens egna
+     * notisval. Ruttvakten hade inte passerat någonting alls, och skickade
+     * rapportens råa label rakt till speaker.say.
+     *
+     * MÄTT: en rapport med label "Nykterhetskontroll Skultuna" undanhålls av
+     * kvalitet.js och finns varken i forRost eller i inkommande-listan — men
+     * låg kvar i store.active(), projicerades på rutten och lästes upp. Det
+     * är den enda regel i projektet som aldrig får brytas. Samma hål gällde
+     * allt annat de andra kanalerna respekterar: police på "av", en rapport
+     * med koordinat utanför Sverige, en handmarkerad kamera.
+     *
+     * notiser.js säger i sin modulkommentar att spärren sitter tre gånger
+     * "eftersom en skruv som går att skruva fel förr eller senare är fel
+     * skruvad". Det här var den fjärde skruven, och ingen hade dragit åt den.
+     *
+     * Förvalet är store.active() så att modulen fungerar ensam i prov och
+     * provdokument. Appen injicerar sin graderade lista i app.js.
+     */
+    this.haemtaFaror = typeof opts.haemtaFaror === 'function'
+      ? opts.haemtaFaror
+      : (now => this.store.active(now));
 
     this.route = null;
     this.destination = null;      // sparas separat, behövs vid omräkning
@@ -821,7 +849,32 @@ export class RouteGuide extends EventTarget {
     const here = this.progress.s;
     const out = [];
 
-    for (const r of this.store.active(now)) {
+    /*
+     * Flödet, inte store. Se haemtaFaror i konstruktorn: det som inte får
+     * höras någon annanstans får inte höras här heller. Kastar den
+     * injicerade funktionen faller vi tillbaka på store.active() — ruttvakten
+     * får aldrig kunna släcka sig själv, och de talande grindarna finns kvar
+     * i #announce och i app.js.
+     */
+    let flode;
+    try {
+      flode = this.haemtaFaror(now) || [];
+    } catch {
+      /*
+       * Nödfallet, och det är avsiktligt inte store.active() rakt av.
+       *
+       * Ruttvakten får inte kunna släcka appen genom att gå sönder —
+       * filterHazards() bygger på matches(), så en tom lista här hade tystat
+       * även närhetsmotorn under aktiv rutt. Men den får inte heller läcka
+       * det som aldrig får sägas. Därför samma fråga som parser.js äger,
+       * ställd direkt: allt som ser ut som en nykterhets- eller drogkontroll
+       * lämnas utanför även när graderingen inte gick att nå.
+       */
+      flode = this.store.active(now)
+        .filter(r => !isSobrietyCheck(`${r?.note || ''} ${r?.label || ''}`));
+    }
+
+    for (const r of flode) {
       if (!ROUTE_ALERT_TYPES.has(r.type)) continue;      // se filen högst upp
       if (!Number.isFinite(r.lat) || !Number.isFinite(r.lon)) continue;
       const p = this.#projection(r);
