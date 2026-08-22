@@ -1286,6 +1286,56 @@ function Ladda-Om-Gruppfliken {
   }
 }
 
+# Knuffa igång renderingen efter en omladdning.
+#
+# MÄTT PROBLEM: en nyladdad gruppsida renderar BARA ETT ELLER TVÅ inlägg.
+# Loggen gick från "inlägg=5" till "inlägg=2" i samma sekund som den första
+# omladdningen slog till, och kom aldrig tillbaka. Resten av flödet hämtas
+# först när någon rullar — Facebook renderar lat.
+#
+# Två inlägg RÄCKER i teorin, eftersom ett nytt inlägg hamnar överst. Men
+# marginalen är noll: sorteras flödet om, ligger ett fastnålat inlägg först,
+# eller hinner sidan inte rendera klart, så är det nya inlägget utanför vyn
+# och varningen uteblir utan ett spår i loggen.
+#
+# Därför rullas sidan ner och upp igen. Det är samma sak en människa gör när
+# hon öppnar gruppen, det utlöser Facebooks egen efterhämtning, och det
+# lämnar vyn där den började.
+#
+# Rullningen sker i sidans egen värld via Runtime.evaluate — inga
+# musknappar, inga syntetiska händelser, ingenting som liknar en klickrobot.
+function Knuffa-Renderingen {
+  param($Kontext, [string]$Namn)
+
+  if (-not $Kontext -or -not $Kontext.ws) { return }
+  $js = @'
+(async () => {
+  const vila = ms => new Promise(r => setTimeout(r, ms));
+  // Tre steg ner. Fler ger äldre inlägg vi ändå inte bryr oss om, och varje
+  // steg är en hämtning mot Facebook.
+  for (let i = 0; i < 3; i++) { window.scrollBy(0, window.innerHeight * 1.5); await vila(1200); }
+  window.scrollTo(0, 0);
+  await vila(600);
+  return document.querySelectorAll('[data-ad-rendering-role="story_message"]').length;
+})()
+'@
+  try {
+    $r = Cdp-Kommando -Ws $Kontext.ws -Metod 'Runtime.evaluate' -TimeoutMs 25000 -Param @{
+      expression    = $js
+      awaitPromise  = $true
+      returnByValue = $true
+    }
+    $antal = -1
+    try { $antal = [int]$r.result.value } catch { }
+    if ($antal -ge 0) {
+      Logga 'RENDERING' ('[' + $Namn + '] knuffad, ' + $antal + ' inlägg i vyn.') DarkGray
+    }
+  } catch {
+    # Inte ett haveri. Utan knuffen läser bryggan de översta inläggen ändå.
+    Logga 'RENDERING' ('[' + $Namn + '] knuffen gick inte: ' + $_.Exception.Message) DarkYellow
+  }
+}
+
 function Koppla-Ner {
   param($Kontext)
   if (-not $Kontext) { return }
@@ -4123,8 +4173,13 @@ try {
             # återinjiceras av sig själv — den ligger i
             # Page.addScriptToEvaluateOnNewDocument, alltså körs den på nytt
             # vid varje dokument. Svepet nedan blir ett kalibreringssvep.
-            Start-Sleep -Milliseconds 4000
+            #
+            # Åtta sekunder, inte fyra. Med fyra hann sidan bara rendera ett
+            # enda inlägg, och knuffen nedan rullade i en sida som inte var
+            # klar att rulla i.
+            Start-Sleep -Milliseconds 8000
             Logga 'OMLADDNING' ('[' + $grupp.namn + '] fliken omladdad — flödet hämtas om.') DarkGray
+            Knuffa-Renderingen -Kontext $script:Kontexter[$gid] -Namn $grupp.namn
           }
         }
       }
