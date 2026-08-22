@@ -1,0 +1,544 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — rörelseberäkningens testsvep</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; max-width: 62em; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 4px; }
+  .grupp p.om { color: #6d7d8e; font-size: 12.5px; margin: 0 0 8px; max-width: 62em; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; text-align: right; }
+  code { color: #8fcaff; }
+
+  /* js/geo.js drar in js/platsstart.js vid import, och den ritar sin röda
+     "Plats är blockerad"-remsa eftersom testwebbläsaren förstås inte gett
+     platstillstånd. Den har inget med proven att göra, och en röd remsa på en
+     testsida får ingen att lita på det gröna ovanför. Göm den. */
+  .pv-ps-remsa { display: none !important; }
+</style>
+
+<h1>Polisvakt — rörelseberäkningens testsvep</h1>
+<p class="sub">
+  Ägaren rapporterade att appen sa 26 km/h medan han promenerade. Orsaken satt i
+  <code>js/geo.js</code>: farten räknades ur avståndet mellan två fixar som låg
+  minst 15 meter isär, och <code>coords.accuracy</code> lästes aldrig. GPS-brus
+  vid gång ligger rutinmässigt på 20–40 meter, alltså mer än tröskeln.<br><br>
+  Testerna nedan spelar upp inspelade fixföljder genom
+  <code>harledRorelse()</code> och kontrollerar två saker som drar åt olika håll.
+  Att appen är <b>tyst när ingen kör</b> — och, viktigare, att den
+  <b>aldrig tystnar när någon faktiskt kör</b>. Alla tystnadsgrindar i appen är
+  skrivna <code>fix.speedKmh ?? 0</code>, så en fart som saknas eller
+  underskattas stänger av polisvarningen lika effektivt som en trasig högtalare.
+  Gruppen "Tystnaden" är därför den viktigaste på sidan.<br><br>
+  Inget nätverk, ingen GPS, ingen klocka. Sidan går att köra rakt.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+/* Grinden för platsfrågan i geo.js drar in js/platsstart.js vid import och
+   skulle rita upp sin förklaringsruta ovanpå testerna. Låtsas att frågan redan
+   är ställd en gång, så håller grinden sig lugn. Samma nyckel som
+   js/behorigheter.js äger. */
+try {
+  const K = 'pv.behorigheter.v1';
+  const st = JSON.parse(localStorage.getItem(K)) ?? {};
+  st.platsFragad = st.platsFragad || { at: Date.now() };
+  localStorage.setItem(K, JSON.stringify(st));
+} catch {}
+
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0;
+let grupp = null;
+
+function G(namn, om) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>` + (om ? `<p class="om">${om}</p>` : '');
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+function T(namn, fn) {
+  try {
+    const r = fn();
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    if (typeof r === 'string') { fel++; rad('fel', namn, r); return; }
+    if (r && r.ok) { ok++; rad('ok', namn, r.info); return; }
+    fel++; rad('fel', namn, (r && r.info) || String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+
+const { harledRorelse, RORELSE } = await import('./js/geo.js');
+
+/* Hämtas här uppe och inte inne i provet: provharnesset T är synkront med
+   flit, så att ett prov aldrig kan glida iväg och rapportera efter summan. */
+let chattGranser = null;
+try { chattGranser = (await import('./js/chatt.js')).GRANSER; } catch {}
+
+/* =================================================================== */
+/* Verktyg för att bygga inspelade fixföljder                          */
+/* =================================================================== */
+
+/* Riktig plats, så att testerna handlar om Västerås och inte om påhittade tal. */
+const LAT = 59.6099, LON = 16.5448;
+const mLat = m => m / 111320;
+const mLon = m => m / (111320 * Math.cos(LAT * Math.PI / 180));
+
+/* Egen slumpgenerator med frö. Testerna måste ge samma svar varje gång — en
+   flakig test som ibland är röd lär folk att ignorera rött. */
+let fro = 1;
+const sattFro = n => { fro = n >>> 0 || 1; };
+const rnd = () => { fro = (fro * 1103515245 + 12345) & 0x7fffffff; return fro / 0x7fffffff; };
+
+/**
+ * Bygg en fixföljd.
+ *
+ * @param n        antal fixar
+ * @param opt.kmh  verklig fart, rakt österut
+ * @param opt.acc  noggrannhet fixarna PÅSTÅR sig ha
+ * @param opt.hopp [min, max] hur långt positionen faktiskt hoppar i sidled.
+ *                 Skilt från acc med flit: telefoner underdriver sin osäkerhet,
+ *                 och det är precis den lögnen buggen levde på.
+ * @param opt.doppler  true = chippet rapporterar coords.speed, false = null
+ */
+function folj(n, opt = {}) {
+  const { kmh = 0, acc = 10, hopp = [0, 0], doppler = true, t0 = 1000000, hz = 1000 } = opt;
+  const v = kmh / 3.6;
+  const f = [];
+  for (let i = 0; i < n; i++) {
+    const langd = hopp[0] + rnd() * (hopp[1] - hopp[0]);
+    const vinkel = rnd() * Math.PI * 2;
+    f.push({
+      lat: LAT + mLat(Math.sin(vinkel) * langd),
+      lon: LON + mLon(v * i + Math.cos(vinkel) * langd),
+      accuracy: acc,
+      speed: doppler ? v : null,
+      heading: doppler && kmh > 0 ? 90 : null,
+      ts: t0 + i * hz,
+    });
+  }
+  return f;
+}
+
+/** Spela upp en följd precis som GeoTracker gör det, fix för fix. */
+function spela(fixar) {
+  const h = [];
+  let st = null;
+  const rader = [];
+  for (const f of fixar) {
+    h.push(f);
+    if (h.length > RORELSE.historikTak) h.shift();
+    st = harledRorelse(h, st);
+    rader.push({ ts: f.ts, ...st });
+  }
+  return rader;
+}
+
+const sista = r => r[r.length - 1];
+const maxFart = r => Math.max(...r.map(x => x.speedKmh));
+const andel = (r, p) => r.filter(p).length / r.length;
+
+/* =================================================================== */
+G('A. Står still, noggrannhet 30 m, positionen hoppar 20–40 m',
+  'Ägarens fall. Hoppen är större än den gamla 15-meterströskeln, så den gamla ' +
+  'koden räknade dem till 26–27 km/h. Kravet nu: 0 km/h och moving = false.');
+
+T('A1 · med doppler (chippet säger 0 m/s) — 0 km/h, moving = false', () => {
+  sattFro(4711);
+  const r = spela(folj(25, { kmh: 0, acc: 30, hopp: [20, 40], doppler: true }));
+  const s = sista(r);
+  if (s.speedKmh !== 0) return `fick ${s.speedKmh} km/h`;
+  if (s.moving) return 'moving blev true';
+  if (maxFart(r) !== 0) return `högsta fart under följden blev ${maxFart(r)}`;
+  return { ok: true, info: `0 km/h hela vägen, källa ${s.kalla}` };
+});
+
+T('A2 · utan doppler (wifi/mastfix) — inget fantomvärde', () => {
+  sattFro(4711);
+  const r = spela(folj(25, { kmh: 0, acc: 30, hopp: [20, 40], doppler: false }));
+  const s = sista(r);
+  if (s.speedKmh !== 0) return `fick ${s.speedKmh} km/h`;
+  if (s.moving) return 'moving blev true';
+  if (maxFart(r) > 0) return `högsta fart under följden blev ${maxFart(r)}`;
+  return { ok: true, info: '0 km/h, ingen fantomfart' };
+});
+
+T('A3 · den gamla regeln hade fallit här (bevis att provet är vasst)', () => {
+  /* Samma följd, men mätt med den gamla logiken: närmaste punkt ≥ 15 m bort,
+     delat med tiden. Går den under 15 km/h är följden för snäll och testet
+     bevisar ingenting. */
+  sattFro(4711);
+  const f = folj(25, { kmh: 0, acc: 30, hopp: [20, 40], doppler: false });
+  const R = 6371000, rad = d => d * Math.PI / 180;
+  const dist = (a, b) => {
+    const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+    const s = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+  };
+  let varsta = 0;
+  for (let i = 1; i < f.length; i++) {
+    for (let j = i - 1; j >= Math.max(0, i - 8); j--) {
+      if (dist(f[j], f[i]) >= 15) {
+        const dt = (f[i].ts - f[j].ts) / 1000;
+        if (dt > 0.5) varsta = Math.max(varsta, dist(f[j], f[i]) / dt * 3.6);
+        break;
+      }
+    }
+  }
+  if (varsta < 15) return `gamla koden gav bara ${Math.round(varsta)} km/h — följden är för snäll`;
+  return { ok: true, info: `gamla koden: ${Math.round(varsta)} km/h` };
+});
+
+/* =================================================================== */
+G('B. Går i 5 km/h med samma brus',
+  'Låg fart ska rapporteras låg, och moving ska förbli false — gränsen för ' +
+  'moving är 8 km/h, samma tal som chatt.js farttroskelKmh.');
+
+T('B1 · med doppler — låg fart, moving = false', () => {
+  sattFro(90210);
+  const r = spela(folj(25, { kmh: 5, acc: 30, hopp: [20, 40], doppler: true }));
+  const s = sista(r);
+  if (s.speedKmh > RORELSE.borjaKoraKmh) return `fick ${s.speedKmh} km/h`;
+  if (s.moving) return 'moving blev true';
+  if (maxFart(r) > RORELSE.borjaKoraKmh) return `högsta fart blev ${maxFart(r)}`;
+  return { ok: true, info: `${s.speedKmh} km/h, moving false` };
+});
+
+T('B2 · utan doppler — ingen fantomfart av bruset', () => {
+  sattFro(90210);
+  const r = spela(folj(25, { kmh: 5, acc: 30, hopp: [20, 40], doppler: false }));
+  if (maxFart(r) > RORELSE.borjaKoraKmh) return `högsta fart blev ${maxFart(r)} km/h`;
+  if (sista(r).moving) return 'moving blev true';
+  return { ok: true, info: `högst ${maxFart(r)} km/h under hela följden` };
+});
+
+/* =================================================================== */
+G('C. Kör i 70 km/h med noggrannhet 8 m',
+  'Farten ska stämma, moving ska vara true — och ETT signaltapp mitt i får ' +
+  'inte slå av körläget. Det sista är hela poängen med hysteresen: räknaren ' +
+  'som släcker moving drivs bara av trovärdiga avläsningar under 4 km/h, ' +
+  'aldrig av tystnad.');
+
+T('C1 · rent förlopp — ~70 km/h, moving = true', () => {
+  sattFro(2024);
+  const r = spela(folj(30, { kmh: 70, acc: 8, hopp: [0, 3], doppler: true }));
+  const s = sista(r);
+  if (Math.abs(s.speedKmh - 70) > 3) return `fick ${s.speedKmh} km/h`;
+  if (!s.moving) return 'moving blev false';
+  return { ok: true, info: `${s.speedKmh} km/h, moving true` };
+});
+
+T('C2 · åtta sekunder helt utan fixar — moving överlever', () => {
+  sattFro(2024);
+  const f = folj(30, { kmh: 70, acc: 8, hopp: [0, 3], doppler: true });
+  f.splice(15, 8);                      // tunnel: inga fixar alls kommer in
+  const r = spela(f);
+  const efter = r.slice(10);
+  if (efter.some(x => !x.moving)) return 'moving slocknade under tappet';
+  if (Math.abs(sista(r).speedKmh - 70) > 3) return `fick ${sista(r).speedKmh} km/h efteråt`;
+  const lagsta = Math.min(...efter.map(x => x.speedKmh));
+  if (lagsta < 15) return `farten dök till ${lagsta} km/h — kameravarningen hade tystnat`;
+  return { ok: true, info: `lägst ${lagsta} km/h, moving hela tiden` };
+});
+
+T('C3 · åtta sekunder av skräpfixar (accuracy 300, ingen doppler)', () => {
+  sattFro(2024);
+  const f = folj(30, { kmh: 70, acc: 8, hopp: [0, 3], doppler: true });
+  for (let i = 15; i < 23; i++) { f[i].accuracy = 300; f[i].speed = null; f[i].heading = null; }
+  const r = spela(f);
+  const efter = r.slice(10);
+  if (efter.some(x => !x.moving)) return 'moving slocknade';
+  const lagsta = Math.min(...efter.map(x => x.speedKmh));
+  if (lagsta < 15) return `farten dök till ${lagsta} km/h`;
+  if (!efter.some(x => x.kalla === 'hallen')) return 'farten hölls aldrig kvar — skräpet togs på allvar';
+  return { ok: true, info: `lägst ${lagsta} km/h, källa "hallen" under tappet` };
+});
+
+T('C4 · tunnel i tre minuter — farten hålls, moving överlever', () => {
+  sattFro(2024);
+  const f = folj(8, { kmh: 70, acc: 8, hopp: [0, 3], doppler: true });
+  const t = f[7].ts;
+  for (let i = 1; i <= 180; i++) {
+    f.push({ lat: f[7].lat, lon: f[7].lon, accuracy: 900, speed: null, heading: null, ts: t + i * 1000 });
+  }
+  const s = sista(spela(f));
+  if (!s.moving) return 'moving slocknade i tunneln';
+  if (s.speedKmh < 60) return `farten föll till ${s.speedKmh} km/h`;
+  if (s.fartFarsk) return 'värdet påstods vara färskt fast det var hållet';
+  return { ok: true, info: `${s.speedKmh} km/h hållen, fartFarsk = false` };
+});
+
+/* =================================================================== */
+G('Tystnaden — det som är värre än en felaktig siffra',
+  'En utebliven polisvarning är värre än fel hastighet på skärmen. Här körs ' +
+  'riktig körning UTAN doppler, alltså på wifi- och mastfixar, i tvåhundra ' +
+  'slumpade förlopp per rad. Grinden för polisvarning går vid 5 km/h och för ' +
+  'kamera, ruttvakt och vakthund vid 15.');
+
+function tystnadsprov(kmh, acc, hopp, kravMoving, kravOver15) {
+  const rader = [];
+  for (let k = 0; k < 200; k++) {
+    sattFro(k * 104729 + 7);
+    rader.push(...spela(folj(30, { kmh, acc, hopp, doppler: false })).slice(10));
+  }
+  const mv = andel(rader, x => x.moving);
+  const o15 = andel(rader, x => x.speedKmh >= 15);
+  const o5 = andel(rader, x => x.speedKmh >= 5);
+  const info = `moving ${(mv * 100).toFixed(0)}% · ≥15 km/h ${(o15 * 100).toFixed(0)}% · ≥5 km/h ${(o5 * 100).toFixed(0)}%`;
+  if (mv < kravMoving) return `moving bara ${(mv * 100).toFixed(0)}% — körläget tappas`;
+  if (o15 < kravOver15) return `bara ${(o15 * 100).toFixed(0)}% över 15 km/h — kameravarningen tystnar. ${info}`;
+  if (o5 < 0.95) return `bara ${(o5 * 100).toFixed(0)}% över 5 km/h — POLISVARNINGEN tystnar. ${info}`;
+  return { ok: true, info };
+}
+
+T('70 km/h, noggrannhet 8 m, ingen doppler',  () => tystnadsprov(70, 8,  [0, 5],  0.99, 0.98));
+T('70 km/h, noggrannhet 40 m (viadukt)',      () => tystnadsprov(70, 40, [0, 24], 0.99, 0.95));
+T('70 km/h, noggrannhet 70 m (stadsgata)',    () => tystnadsprov(70, 70, [0, 42], 0.95, 0.85));
+T('30 km/h, noggrannhet 8 m',                 () => tystnadsprov(30, 8,  [0, 5],  0.99, 0.95));
+
+T('Bara doppler kvar (positionen är skräp) — farten kommer ändå fram', () => {
+  /* Doppler mäts på bärvågsskift, inte på positionsskillnader. Den ska inte
+     kastas bara för att positionen är osäker — det var därför grinden lades
+     på skillnadsgrenen och inte på dopplergrenen. */
+  sattFro(31337);
+  const f = folj(20, { kmh: 90, acc: 800, hopp: [0, 400], doppler: true });
+  const s = sista(spela(f));
+  if (Math.abs(s.speedKmh - 90) > 3) return `fick ${s.speedKmh} km/h`;
+  if (!s.moving) return 'moving blev false';
+  return { ok: true, info: `${s.speedKmh} km/h trots accuracy 800 m` };
+});
+
+T('Igångkörning från rödljus — 5 km/h-grinden passeras utan dröjsmål', () => {
+  const f = [];
+  for (let i = 0; i < 12; i++) {
+    const v = Math.max(0, Math.min(19.44, (i - 5) * 3.5));      // 3,5 m/s² från fix 5
+    const fram = i > 5 ? 0.5 * 3.5 * (i - 5) ** 2 : 0;
+    f.push({ lat: LAT, lon: LON + mLon(fram), accuracy: 8, speed: v, heading: 90, ts: 5e6 + i * 1000 });
+  }
+  const r = spela(f);
+  const forstaRiktig = f.findIndex(x => x.speed * 3.6 >= 5);
+  const forstaSedd = r.findIndex(x => x.speedKmh >= 5);
+  if (forstaSedd < 0) return 'passerade aldrig 5 km/h';
+  const efter = forstaSedd - forstaRiktig;
+  if (efter > 1) return `${efter} fixar efter — medianen släpar för mycket`;
+  return { ok: true, info: `sedd vid fix ${forstaSedd}, sant vid ${forstaRiktig} (${efter} fix efter)` };
+});
+
+/* =================================================================== */
+G('Hysteresen kring moving',
+  'Lättare att bli "kör" än att sluta vara det: på vid 8 km/h direkt, av först ' +
+  'under 4 km/h och först efter tolv sekunder i följd. rutt.js är enda läsaren ' +
+  'och tolkar flaggan som <code>!== false</code>, så en felaktig false stänger ' +
+  'av omräkningen av rutten helt.');
+
+T('Slås på direkt vid första avläsningen över 8 km/h', () => {
+  const f = folj(4, { kmh: 40, acc: 8, doppler: true });
+  const r = spela(f);
+  if (!r[0].moving) return 'första fixen gav inte moving';
+  return { ok: true, info: 'moving redan på fix 1' };
+});
+
+T('Släcks inte förrän 12 s under 4 km/h', () => {
+  const f = [];
+  for (let i = 0; i < 25; i++) {
+    f.push({ lat: LAT, lon: LON, accuracy: 8, speed: i < 5 ? 19.44 : 0, heading: 90, ts: 6e6 + i * 1000 });
+  }
+  const r = spela(f);
+  const slock = r.findIndex((x, i) => i > 5 && !x.moving);
+  const sekunder = slock - 4;
+  if (slock < 0) return 'moving släcktes aldrig';
+  if (sekunder < 12) return `släcktes redan efter ${sekunder} s`;
+  if (sekunder > 16) return `dröjde ${sekunder} s — för trögt`;
+  return { ok: true, info: `släcktes ${sekunder} s efter stopp` };
+});
+
+T('Krypfart i kö (5–7 km/h) får inte fladdra', () => {
+  const f = [];
+  for (let i = 0; i < 30; i++) {
+    const v = (5 + (i % 3)) / 3.6;                  // 5, 6, 7 km/h om vartannat
+    f.push({ lat: LAT, lon: LON + mLon(v * i), accuracy: 8, speed: v, heading: 90, ts: 7e6 + i * 1000 });
+  }
+  const r = spela(f);
+  let byten = 0;
+  for (let i = 1; i < r.length; i++) if (r[i].moving !== r[i - 1].moving) byten++;
+  if (byten > 0) return `flaggan bytte ${byten} gånger i hysteresbandet`;
+  return { ok: true, info: 'noll byten — bandet 4–8 km/h håller' };
+});
+
+/* =================================================================== */
+G('Rimlighet och skräptålighet',
+  'Spärren på accelerationen är ENKELRIKTAD. En krock stannar bilen på ' +
+  'bråkdelen av en sekund och den händelsen får inte jämnas bort.');
+
+T('Enstaka utrusare på 300 m slår inte igenom (medianen)', () => {
+  const f = [];
+  for (let i = 0; i < 14; i++) {
+    f.push({ lat: LAT + mLat(i === 7 ? 300 : 0), lon: LON + mLon(19.44 * i),
+             accuracy: 8, speed: null, heading: null, ts: 8e6 + i * 1000 });
+  }
+  const r = spela(f).slice(3);
+  const topp = Math.max(...r.map(x => x.speedKmh));
+  if (topp > 85) return `utrusaren tog sig fram som ${topp} km/h`;
+  return { ok: true, info: `högst ${topp} km/h` };
+});
+
+T('Doppler som glitchar till 0 mitt i körningen ignoreras', () => {
+  const f = [];
+  for (let i = 0; i < 12; i++) {
+    f.push({ lat: LAT, lon: LON + mLon(19.44 * i), accuracy: 8,
+             speed: i === 6 ? 0 : 19.44, heading: 90, ts: 9e6 + i * 1000 });
+  }
+  const r = spela(f);
+  if (r[6].speedKmh < 60) return `farten föll till ${r[6].speedKmh} km/h på glitchen`;
+  if (!r[6].moving) return 'moving slocknade på glitchen';
+  return { ok: true, info: `${r[6].speedKmh} km/h genom glitchen` };
+});
+
+T('Kraftig inbromsning jämnas INTE bort', () => {
+  const f = [];
+  for (let i = 0; i < 12; i++) {
+    f.push({ lat: LAT, lon: LON, accuracy: 8, speed: i < 6 ? 25 : 0, heading: 90, ts: 1e7 + i * 1000 });
+  }
+  const r = spela(f);
+  const dropp = r.findIndex((x, i) => i >= 6 && x.speedKmh === 0);
+  if (dropp < 0) return 'farten nådde aldrig 0';
+  if (dropp - 5 > 2) return `tog ${dropp - 5} fixar att falla — spärren bromsar nedåt`;
+  return { ok: true, info: `nere på 0 efter ${dropp - 5} fixar` };
+});
+
+T('Orimlig doppler (1800 km/h) kastas helt', () => {
+  const f = [];
+  for (let i = 0; i < 8; i++) {
+    f.push({ lat: LAT, lon: LON + mLon(19.44 * i), accuracy: 8,
+             speed: i === 4 ? 500 : 19.44, heading: 90, ts: 1.1e7 + i * 1000 });
+  }
+  const topp = maxFart(spela(f));
+  if (topp > 80) return `fick ${topp} km/h`;
+  return { ok: true, info: `högst ${topp} km/h` };
+});
+
+T('Absurt språng 0 → 300 km/h bromsas av accelerationsspärren', () => {
+  const f = [];
+  for (let i = 0; i < 6; i++) {
+    f.push({ lat: LAT, lon: LON, accuracy: 8, speed: i < 3 ? 0 : 83.3, heading: 90, ts: 1.2e7 + i * 1000 });
+  }
+  const r = spela(f);
+  const tak = RORELSE.maxAccelMs2 * 1 * 3.6;
+  if (r[3].speedKmh > tak + 1) return `släppte igenom ${r[3].speedKmh} km/h på en sekund`;
+  return { ok: true, info: `${r[3].speedKmh} km/h första sekunden (tak ${Math.round(tak)})` };
+});
+
+T('NaN, undefined och negativ fart läcker aldrig ut', () => {
+  const f = [
+    { lat: NaN, lon: LON, accuracy: 10, speed: NaN, heading: NaN, ts: 1.3e7 },
+    { lat: LAT, lon: LON, accuracy: undefined, speed: undefined, heading: undefined, ts: 1.3e7 + 1000 },
+    { lat: LAT, lon: LON, accuracy: 10, speed: -3, heading: 999, ts: 1.3e7 + 2000 },
+    { lat: LAT, lon: LON, accuracy: 10, speed: null, heading: null, ts: NaN },
+  ];
+  const r = spela(f);
+  for (const x of r) {
+    if (!Number.isFinite(x.speedKmh)) return `speedKmh blev ${x.speedKmh}`;
+    if (x.speedKmh < 0) return `negativ fart ${x.speedKmh}`;
+    if (x.heading != null && !Number.isFinite(x.heading)) return `heading blev ${x.heading}`;
+    if (typeof x.moving !== 'boolean') return `moving blev ${x.moving}`;
+  }
+  return { ok: true, info: 'allt ändligt, inget NaN' };
+});
+
+T('Kallstart utan en enda trovärdig avläsning ger 0, inte null', () => {
+  /* Konsumenterna skriver `fix.speedKmh ?? 0`. Noll är alltså samma sak för
+     dem, men null kan smita förbi Number.isFinite-grindar på vägen. */
+  const s = harledRorelse([], null);
+  if (s.speedKmh !== 0) return `fick ${s.speedKmh}`;
+  if (s.moving !== false) return 'moving var inte false';
+  return { ok: true, info: `0 km/h, källa ${s.kalla}` };
+});
+
+/* =================================================================== */
+G('Kursen',
+  'headingSmoothed matas till alerts.js riktningsfilter. En slumpmässig kurs ' +
+  'kan sortera bort en polis som ligger rakt fram, så bäringen mellan två ' +
+  'punkter måste klara samma osäkerhetskrav som farten.');
+
+T('Står still utan doppler — ingen påhittad kurs', () => {
+  sattFro(555);
+  const r = spela(folj(12, { kmh: 0, acc: 30, hopp: [20, 40], doppler: false }));
+  const gissade = r.filter(x => x.heading != null).length;
+  if (gissade > 0) return `${gissade} fixar fick en kurs ur rent brus`;
+  return { ok: true, info: 'heading förblev null' };
+});
+
+T('Kör rakt österut — stabil kurs kring 90°', () => {
+  const f = [];
+  for (let i = 0; i < 12; i++) {
+    f.push({ lat: LAT, lon: LON + mLon(19.44 * i), accuracy: 8, speed: null, heading: null, ts: 1.4e7 + i * 1000 });
+  }
+  const r = spela(f).filter(x => x.heading != null);
+  if (!r.length) return 'ingen kurs alls beräknades under körning';
+  const fel = Math.max(...r.map(x => Math.abs(((x.heading - 90) % 360 + 540) % 360 - 180)));
+  if (fel > 5) return `kursen avvek upp till ${fel.toFixed(1)}°`;
+  return { ok: true, info: `${r.length} fixar, avvikelse högst ${fel.toFixed(1)}°` };
+});
+
+T('Chippets egen kurs går före den beräknade', () => {
+  const f = [];
+  for (let i = 0; i < 6; i++) {
+    f.push({ lat: LAT, lon: LON + mLon(19.44 * i), accuracy: 8, speed: 19.44, heading: 275, ts: 1.5e7 + i * 1000 });
+  }
+  const s = sista(spela(f));
+  if (Math.round(s.heading) !== 275) return `fick ${s.heading}`;
+  return { ok: true, info: '275° oförändrat' };
+});
+
+/* =================================================================== */
+G('Gränser som andra filer beror på',
+  'Samma tal finns skrivet på fler ställen. Driver de isär går det inte att ' +
+  'se — precis som nykterhetsregelns sex kopior redan lärt projektet.');
+
+T('borjaKoraKmh är 8, samma som chatt.js GRANSER.farttroskelKmh', () => {
+  if (!chattGranser) return 'kunde inte läsa js/chatt.js';
+  if (RORELSE.borjaKoraKmh !== chattGranser.farttroskelKmh) {
+    return `geo.js ${RORELSE.borjaKoraKmh} mot chatt.js ${chattGranser.farttroskelKmh}`;
+  }
+  return { ok: true, info: `båda ${RORELSE.borjaKoraKmh} km/h` };
+});
+
+T('Hysteresen är åt rätt håll (av-gränsen under på-gränsen)', () => {
+  if (!(RORELSE.slutaKoraKmh < RORELSE.borjaKoraKmh)) return 'inget hysteresband';
+  if (RORELSE.slutaKoraMs < 5000) return 'av-fördröjningen är för kort för ett stopp i korsning';
+  return { ok: true, info: `på ${RORELSE.borjaKoraKmh}, av ${RORELSE.slutaKoraKmh} efter ${RORELSE.slutaKoraMs / 1000} s` };
+});
+
+T('Noggrannhetsgrinden är slappare än chattens och kartrotationens', () => {
+  /* Med flit. De två besluten låser ett textfält och roterar en karta; det här
+     avgör om appen får varna för polis. Blir den här strängast är lutningen fel. */
+  if (RORELSE.maxOsakerhetM <= 60) return `${RORELSE.maxOsakerhetM} m är inte slappare än kartrotationens 60`;
+  return { ok: true, info: `${RORELSE.maxOsakerhetM} m mot 50 (chatt) och 60 (kartrotation)` };
+});
+
+/* =================================================================== */
+const s = document.getElementById('summa');
+s.textContent = fel === 0 ? `Allt grönt — ${ok} prov.` : `${fel} FEL av ${ok + fel} prov.`;
+s.style.color = fel === 0 ? '#2fd07a' : '#ff4d4f';
+</script>
