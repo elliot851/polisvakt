@@ -9,7 +9,7 @@
 // lugnt. Föraren behöver aldrig göra något — och blir aldrig avbruten mitt i
 // en körning, eftersom omladdningen väntar tills bilen står still.
 
-const VERSION = '2026-08-23-84';
+const VERSION = '2026-08-23-85';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -158,6 +158,27 @@ self.addEventListener('push', e => {
     badge: './icon.svg',
     tag: d.tag,
     data: { url: d.url },
+
+    /* silent: false står UTSKRIVET, fastän det är förvalet.
+     *
+     * Fältet är trestatligt i praktiken: true = tyst, false = ljud, och
+     * undefined betyder "webbläsaren bestämmer". Ett par Android-skal och
+     * batterisparlägen har tolkat undefined som tyst, och en polisvarning
+     * som kommer utan ljud är en polisvarning som inte kom.
+     *
+     * Det här styr BARA om systemljudet får spelas. VILKET ljud det är kan
+     * en webbsida inte välja — Notification-API:ts sound-fält är dött i alla
+     * webbläsare som räknas, och på iPhone finns det inte alls. Är telefonen
+     * ljudlös, eller är ljud avslaget för appen i telefonens egna
+     * notisinställningar, hjälper ingenting här. */
+    silent: false,
+
+    /* Vibrationen är det enda vi faktiskt styr över, och den finns för
+     * fallet ovan: en telefon i fickan i en bil hör man inte ändå.
+     * Mönstret är långt-kort-långt, alltså inte samma korta knäpp som ett
+     * meddelande. iOS Safari struntar i fältet; Android använder det. */
+    vibrate: [220, 90, 120, 90, 220],
+
     // Ingen requireInteraction: en påminnelse ska gå att svepa bort, inte
     // ligga kvar i luren tills man rör vid den.
   }));
