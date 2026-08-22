@@ -1241,6 +1241,51 @@ function Anslut {
   return $kontext
 }
 
+# =====================================================================
+#  OMLADDNING — det som gör att fliken faktiskt ser nya inlägg
+# =====================================================================
+#
+# BRISTEN SOM FANNS HÄR: ingenting laddade om gruppfliken. Någonsin.
+#
+# Bryggan öppnade sidan en gång, injicerade läsaren, och läste sedan samma
+# DOM var tjugonde sekund i timmar. Loggen såg perfekt ut — "SVEP inlägg=5
+# nya=0" om och om igen — och det är exakt vad den skulle skriva både när
+# gruppen är tyst och när flödet har frusit. De två går inte att skilja åt.
+#
+# Mätt på riktigt: kl 19:48 stod det fem inlägg i fliken, kl 05:22 nästa
+# morgon stod det samma fem, med samma åldersfördelning. Nio timmar.
+#
+# Facebooks flöde är en enkelsidesapp som visar nytt material när den vill,
+# och en bakgrundsflik som ingen rör får dessutom sina timers strypta av
+# Chrome. Att lita på att inlägg dyker upp av sig själva är att lita på en
+# sak vi varken styr över eller kan mäta.
+#
+# VARFÖR INTE BARA SCROLLA: en scroll hämtar ÄLDRE inlägg längre ner, inte
+# nyare högst upp. Fel håll.
+#
+# VARFÖR INTE KLICKA PÅ "Nya aktiviteter"-pillret: det finns inte alltid, och
+# ett klick är en handling på ägarens riktiga konto. En omladdning är
+# läsning, och läsning är allt bryggan får göra.
+#
+# Kostnaden är en sidladdning per grupp var femte minut. Kalibreringssvepet
+# efteråt sätter inga observerade åldrar, så en omladdning kan aldrig få ett
+# gammalt inlägg att se färskt ut — se KALIBRERINGSSVEP i Behandla-Svep.
+function Ladda-Om-Gruppfliken {
+  param($Kontext, [string]$Namn)
+
+  if (-not $Kontext -or -not $Kontext.ws) { return $false }
+  try {
+    # ignoreCache = false med flit. Vi vill ha Facebooks vanliga
+    # cachebeteende, inte tvinga fram en tung omhämtning av allt var femte
+    # minut på en uppkoppling vi inte känner.
+    Cdp-Kommando -Ws $Kontext.ws -Metod 'Page.reload' -Param @{ ignoreCache = $false } | Out-Null
+    return $true
+  } catch {
+    Logga 'OMLADDNING' ('[' + $Namn + '] gick inte: ' + $_.Exception.Message) DarkYellow
+    return $false
+  }
+}
+
 function Koppla-Ner {
   param($Kontext)
   if (-not $Kontext) { return }
@@ -2304,6 +2349,65 @@ function Kolla-Session {
   } catch {
     Logga 'VAKTHUND' ('sessionskollen kunde inte köras: ' + $_.Exception.Message) DarkYellow
   }
+}
+
+# =====================================================================
+#  FRUSENHETSVAKTEN — skiljer "tyst grupp" från "frusen flik"
+# =====================================================================
+#
+# De två ser IDENTISKA ut i loggen. "SVEP inlägg=5 nya=0" skrivs både när
+# ingen postat på timmar och när sidan slutat hämta nytt material. Det är
+# den värsta sortens fel i det här projektet: varje led rapporterar grönt
+# medan slutresultatet är noll.
+#
+# Den befintliga vakthunden svarar på en annan fråga — "kommer det fram
+# NÅGOT inlägg alls", alltså om gruppen är privat eller sessionen utloggad.
+# En frusen flik har fem inlägg och klarar den kontrollen galant.
+#
+# Vakten här mäter i stället TIDEN SEDAN NÅGOT NYTT SÅGS. Efter en timme
+# utan ett enda nytt inlägg säger den ifrån. Det är inte ett bevis på
+# frysning — en liten lokal grupp kan vara tyst en timme mitt i natten —
+# men det är den enda signal som finns, och tystnad utan signal är precis
+# vad som gjorde att bristen kunde ligga oupptäckt i nio timmar.
+#
+# Den SKRIKER inte och den startar ingenting om. Omladdningen var femte
+# minut är åtgärden; det här är kvittot på att åtgärden fungerar. Slutar
+# raden dyka upp vet man att flödet lever.
+function Kolla-Frusen {
+  param($Grupp, $Svepresultat)
+
+  $gid = [string]$Grupp.id
+  $poster = @($Svepresultat.poster)
+
+  # Ett nytt inlägg räknas som livstecken oavsett om det blev en rapport.
+  # En hälsning i gruppen bevisar också att flödet hämtar nytt.
+  $nagotNytt = $false
+  foreach ($p in $poster) {
+    if ($script:UnikaSedda.Contains($p.nyckel)) { continue }
+    $nagotNytt = $true
+    break
+  }
+
+  if ($nagotNytt -or -not $script:SenastNyttInlagg.ContainsKey($gid)) {
+    $script:SenastNyttInlagg[$gid] = Get-Date
+    if ($script:FrusenSagd.ContainsKey($gid)) { $script:FrusenSagd.Remove($gid) }
+    return
+  }
+
+  $tyst = ((Get-Date) - $script:SenastNyttInlagg[$gid]).TotalMinutes
+  if ($tyst -lt 60) { return }
+
+  # En gång i timmen, inte var tjugonde sekund. En vakt som skriker lär folk
+  # att sluta läsa loggen.
+  $sagd = [DateTime]::MinValue
+  if ($script:FrusenSagd.ContainsKey($gid)) { $sagd = $script:FrusenSagd[$gid] }
+  if (((Get-Date) - $sagd).TotalMinutes -lt 60) { return }
+  $script:FrusenSagd[$gid] = Get-Date
+
+  Logga 'FRUSEN?' ('[' + $Grupp.namn + '] inget NYTT inlägg på ' + [int]$tyst +
+    ' min, trots omladdning var ' + [int]($script:OmladdningSek / 60) + ':e minut.') DarkYellow
+  Logga 'FRUSEN?' '  Antingen är gruppen tyst, eller så hämtar fliken inte nytt. Öppna' DarkGray
+  Logga 'FRUSEN?' '  gruppen i en vanlig webbläsare och jämför översta inlägget.' DarkGray
 }
 
 function Kolla-Vakthund {
@@ -3891,6 +3995,18 @@ Kolla-Livstecken
 # kalibreringssvep, alltså evig tystnad som ser ut som en lugn dag.
 $script:Kontexter = @{}          # gruppid -> kontext
 $script:KlaganPerGrupp = @{}     # gruppid -> när vi senast klagade
+
+# Omladdningen. Se Ladda-Om-Gruppfliken för varför den finns.
+#
+# Första omladdningen hoppas över per grupp: fliken är nyss laddad när
+# daemonen startar, och att ladda om den direkt hade kostat en sidladdning
+# och fyra sekunder utan att ge ett enda nytt inlägg.
+$script:OmladdningSek = 300
+$script:SenastOmladdad = @{}     # gruppid -> när fliken senast laddades om
+
+# Frusenhetsvakten. Se Kolla-Frusen längre ner.
+$script:SenastNyttInlagg = @{}   # gruppid -> när gruppen senast gav ett NYTT inlägg
+$script:FrusenSagd = @{}         # gruppid -> när vi senast sa ifrån om frysning
 $slutTid = $null
 if ($MinuterAttKora -gt 0) { $slutTid = (Get-Date).AddMinutes($MinuterAttKora) }
 
@@ -3983,9 +4099,43 @@ try {
         Logga 'ANSLUTEN' ('[' + $grupp.namn + '] flik ' + $a.flikId + '  ' + $a.url) DarkCyan
       }
 
+      # ---- Dags att ladda om fliken? ------------------------------------
+      #
+      # Var femte minut per grupp. Se Ladda-Om-Gruppfliken för varför det
+      # behövs alls; här står bara varför just fem minuter.
+      #
+      # Kortare hade betytt fler sidladdningar mot Facebook från ett konto
+      # som redan gör något de inte tycker om. Längre hade betytt att en
+      # varning i värsta fall är en kvart gammal när den går ut, och en
+      # polisvarning som kommer för sent är ingen varning.
+      #
+      # Omladdningen sker FÖRE svepet och räknas som gjord även när den
+      # misslyckas. En flik som vägrar laddas om ska inte försöka igen var
+      # tjugonde sekund i timmar — anslutningen tas ändå om hand av
+      # felhanteringen längre ner.
+      $senastOm = [DateTime]::MinValue
+      if ($script:SenastOmladdad.ContainsKey($gid)) { $senastOm = $script:SenastOmladdad[$gid] }
+      if (((Get-Date) - $senastOm).TotalSeconds -ge $script:OmladdningSek) {
+        $script:SenastOmladdad[$gid] = Get-Date
+        if ($senastOm -ne [DateTime]::MinValue) {
+          if (Ladda-Om-Gruppfliken -Kontext $script:Kontexter[$gid] -Namn $grupp.namn) {
+            # Sidan behöver några sekunder på sig att rendera. Läsaren
+            # återinjiceras av sig själv — den ligger i
+            # Page.addScriptToEvaluateOnNewDocument, alltså körs den på nytt
+            # vid varje dokument. Svepet nedan blir ett kalibreringssvep.
+            Start-Sleep -Milliseconds 4000
+            Logga 'OMLADDNING' ('[' + $grupp.namn + '] fliken omladdad — flödet hämtas om.') DarkGray
+          }
+        }
+      }
+
       # ---- Svep för den här gruppen -------------------------------------
       try {
         $resultat = Gor-Svep -Kontext $script:Kontexter[$gid]
+        # FÖRE Behandla-Svep, och det är inte godtyckligt: Behandla-Svep
+        # lägger varje post i UnikaSedda, och efter den ser allt gammalt ut.
+        Kolla-Frusen -Grupp $grupp -Svepresultat $resultat
+
         $skord = Behandla-Svep -Grupp $grupp -Svepresultat $resultat
         $nagotSvep = $true
 
