@@ -27,7 +27,12 @@ set local statement_timeout = '60s';
 
 do $forkontroll$
 begin
-  if to_regprocedure('public.fbmejl_notis_ut(jsonb)') is null then
+  -- Vakten frågar efter avståndsfunktionen, inte efter fbmejl_notis_ut.
+  -- notis_ut har funnits länge och har dessutom fem argument, så en vakt på
+  -- den hade svarat "kör notisradie först" även när den redan var körd.
+  if to_regprocedure(
+       'public.fbmejl_avstand_m(double precision, double precision, double precision, double precision)'
+     ) is null then
     raise exception 'Kör supabase/migrationer/2026-08-22-notisradie.sql först.';
   end if;
 end
