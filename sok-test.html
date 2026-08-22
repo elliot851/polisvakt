@@ -1,0 +1,645 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Hittar sökaren skylten?</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { margin:0; padding:20px 18px 80px; background:#0b0f14; color:#eef4fa;
+         font:15px/1.5 -apple-system,system-ui,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  h2 { font-size:15px; margin:28px 0 2px; color:#cfe0f0;
+       border-top:1px solid #26323f; padding-top:16px; }
+  .sub { color:#93a4b6; font-size:13px; margin:0 0 10px; max-width:52em; }
+  #summa { position:sticky; top:0; z-index:5; background:#0b0f14; padding:10px 0;
+           border-bottom:1px solid #26323f; font-weight:700; }
+  table { border-collapse:collapse; width:100%; margin-top:8px; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #1a232d; vertical-align:middle; }
+  th { color:#93a4b6; font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .ok { color:#2fd07a; } .fel { color:#ff4d4f; } .halv { color:#ffb020; }
+  .noll { color:#6d7d8e; }
+  canvas { border:1px solid #26323f; border-radius:4px; vertical-align:middle;
+           max-width:230px; height:auto; image-rendering:auto; }
+  code { background:#131b24; padding:1px 5px; border-radius:3px; font-size:12px; }
+</style>
+
+<h1>Hittar sökaren skylten?</h1>
+<p class="sub">
+  Mätning utan kamera. Varje bildruta ritas på en canvas, precis som en sökare
+  hade sett den, och skickas rakt in i <code>js/plate.js</code>. Provet mäter
+  tre saker och gissar ingen av dem: <b>hittas skylten</b>, <b>ankras den på
+  det blå EU-bandet</b>, och <b>vad kostar det i millisekunder</b>. Sist
+  provas det som INTE får ge träff — en sökare som hittar skyltar överallt är
+  värdelös.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+import { sokKandidater, sokAnkare, hittaPlat, forbehandla, lasRuta,
+         Malsokare, MALSOK, Rostrakning, ROST, rostvikt,
+         normaliseraPlat, haMotor, visaPlat,
+         SKYLT_KVOT, SKYLT_KVOT_MIN, SKYLT_KVOT_MAX, BAND, BLAGRIND }
+  from './js/plate.js';
+
+const ut = document.getElementById('ut');
+const summa = document.getElementById('summa');
+let godkant = 0, underkant = 0;
+
+const el = (t, kl, txt) => {
+  const e = document.createElement(t);
+  if (kl) e.className = kl;
+  if (txt != null) e.textContent = txt;
+  return e;
+};
+function avsnitt(rubrik, beskrivning) {
+  ut.appendChild(el('h2', null, rubrik));
+  if (beskrivning) ut.appendChild(el('p', 'sub', beskrivning));
+  const t = document.createElement('table');
+  ut.appendChild(t);
+  return t;
+}
+function rad(tabell, celler) {
+  const tr = document.createElement('tr');
+  for (const c of celler) {
+    const td = document.createElement(tabell.rows.length ? 'td' : 'th');
+    if (c && c.nod) { td.appendChild(c.nod); td.className = c.kl || ''; }
+    else if (c && typeof c === 'object') { td.textContent = c.t; td.className = c.kl || ''; }
+    else td.textContent = c == null ? '' : c;
+    tr.appendChild(td);
+  }
+  tabell.appendChild(tr);
+  return tr;
+}
+function dom(villkor) {
+  if (villkor) { godkant++; return { t: 'ja', kl: 'ok' }; }
+  underkant++; return { t: 'NEJ', kl: 'fel' };
+}
+const en = n => (n == null ? '–' : (Math.round(n * 10) / 10).toString().replace('.', ','));
+
+/* ---- Ritverktyg ---------------------------------------------------------
+ *
+ * Skylten ritas så nära verkligheten som en canvas kommer: reflexblått band
+ * (#003399) med tolv gula stjärnor och ett gult S, vit botten, svarta tecken
+ * i en smal grotesk, och en tunn svart ram. Stjärnorna och S:et är med av ett
+ * skäl som inte är kosmetiskt — de gör hål i det blå bandet, och det var just
+ * de hålen som tvingade fram åttagrannsfyllning i `blaBand`.
+ */
+function skyltbild(text, bredd, { smuts = 0, band = '#003399' } = {}) {
+  const h = Math.max(6, Math.round(bredd / 4.73));
+  const c = document.createElement('canvas');
+  c.width = bredd; c.height = h;
+  const x = c.getContext('2d');
+
+  x.fillStyle = '#0d0d0d'; x.fillRect(0, 0, bredd, h);           // ram
+  const r = Math.max(1, Math.round(h * 0.03));
+  x.fillStyle = '#f4f4f0'; x.fillRect(r, r, bredd - r * 2, h - r * 2);
+
+  // EU-bandet: en tiondel av bredden, hela höjden innanför ramen.
+  const bw = Math.round(bredd * 0.105);
+  x.fillStyle = band; x.fillRect(r, r, bw - r, h - r * 2);
+
+  // Tolv stjärnor i ring, och landsbokstaven under.
+  x.fillStyle = '#ffcc00';
+  const scx = r + (bw - r) / 2, scy = h * 0.36, sr = h * 0.19;
+  for (let i = 0; i < 12; i++) {
+    const a = i * Math.PI / 6;
+    x.beginPath();
+    x.arc(scx + Math.cos(a) * sr, scy + Math.sin(a) * sr, Math.max(0.5, h * 0.035), 0, 7);
+    x.fill();
+  }
+  x.font = `700 ${Math.round(h * 0.26)}px Arial`;
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('S', scx, h * 0.78);
+
+  x.fillStyle = '#101010';
+  x.font = `700 ${Math.round(h * 0.62)}px "Arial Narrow", Arial, sans-serif`;
+  x.textAlign = 'left';
+  x.fillText(text, bredd * 0.155, h * 0.54);
+
+  if (smuts) {
+    x.fillStyle = `rgba(58,48,38,${smuts})`;
+    for (let i = 0; i < 60; i++) {
+      x.beginPath();
+      x.arc((i * 37) % bredd, (i * 53) % h, 0.7 + (i % 4) * 0.6, 0, 7);
+      x.fill();
+    }
+  }
+  return c;
+}
+
+/**
+ * En hel gatuscen. `ljus` under 1 är skugga och multipliceras in — då står
+ * kulör och mättnad kvar oförändrade, precis som i verkligheten. Över 1 är
+ * motljus och läggs på som en vit slöja, vilket sänker mättnaden. Skillnaden
+ * mellan de två är hela poängen med provet: skugga ska inte bita på
+ * blådetektionen, motljus ska göra det till slut.
+ */
+function scen(saker, { w = 960, h = 540, ljus = 1, blur = 0, vrid = 0 } = {}) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#6a7078'); g.addColorStop(1, '#2c3035');
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+
+  const rad2 = vrid * Math.PI / 180;
+  const ytor = [];
+  if (vrid) { x.save(); x.translate(w / 2, h / 2); x.rotate(rad2); x.translate(-w / 2, -h / 2); }
+
+  for (const s of saker) {
+    if (s.typ === 'bil') {
+      x.fillStyle = s.farg || '#1d2733';
+      x.fillRect(s.fx * w - s.bredd / 2, s.fy * h - s.hojd / 2, s.bredd, s.hojd);
+      x.fillStyle = '#0f151d';
+      x.fillRect(s.fx * w - s.bredd * 0.4, s.fy * h - s.hojd * 0.42, s.bredd * 0.8, s.hojd * 0.3);
+      continue;
+    }
+    if (s.typ === 'panel') {
+      // Vit skåpbilssida med skarvar och bultar — avsiktligt lockande.
+      const ph = Math.round(s.bredd / (s.kvot || 4.4));
+      const px = Math.round(s.fx * w - s.bredd / 2), py = Math.round(s.fy * h - ph / 2);
+      const g2 = x.createLinearGradient(0, py, 0, py + ph);
+      g2.addColorStop(0, '#ffffff'); g2.addColorStop(1, '#e9edf0');
+      x.fillStyle = g2; x.fillRect(px, py, s.bredd, ph);
+      x.strokeStyle = '#c9d1d7'; x.lineWidth = 1;
+      x.beginPath(); x.moveTo(px, py + ph * 0.5); x.lineTo(px + s.bredd, py + ph * 0.5); x.stroke();
+      x.fillStyle = '#b9c2c9';
+      for (let i = 1; i < 5; i++) { x.beginPath(); x.arc(px + s.bredd * i / 5, py + ph * 0.2, 2, 0, 7); x.fill(); }
+      continue;
+    }
+    if (s.typ === 'blarektangel') {
+      const ph = Math.round(s.bredd / (s.kvot || 1));
+      x.fillStyle = s.farg || '#2255dd';
+      x.fillRect(Math.round(s.fx * w - s.bredd / 2), Math.round(s.fy * h - ph / 2), s.bredd, ph);
+      if (s.text) {
+        x.fillStyle = '#fff';
+        x.font = `700 ${Math.round(ph * 0.32)}px Arial`;
+        x.textAlign = 'center'; x.textBaseline = 'middle';
+        x.fillText(s.text, s.fx * w, s.fy * h);
+      }
+      continue;
+    }
+    // Skylt.
+    const bild = skyltbild(s.text, s.bredd, s);
+    const px = Math.round(s.fx * w - s.bredd / 2);
+    const py = Math.round(s.fy * h - bild.height / 2);
+    x.save();
+    x.translate(px + s.bredd / 2, py + bild.height / 2);
+    if (s.snett) x.transform(Math.cos(s.snett * Math.PI / 180), 0, 0, 1, 0, 0);  // vriden i sidled
+    if (s.lutning) x.transform(1, 0, Math.tan(s.lutning * Math.PI / 180), 1, 0, 0);
+    if (s.blur) x.filter = `blur(${s.blur}px)`;
+    x.drawImage(bild, -bild.width / 2, -bild.height / 2);
+    x.restore();
+
+    // Var skylten faktiskt hamnade, efter en eventuell vridning av hela bilden.
+    const kos = Math.cos(rad2), sin = Math.sin(rad2);
+    const bw2 = s.bredd * (s.snett ? Math.cos(s.snett * Math.PI / 180) : 1);
+    const mcx = w / 2 + (px + s.bredd / 2 - w / 2) * kos - (py + bild.height / 2 - h / 2) * sin;
+    const mcy = h / 2 + (px + s.bredd / 2 - w / 2) * sin + (py + bild.height / 2 - h / 2) * kos;
+    ytor.push({ text: s.text, cx: mcx, cy: mcy, bredd: bw2, hojd: bild.height });
+  }
+  if (vrid) x.restore();
+
+  if (blur) {
+    const t = document.createElement('canvas'); t.width = w; t.height = h;
+    const tg = t.getContext('2d'); tg.filter = `blur(${blur}px)`; tg.drawImage(c, 0, 0);
+    x.clearRect(0, 0, w, h); x.filter = 'none'; x.drawImage(t, 0, 0);
+  }
+
+  if (ljus !== 1) {
+    const bild = x.getImageData(0, 0, w, h), p = bild.data;
+    if (ljus < 1) {
+      // Skugga: rena multiplikationer. Kulör och mättnad rörs inte.
+      for (let i = 0; i < p.length; i += 4) {
+        p[i] *= ljus; p[i + 1] *= ljus; p[i + 2] *= ljus;
+      }
+    } else {
+      // Motljus: vit slöja. Den sänker mättnaden, och det ska den göra.
+      const a = Math.min(0.9, ljus - 1);
+      for (let i = 0; i < p.length; i += 4) {
+        p[i] += (255 - p[i]) * a;
+        p[i + 1] += (255 - p[i + 1]) * a;
+        p[i + 2] += (255 - p[i + 2]) * a;
+      }
+    }
+    x.putImageData(bild, 0, 0);
+  }
+  return { canvas: c, ytor };
+}
+
+const bil = (fx, fy, bredd, hojd, farg) => ({ typ: 'bil', fx, fy, bredd, hojd, farg });
+const traff = (k, yta) => {
+  if (!k) return false;
+  const kcx = k.x + k.w / 2, kcy = k.y + k.h / 2;
+  return Math.abs(kcx - yta.cx) < yta.bredd * 0.5 &&
+         Math.abs(kcy - yta.cy) < Math.max(yta.hojd, 10) * 0.9;
+};
+const median = a => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+/* ======================================================================= */
+/* 1. HITTAS SKYLTEN?                                                       */
+/* ======================================================================= */
+
+const fall = [
+  { namn: 'nära, fyller halva bilden', bredd: 520 },
+  { namn: 'normalt avstånd',           bredd: 300 },
+  { namn: 'på håll',                   bredd: 180 },
+  { namn: 'långt bort',                bredd: 120 },
+  { namn: 'snett från sidan, 35°',     bredd: 340, o: { snett: 35 } },
+  { namn: 'snett från sidan, 50°',     bredd: 340, o: { snett: 50 } },
+  { namn: 'skyltlutning 15°',          bredd: 340, o: { lutning: 15 } },
+  { namn: 'hela bilden vriden 20°',    bredd: 340, scen: { vrid: 20 } },
+  { namn: 'hela bilden vriden 40°',    bredd: 340, scen: { vrid: 40 } },
+  { namn: 'skugga (×0,30)',            bredd: 340, scen: { ljus: 0.30 } },
+  { namn: 'djup skugga (×0,16)',       bredd: 340, scen: { ljus: 0.16 } },
+  { namn: 'motljus (slöja 0,25)',      bredd: 340, scen: { ljus: 1.25 } },
+  { namn: 'hårt motljus (slöja 0,45)', bredd: 340, scen: { ljus: 1.45 } },
+  { namn: 'rörelseoskärpa',            bredd: 340, scen: { blur: 1.6 } },
+  { namn: 'smutsig skylt',             bredd: 340, o: { smuts: 0.4 } },
+  { namn: 'skylt på vit skåpbil',      bredd: 300, vit: true },
+  { namn: 'två bilar i bild',          bredd: 300, tva: true },
+];
+
+const t1 = avsnitt('1. Hittas skylten?',
+  'Överst i listan står den kandidat sökningen rankar högst. "Ankrad" betyder ' +
+  'att den hittades på det blå EU-bandet; "ljus" att den hittades av den gamla ' +
+  'ljusstapelvägen. Båda räknas som träff — poängen med reserven är just att ' +
+  'den fångar det ankaret missar. "Kvot" är den uppmätta proportionen, som ' +
+  'ska ligga nära 4,73 rakt framifrån.');
+rad(t1, ['fall', 'hittad', 'väg', { t: 'kvot', kl: 'n' }, { t: 'poäng', kl: 'n' },
+         { t: 'sök ms', kl: 'n' }, 'bild']);
+
+for (const f of fall) {
+  const saker = [];
+  if (f.vit) saker.push({ typ: 'panel', fx: 0.5, fy: 0.42, bredd: 620, kvot: 2.2 });
+  else saker.push(bil(0.5, 0.5, 620, 300));
+  saker.push({ typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.62, bredd: f.bredd, ...(f.o || {}) });
+  if (f.tva) {
+    saker.push(bil(0.14, 0.42, 300, 190, '#2a3440'));
+    saker.push({ typ: 'skylt', text: 'XKF42B', fx: 0.14, fy: 0.5, bredd: 150 });
+  }
+  const s = scen(saker, f.scen || {});
+  const yta = s.ytor[0];
+
+  const tider = [];
+  let kand = [];
+  for (let i = 0; i < 7; i++) {
+    const t0 = performance.now();
+    kand = sokKandidater(s.canvas, null, { arbetsbredd: 400 });
+    tider.push(performance.now() - t0);
+  }
+  const b = kand.find(k => traff(k, yta)) || null;
+  const overst = kand[0] || null;
+  const bastOverst = b && overst && b === overst;
+
+  const mini = document.createElement('canvas');
+  mini.width = 240; mini.height = 135;
+  const mg = mini.getContext('2d');
+  mg.drawImage(s.canvas, 0, 0, mini.width, mini.height);
+  if (b) {
+    const sx = mini.width / s.canvas.width, sy = mini.height / s.canvas.height;
+    mg.strokeStyle = b.ankrad ? '#2fd07a' : '#8fcaff';
+    mg.lineWidth = 2;
+    mg.strokeRect(b.x * sx, b.y * sy, b.w * sx, b.h * sy);
+  }
+
+  rad(t1, [
+    f.namn,
+    dom(!!b && bastOverst),
+    b ? { t: b.ankrad ? 'ankrad' : 'ljus', kl: b.ankrad ? 'ok' : 'halv' } : { t: '–', kl: 'noll' },
+    { t: b ? en(b.forhallande) : '–', kl: 'n' },
+    { t: b ? en(b.poang * 100) : '–', kl: 'n' },
+    { t: en(median(tider)), kl: 'n' },
+    { nod: mini, kl: 'bild' },
+  ]);
+}
+
+/* ======================================================================= */
+/* 2. RESERVEN                                                              */
+/* ======================================================================= */
+
+const t2 = avsnitt('2. Reserven — hittas skylten när det blå bandet inte gör det?',
+  'Bandet kan vara igensmutsat, övermålat, avklippt i bildkanten eller sitta ' +
+  'på en utländsk skylt som inte har något. Här ritas skylten med ett grått ' +
+  'eller helt saknat band. Ankaret SKA misslyckas i de här fallen — det som ' +
+  'provas är att den gamla ljusstapelvägen fortfarande fångar skylten, så att ' +
+  'den nya sökaren aldrig blir en försämring i något läge.');
+rad(t2, ['fall', 'ankare hittar', 'sökning hittar', 'väg']);
+
+for (const f of [
+  { namn: 'grått band (kraftigt nedsmutsat)', band: '#6b6f74' },
+  { namn: 'inget band alls (utländsk skylt)', band: '#f4f4f0' },
+  { namn: 'blått band avklippt i bildkanten', band: '#003399', kant: true },
+]) {
+  const saker = [bil(0.5, 0.5, 620, 300),
+    { typ: 'skylt', text: 'ABC123', fx: f.kant ? 0.035 : 0.5, fy: 0.62, bredd: 300, band: f.band }];
+  const s = scen(saker);
+  const yta = s.ytor[0];
+  const ankare = sokAnkare(s.canvas).some(a => traff(a, yta));
+  const kand = sokKandidater(s.canvas, null, { arbetsbredd: 400 });
+  const b = kand.find(k => traff(k, yta));
+  rad(t2, [
+    f.namn,
+    { t: ankare ? 'ja' : 'nej', kl: ankare ? 'halv' : 'noll' },
+    dom(!!b),
+    b ? { t: b.ankrad ? 'ankrad' : 'ljus', kl: b.ankrad ? 'ok' : 'halv' } : { t: '–', kl: 'noll' },
+  ]);
+}
+
+/* ======================================================================= */
+/* 3. FALSKLARM                                                             */
+/* ======================================================================= */
+
+const t3 = avsnitt('3. Det som INTE får ge träff',
+  'En sökare som hittar skyltar överallt är värdelös, och blått är den nya ' +
+  'ingången — alltså är det blå lockbeten som måste provas. Kravet: ingen ' +
+  'ANKRAD kandidat får uppstå i de här bildrutorna. Ljusa kandidater får ' +
+  'finnas, precis som förut; de dör längre fram på formatvalideringen, och ' +
+  'låset brinner upp av sig självt när de aldrig ger en giltig skylt.');
+rad(t3, ['bildruta', 'ankrade', 'ingen ankring', 'högsta poäng']);
+
+const lockbeten = [
+  { namn: 'vit skåpbilssida, inget annat',
+    saker: [bil(0.5, 0.5, 700, 320), { typ: 'panel', fx: 0.5, fy: 0.6, bredd: 420, kvot: 4.6 }] },
+  { namn: 'blå bilkaross intill vit panel',
+    saker: [{ typ: 'blarektangel', fx: 0.3, fy: 0.5, bredd: 70, kvot: 0.35, farg: '#2255dd' },
+            { typ: 'panel', fx: 0.62, fy: 0.5, bredd: 380, kvot: 4.4 }] },
+  { namn: 'smal blå stolpe intill vit vägg',
+    saker: [{ typ: 'blarektangel', fx: 0.28, fy: 0.5, bredd: 26, kvot: 0.16, farg: '#1a49c8' },
+            { typ: 'panel', fx: 0.62, fy: 0.5, bredd: 420, kvot: 3.6 }] },
+  { namn: 'blått vägmärke med vit text',
+    saker: [bil(0.5, 0.72, 620, 220),
+            { typ: 'blarektangel', fx: 0.5, fy: 0.3, bredd: 380, kvot: 2.6,
+              farg: '#0a4fa0', text: 'VÄSTERÅS' }] },
+  { namn: 'blå himmel över ljus husfasad',
+    saker: [{ typ: 'blarektangel', fx: 0.5, fy: 0.22, bredd: 960, kvot: 4.0, farg: '#4a90d9' },
+            { typ: 'panel', fx: 0.5, fy: 0.68, bredd: 700, kvot: 3.0 }] },
+  { namn: 'tom väg',
+    saker: [] },
+];
+
+for (const l of lockbeten) {
+  const s = scen(l.saker);
+  const kand = sokKandidater(s.canvas, null, { arbetsbredd: 400 });
+  const ankrade = kand.filter(k => k.ankrad).length;
+  const hogst = kand[0] ? kand[0].poang * 100 : 0;
+  rad(t3, [l.namn, { t: String(ankrade), kl: 'n' }, dom(ankrade === 0),
+           { t: en(hogst), kl: 'n' }]);
+}
+
+/* ======================================================================= */
+/* 4. FORMGRINDEN                                                           */
+/* ======================================================================= */
+
+const t4 = avsnitt('4. Formgrinden',
+  `Spannet är [${en(SKYLT_KVOT_MIN)}; ${en(SKYLT_KVOT_MAX)}] kring ${en(SKYLT_KVOT)}. ` +
+  'Nedre gränsen motsvarar en skylt vriden 58° bort i sidled, övre en sedd i ' +
+  '48° höjdvinkel. Här provas att den släpper igenom det den ska och stoppar ' +
+  'det den ska: ett blått band med rätt form men FEL fortsättning åt höger.');
+rad(t4, ['bildruta', 'väntat', 'ankrad', 'uppmätt kvot', 'utfall']);
+
+const formfall = [
+  { namn: 'skylt rakt framifrån (kvot 4,7)', snett: 0,  vantad: true },
+  { namn: 'skylt vriden 40° (kvot ≈ 3,6)',   snett: 40, vantad: true },
+  { namn: 'skylt vriden 55° (kvot ≈ 2,7)',   snett: 55, vantad: true },
+  { namn: 'band + ljust som slutar för tidigt (kvot ≈ 1,5)', stump: 1.5, vantad: false },
+  { namn: 'band + ljust som slutar för tidigt (kvot ≈ 2,1)', stump: 2.1, vantad: false },
+];
+for (const f of formfall) {
+  let s, yta;
+  if (f.stump) {
+    // Ett äkta blått band, men den ljusa ytan till höger är alldeles för kort
+    // för att vara en skylt. Grinden ska säga nej.
+    const h = 64, w = Math.round(h * f.stump);
+    const saker = [bil(0.5, 0.5, 620, 300)];
+    s = scen(saker);
+    const x = s.canvas.getContext('2d');
+    const px = 420, py = 300;
+    x.fillStyle = '#f4f4f0'; x.fillRect(px, py, w, h);
+    x.fillStyle = '#003399'; x.fillRect(px, py, Math.round(h * 0.47), h);
+    x.fillStyle = '#101010';
+    x.font = `700 ${Math.round(h * 0.62)}px "Arial Narrow", Arial, sans-serif`;
+    x.textAlign = 'left'; x.textBaseline = 'middle';
+    x.fillText('AB', px + h * 0.55, py + h * 0.54);
+    yta = { cx: px + w / 2, cy: py + h / 2, bredd: w, hojd: h };
+  } else {
+    s = scen([bil(0.5, 0.5, 620, 300),
+      { typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.62, bredd: 340, snett: f.snett }]);
+    yta = s.ytor[0];
+  }
+  const a = sokAnkare(s.canvas).find(k => traff(k, yta));
+  rad(t4, [
+    f.namn,
+    f.vantad ? 'ankras' : 'avvisas',
+    { t: a ? 'ja' : 'nej', kl: a ? 'ok' : 'noll' },
+    { t: a ? en(a.forhallande) : '–', kl: 'n' },
+    dom(!!a === f.vantad),
+  ]);
+}
+
+/* ======================================================================= */
+/* 5. EU-BANDETS BREDD                                                      */
+/* ======================================================================= */
+
+const t5 = avsnitt('5. Mäts EU-bandet, eller gissas det?',
+  'Förut vitmålades en fast tiondel av vänsterkanten, oavsett vad som faktiskt ' +
+  'fanns där. Nu mäter ankaret bandets bredd. Facit är 0,105 av skyltens bredd. ' +
+  'Godkänt är inom ±0,04 — bredare fel än så äter antingen ett tecken eller ' +
+  'lämnar stjärnor kvar åt motorn.');
+rad(t5, ['skyltbredd i bild', { t: 'uppmätt andel', kl: 'n' }, { t: 'fel', kl: 'n' }, 'inom ±0,04']);
+
+for (const bredd of [520, 360, 260, 180]) {
+  const s = scen([bil(0.5, 0.5, 620, 300),
+    { typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.62, bredd }]);
+  const a = sokAnkare(s.canvas).find(k => traff(k, s.ytor[0]));
+  const fel = a ? Math.abs(a.euAndel - 0.105) : null;
+  const tresiffrig = v => (v == null ? '–' : v.toFixed(3).replace('.', ','));
+  rad(t5, [`${bredd} px`,
+           { t: tresiffrig(a ? a.euAndel : null), kl: 'n' },
+           { t: tresiffrig(fel), kl: 'n' },
+           dom(fel != null && fel <= 0.04)]);
+}
+
+/* ======================================================================= */
+/* 6. HUR SNABBT SITTER LÅSET?                                              */
+/* ======================================================================= */
+
+const t6 = avsnitt('6. Hur många bildrutor tar låset?',
+  `Ett ankrat spår låser efter ${MALSOK.bildrutorForLasAnkrad} bildrutor, ett ` +
+  `oankrat efter ${MALSOK.bildrutorForLas}. Vid 120 ms mellan sökningar är det ` +
+  '0,36 s mot 0,96 s. Rutorna skakas en pixel mellan varven — spårningen ska ' +
+  'klara att målet rör sig, det är hela dess uppgift.');
+rad(t6, ['bildruta', { t: 'bildrutor till lås', kl: 'n' }, { t: 'ms', kl: 'n' }, 'ankrat', 'låser inom 8']);
+
+for (const f of [
+  { namn: 'skylt med blått band', band: '#003399' },
+  { namn: 'skylt med grått band (reserven)', band: '#6b6f74' },
+]) {
+  const s = scen([bil(0.5, 0.5, 620, 300),
+    { typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.62, bredd: 300, band: f.band }]);
+  const m = new Malsokare();
+  let rutor = null, ankrat = false;
+  for (let i = 1; i <= 14; i++) {
+    const k = sokKandidater(s.canvas, {
+      x: (i % 2), y: (i % 3), w: s.canvas.width - 4, h: s.canvas.height - 4,
+    }, { arbetsbredd: 400 });
+    const { last } = m.mata(k, i * 120);
+    if (last && rutor == null) { rutor = i; ankrat = !!last.ankrad; }
+  }
+  rad(t6, [f.namn,
+           { t: rutor == null ? '–' : String(rutor), kl: 'n' },
+           { t: rutor == null ? '–' : String(rutor * 120), kl: 'n' },
+           { t: ankrat ? 'ja' : 'nej', kl: ankrat ? 'ok' : 'halv' },
+           dom(rutor != null && rutor <= MALSOK.bildrutorForLas)]);
+}
+
+/* ======================================================================= */
+/* 7. FLERBILDSKONSENSUS                                                    */
+/* ======================================================================= */
+
+const t7 = avsnitt('7. Flerbildskonsensus',
+  'Vikten per läsning går från ' + en(ROST.viktLag) + ' vid ' + ROST.sakerhetLag +
+  ' % säkerhet till ' + en(ROST.viktHog) + ' vid ' + ROST.sakerhetHog + ' %. ' +
+  'Målet är ' + en(ROST.malVikt * 2) + ' vid krav 2. Taket ' + en(ROST.viktHog) +
+  ' är det viktigaste talet: EN läsning kan aldrig räcka, hur säker motorn än ' +
+  'säger sig vara. Vinnaren måste dessutom leda tvåan med ' + en(ROST.vinstMarginal) + '.');
+rad(t7, ['scenario', { t: 'bildrutor till svar', kl: 'n' }, 'väntat', 'utfall']);
+
+function kor(lasningar, { krav = 2, urna = 'a', steg = 300 } = {}) {
+  const r = new Rostrakning();
+  let nu = 1000;
+  for (let i = 0; i < lasningar.length; i++) {
+    const [h, sak] = lasningar[i];
+    const svar = r.rosta(urna, h, sak, { krav, nu });
+    if (svar.klar) return i + 1;
+    nu += steg;
+  }
+  return null;
+}
+const upprepa = (h, sak, n) => Array.from({ length: n }, () => [h, sak]);
+
+const rostfall = [
+  { namn: 'en enda mycket säker läsning (99 %)', las: upprepa('A', 99, 1), vantat: null },
+  { namn: 'två säkra läsningar (92 %)',          las: upprepa('A', 92, 4), vantat: 2 },
+  { namn: 'medelbra läsningar (65 %)',           las: upprepa('A', 65, 5), vantat: 3 },
+  // Fem, inte fyra: blekningen gör att en röst tre bildrutor tillbaka inte
+  // längre väger fullt, och fyra gånger 0,30 når därför inte riktigt 1,0.
+  { namn: 'osäkra läsningar (20 %)',             las: upprepa('A', 20, 7), vantat: 5 },
+  { namn: 'två säkra men olika svar, sedan A igen',
+    las: [['A', 92], ['B', 92], ['A', 92]], vantat: 3 },
+  { namn: 'systematisk felläsning växlar A/B',
+    las: [['A', 70], ['B', 70], ['A', 70], ['B', 70]], vantat: null },
+  { namn: 'krav 3 höjer ribban för samma läsningar',
+    las: upprepa('A', 92, 5), vantat: 3, krav: 3 },
+];
+for (const f of rostfall) {
+  const n = kor(f.las, { krav: f.krav || 2 });
+  rad(t7, [f.namn,
+           { t: n == null ? 'aldrig' : String(n), kl: 'n' },
+           f.vantat == null ? 'aldrig' : String(f.vantat),
+           dom(n === f.vantat)]);
+}
+
+// Två fordon i bild får inte rösta i samma urna.
+{
+  const r = new Rostrakning();
+  let nu = 1000, klarA = false, klarB = false;
+  for (let i = 0; i < 2; i++) {
+    klarA = r.rosta(1, 'A', 92, { nu }).klar || klarA;
+    klarB = r.rosta(2, 'B', 92, { nu }).klar || klarB;
+    nu += 300;
+  }
+  rad(t7, ['två fordon i bild, egna urnor', { t: '2', kl: 'n' }, 'båda klara',
+           dom(klarA && klarB)]);
+}
+// Röster bleknar: samma svar två gånger men med fyra sekunder emellan.
+{
+  const r = new Rostrakning();
+  r.rosta('c', 'A', 92, { nu: 1000 });
+  const sen = r.rosta('c', 'A', 92, { nu: 1000 + ROST.fonsterMs + 1500 });
+  rad(t7, [`samma svar men ${en((ROST.fonsterMs + 1500) / 1000)} s isär`,
+           { t: '2', kl: 'n' }, 'inte klar', dom(!sen.klar)]);
+}
+
+/* ======================================================================= */
+/* 8. TID PER STEG                                                          */
+/* ======================================================================= */
+
+const t8 = avsnitt('8. Tid per steg',
+  'Median av 25 körningar mot en 1920×1080-bildruta, alltså telefonens ' +
+  'upplösning. Sökningen kör 8,3 gånger i sekunden, så dess kostnad ska ' +
+  'jämföras mot 120 ms — inte mot noll. Kolumnen "ms/s" är hur stor del av en ' +
+  'sekund steget faktiskt äter i drift.');
+rad(t8, ['steg', { t: 'median ms', kl: 'n' }, { t: 'ggr/s', kl: 'n' }, { t: 'ms/s', kl: 'n' }]);
+
+{
+  const stor = document.createElement('canvas');
+  stor.width = 1920; stor.height = 1080;
+  const liten = scen([bil(0.5, 0.5, 620, 300),
+    { typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.62, bredd: 300 }]);
+  stor.getContext('2d').drawImage(liten.canvas, 0, 0, 1920, 1080);
+
+  const mat = (fn, n = 25) => {
+    const t = [];
+    for (let i = 0; i < n; i++) { const a = performance.now(); fn(); t.push(performance.now() - a); }
+    return median(t);
+  };
+  const roi = { x: 1920 * 0.28, y: 1080 * 0.5, w: 1920 * 0.44, h: 1080 * 0.14 };
+  const rader = [
+    ['sokKandidater (400 px, båda vägarna)', mat(() => sokKandidater(stor, null, { arbetsbredd: 400 })), 8.3],
+    ['sokAnkare (bara blå vägen)',           mat(() => sokAnkare(stor, null, { arbetsbredd: 400 })), 8.3],
+    ['hittaPlat (320 px, inne i rutan)',     mat(() => hittaPlat(stor, roi)), 1.4],
+    ['forbehandla (beskär + tröskla)',       mat(() => forbehandla(stor, roi)), 1.4],
+  ];
+  for (const [namn, ms, per] of rader) {
+    rad(t8, [namn, { t: en(ms), kl: 'n' }, { t: en(per), kl: 'n' }, { t: en(ms * per), kl: 'n' }]);
+  }
+}
+
+/* ======================================================================= */
+/* 9. HELA VÄGEN, MED TEXTIGENKÄNNING                                       */
+/* ======================================================================= */
+
+const t9 = avsnitt('9. Hela vägen — hittas OCH läses skylten?',
+  'Kräver att Tesseract går att hämta från internet. Här mäts det som faktiskt ' +
+  'räknas: rätt sex tecken ut, och vad varje steg kostade på vägen dit.');
+rad(t9, ['fall', 'facit', 'läst', { t: 'säkerhet', kl: 'n' },
+         { t: 'OCR-körningar', kl: 'n' }, { t: 'ms', kl: 'n' }, 'rätt']);
+
+try {
+  await haMotor();
+  for (const f of [
+    { namn: 'normalt avstånd', text: 'ABC123', bredd: 340 },
+    { namn: 'nya serien',      text: 'XKF42B', bredd: 340 },
+    { namn: 'på håll',         text: 'RTN881', bredd: 200 },
+    { namn: 'skugga',          text: 'MLK907', bredd: 340, scen: { ljus: 0.3 } },
+    { namn: 'motljus',         text: 'MLK907', bredd: 340, scen: { ljus: 1.25 } },
+    { namn: 'skylten lutar 12°', text: 'JHD556', bredd: 340, o: { lutning: 12 } },
+  ]) {
+    const s = scen([bil(0.5, 0.5, 620, 300),
+      { typ: 'skylt', text: f.text, fx: 0.5, fy: 0.62, bredd: f.bredd, ...(f.o || {}) }],
+      f.scen || {});
+    const kand = sokKandidater(s.canvas, null, { arbetsbredd: 400 });
+    const k = kand.find(x => traff(x, s.ytor[0])) || kand[0];
+    const t0 = performance.now();
+    const r = k ? await lasRuta(s.canvas, k, { fardigMatt: k.ankrad ? k : null })
+                : { plat: null, sakerhet: 0, tider: null };
+    const ms = performance.now() - t0;
+    rad(t9, [f.namn, visaPlat(f.text),
+             { t: r.plat ? visaPlat(r.plat) : '–', kl: r.plat ? '' : 'noll' },
+             { t: String(r.sakerhet || 0), kl: 'n' },
+             { t: String(r.tider ? r.tider.ocrAntal : 0), kl: 'n' },
+             { t: en(ms), kl: 'n' },
+             dom(r.plat === f.text)]);
+  }
+} catch (e) {
+  rad(t9, [{ t: 'Textigenkänningen kunde inte laddas: ' + (e && e.message || e), kl: 'halv' },
+           '', '', '', '', '', { t: 'hoppat över', kl: 'noll' }]);
+}
+
+/* ---- Sammanfattning ---------------------------------------------------- */
+summa.textContent =
+  `${godkant} godkända, ${underkant} underkända` +
+  (underkant ? ' — läs raderna märkta NEJ.' : ' — allt gick igenom.');
+summa.className = underkant ? 'fel' : 'ok';
+</script>

@@ -14,9 +14,37 @@
  *   4. Sträck kontrasten och tröskla till svart/vitt (Otsu).
  *   5. Säg åt motorn att det är EN textrad, inte ett dokument.
  *   6. Begränsa alfabetet till de tecken svenska skyltar faktiskt använder.
- *   7. Läs flera bildrutor och kräv att två är överens.
+ *   7. Läs flera bildrutor och väg ihop svaren innan något visas.
  *
  * Punkt 7 är det som gör den ärlig. En enstaka gissning är en gissning.
+ *
+ * ATT HITTA SKYLTEN, INTE BARA LÄSA DEN
+ *
+ * Länge letade sökningen efter *ljusa avlånga fläckar*. Det var fel fråga.
+ * En ljus avlång fläck är lika ofta en skåpbilsdörr, en stötfångarreflex,
+ * en dörrkarm eller en solblänk i en sidoruta. Sökningen såg inte en skylt,
+ * den såg något som råkade ha ungefär rätt form, och den valde dessutom den
+ * *största* av dem — vilket är ungefär det sämsta urvalskriterium som finns,
+ * eftersom skylten nästan aldrig är det största ljusa i bilden.
+ *
+ * En människa gör inte så. En människa ser det blå EU-bandet. Det är det mest
+ * distinkta på en svensk skylt: ett mättat blått, stående, smalt band längst
+ * till vänster, med vitt eller gult omedelbart till höger om sig. Mättat blått
+ * är ovanligt i en gatubild, och mättat blått i ett smalt stående band med
+ * ljust intill är i praktiken bara en skylt.
+ *
+ * Så numera är ordningen:
+ *   A. Hitta det blå bandet på kulör och mättnad (inte på råa RGB-trösklar —
+ *      en skylt i skugga är fortfarande blå, bara mycket mörkare).
+ *   B. Bandets höjd ÄR skyltens höjd. Mät hur långt det ljusa fortsätter åt
+ *      höger, och grinda på 4,73:1.
+ *   C. Räkna teckenväxlingar i skyltkroppen. Det skiljer en skylt från en
+ *      blå bil bredvid en vit panel.
+ *   D. Hittas inget blått körs den gamla ljusstapelsökningen precis som förut.
+ *      Bandet kan vara smutsigt, avklippt i bildkanten eller bortvänt, och en
+ *      sökare som är bättre i snitt men blind i vissa lägen är en försämring.
+ *
+ * Se docs/malsokning.md.
  *
  * Punkt 1 krävde länge att skylten hamnade inuti en fast ruta mitt i bilden.
  * Det var ett krav på verkligheten och inte på programmet — telefonen sitter i
@@ -499,6 +527,105 @@ function vikVinkel(v) {
   return x;
 }
 
+/* ---- Det blå EU-bandet --------------------------------------------------
+ *
+ * Svensk skylt: 520 × 110 mm, vit eller gul botten, svarta tecken, och längst
+ * till vänster ett blått EU-band. Bandet är ungefär 52 mm brett — en tiondel
+ * av skyltens bredd — och går hela höjden. Färgen är reflexblå, i tryck
+ * ungefär #003399.
+ *
+ * VARFÖR KULÖR OCH MÄTTNAD, INTE RÅ RGB
+ *
+ * En rå tröskel av typen "b > 120 och r < 80" fungerar i solsken och bara där.
+ * Samma skylt i skugga har kanske RGB 0/18/54 — en åttondel så ljus — och
+ * ramlar rakt igenom varje absolut tröskel man sätter. Men den är fortfarande
+ * *blå*: förhållandet mellan kanalerna är intakt. Kulör och mättnad är just
+ * de två tal som beskriver det förhållandet och struntar i hur mycket ljus som
+ * fanns. Därför mäts de, och inte råa nivåer.
+ *
+ * TALEN, OCH VAD DE KOMMER IFRÅN
+ *
+ * Kulör räknas bara ut när blå är den största kanalen — vi behöver inte de
+ * andra sektorerna av färgcirkeln och kan hoppa över dem gratis.
+ *
+ *   #003399  → mättnad 1,00, kulör 220°
+ *   samma i djup skugga (0/18/54)   → mättnad 1,00, kulör 220°   (oförändrad)
+ *   samma urblekt i motljus (90/125/190) → mättnad 0,53, kulör 219°
+ *
+ * MATTNAD_MIN 0,32 släpper igenom även den urblekta varianten med god marginal
+ * och stänger ute grått, asfalt och vita ytor med en blå ton i vitbalansen —
+ * de ligger under 0,15.
+ *
+ * MEN MÄTTNAD ENSAM RÄCKER INTE, OCH DET VAR EN MÄTNING SOM VISADE DET
+ *
+ * Mättnad är ett förhållande, och förhållanden blir opålitliga när det inte
+ * finns mycket ljus att ta förhållandet mellan. En mörk blågrå bilkaross —
+ * #1d2733, en fullständigt vardaglig bilfärg — har RGB 29/39/51. Skillnaden
+ * mellan största och minsta kanal är futtiga 22 steg av 255, alltså nästan
+ * ingen färg alls. Men eftersom hela pixeln är mörk blir mättnaden 22/51 =
+ * 0,43, och den seglade rakt igenom en gräns på 0,32.
+ *
+ * Följden var inte att en bilkaross råkade se ut som ett band. Följden var
+ * värre: karossen ligger RUNT skylten, och när den blev "blå" flöt bandet
+ * ihop med den till en enda stor klump. Klumpen hade förstås inte ett bands
+ * form, så den kastades — och skylten försvann med den. Ankaret fungerade i
+ * skugga och i motljus, men inte i normalt ljus, vilket är precis tvärtemot
+ * vad man gissar.
+ *
+ * Rätt regel är två villkor med ELLER emellan, och skälet är att de två
+ * sätten en skylt kan bli svår på förstör olika saker:
+ *
+ *   MÖRKER bevarar förhållandet mellan kanalerna och förstör absolutnivån.
+ *   URBLEKNING bevarar absolutnivån och förstör förhållandet.
+ *
+ * Alltså: släpp igenom en pixel som är MYCKET REN i kulören (mättnad ≥ 0,70,
+ * vilket bandet är ända ner i nattmörker) ELLER som har MYCKET FÄRG i absoluta
+ * tal (kromaskillnad ≥ 30 av 255, vilket bandet har ända upp i hårt motljus).
+ * Att kräva båda hade fällt bandet i båda lägena. Att kräva bara ett av dem
+ * hade släppt in bilkarossen.
+ *
+ *   bandet, rent               mättnad 1,00   kroma 153   → båda
+ *   bandet, skugga ×0,16       mättnad 1,00   kroma  25   → renheten
+ *   bandet, motljus slöja 0,45 mättnad 0,42   kroma  84   → kromat
+ *   blågrå kaross #1d2733      mättnad 0,43   kroma  22   → INGETDERA
+ *   asfalt #5a6068             mättnad 0,14   kroma  14   → INGETDERA
+ *
+ * NYANS 198°–268° är brett med flit. Bandet självt ligger på 220°, men
+ * vitbalansen i en telefonkamera flyttar hela bilden flera grader, och en våt
+ * eller smutsig skylt drar mot violett. Den nedre gränsen 198° är satt precis
+ * ovanför ljus himmelsblå (#87CEEB ligger på 197°), den övre 268° under lila.
+ *
+ * V_MIN 0,09: under det är pixeln nattsvart och kulören är brus, inte färg.
+ * V_MAX 0,98: en utbränd pixel har ingen kulör kvar att mäta.
+ *
+ * VAD SOM ÄNDÅ SLINKER IGENOM, OCH VARFÖR DET INTE GÖR NÅGOT
+ *
+ * Klarblå himmel klarar pixeltestet (djup himmel ligger på ~211° och mättnad
+ * 0,66). Det är avsiktligt: att strama åt kulören tills himlen faller hade
+ * tagit skylten med sig. Himlen faller i stället på formen — den är inte ett
+ * smalt stående band — och på att det inte finns vitt med sex mörka pelare
+ * omedelbart till höger om den. Samma sak med blå bilar och blå vägmärken.
+ * Färgen väljer ut var vi ska titta. Den avgör inte vad vi hittade.
+ */
+const BLA_MATTNAD_MIN = 0.32;   // golv, alltid
+const BLA_MATTNAD_REN = 0.70;   // ...eller så här ren, då räcker det ensamt
+const BLA_KROMA_MIN   = 30;     // ...eller så här mycket färg i absoluta tal
+const BLA_NYANS_MIN   = 198;
+const BLA_NYANS_MAX   = 268;
+const BLA_V_MIN       = 0.09;
+const BLA_V_MAX       = 0.98;
+
+/** Grindarna samlade, så provet kan skriva ut dem i stället för att upprepa dem. */
+export const BLAGRIND = {
+  mattnadMin: BLA_MATTNAD_MIN,
+  mattnadRen: BLA_MATTNAD_REN,
+  kromaMin: BLA_KROMA_MIN,
+  nyansMin: BLA_NYANS_MIN,
+  nyansMax: BLA_NYANS_MAX,
+  vMin: BLA_V_MIN,
+  vMax: BLA_V_MAX,
+};
+
 /**
  * Grunden under både `hittaPlat` och `sokKandidater`: skala ner ett område,
  * tröskla med Otsu och plocka ut alla ljusa sammanhängande områden som har
@@ -513,7 +640,7 @@ function vikVinkel(v) {
  *
  * @returns {{b:number,h:number,skala:number,gra:Uint8ClampedArray,trosk:number,blobbar:Array}}
  */
-function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8 } = {}) {
+function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8, bla = false } = {}) {
   const skala = Math.min(1, arbetsbredd / omrade.w);
   const b = Math.max(8, Math.round(omrade.w * skala));
   const h = Math.max(4, Math.round(omrade.h * skala));
@@ -526,8 +653,40 @@ function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8 } 
 
   const n = b * h;
   const gra = new Uint8ClampedArray(n);
+  /*
+   * Blåmasken byggs i samma svep som gråskalan. Det är enda stället i modulen
+   * där varje pixel ändå läses, och att lägga masken här kostar ett fåtal
+   * jämförelser per pixel i stället för en hel extra genomgång av bilden.
+   *
+   * Uppmätt kostnad för hela ankarvägen, median av 50 körningar mot en
+   * 1920 × 1080-bildruta vid arbetsbredd 400: sökningen gick från 4,1 ms till
+   * 5,2 ms. Vid 8,3 sökningar i sekunden är det 9 ms extra per sekund, alltså
+   * knappt en procent av en kärna. Det är priset för att hitta skylten på
+   * färgen i stället för att gissa på ljusstyrka.
+   */
+  const blaMask = bla ? new Uint8Array(n) : null;
   for (let i = 0, p = 0; i < n; i++, p += 4) {
-    gra[i] = (px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114) | 0;
+    const r = px[p], g2 = px[p + 1], b2 = px[p + 2];
+    gra[i] = (r * 0.299 + g2 * 0.587 + b2 * 0.114) | 0;
+    if (!bla) continue;
+
+    // Blå måste vara den största kanalen. Är den inte det är pixeln inte blå,
+    // och då behöver vi varken mättnad eller kulör — det är den billigaste
+    // avvisningen som finns och den tar merparten av bilden.
+    if (b2 <= r || b2 <= g2) continue;
+    const mn = r < g2 ? r : g2;
+    const delta = b2 - mn;
+    if (delta <= 0) continue;
+    if (b2 < BLA_V_MIN * 255 || b2 > BLA_V_MAX * 255) continue;
+    // Mättnadsgolvet först, sedan renhet ELLER kroma. Se resonemanget ovan:
+    // mörker och urblekning förstör var sitt av de två talen, aldrig båda.
+    const mattnad = delta / b2;
+    if (mattnad < BLA_MATTNAD_MIN) continue;
+    if (mattnad < BLA_MATTNAD_REN && delta < BLA_KROMA_MIN) continue;
+    // Kulören, men bara den sektor där blå är störst: 240° ± 60°.
+    const nyans = 240 + 60 * (r - g2) / delta;
+    if (nyans < BLA_NYANS_MIN || nyans > BLA_NYANS_MAX) continue;
+    blaMask[i] = 1;
   }
   const trosk = otsu(gra);
 
@@ -600,7 +759,7 @@ function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8 } 
     blobbar.push({ minX, minY, bw, bh, area, forhallande, fyllnad,
                    vinkel, L, W, cx: mx, cy: my });
   }
-  return { b, h, skala, gra, trosk, blobbar };
+  return { b, h, skala, gra, trosk, blobbar, blaMask };
 }
 
 /**
@@ -704,6 +863,660 @@ function raknaTeckenbytenVriden(gra, b, h, box) {
   return byten;
 }
 
+/* ---- Skyltens proportion som grind --------------------------------------
+ *
+ * 520 / 110 = 4,73. Nästan ingenting annat i en gatubild har den formen, och
+ * det gör den till en av de starkaste grindarna som finns att sätta. Men den
+ * får inte sättas hårt kring 4,73, för skylten är sällan sedd rakt framifrån.
+ *
+ * NEDRE GRÄNSEN 2,5 — skylten vriden bort från kameran i sidled.
+ * Bredden kortas av med cosinus för vinkeln, höjden står kvar:
+ *      4,73 · cos 40° = 3,62
+ *      4,73 · cos 50° = 3,04
+ *      4,73 · cos 58° = 2,51
+ * Vid 58° börjar tecknen skymma varandra i sidled och ingen motor läser dem.
+ * Grinden kastar alltså bara sådant som ändå inte gick att läsa.
+ *
+ * ÖVRE GRÄNSEN 7,0 — skylten sedd uppifrån eller underifrån.
+ * Nu är det höjden som kortas av:
+ *      4,73 / cos 30° = 5,46
+ *      4,73 / cos 40° = 6,17
+ *      4,73 / cos 48° = 7,07
+ * Telefonen sitter i en hållare och tittar snett ner, och skyltar sitter
+ * dessutom ofta lätt bakåtlutade. 48° är mer än det med god marginal. Ligger
+ * mätningen ovanför är det inte längre en skylt vi mätt — då har det ljusa
+ * fortsatt förbi skylten ut i en vit stötfångare eller en ljus skåpbilssida.
+ *
+ * Spannet [2,5; 7,0] täcker alltså ±58° i sidled och ±48° i höjdled, och det
+ * är mer än vad som går att läsa åt båda hållen.
+ */
+export const SKYLT_KVOT     = 4.73;
+export const SKYLT_KVOT_MIN = 2.5;
+export const SKYLT_KVOT_MAX = 7.0;
+
+/* ---- Blå bandet som ankare ----------------------------------------------
+ *
+ * Bandets form, mätt längs bandets EGNA axlar.
+ *
+ * Nominellt är bandet 110 mm högt och 52 mm brett, alltså 2,12 gånger längre
+ * än brett. Sett snett i sidled blir det smalare och kvoten stiger
+ * (2,12 / cos 60° = 4,2), sett snett uppifrån blir det kortare och kvoten
+ * sjunker (2,12 · cos 60° = 1,06). Därav [1,10; 6,0].
+ *
+ * FÖRST MÄTTES DEN AXELPARALLELLA LÅDAN, OCH DET VAR FEL PÅ SAMMA SÄTT SOM
+ * DEN GAMLA SÖKNINGEN VAR FEL.
+ *
+ * Lutar bilden i sökaren dras den omslutande lådan mot kvadrat: vid 40° blir
+ * ett band på 2,12 en låda på 1,07, som föll på en gräns vid 1,10. Skylten
+ * fanns mitt i bild, tydligt blå, och ankaret såg den inte — av exakt samma
+ * skäl som den gamla ljusstapelsökningen inte såg lutade skyltar.
+ *
+ * Kvoten mäts därför på egenvärdena, precis som `skannaLjusa` redan gör för
+ * skyltar. De är oberoende av hur bilden är vriden: ett band är 2,12 långt mot
+ * brett oavsett om telefonen ligger rakt eller på sned. Talen nedan behövde
+ * inte ändras — bara vad de mäts på.
+ *
+ * Grinden är ändå medvetet slapp. Bandets uppgift är att peka ut VAR vi ska
+ * titta, inte att avgöra vad vi hittade. Det avgörandet ligger i skyltens
+ * proportion och i teckenräkningen längre ner.
+ */
+export const BAND = {
+  minBredd: 2,      // px i arbetsupplösning; smalare än så är en pixelrad brus
+  minHojd: 5,       // motsvarar en skylt ~24 px bred i arbetsupplösning
+  kvotMin: 1.10,    // längd genom bredd, längs bandets egna axlar
+  kvotMax: 6.0,
+  /*
+   * Kostnadsgrind, inte formgrind: en blå himmel eller en blå husvägg ska inte
+   * betala för en mätning som ändå kommer att falla.
+   *
+   * Talet måste sättas mot det MINSTA område sökningen körs i, inte mot en hel
+   * bildruta. `sokKandidater` söker i hela bilden, och där är bandet under en
+   * procent av ytan. Men `hittaPlat` söker inne i en ruta som redan sitter tätt
+   * om skylten, och där är bandet ungefär en tiondel av bredden gånger hela
+   * höjden — alltså runt tio procent av ytan, fullt lagligt.
+   *
+   * Först stod 0,06 här, satt efter helbildsfallet. Följden var att ankaret
+   * fungerade i den stora sökningen men aldrig inne i den snäva rutan, vilket
+   * är precis där beskärningen till textigenkänningen avgörs. 0,20 lämnar
+   * marginal åt båda hållen och stänger fortfarande ute himmel och fasader.
+   */
+  maxAreaAndel: 0.20,
+  max: 8,           // så många band tas vidare till mätning, störst först
+};
+
+/* ---- Vad som krävs av KROPPEN till höger om bandet ----------------------
+ *
+ * DET HÄR ÄR DET SOM SAKNADES, OCH DET SLÄPPTE IGENOM PÅHITTADE SKYLTAR.
+ *
+ * Kravet på kroppen var i praktiken bara tre saker: att den är ljus, att den
+ * har ungefär rätt proportion, och att det finns MINST fyra växlingar mellan
+ * mörkt och ljust. En vit skåpbilssida med en blå logotypruta och texten
+ * "RÖR & VVS AB" uppfyller alla tre — uppmätt gav den scenen en ankrad
+ * kandidat med poäng 1,75, och textigenkänningen läste ut "ROR54B", som är
+ * ett formatgiltigt svenskt registreringsnummer. Ingenting längre fram i
+ * kedjan kan stoppa det: formatvalideringen säger ja, rösträkningen får
+ * samma svar bildruta efter bildruta eftersom skåpbilen står stilla, och en
+ * kollision mot ett av förarens egna fordon hade utlöst larm på en främling.
+ *
+ * Grinden nedan säger inte längre "ljust med kontrast" utan "kropp med sex
+ * tecken i skyltens takt". Fyra oberoende mätningar:
+ *
+ *   TAK PÅ VÄXLINGARNA. Sex tecken ger tio till fjorton växlingar. En
+ *     korrugerad trailersida gav trettio och en företagstext tjugo. Talet
+ *     som skulle skilja en skylt från en slät yta belönade i stället det som
+ *     har MER struktur än en skylt. Taket är den enkla halvan av fixen.
+ *
+ *   GOLV EFTER UPPLÖSNING. Fyra växlingar är inte sex tecken. Men golvet kan
+ *     inte sättas till åtta rakt av: en skylt vars kropp bara är fyrtio
+ *     pixlar i arbetsupplösning har tio pixlar per tecken, och där flyter
+ *     tecken ihop av ren nedskalning. Golvet följer därför upplösningen, och
+ *     är hårdast där mätningen är pålitligast. Är bredden dessutom ANTAGEN
+ *     är formen inget bevis alls, och då krävs två växlingar till.
+ *
+ *   SPANN. Tecknen ska ligga utspridda över kroppen. En skylt har text från
+ *     nära bandet mot högerkanten; en företagslogotyp har ett kort ord i ena
+ *     änden av en lång ljus yta.
+ *
+ * EN FEMTE GRIND PRÖVADES OCH FÖLL PÅ MÄTNINGEN: teckenTAKTEN, alltså
+ * spannet delat med antalet pelare. Tanken var god — sex tecken ger gles takt,
+ * löpande text ger tät. Men mätt mot provbilderna i sok-test.html ligger en
+ * äkta skylt mellan 0,054 och 0,131 kroppslängder, och en tolv glyfer lång
+ * företagstext över samma spann landar runt 0,043. Marginalen mellan rätt och
+ * fel är alltså mindre än tio procent, och en grind med den marginalen kommer
+ * att döda riktiga skyltar långt innan den räddar oss från ett lockbete.
+ * Antalet växlingar mäter samma sak — hur många tecken det är — med betydligt
+ * större marginal, så taket och golvet får bära det ensamma.
+ *
+ * Talen nedan är satta mot uppmätta värden och inte mot teori. På samtliga
+ * provbilder ligger en äkta skylt på 10–16 växlingar och minst 38 % spann;
+ * lockbetena som släpptes igenom låg på 20, 28 och 30 växlingar.
+ */
+export const KROPP = {
+  bytenTak: 18,          // uppmätt: äkta skylt max 16, lockbeten från 20
+  golvHog: 8,            // kropp >= hogUpplostPx: full teckenevidens krävs
+  golvMellan: 6,         // kropp >= mellanUpplostPx
+  golvLag: 4,            // därunder: som förut, mätningen bär inte mer
+  antagenTillagg: 2,     // antagen bredd ⇒ hårdare krav på tecknen
+  hogUpplostPx: 80,
+  mellanUpplostPx: 40,
+  spannAndel: 0.30,      // uppmätt golv på provbilderna: 0,38
+  vansterLjusMax: 0.6,   // så långt får det ljusa fortsätta VÄNSTER om bandet
+  bandMorkerAndel: 0.55, // bandet måste ligga under den nivån mellan lag och hog
+};
+
+/**
+ * Plockar ut sammanhängande blå områden ur blåmasken.
+ *
+ * Fyra grannar, inte åtta, och sedan en hopslagning.
+ *
+ * Först prövades åtta grannar, eftersom EU-bandet är genomborrat av tolv gula
+ * stjärnor och ett gult S och de hålen kan kapa bandet i två delar när skylten
+ * är liten i bild. Men åtta grannar läcker: skyltens svarta ram är två pixlar
+ * i full upplösning och mindre än en pixel efter nedskalningen till 400, och
+ * över den utsuddade ramen räckte en enda diagonal förbindelse för att bandet
+ * skulle flyta ihop med det som låg utanför skylten. Den sammanflutna klumpen
+ * har inte ett bands form, så den kastades — och skylten med den.
+ *
+ * Fyra grannar läcker inte lika lätt. Att bandet kan splittras av stjärnorna
+ * löses i stället av hopslagningen nedan, som bara slår ihop bitar som ligger
+ * i samma lodräta stråk och nästan nuddar varandra. Den kan laga ett delat
+ * band; den kan inte limma ihop ett band med en bilkaross bredvid.
+ *
+ * Momenten är rena summor, så en hopslagning är exakt — inte en approximation.
+ */
+function blaBand(mask, b, h) {
+  const n = b * h;
+  const besokt = new Uint8Array(n);
+  const stack = new Int32Array(n);
+  const bitar = [];
+
+  for (let start = 0; start < n; start++) {
+    if (besokt[start] || !mask[start]) continue;
+    let sp = 0; stack[sp++] = start; besokt[start] = 1;
+    let minX = b, maxX = -1, minY = h, maxY = -1, area = 0;
+    let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+
+    while (sp) {
+      const i = stack[--sp];
+      const x = i % b, y = (i / b) | 0;
+      area++;
+      sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (x > 0     && !besokt[i - 1] && mask[i - 1]) { besokt[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < b - 1 && !besokt[i + 1] && mask[i + 1]) { besokt[i + 1] = 1; stack[sp++] = i + 1; }
+      if (y > 0     && !besokt[i - b] && mask[i - b]) { besokt[i - b] = 1; stack[sp++] = i - b; }
+      if (y < h - 1 && !besokt[i + b] && mask[i + b]) { besokt[i + b] = 1; stack[sp++] = i + b; }
+    }
+    bitar.push({ minX, minY, maxX, maxY, area, sx, sy, sxx, syy, sxy });
+  }
+
+  // Störst först, så en hopslagning alltid växer det största fragmentet.
+  bitar.sort((a, c) => c.area - a.area);
+  const hela = [];
+  for (const f of bitar) {
+    let slogsIhop = false;
+    for (const m of hela) {
+      const overlapp = Math.min(f.maxX, m.maxX) - Math.max(f.minX, m.minX) + 1;
+      const smalast = Math.min(f.maxX - f.minX, m.maxX - m.minX) + 1;
+      const glapp = Math.max(f.minY - m.maxY, m.minY - f.maxY);
+      if (overlapp < smalast * 0.5 || glapp > 2) continue;
+      m.minX = Math.min(m.minX, f.minX); m.maxX = Math.max(m.maxX, f.maxX);
+      m.minY = Math.min(m.minY, f.minY); m.maxY = Math.max(m.maxY, f.maxY);
+      m.area += f.area; m.sx += f.sx; m.sy += f.sy;
+      m.sxx += f.sxx; m.syy += f.syy; m.sxy += f.sxy;
+      slogsIhop = true; break;
+    }
+    if (!slogsIhop) hela.push({ ...f });
+  }
+
+  const ut = [];
+  for (const m of hela) {
+    const bw = m.maxX - m.minX + 1, bh = m.maxY - m.minY + 1;
+    // Lådan duger till två saker: att se att fläcken alls har någon utsträckning,
+    // och att se att den inte är orimligt stor. Formen mäts längre ner.
+    if (bw < BAND.minBredd || bh < BAND.minHojd) continue;
+    if (m.area > n * BAND.maxAreaAndel) continue;
+
+    // Samma momentmatematik som `skannaLjusa`, men bandets långa axel är den
+    // *lodräta*. Skyltens riktning är därför vinkelrät mot den, och den faller
+    // ut gratis ur samma summor.
+    const cx = m.sx / m.area, cy = m.sy / m.area;
+    const cxx = m.sxx / m.area - cx * cx;
+    const cyy = m.syy / m.area - cy * cy;
+    const cxy = m.sxy / m.area - cx * cy;
+    const spar = cxx + cyy;
+    const det = cxx * cyy - cxy * cxy;
+    const rot = Math.sqrt(Math.max(0, spar * spar / 4 - det));
+    const L = Math.sqrt(Math.max(1, 12 * (spar / 2 + rot) + 1));            // bandets längd
+    const W = Math.sqrt(Math.max(1, 12 * Math.max(0, spar / 2 - rot) + 1)); // bandets bredd
+
+    // Formgrinden, längs bandets egna axlar. Se resonemanget vid BAND.
+    const kvot = L / W;
+    if (kvot < BAND.kvotMin || kvot > BAND.kvotMax) continue;
+
+    /*
+     * Huvudaxeln är bara meningsfull när bandet faktiskt är avlångt. Ett band
+     * sett brant uppifrån är nästan kvadratiskt, och då pekar "långa axeln" åt
+     * ett slumpmässigt håll. Hellre anta att skylten ligger vågrätt — det är
+     * rätt i de allra flesta bildrutor — än att lita på ett brusigt tal.
+     */
+    const axel = vikVinkel(0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180 / Math.PI);
+    const platvinkel = (L / W) >= 1.3 ? vikVinkel(axel - 90) : 0;
+
+    ut.push({ minX: m.minX, minY: m.minY, bw, bh, area: m.area, cx, cy, L, W, platvinkel });
+  }
+  ut.sort((a, c) => c.area - a.area);
+  return ut.slice(0, BAND.max);
+}
+
+/**
+ * Bandets höjd, mätt längs bandets egen axel.
+ *
+ * Momenten duger till att peka ut riktningen men inte till att mäta höjden,
+ * och det är inte en detalj — höjden ÄR skyltens höjd, och hela proportionen
+ * hänger på den.
+ *
+ * Skälet är hålen. Ett band med tolv stjärnor och ett S är genomborrat mitt
+ * på, och andra ordningens moment mäter spridning: tar man bort massa nära
+ * mitten ökar spridningen, och den beräknade längden blir för stor. Uppmätt
+ * på provbilderna gav momenten 77 px där bandet var 72 — sju procent för
+ * mycket, konsekvent, och sju procent på höjden är sju procent fel på
+ * proportionen. Det räckte för att en skylt vriden 55° skulle mätas till 2,49
+ * och falla på en grind som går vid 2,50.
+ *
+ * Här mäts i stället hur långt det blå faktiskt sträcker sig, längs bandets
+ * egen axel, från mitten och utåt åt båda hållen. Hålen bryggas av ett glapp —
+ * ett hål i ett band är fortfarande samma band. Tre provlinjer i sidled, den
+ * längsta vinner, så att en stjärna som råkar ligga mitt i den ena linjen inte
+ * kortar av svaret.
+ *
+ * @returns {{hojd:number, vMitt:number}|null}  höjd i pixlar, och hur långt
+ *          bandets verkliga mitt ligger från tyngdpunkten längs axeln
+ */
+function matBandHojd(mask, b, h, band, vinkel) {
+  const rad = vinkel * Math.PI / 180;
+  const kos = Math.cos(rad), sin = Math.sin(rad);
+  const pa = (u, v) => {
+    const x = Math.round(band.cx + u * kos - v * sin);
+    const y = Math.round(band.cy + u * sin + v * kos);
+    if (x < 0 || x >= b || y < 0 || y >= h) return 0;
+    return mask[y * b + x];
+  };
+  // Bandet kan aldrig vara längre än sin egen omslutande låda, med marginal.
+  const tak = Math.round(Math.max(band.bw, band.bh) * 1.2) + 4;
+  const glapp = Math.max(2, Math.round(Math.max(band.bw, band.bh) * 0.22));
+
+  let bast = 0, mitt = 0;
+  for (const u of [0, -band.W * 0.3, band.W * 0.3]) {
+    let upp = 0, ner = 0;
+    for (let d = 1; d <= tak; d++) {
+      if (pa(u, d)) upp = d; else if (d - upp > glapp) break;
+    }
+    for (let d = 1; d <= tak; d++) {
+      if (pa(u, -d)) ner = d; else if (d - ner > glapp) break;
+    }
+    if (upp + ner > bast) { bast = upp + ner; mitt = (upp - ner) / 2; }
+  }
+  return bast ? { hojd: bast + 1, vMitt: mitt } : null;
+}
+
+/**
+ * Mäter upp skylten utifrån ett blått band.
+ *
+ * Bandets höjd ÄR skyltens höjd — bandet går hela vägen upp och ner. Det är
+ * den mätningen som gör ankaret värt något: höjden är det tal skylten är
+ * minst tvetydig om, och ur den följer allt annat.
+ *
+ * Bredden mäts, den antas inte. Vi går åt höger från bandet och letar efter
+ * var det ljusa tar slut. Det måste gå att gå förbi tecknen på vägen — en
+ * kolumn mitt i ett B är nästan helt mörk — så mätningen bär med sig ett
+ * glapp på 0,45 skylthöjder innan den säger att det ljusa är slut. Bredare än
+ * så är inget tecken i skyltfonten.
+ *
+ * @param {number} vinkel  skyltens riktning i grader, ofolded: bandet ligger
+ *                         vid u = 0 och skyltkroppen åt +u
+ * @returns {object|null}  mätningen i arbetsupplösningens pixlar
+ */
+function matSkyltFranBand(gra, mask, b, h, band, vinkel) {
+  const matt = matBandHojd(mask, b, h, band, vinkel);
+  if (!matt) return null;
+  const ph = matt.hojd / 0.94;          // bandet är inramat, skylten är lite högre
+  if (ph < 6) return null;
+
+  // Bandbredden i förhållande till höjden. Nominellt 52/110 = 0,47; snett
+  // sett krymper den. Långt utanför det är det inte ett skyltband.
+  const bandAndel = band.W / ph;
+  if (bandAndel < 0.18 || bandAndel > 1.0) return null;
+
+  const rad = vinkel * Math.PI / 180;
+  const kos = Math.cos(rad), sin = Math.sin(rad);
+  /*
+   * Origo läggs i bandets UPPMÄTTA mitt, inte i dess tyngdpunkt. Stjärnorna
+   * och S:et sitter inte symmetriskt i bandet, så tyngdpunkten dras åt ett
+   * håll — och eftersom allt nedan mäts från origo hade den förskjutningen
+   * lutat hela skylten uppåt eller nedåt i beskärningen.
+   */
+  const ox = band.cx - matt.vMitt * sin;
+  const oy = band.cy + matt.vMitt * kos;
+  const prov = (u, v) => {
+    const x = Math.round(ox + u * kos - v * sin);
+    const y = Math.round(oy + u * sin + v * kos);
+    if (x < 0 || x >= b || y < 0 || y >= h) return -1;
+    return gra[y * b + x];
+  };
+
+  // Elva provlinjer över mittersta 60 % av höjden. Över- och underkanten
+  // bidrar ingenting och drar bara in skyltramen i mätningen.
+  const vRad = [];
+  for (let i = 0; i < 11; i++) vRad.push((-0.3 + 0.06 * i) * ph);
+
+  const steg = Math.max(1, Math.round(ph / 60));
+  const u0 = band.W / 2;                        // bandets högerkant
+  const uMax = u0 + SKYLT_KVOT_MAX * 1.03 * ph; // så långt vi någonsin letar
+
+  /*
+   * Vitnivån tas ur den första biten närmast bandet. Där ÄR vi på skylten om
+   * det finns en skylt — de första 1,5 skylthöjderna rymmer ett par tecken och
+   * bottnen mellan dem. Att i stället ta nivån ur hela sökspannet hade låtit
+   * bakgrunden bestämma var gränsen går.
+   */
+  let lag = 255, hog = 0, prickar = 0;
+  for (let u = u0; u <= u0 + 1.5 * ph; u += steg) {
+    for (const v of vRad) {
+      const g = prov(u, v);
+      if (g < 0) continue;
+      prickar++;
+      if (g < lag) lag = g;
+      if (g > hog) hog = g;
+    }
+  }
+  if (prickar < 20) return null;          // skylten ligger utanför bilden
+  if (hog - lag < 35) return null;        // slät yta intill bandet, inga tecken
+  const trosk = lag + (hog - lag) * 0.55;
+
+  /*
+   * Bandet måste vara MÖRKT i förhållande till kroppen.
+   *
+   * Blåmasken går på kulör och mättnad, inte på ljushet, och det är rätt — en
+   * skylt i skugga är fortfarande blå. Men konsekvensen är att en ljus blå
+   * yta (en himmelsflik mellan två grenar, en blekt blå dekal) kan bli ett
+   * "band" med en ljus yta bredvid sig. Ett EU-band är djupt mörkblått och
+   * ligger långt under skyltens vitnivå även med de gula stjärnorna inräknade.
+   * Uppmätt på provbilderna landar bandet runt en fjärdedel upp mellan svart
+   * text och vit botten; grinden går vid drygt hälften.
+   */
+  let bandSumma = 0, bandAntal = 0;
+  for (let u = -band.W * 0.3; u <= band.W * 0.3; u += Math.max(1, steg)) {
+    for (const v of vRad) {
+      const g = prov(u, v);
+      if (g < 0) continue;
+      bandSumma += g; bandAntal++;
+    }
+  }
+  if (!bandAntal) return null;
+  if (bandSumma / bandAntal > lag + (hog - lag) * KROPP.bandMorkerAndel) return null;
+
+  /*
+   * Hur långt det ljusa fortsätter till VÄNSTER om bandet.
+   *
+   * En skylt SLUTAR vid bandet — bandet sitter i skyltens yttersta vänsterkant.
+   * En skåpbilssida med en blå logotypruta gör det inte: där fortsätter samma
+   * vita plåt förbi det blå åt båda hållen.
+   *
+   * Det är däremot medvetet INTE en dödsdom. Sitter skylten på en vit skåpbil,
+   * en silverkaross eller mot en ljus husvägg är det ljust till vänster om
+   * bandet också, och det är exakt det fall ankaret finns för — att avvisa där
+   * vore att göra sökaren blind i just det läge där ljusstapelvägen redan är
+   * svagast. Måttet används därför till att avgöra hur mycket ankaret får LYFTA
+   * kandidaten, inte till att kasta den. Se `ankarfaktor`.
+   */
+  let vansterLjus = 0;
+  for (let d = steg; d <= 1.2 * ph; d += steg) {
+    let ljus = 0, av = 0;
+    for (const v of vRad) {
+      const g = prov(-band.W / 2 - d, v);
+      if (g < 0) continue;
+      av++;
+      if (g > trosk) ljus++;
+    }
+    if (!av || ljus / av < 0.35) break;
+    vansterLjus = d;
+  }
+  const kantstodd = vansterLjus < KROPP.vansterLjusMax * ph;
+
+  // Gå åt höger tills det ljusa tar slut.
+  const glapp = 0.45 * ph;
+  let sistLjus = u0, slutMatt = false;
+  for (let u = u0; u <= uMax; u += steg) {
+    let ljus = 0, av = 0;
+    for (const v of vRad) {
+      const g = prov(u, v);
+      if (g < 0) continue;
+      av++;
+      if (g > trosk) ljus++;
+    }
+    if (av && ljus / av >= 0.35) sistLjus = u;
+    else if (u - sistLjus > glapp) { slutMatt = true; break; }
+  }
+
+  /*
+   * Tre utfall, och skillnaden mellan dem är ärlighet.
+   *
+   * 1. Det ljusa tog slut på ett rimligt avstånd. Då HAR vi mätt skyltens
+   *    bredd, och proportionen får grinda på riktigt.
+   *
+   * 2. Det ljusa tog aldrig slut, eller tog slut orimligt långt bort. Båda
+   *    betyder samma sak: skyltens högerkant syns inte, för bakgrunden är
+   *    också ljus. Skylten sitter på en vit skåpbil, en silverfärgad kaross
+   *    eller mot en ljus husvägg. Då har vi inte mätt bredden, och att låtsas
+   *    om något annat vore att grinda på ett tal vi hittat på.
+   *
+   *    I stället används den kända geometrin, 4,73, och kandidaten märks som
+   *    antagen. Formen är då inget bevis längre, så bevisbördan flyttas till
+   *    teckenräkningen som får ett hårdare krav längre ner.
+   *
+   *    Att i stället avvisa hade tappat skylten helt i just det läge där
+   *    ljusstapelsökningen också är som svagast — där flyter skylten ihop med
+   *    karossen till en enda ljus fläck. Det är precis det fallet ankaret
+   *    finns för.
+   *
+   * 3. Det ljusa tog slut alldeles för tidigt. Då är det inte en skylt till
+   *    höger om bandet, och kandidaten avvisas. Här är mätningen ett riktigt
+   *    negativt besked och inte ett uteblivet svar.
+   */
+  let pw = sistLjus + band.W / 2;
+  let antagenBredd = false;
+  const kvot = pw / ph;
+  if (!slutMatt || kvot > SKYLT_KVOT_MAX) {
+    pw = SKYLT_KVOT * ph;
+    antagenBredd = true;
+  } else if (kvot < SKYLT_KVOT_MIN) {
+    return null;
+  }
+
+  /*
+   * Teckenväxlingar i skyltkroppen, alltså till höger om bandet. Sex tecken
+   * ger tio till sexton växlingar; en slät vit yta ger noll, en företagstext
+   * tjugo och ett räfflat trailerplåt trettio. Det är den mätning som skiljer
+   * en skylt från en blå bil parkerad intill en vit panel, och den får döda en
+   * kandidat åt båda hållen — för få OCH för många. Grindarna och de uppmätta
+   * talen bakom dem står i KROPP.
+   *
+   * Räkningen kräver upplösning för att betyda något. Är kroppen under 24 px
+   * lång i arbetsupplösning svarar vi varken ja eller nej — samma försiktighet
+   * som `poangsattKandidat` redan har mot små kandidater.
+   */
+  const uSlut = -band.W / 2 + pw;
+  const kroppLangd = uSlut - u0;
+  let byten = 0, imork = false;
+  // Var växlingarna ligger, inte bara hur många. Spannet räknas ur det.
+  let forstaByte = 0, sistaByte = 0;
+  for (let u = u0; u <= uSlut; u += steg) {
+    let mork = 0, av = 0;
+    for (const v of vRad) {
+      const g = prov(u, v);
+      if (g < 0) continue;
+      av++;
+      if (g < trosk) mork++;
+    }
+    if (!av) continue;
+    const andel = mork / av;
+    let bytte = false;
+    if (!imork && andel > 0.45) { imork = true; bytte = true; }
+    else if (imork && andel < 0.2) { imork = false; bytte = true; }
+    if (bytte) {
+      if (!byten) forstaByte = u;
+      sistaByte = u;
+      byten++;
+    }
+  }
+  const palitligTeckenrakning = kroppLangd >= 24;
+  if (palitligTeckenrakning) {
+    /*
+     * Tre grindar, i den ordning de är billigast att svara på. Alla tre frågar
+     * samma sak från olika håll: är det här sex tecken, eller är det något
+     * annat som råkar vara randigt? Se KROPP för motiveringen och för talen.
+     */
+    if (byten > KROPP.bytenTak) return null;
+
+    const bas = kroppLangd >= KROPP.hogUpplostPx ? KROPP.golvHog
+              : kroppLangd >= KROPP.mellanUpplostPx ? KROPP.golvMellan
+              : KROPP.golvLag;
+    if (byten < bas + (antagenBredd ? KROPP.antagenTillagg : 0)) return null;
+
+    if (sistaByte - forstaByte < kroppLangd * KROPP.spannAndel) return null;
+  }
+
+  // Skyltens mitt, uttryckt i bildens pixlar.
+  const uMitt = -band.W / 2 + pw / 2;
+  const cx = ox + uMitt * kos;
+  const cy = oy + uMitt * sin;
+  const aw = pw * Math.abs(kos) + ph * Math.abs(sin);
+  const ah = pw * Math.abs(sin) + ph * Math.abs(kos);
+
+  return {
+    cx, cy, rw: pw, rh: ph, vinkel,
+    minX: cx - aw / 2, minY: cy - ah / 2, bw: aw, bh: ah,
+    forhallande: pw / ph,
+    teckenbyten: byten,
+    palitligTeckenrakning,
+    antagenBredd,
+    kantstodd,
+    // Uppmätt EU-band i andel av skyltens bredd. `forbehandla` slipper då
+    // gissa på en fast tiondel.
+    euAndel: Math.min(0.3, Math.max(0.04, band.W / pw)),
+  };
+}
+
+/**
+ * Kör hela ankarvägen mot en färdig skanning: blå band → uppmätt skylt.
+ *
+ * BÅDA RIKTNINGARNA MÄTS, OCH DEN BÄSTA VINNER.
+ *
+ * Huvudaxeln vet vilken linje bandet ligger längs men inte åt vilket håll
+ * skylten fortsätter — ett band och samma band upp och ner ger identiska
+ * moment. Förut stod det `a || b` här, med motiveringen att fel riktning
+ * "faller på sina egna grindar". Det var ett antagande och inte en mätning,
+ * och `||` gör antagandet till ett faktum: passerar fel riktning så prövas
+ * rätt riktning aldrig.
+ *
+ * `vikVinkel` viker alltid till (-90, 90], så första försöket letar alltid
+ * åt höger i bildens koordinater. Står skylten nästan lodrätt i bildrutan —
+ * liggande telefon, som modulen räknar med på annat håll — pekar det första
+ * försöket rakt in i karossen. Är karossen ljus tar det ljusa aldrig slut,
+ * bredden antas, och en grill eller en lyktkant kan bära hem teckengrinden.
+ * Då returnerades en ruta över plåten och den riktiga skylten mättes aldrig.
+ *
+ * Rangordningen: en UPPMÄTT bredd slår en antagen, sedan vinner den med flest
+ * teckenväxlingar. Kostnaden är en extra mätning per band — samma kostnad som
+ * förut betalades i varje fall där den första riktningen misslyckades.
+ *
+ * Den omvända riktningen märks. En svensk skylt har bandet till vänster, så i
+ * en rättvänd bildruta är omvänd riktning inte skyltens layout. Den får därför
+ * ett mindre lyft i poängen (se `ankarfaktor`) — men den kastas inte, för med
+ * liggande telefon är den rätt.
+ */
+function blaAnkare(s) {
+  if (!s.blaMask) return [];
+  const ut = [];
+  const battre = (a, b) => {
+    if (!b) return a;
+    if (!a) return b;
+    if (a.antagenBredd !== b.antagenBredd) return a.antagenBredd ? b : a;
+    return b.teckenbyten > a.teckenbyten ? b : a;
+  };
+  for (const bd of blaBand(s.blaMask, s.b, s.h)) {
+    const fram = matSkyltFranBand(s.gra, s.blaMask, s.b, s.h, bd, bd.platvinkel);
+    const bak = matSkyltFranBand(s.gra, s.blaMask, s.b, s.h, bd, bd.platvinkel + 180);
+    if (bak) bak.omvand = true;
+    const f = battre(fram, bak);
+    if (f) ut.push(f);
+  }
+  return ut;
+}
+
+/**
+ * Hur mycket ett ankare får lyfta en kandidats poäng.
+ *
+ * FÖRUT VAR TALET 1,8 OVILLKORLIGT, OCH DET VAR DET SOM GJORDE ETT FALSKT
+ * ANKARE FARLIGT. Med en äkta ABC123-skylt mitt i bild och en skåpbil med blå
+ * logotypruta uppe i hörnet vann lockbetet låset — 1,55 mot 1,35 — och den
+ * skylt föraren faktiskt hade framför sig lästes aldrig. Lyftet ska ges för
+ * bevis, inte för att kandidaten kom in genom den blå dörren.
+ *
+ * Fullt lyft kräver att kroppen faktiskt bevisats vara en skyltkropp: att
+ * teckenräkningen var pålitlig (kroppen har upplösning nog), att bredden
+ * MÄTTES och inte antogs, att bandet sitter i en kant, och att riktningen är
+ * den en svensk skylt har. Saknas något av det är kandidaten fortfarande värd
+ * att titta på — den ska bara inte gå före en uppmätt ljus skylt.
+ */
+function ankarfaktor(a) {
+  if (!a.palitligTeckenrakning) return 1.15;   // ingen teckenevidens alls
+  let f = a.antagenBredd ? 1.35 : 1.8;         // gissad bredd ⇒ formen är inget bevis
+  if (!a.kantstodd) f = Math.min(f, 1.25);     // bandet sitter mitt i en ljus yta
+  /*
+   * Omvänd riktning: mindre lyft, men inte inget. Uppmätt på en scen vriden
+   * −90° — liggande telefon, ett läge modulen uttryckligen räknar med — läser
+   * den omvända ankarkandidaten ut MLK907 med 87 % säkerhet medan ljusstapeln
+   * på samma skylt inte ger någon läsning alls. Straffas ankaret ända ner till
+   * 1,0 vinner alltså den kandidat som inte går att läsa. 1,5 räcker för att
+   * en rättvänd ankarkandidat alltid ska gå före, och för att den omvända ändå
+   * ska slå en ren ljus fläck.
+   */
+  if (a.omvand) f = Math.min(f, 1.5);
+  return f;
+}
+
+/**
+ * Bara ankarvägen, i källans pixlar. Finns för att provet ska kunna mäta den
+ * för sig — hur ofta bandet hittas, vilken proportion som mättes upp och vad
+ * det kostade — utan att ljusstapelvägen blandar sig i svaret.
+ *
+ * Produktionsvägen går genom `sokKandidater`, som kör båda.
+ */
+export function sokAnkare(kalla, omrade = null, { arbetsbredd = 400 } = {}) {
+  const m = kallMatt(kalla);
+  const yta = omrade || { x: 0, y: 0, w: m.b, h: m.h };
+  if (!(yta.w > 16 && yta.h > 16)) return [];
+  const s = skannaLjusa(kalla, yta, arbetsbredd, { minAndel: 0.025, minPx: 10, bla: true });
+  const inv = 1 / s.skala;
+  return blaAnkare(s).map(a => ({
+    x: yta.x + a.minX * inv, y: yta.y + a.minY * inv,
+    w: a.bw * inv, h: a.bh * inv,
+    cx: yta.x + a.cx * inv, cy: yta.y + a.cy * inv,
+    rw: a.rw * inv, rh: a.rh * inv,
+    vinkel: a.vinkel,
+    forhallande: a.forhallande,
+    teckenbyten: a.teckenbyten,
+    antagenBredd: a.antagenBredd,
+    palitligTeckenrakning: a.palitligTeckenrakning,
+    kantstodd: a.kantstodd,
+    omvand: !!a.omvand,
+    euAndel: a.euAndel,
+  }));
+}
+
 /**
  * Letar upp själva skylten inne i en given ruta.
  *
@@ -712,17 +1525,104 @@ function raknaTeckenbytenVriden(gra, b, h, box) {
  * ingenting. Det var precis så mätningen såg ut innan: rutan gav rätt svar
  * bara när skylten råkade fylla den.
  *
- * Beteendet är oförändrat sedan mätningen: samma arbetsbredd, samma filter,
- * största träffen vinner. Sökningen i hela bilden ligger i `sokKandidater`.
+ * Två vägar, i den ordningen:
+ *
+ *   1. Det blå EU-bandet. Hittas ett band som mäter upp till något med
+ *      skyltens proportion är det skylten, punkt. Den vägen ger dessutom två
+ *      saker den gamla aldrig kunde: en vänsterkant som är uppmätt i stället
+ *      för gissad, och bandets faktiska bredd — så att `forbehandla` kan
+ *      vitmåla precis bandet i stället för en fast tiondel av bilden.
+ *
+ *   2. Ljusstapeln, precis som förut: samma arbetsbredd, samma filter. Den är
+ *      kvar därför att bandet kan vara smutsigt, avklippt i bildkanten,
+ *      bortvänt eller sitta på en utländsk skylt utan band alls. En sökare som
+ *      är bättre i snitt men blind i vissa lägen är en försämring, inte en
+ *      förbättring.
+ *
+ * DE TÄVLAR, DE STÅR INTE I KÖ.
+ *
+ * Förut returnerades ankaret ovillkorligt och ljusstapeln nåddes bara när
+ * ankaret gav NOLL träffar. Ett enda blått område som tog sig igenom
+ * mätningen vann därmed över en perfekt ljus skylt i samma ruta — och de två
+ * vanligaste sätten att få ett sådant område är blå kaross som flyter ihop
+ * med bandet (bredden överskattas, kvoten sätts till 4,73 per definition och
+ * lådan blir karossen) och ett blått föremål bredvid skylten. Kommentaren
+ * ovan om att ljusstapeln är kvar "för att bandet kan vara bortvänt" stämde
+ * bara i det fall ankaret inte hittade någonting alls.
+ *
+ * Numera poängsätts båda med samma funktion som `sokKandidater` använder, och
+ * den bästa vinner. Det är samma jämförelse på båda ställena, vilket också
+ * betyder att de inte längre kan välja olika ruta för samma bildruta.
+ *
+ * Sökningen i hela bilden ligger i `sokKandidater`.
  *
  * @returns {object|null} snävare {x,y,w,h} i källans pixlar, eller null
  */
 export function hittaPlat(kalla, roi) {
   const AB = 320;                                   // arbetsbredd, håller det billigt
-  const s = skannaLjusa(kalla, roi, AB, { minAndel: 0.12, minPx: 0 });
+  const s = skannaLjusa(kalla, roi, AB, { minAndel: 0.12, minPx: 0, bla: true });
+  const inv0 = 1 / s.skala;
 
-  let bast = null;
-  for (const bl of s.blobbar) if (!bast || bl.area > bast.area) bast = bl;
+  let ankare = null, ankarePoang = -1;
+  for (const a of blaAnkare(s)) {
+    const p = poangsattKandidat({
+      forhallande: a.forhallande,
+      fyllnad: null,
+      teckenbyten: a.teckenbyten,
+      bredd: a.rw,
+      cx: a.cx / s.b, cy: a.cy / s.h,
+      ytaB: s.b,
+      vinkel: a.vinkel,
+      ankare: ankarfaktor(a),
+    });
+    if (p.poang > ankarePoang) { ankare = a; ankarePoang = p.poang; }
+  }
+
+  // Ljusstapeln poängsätts likadant. Att välja den STÖRSTA blobben, som koden
+  // gjorde förut, är ungefär det sämsta urvalskriterium som finns — skylten är
+  // nästan aldrig det största ljusa i bilden.
+  let bast = null, bastPoang = -1;
+  for (const bl of s.blobbar) {
+    const p = poangsattKandidat({
+      forhallande: bl.forhallande,
+      fyllnad: bl.fyllnad,
+      teckenbyten: raknaTeckenbyten(s.gra, s.b, s.h, bl),
+      bredd: bl.L,
+      cx: (bl.minX + bl.bw / 2) / s.b,
+      cy: (bl.minY + bl.bh / 2) / s.h,
+      ytaB: s.b,
+      vinkel: bl.vinkel,
+    });
+    if (p.poang > bastPoang) { bast = bl; bastPoang = p.poang; }
+  }
+
+  if (ankare && ankarePoang >= bastPoang) {
+    return {
+      x: roi.x + ankare.minX * inv0,
+      y: roi.y + ankare.minY * inv0,
+      w: ankare.bw * inv0,
+      h: ankare.bh * inv0,
+      vinkel: ankare.vinkel,
+      cx: roi.x + ankare.cx * inv0,
+      cy: roi.y + ankare.cy * inv0,
+      // Ankaret har mätt skyltens kanter, inte en ljus fläcks. Marginalen är
+      // därför mindre än i ljusstapelvägen — vi vet var kanten går.
+      rw: ankare.rw * 1.03 * inv0,
+      rh: ankare.rh * 1.08 * inv0,
+      euAndel: ankare.euAndel,
+      // Följer med ut. Förut stannade de här inne i `hittaPlat`, och den som
+      // fick rutan kunde inte se om bredden var mätt eller påhittad.
+      teckenbyten: ankare.teckenbyten,
+      forhallande: ankare.forhallande,
+      antagenBredd: ankare.antagenBredd,
+      palitligTeckenrakning: ankare.palitligTeckenrakning,
+      kantstodd: ankare.kantstodd,
+      omvand: !!ankare.omvand,
+      poang: ankarePoang,
+      ankrad: true,
+    };
+  }
+
   if (!bast) return null;
 
   // Tillbaka till källans pixlar, med en nypa marginal så inte kanttecknen
@@ -752,6 +1652,7 @@ export function hittaPlat(kalla, roi) {
     // Samma marginaler, fast längs skyltens egna axlar.
     rw: bast.L * 1.06 * inv,
     rh: bast.W * 1.16 * inv,
+    poang: bastPoang,
   };
 }
 
@@ -767,7 +1668,7 @@ export function hittaPlat(kalla, roi) {
  * ligger mitt i vägen.
  */
 function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, ytaB,
-                             vinkel = 0, forvantadVinkel = null }) {
+                             vinkel = 0, forvantadVinkel = null, ankare = 1 }) {
   // Form: svenska skyltar är 520 × 110 mm, alltså 4,7. Avvikelsen mäts i
   // logaritm så att 2,35 och 9,4 straffas lika mycket — en skylt sedd snett
   // trycks ihop i sidled, aldrig i höjdled.
@@ -793,14 +1694,32 @@ function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, y
    * en vägskylts baksida och ett vitt klistermärke har allihop rätt form och
    * rätt ljushet. Det de inte har är sex mörka pelare på rad.
    *
+   * FAKTORN VAR ENSIDIG, OCH DÅ BELÖNADE DEN FEL SAK. `teckenbyten / 8` med
+   * tak vid 1 gav full poäng åt allt från åtta växlingar och uppåt. En svensk
+   * skylt ger tio till fjorton. En korrugerad trailersida gav trettio och en
+   * företagstext tjugo — alltså exakt samma teckenpoäng som en perfekt läst
+   * skylt. Talet som skulle skilja en skylt från en slät yta kontrollerade
+   * bara att det fanns MINST sex pelare, aldrig att det inte fanns trettio.
+   *
+   * Nu är den tvåsidig: en klocka kring tolv växlingar. Tio till fjorton
+   * behåller i praktiken full poäng, medan räfflor och löpande text faller.
+   * Golvet 0,2 står kvar — faktorn ska rangordna, och bara de två uttryckliga
+   * fallen nedan får döda.
+   *
    * Räkningen kräver att kandidaten är minst 24 pixlar bred i arbetsupplösning
    * för att vara pålitlig. Är den mindre svarar vi varken ja eller nej, utan
    * lägger oss mitt emellan — annars hade varje skylt på håll dömts ut.
    */
   let tecken;
   if (bredd < 24) tecken = 0.7;
-  else if (fyllnad > 0.96 || teckenbyten < 3) tecken = 0.08;
-  else tecken = Math.min(1, Math.max(0.2, teckenbyten / 8));
+  // Fyllnaden mäts bara i ljusstapelvägen. Ankarvägen har ingen ljus blobb att
+  // mäta fyllnad på — den har mätt skyltens kanter direkt — och då ska
+  // fyllnadstestet hoppas över, inte matas med ett påhittat tal.
+  else if ((fyllnad != null && fyllnad > 0.96) || teckenbyten < 3) tecken = 0.08;
+  else {
+    const db = teckenbyten - 12;
+    tecken = Math.max(0.2, Math.exp(-(db * db) / (2 * 4 * 4)));
+  }
 
   /*
    * Rakhet: hur mycket kandidaten lutar.
@@ -817,15 +1736,26 @@ function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, y
    * telefon som ligger stilla i handen blir svaret det samma som utan givare.
    * Sensorn är ett tillägg och får aldrig bli ett krav.
    */
-  const straff = a => 1 - 0.45 * Math.pow(Math.min(1, Math.abs(a) / 90), 1.5);
+  // Vinkeln viks först. Straffet handlar om hur långt från vågrätt kandidaten
+  // ligger, och en skylt vriden 180° ligger vågrätt. Ankarvägen kan lämna en
+  // ovikt vinkel eftersom den vet åt vilket håll skylten läses; utan vikningen
+  // hade den kandidaten straffats som om den stod på högkant.
+  const straff = a => 1 - 0.45 * Math.pow(Math.min(1, Math.abs(vikVinkel(a)) / 90), 1.5);
   let rakhet = straff(vinkel);
   if (forvantadVinkel !== null) {
-    rakhet = Math.max(rakhet, straff(vikVinkel(vinkel - forvantadVinkel)));
+    rakhet = Math.max(rakhet, straff(vinkel - forvantadVinkel));
   }
 
+  /*
+   * Ankarfaktorn. Den är det enda som får lyfta en poäng över 1, och det är
+   * avsiktligt: en kandidat med ett uppmätt blått band, ljust omedelbart till
+   * höger om det och rätt proportion är inte "lite bättre" än en ljus stapel
+   * som råkar ha rätt form — den är en annan sorts bevis. Poängen används bara
+   * till rangordning och mot `minPoang`, så ett tal över 1 gör ingen skada.
+   */
   return {
-    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken * rakhet,
-    form, storlek, centrum, tecken, rakhet,
+    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken * rakhet * ankare,
+    form, storlek, centrum, tecken, rakhet, ankare,
   };
 }
 
@@ -856,9 +1786,82 @@ export function sokKandidater(kalla, omrade = null,
   // tjugo pixlar bred i en telefonbild och innehåller inte tillräckligt med
   // information för att bli text — men den får finnas med, för zoomen kan
   // göra något av den.
-  const s = skannaLjusa(kalla, yta, arbetsbredd, { minAndel: 0.025, minPx: 10 });
+  const s = skannaLjusa(kalla, yta, arbetsbredd, { minAndel: 0.025, minPx: 10, bla: true });
   const inv = 1 / s.skala;
   const ut = [];
+
+  /*
+   * ANKARVÄGEN FÖRST — det blå bandet.
+   *
+   * Båda vägarna delar på en enda skanning: samma nedskalning, samma
+   * getImageData, samma gråskalesvep. Blåmasken byggdes i det svepet. Att
+   * lägga till ankaret kostar alltså ingen ny genomgång av bilden, bara en
+   * flödesfyllning över en mask som är tom i nästan hela bildrutan.
+   */
+  for (const a of blaAnkare(s)) {
+    const p = poangsattKandidat({
+      forhallande: a.forhallande,
+      fyllnad: null,
+      teckenbyten: a.teckenbyten,
+      bredd: a.rw,
+      cx: a.cx / s.b, cy: a.cy / s.h,
+      ytaB: s.b,
+      vinkel: a.vinkel, forvantadVinkel,
+      ankare: ankarfaktor(a),
+    });
+    ut.push({
+      x: yta.x + a.minX * inv,
+      y: yta.y + a.minY * inv,
+      w: a.bw * inv,
+      h: a.bh * inv,
+      vinkel: a.vinkel,
+      cx: yta.x + a.cx * inv,
+      cy: yta.y + a.cy * inv,
+      rw: a.rw * 1.03 * inv,
+      rh: a.rh * 1.08 * inv,
+      teckenbyten: a.teckenbyten,
+      forhallande: a.forhallande,
+      fyllnad: null,
+      euAndel: a.euAndel,
+      antagenBredd: a.antagenBredd,
+      palitligTeckenrakning: a.palitligTeckenrakning,
+      kantstodd: a.kantstodd,
+      omvand: !!a.omvand,
+      ankrad: true,
+      ...p,
+    });
+  }
+
+  /*
+   * En ljusstapel som täcker samma sak som ett ankare är samma sak som
+   * ankaret, sämre beskriven. Den ska inte tävla mot sitt eget bättre jag om
+   * låset — två spår på en skylt gör bara att båda får färre bildrutor.
+   *
+   * MEN "SÄMRE BESKRIVEN" MÅSTE VARA MÄTT OCH INTE ANTAGET.
+   *
+   * Förut räckte det att blobbens mittpunkt låg inuti ankarets låda, utan att
+   * poängen någonsin jämfördes, och blobben togs bort innan den ens kom in i
+   * listan. Ankarlådan är som störst just när den är som minst trovärdig: när
+   * det ljusa aldrig tog slut sätts bredden till 4,73 skylthöjder rakt av, och
+   * den påhittade lådan svalt då ut den riktiga blobben. Att kvoten samtidigt
+   * blir exakt 4,73 gör dessutom att formfaktorn blir 1,00 och kandidaten SER
+   * bäst ut i poängen fastän bredden aldrig mättes. Värst av allt: tystandet
+   * skedde även när ankarets egen poäng låg under låsgränsen, och då fanns
+   * ingen kandidat kvar att låsa på alls — där den gamla koden hade låst på
+   * blobben.
+   *
+   * Nu räknas blobbens poäng först, och ankaret får bara tysta den om det
+   * faktiskt är det starkare beviset.
+   */
+  const taxAvAnkare = (bx, by, bw2, bh2, blobbPoang) => {
+    const mx2 = bx + bw2 / 2, my2 = by + bh2 / 2;
+    return ut.some(a => a.ankrad &&
+      mx2 >= a.x && mx2 <= a.x + a.w && my2 >= a.y && my2 <= a.y + a.h &&
+      // Antagen bredd eller en poäng under låsgränsen är inte starkare bevis
+      // än en uppmätt ljus kant. Då får blobben stå kvar och tävla.
+      !a.antagenBredd && a.poang >= MALSOK.minPoang &&
+      a.poang >= blobbPoang);
+  };
 
   for (const bl of s.blobbar) {
     const teckenbyten = raknaTeckenbyten(s.gra, s.b, s.h, bl);
@@ -879,11 +1882,11 @@ export function sokKandidater(kalla, omrade = null,
     // Samma marginal som `hittaPlat` ger, så att OCR-steget får en ruta med
     // luft kring tecknen och inte klipper kanterna.
     const mx = bl.bw * 0.03 * inv, my = bl.bh * 0.08 * inv;
+    const lx = yta.x + bl.minX * inv - mx, ly = yta.y + bl.minY * inv - my;
+    const lw = bl.bw * inv + mx * 2, lh = bl.bh * inv + my * 2;
+    if (taxAvAnkare(lx, ly, lw, lh, p.poang)) continue;
     ut.push({
-      x: yta.x + bl.minX * inv - mx,
-      y: yta.y + bl.minY * inv - my,
-      w: bl.bw * inv + mx * 2,
-      h: bl.bh * inv + my * 2,
+      x: lx, y: ly, w: lw, h: lh,
       vinkel: bl.vinkel,
       cx: yta.x + bl.cx * inv,
       cy: yta.y + bl.cy * inv,
@@ -905,15 +1908,33 @@ export function sokKandidater(kalla, omrade = null,
  * @returns {HTMLCanvasElement}
  */
 export function forbehandla(kalla, roi,
-                            { malHojd = 96, kapaEuFalt = true, lutning = 0, vridning = 0 } = {}) {
+                            { malHojd = 96, kapaEuFalt = true, lutning = 0, vridning = 0,
+                              euAndel = null, vridenRuta = null } = {}) {
   /*
-   * `vridning` räknar med att `roi` beskriver en *vriden* rektangel: mitten i
-   * cx/cy och sidorna i rw/rh, mätta längs skyltens egna axlar. Utan vridning
-   * är roi den vanliga axelparallella rutan och allt nedan går den gamla vägen,
-   * bit för bit — de tio pipelinefallen ska mäta exakt samma sak som förut.
+   * `vridenRuta` säger att `roi` beskriver en *vriden* rektangel: mitten i
+   * cx/cy och sidorna i rw/rh, mätta längs skyltens egna axlar. Är den falsk
+   * är roi den vanliga axelparallella rutan och allt nedan går den gamla
+   * vägen, bit för bit — de tio pipelinefallen mäter exakt samma sak som förut.
+   *
+   * DET VAR TVÅ FRÅGOR SOM DELADE PÅ ETT ENDA TAL, OCH DE DREV ISÄR I DET
+   * VANLIGASTE FALLET AV ALLA.
+   *
+   * Förut var `vridning` både "vrid så här många grader" OCH omkopplaren för
+   * om den uppmätta rektangeln alls skulle användas. Vinkel exakt 0 är inte
+   * ett kantfall: `blaBand` sätter platvinkel = 0 så fort bandets L/W ligger
+   * under 1,3 — alltså i hela spannet 1,10–1,30 — och en skylt sedd rakt
+   * framifrån ger axel 90°, vilket viks till 0. Då blev omkopplaren falsk,
+   * hela ankarmätningen kastades, och beskärningen tog roi.w/roi.h: den exakta
+   * uppmätta lådan UTAN den marginal som ligger i rw/rh. Kanttecknen klipptes,
+   * och den ankrade vägen läste sämre än reserven för den geometri som är
+   * absolut vanligast.
+   *
+   * Nu är frågorna åtskilda. Grundvärdet härleds ur vridningen så att äldre
+   * anrop beter sig precis som förut.
    */
-  const rw = vridning ? (roi.rw ?? roi.w) : roi.w;
-  const rh = vridning ? (roi.rh ?? roi.h) : roi.h;
+  const vriden = vridenRuta === null ? !!vridning : !!vridenRuta;
+  const rw = vriden ? (roi.rw ?? roi.w) : roi.w;
+  const rh = vriden ? (roi.rh ?? roi.h) : roi.h;
   const skala = malHojd / rh;
   const bredd = Math.max(1, Math.round(rw * skala));
   const hojd  = Math.max(1, Math.round(malHojd));
@@ -923,7 +1944,7 @@ export function forbehandla(kalla, roi,
   const g = c.getContext('2d', { willReadFrequently: true });
   g.imageSmoothingEnabled = true;
   g.imageSmoothingQuality = 'high';
-  if (vridning) {
+  if (vriden) {
     /*
      * Räta upp en skylt som lutar i bild. Skjuvning räcker inte här: en
      * skjuvning rätar upp tecknens *stammar* men låter textraden fortsätta gå
@@ -966,31 +1987,57 @@ export function forbehandla(kalla, roi,
   const px = bild.data;
   const n = bredd * hojd;
 
-  // Gråskala med ögats viktning, och histogram i samma svep.
+  /*
+   * Hur mycket av vänsterkanten som är EU-band.
+   *
+   * Har sökningen ankrat på bandet VET vi bredden — den är uppmätt, inte
+   * gissad — och då kapas precis den. Taket på 0,14 finns för att en
+   * överskattad mätning aldrig ska få äta första tecknet: bandet slutar vid
+   * 10 % av skyltens bredd och första tecknet börjar vid ungefär 15 %.
+   *
+   * Utan ankare står den gamla vägen kvar oförändrad: fast tiondel, och bara
+   * när anroparen ber om det.
+   */
+  const kapa = euAndel != null
+    ? Math.round(bredd * Math.min(euAndel * 1.06, 0.14))
+    : (kapaEuFalt ? Math.round(bredd * 0.105) : 0);
+
+  /*
+   * Gråskala med ögats viktning, och histogram i samma svep — men histogrammet
+   * räknas bara på det som ligger TILL HÖGER om bandet.
+   *
+   * Det var en verklig felkälla. Bandet är djupt mörkblått och fyller en
+   * tiondel av bilden med pixlar nära noll. De drog ner både den andra
+   * percentilen och Otsu-tröskeln, alltså på en yta som ändå skulle vitmålas
+   * några rader längre ner. Resultatet blev en tröskel som satt för lågt och
+   * tecken som blev fetare än de är — och feta tecken flyter ihop, vilket är
+   * precis den felläsning bandet skulle skydda mot.
+   */
   const gra = new Uint8ClampedArray(n);
   const hist = new Uint32Array(256);
+  let raknade = 0;
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     const v = (px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114) | 0;
-    gra[i] = v; hist[v]++;
+    gra[i] = v;
+    if ((i % bredd) >= kapa) { hist[v]++; raknade++; }
   }
+  if (!raknade) { for (let i = 0; i < n; i++) hist[gra[i]]++; raknade = n; }
 
   // Kontraststräckning mellan 2:a och 98:e percentilen. Utan den blir en
   // skylt i motljus en grå klump där trösklingen tar fel överallt.
-  const lag = percentil(hist, n, 0.02);
-  const hog = percentil(hist, n, 0.98);
+  const lag = percentil(hist, raknade, 0.02);
+  const hog = percentil(hist, raknade, 0.98);
   const spann = Math.max(1, hog - lag);
   for (let i = 0; i < n; i++) {
     gra[i] = Math.max(0, Math.min(255, ((gra[i] - lag) * 255) / spann));
   }
 
   // Otsu: låt bilden själv bestämma var gränsen går mellan text och botten.
-  const trosk = otsu(gra);
+  // Även den räknas utan bandet, av samma skäl.
+  const trosk = otsu(gra, bredd, kapa);
 
-  // Det blå EU-fältet till vänster är ungefär en tiondel av skyltens bredd.
-  // Stjärnorna och landsbokstaven läses annars som tecken, och då stämmer
-  // längden aldrig. Vitmålas hellre än beskärs — då behåller vi marginalen.
-  const kapa = kapaEuFalt ? Math.round(bredd * 0.105) : 0;
-
+  // Bandet vitmålas hellre än beskärs — då behåller vi marginalen kring
+  // tecknen, och motorn ser en textrad som börjar med luft.
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     const x = i % bredd;
     const v = (x < kapa || gra[i] > trosk) ? 255 : 0;
@@ -1006,10 +2053,23 @@ function percentil(hist, n, andel) {
   return 255;
 }
 
-function otsu(gra) {
+/**
+ * Otsus tröskel.
+ *
+ * `bredd` och `kapa` är frivilliga och används bara av `forbehandla`: de
+ * hoppar över de `kapa` första kolumnerna, alltså EU-bandet. Utan dem räknas
+ * hela bilden precis som förut, vilket är vad `skannaLjusa` vill ha.
+ */
+function otsu(gra, bredd = 0, kapa = 0) {
   const hist = new Uint32Array(256);
-  for (let i = 0; i < gra.length; i++) hist[gra[i]]++;
-  const n = gra.length;
+  let n = 0;
+  if (bredd > 0 && kapa > 0) {
+    for (let i = 0; i < gra.length; i++) {
+      if ((i % bredd) < kapa) continue;
+      hist[gra[i]]++; n++;
+    }
+  }
+  if (!n) { hist.fill(0); for (let i = 0; i < gra.length; i++) hist[gra[i]]++; n = gra.length; }
   let summa = 0;
   for (let v = 0; v < 256; v++) summa += v * hist[v];
   let sumB = 0, wB = 0, bast = 0, trosk = 127;
@@ -1123,28 +2183,70 @@ export function uppskattaLutning(bin) {
  *
  * @returns {{plat:string|null, sakerhet:number, bild:HTMLCanvasElement}}
  */
-export async function lasRuta(kalla, roi) {
-  // Snäva in på skylten när den går att hitta. Går den inte att hitta får
-  // hela rutan duga — hellre ett försök än inget.
-  const traff = hittaPlat(kalla, roi);
-  const snav = traff || roi;
+export async function lasRuta(kalla, roi, { fardigMatt = null } = {}) {
+  const tider = { hittaMs: 0, forbMs: 0, ocrMs: 0, ocrAntal: 0, ankrad: false };
+  const klocka = (namn, fn) => {
+    const t0 = performance.now();
+    const r = fn();
+    tider[namn] += performance.now() - t0;
+    return r;
+  };
+  const klockaOcr = async bild => {
+    const t0 = performance.now();
+    const r = await lasBild(bild);
+    tider.ocrMs += performance.now() - t0;
+    tider.ocrAntal++;
+    return r;
+  };
 
-  // Det blå EU-fältet är mörkt, så lokaliseringen har redan lämnat det
-  // utanför. Kapar vi då ytterligare en tiondel äter vi första tecknet —
-  // M blev U, och det såg ut som ett fel i motorn. Kapningen behövs bara när
-  // vi inte hittade skylten och skickar in hela rutan.
+  /*
+   * Snäva in på skylten när den går att hitta. Går den inte att hitta får
+   * hela rutan duga — hellre ett försök än inget.
+   *
+   * `fardigMatt` är en mätning sökningen redan gjort. Kom kandidaten från
+   * ankarvägen är skyltens kanter, vinkel och bandbredd redan uppmätta, och
+   * att skanna om samma yta här hade varit att kasta bort den mätningen och
+   * betala för en ny sämre. Det var en ren dubbelkörning: samma nedskalning,
+   * samma flödesfyllning, en gång per OCR-varv.
+   */
+  const traff = fardigMatt || klocka('hittaMs', () => hittaPlat(kalla, roi));
+  const snav = traff || roi;
+  tider.ankrad = !!(traff && traff.ankrad);
+
+  /*
+   * Det blå EU-fältet.
+   *
+   * Ankrad kandidat: bandet är uppmätt och ligger med i beskärningen, så det
+   * MÅSTE kapas — och kapas precis så brett som det mättes.
+   *
+   * Ljusstapelvägen: bandet är mörkt, så lokaliseringen har redan lämnat det
+   * utanför. Kapar vi då ytterligare en tiondel äter vi första tecknet — M
+   * blev U, och det såg ut som ett fel i motorn. Kapningen behövs bara när vi
+   * inte hittade skylten och skickar in hela rutan.
+   */
+  const euAndel = snav.euAndel ?? null;
   const kapaEuFalt = !traff;
 
-  // Lutar skylten i bild rätas den upp redan i beskärningen. Vinkeln kommer
-  // från sökningen och kostar ingen extra OCR-körning.
-  let vridning = Math.abs(snav.vinkel || 0) >= VINKEL_DODBAND ? snav.vinkel : 0;
+  /*
+   * Lutar skylten i bild rätas den upp redan i beskärningen. Vinkeln kommer
+   * från sökningen och kostar ingen extra OCR-körning.
+   *
+   * `vridenRuta` och `vridning` är två skilda besked, och det är hela poängen:
+   * en ankrad skylt sedd RAKT framifrån har vinkel 0 men en uppmätt rektangel
+   * som ska användas. Slogs de ihop föll den vanligaste geometrin av alla ur
+   * ankarvägen och beskars utan marginal. Se `forbehandla`.
+   */
+  const vridenRuta = !!(traff?.ankrad ||
+    Math.abs(vikVinkel(snav.vinkel || 0)) >= VINKEL_DODBAND);
+  let vridning = vridenRuta ? (snav.vinkel || 0) : 0;
 
   // Rakt på först. Går det bra behöver vi inte röra vinkeln alls.
-  const rak = forbehandla(kalla, snav, { kapaEuFalt, vridning });
-  let bast = { plat: null, sakerhet: 0, bild: rak };
+  const rak = klocka('forbMs',
+    () => forbehandla(kalla, snav, { kapaEuFalt, vridning, vridenRuta, euAndel }));
+  let bast = { plat: null, sakerhet: 0, bild: rak, tider };
 
-  const r0 = await lasBild(rak);
-  if (r0.plat) bast = { plat: r0.plat, sakerhet: r0.sakerhet, bild: rak };
+  const r0 = await klockaOcr(rak);
+  if (r0.plat) bast = { plat: r0.plat, sakerhet: r0.sakerhet, bild: rak, tider };
   if (r0.plat && r0.sakerhet >= 80) return bast;
 
   /*
@@ -1155,11 +2257,12 @@ export async function lasRuta(kalla, roi) {
    * helt olika bilder. Prövas bara när första försöket inte gav någon skylt,
    * så den kostar ingenting i normalfallet.
    */
-  if (!bast.plat && Math.abs(vridning) > 60) {
-    const vand = forbehandla(kalla, snav, { kapaEuFalt, vridning: vridning + 180 });
-    const rv = await lasBild(vand);
+  if (!bast.plat && Math.abs(vikVinkel(vridning)) > 60) {
+    const vand = klocka('forbMs',
+      () => forbehandla(kalla, snav, { kapaEuFalt, vridning: vridning + 180, vridenRuta, euAndel }));
+    const rv = await klockaOcr(vand);
     if (rv.plat) {
-      bast = { plat: rv.plat, sakerhet: rv.sakerhet, bild: vand };
+      bast = { plat: rv.plat, sakerhet: rv.sakerhet, bild: vand, tider };
       vridning += 180;
       if (rv.sakerhet >= 80) return bast;
     }
@@ -1167,15 +2270,16 @@ export async function lasRuta(kalla, roi) {
 
   // Annars: mät lutningen och räta upp. Mätningen kostar ingen OCR-körning,
   // så det är billigare än att pröva sig fram med flera gissningar.
-  const lutning = uppskattaLutning(bast.bild);
+  const lutning = klocka('forbMs', () => uppskattaLutning(bast.bild));
   if (lutning) {
-    const rat = forbehandla(kalla, snav, { kapaEuFalt, lutning, vridning });
-    const r1 = await lasBild(rat);
+    const rat = klocka('forbMs',
+      () => forbehandla(kalla, snav, { kapaEuFalt, lutning, vridning, vridenRuta, euAndel }));
+    const r1 = await klockaOcr(rat);
     // En giltig skylt slår alltid ingen skylt. Att jämföra säkerheten först
     // vore fel: motorn rapporterar ibland 0 % även för en läsning som
     // stämmer, och då kastades det rätta svaret bort.
     if (r1.plat && (!bast.plat || r1.sakerhet > bast.sakerhet)) {
-      bast = { plat: r1.plat, sakerhet: r1.sakerhet, bild: rat };
+      bast = { plat: r1.plat, sakerhet: r1.sakerhet, bild: rat, tider };
     }
   }
   return bast;
@@ -1190,6 +2294,27 @@ export async function lasRuta(kalla, roi) {
  * första tecknet. Marginalen här är billigare än den felläsningen.
  */
 export function lasKandidat(kalla, kandidat) {
+  /*
+   * Ankrad kandidat: sökningen har redan mätt upp skyltens kanter, dess vinkel
+   * och bandets bredd. Då finns ingenting kvar att leta efter — beskär på
+   * mätningen och läs. Det tar bort en hel skanning per OCR-varv och, viktigare,
+   * det behåller den bättre av de två mätningarna i stället för att skriva över
+   * den med en sämre.
+   */
+  if (kandidat.ankrad && kandidat.rw && kandidat.rh) {
+    return lasRuta(kalla, kandidat, { fardigMatt: kandidat });
+  }
+  /*
+   * Ett SPÅR från `Malsokare` bär mätningen i `matt` och har bara den
+   * utjämnade lådan på ytan. Får vi ett sådant ska den råa mätningen användas,
+   * precis som `#steg` gör — annars kastas skyltens uppmätta kanter och vinkel
+   * bort och kvar blir en axelparallell låda. Det syntes tydligast i liggande
+   * läge: samma skylt läses till MLK907 med 87 % ur ankarmätningen och till
+   * ingenting alls ur lådan.
+   */
+  if (kandidat.matt?.ankrad && kandidat.matt.rw && kandidat.matt.rh) {
+    return lasRuta(kalla, kandidat.matt, { fardigMatt: kandidat.matt });
+  }
   const mx = kandidat.w * 0.06, my = kandidat.h * 0.14;
   return lasRuta(kalla, {
     x: kandidat.x - mx, y: kandidat.y - my,
@@ -1200,12 +2325,42 @@ export function lasKandidat(kalla, kandidat) {
 /* Grundvärden för målsökningen. Motiveringen står i docs/malsokning.md. */
 export const MALSOK = {
   bildrutorForLas: 8,   // ~1 s vid 120 ms mellan sökningar
+  /*
+   * Ankrade kandidater låser efter tre bildrutor i stället för åtta, alltså
+   * efter ~0,36 s i stället för ~0,96 s.
+   *
+   * Det är inte en uppmjukning av kravet, det är ett annat bevis. Åtta
+   * bildrutor krävdes därför att en ljus fläck med rätt form är svag evidens
+   * och tiden fick göra jobbet: en solreflex består inte åtta bildrutor i rad
+   * på samma plats med samma storlek. En kandidat som har ett mättat blått
+   * band, ljust omedelbart till höger om bandet, rätt proportion mellan höjd
+   * och uppmätt bredd OCH sex mörka pelare i kroppen har redan lämnat fyra
+   * oberoende bevis i en enda bildruta. Tre bildrutor räcker då för att utesluta
+   * en engångsartefakt, och de sparade 0,6 sekunderna är den enskilt största
+   * posten i väntetiden till första svar.
+   */
+  bildrutorForLasAnkrad: 3,
   tappForLas: 3,        // en låst kandidat får försvinna 3 bildrutor
   tappForSpar: 2,       // en olåst släpps snabbare
   minPoang: 0.16,       // under det låser vi inte, hur ensam kandidaten än är
   brandForsok: 3,       // så många läsningar utan giltig skylt bränner låset
   glidning: 0.4,        // hur mycket av den nya positionen som slår igenom
   maxSpar: 12,
+  /*
+   * Så länge minns spårningen ett spår den nyss släppte, för att kunna
+   * återknyta det i stället för att mynta ett nytt id.
+   *
+   * Utan det tappade rösträkningen sin urna varje gång skylten blinkade bort.
+   * Ett låst spår släpps efter tre missade sökbildrutor, alltså efter 360 ms,
+   * och det räcker att bilen framför kör in i en solreflex eller under en bro.
+   * Kandidaten dök upp igen som ett nytt spår med nytt id, urnan var därmed en
+   * annan, och räkningen började om från noll fastän kameran hela tiden tittat
+   * på samma skylt. 1500 ms täcker glimtar, skakningar och motljus utan att
+   * knyta ihop två olika bilar — en bil hinner inte bytas ut på den tiden utan
+   * att lådan flyttar sig mer än matchningen tillåter.
+   */
+  aterforeningMs: 1500,
+  slapptaMax: 8,        // så många nyss släppta spår minns vi
 };
 
 /**
@@ -1231,11 +2386,15 @@ export class Malsokare {
     this.lastId = null;
     this.sisteOrsak = null;
     this._nastaId = 1;
+    // Nyss släppta spår, för återförening. Se MALSOK.aterforeningMs.
+    this.slappta = [];
   }
 
   get last() { return this.spar.find(s => s.id === this.lastId) || null; }
 
-  nollstall() { this.spar = []; this.lastId = null; this.sisteOrsak = null; }
+  nollstall() {
+    this.spar = []; this.lastId = null; this.sisteOrsak = null; this.slappta = [];
+  }
 
   /**
    * Matar in en bildrutas kandidater och får tillbaka spåren.
@@ -1275,16 +2434,31 @@ export class Malsokare {
       s.poang += (k.poang - s.poang) * g;
       s.matt = k;
       s.traffar++; s.tappade = 0; s.sistSedd = nu;
+      // Ett spår räknas som ankrat så snart det setts med blått band en gång.
+      // Bandet kan blinka bort en bildruta i en solreflex utan att skylten
+      // slutade vara en skylt, och att tappa låskravet då hade varit att låta
+      // en enstaka dålig bildruta straffa den starkaste kandidaten vi har.
+      if (k.ankrad) { s.ankrad = true; s.ankradeTraffar++; }
     }
+
+    // Glöm det som varit borta för länge innan vi försöker återknyta.
+    this.slappta = this.slappta.filter(s => nu - s.sistSedd <= this.k.aterforeningMs);
 
     for (const l of lediga) {
       if (l.tagen) continue;
+      const aterfunnet = this.#aterforena(l.k, nu);
+      if (aterfunnet) { this.spar.push(aterfunnet); continue; }
       this.spar.push({
         id: this._nastaId++,
         x: l.k.x, y: l.k.y, w: l.k.w, h: l.k.h,
         poang: l.k.poang, matt: l.k,
         traffar: 1, tappade: 0, sistSedd: nu,
+        ankrad: !!l.k.ankrad, ankradeTraffar: l.k.ankrad ? 1 : 0,
+        forstSedd: nu,
         ocrForsok: 0, ocrBom: 0, ocrTraffar: 0, brand: false,
+        // Se `rapporteraLasning`: ett spår som spottar ur sig en NY skylt varje
+        // varv hittar på, och det går bara att se genom att jämföra hasharna.
+        sisteHash: null, upprepade: 0,
       });
     }
 
@@ -1293,6 +2467,10 @@ export class Malsokare {
       const tak = s.id === this.lastId ? this.k.tappForLas : this.k.tappForSpar;
       if (s.tappade > tak) {
         if (s.id === this.lastId) { this.lastId = null; this.sisteOrsak = 'tappad'; }
+        // Spara det som släpptes så att samma skylt kan få tillbaka sitt id
+        // om den dyker upp igen inom kort. Rösträkningens urna hänger på id:t.
+        this.slappta.push(s);
+        if (this.slappta.length > this.k.slapptaMax) this.slappta.shift();
         continue;
       }
       kvar.push(s);
@@ -1307,10 +2485,56 @@ export class Malsokare {
     return { spar: this.spar, last: this.last };
   }
 
+  /**
+   * Knyter ihop en kandidat med ett spår som nyss släpptes.
+   *
+   * VARFÖR DET HÄR BEHÖVS: rösträkningens urna nycklas på spårets id. Mintas
+   * ett nytt id ligger de röster som redan lagts kvar i sin gamla urna och
+   * röstas aldrig mer i — de bleknar bort, och räkningen börjar om från noll
+   * fastän kameran hela tiden tittade på samma skylt. Ett låst spår släpps
+   * efter tre missade sökbildrutor, alltså 360 ms, vilket en solreflex eller
+   * en bro klarar av. Föraren fick sitt svar senare i exakt det scenario —
+   * glimtar, skakningar, motljus — som flerbildskonsensus finns för.
+   *
+   * Matchningen är slappare än den mellan två bildrutor i följd, för mer tid
+   * har gått, men den är fortfarande en matchning: ligger rutan på fel ställe
+   * eller har bytt storlek är det en annan bil, och då ska det bli ett nytt
+   * spår med en egen urna. Två bilar i bild får aldrig blandas ihop.
+   *
+   * `brand` följer med tillbaka. Ett spår som brunnit upp ska inte kunna tvätta
+   * sig rent genom att blinka bort en halv sekund.
+   */
+  #aterforena(k, nu) {
+    let bast = -1, bastAvst = Infinity;
+    for (let i = 0; i < this.slappta.length; i++) {
+      const s = this.slappta[i];
+      if (nu - s.sistSedd > this.k.aterforeningMs) continue;
+      const ref = Math.max(s.w, k.w);
+      const avst = Math.hypot((k.x + k.w / 2) - (s.x + s.w / 2),
+                              (k.y + k.h / 2) - (s.y + s.h / 2)) / ref;
+      const storleksbyte = k.w / s.w;
+      if (avst > 1.2 || storleksbyte < 0.45 || storleksbyte > 2.2) continue;
+      if (avst < bastAvst) { bastAvst = avst; bast = i; }
+    }
+    if (bast < 0) return null;
+
+    const s = this.slappta.splice(bast, 1)[0];
+    s.x = k.x; s.y = k.y; s.w = k.w; s.h = k.h;
+    s.poang = k.poang; s.matt = k;
+    s.traffar++; s.tappade = 0; s.sistSedd = nu;
+    if (k.ankrad) { s.ankrad = true; s.ankradeTraffar++; }
+    return s;
+  }
+
+  /** Så många bildrutor det här spåret behöver innan det får låsas. */
+  krav(s) {
+    return s.ankrad ? this.k.bildrutorForLasAnkrad : this.k.bildrutorForLas;
+  }
+
   #valjLas() {
     let bast = null;
     for (const s of this.spar) {
-      if (s.brand || s.traffar < this.k.bildrutorForLas) continue;
+      if (s.brand || s.traffar < this.krav(s)) continue;
       if (s.poang < this.k.minPoang) continue;
       if (!bast || s.poang > bast.poang) bast = s;
     }
@@ -1322,23 +2546,51 @@ export class Malsokare {
     let b = 0;
     for (const s of this.spar) {
       if (s.brand || s.poang < this.k.minPoang) continue;
-      b = Math.max(b, Math.min(1, s.traffar / this.k.bildrutorForLas));
+      b = Math.max(b, Math.min(1, s.traffar / this.krav(s)));
     }
     return b;
   }
 
   /**
    * Rapporterar in vad textigenkänningen fick ut ur ett spår.
-   * Giltig skylt nollställer bomräkningen — en skylt som lästs en gång är en
-   * skylt även när nästa bildruta är suddig.
+   *
+   * "GILTIG SKYLT" ÄR INTE SAMMA SAK SOM "SAMMA SKYLT TVÅ GÅNGER", och det var
+   * hålet i brandmekanismen. Ett falskt ankare på en skåpbilssida läser ut
+   * text som råkar passera formatvalideringen — den uppmätta scenen gav
+   * "ROR54B", ett fullt giltigt svenskt nummer. Då blev `giltig` sant,
+   * `ocrTraffar` större än noll, bomräkningen nollställdes, och spåret kunde
+   * per konstruktion aldrig brinna. Det satt kvar och läste vidare framför den
+   * riktiga skylten.
+   *
+   * Nu jämförs hashen mot förra varvets. Bara en UPPREPAD läsning räknas som
+   * ett kvitto på att spåret tittar på en verklig skylt; en ny påhittad skylt
+   * varje varv räknas som en bom, och tre sådana bränner låset precis som tre
+   * tomma läsningar gör.
+   *
+   * Hashen jämförs bara med sig själv. Den lagras aldrig som något annat än
+   * det saltade värdet, och den lämnar inte spåret — samma regel som resten av
+   * modulen: ingenting läsbart korsar en bildrutegräns.
+   *
+   * @param {string|null} hash  saltad hash av läsningen, eller null när det
+   *                            inte gick att hasha alls
    */
-  rapporteraLasning(id, giltig) {
+  rapporteraLasning(id, giltig, hash = null) {
     const s = this.spar.find(x => x.id === id);
     if (!s) return;
     s.ocrForsok++;
-    if (giltig) { s.ocrTraffar++; s.ocrBom = 0; return; }
+
+    if (giltig) {
+      s.ocrTraffar++;
+      const samma = !!(hash && s.sisteHash && hash === s.sisteHash);
+      if (hash) s.sisteHash = hash;
+      if (samma) { s.upprepade++; s.ocrBom = 0; return; }
+      // Utan hash går det inte att avgöra om det var samma skylt. Då står den
+      // gamla, mildare regeln kvar: en giltig läsning friar spåret.
+      if (!hash) { s.ocrBom = 0; return; }
+    }
+
     s.ocrBom++;
-    if (s.ocrTraffar === 0 && s.ocrBom >= this.k.brandForsok) {
+    if (!s.upprepade && s.ocrBom >= this.k.brandForsok) {
       s.brand = true;
       if (s.id === this.lastId) { this.lastId = null; this.sisteOrsak = 'brand'; }
     }
@@ -1348,6 +2600,253 @@ export class Malsokare {
     if (this.lastId === null) return;
     this.lastId = null; this.sisteOrsak = orsak;
     for (const s of this.spar) s.last = false;
+  }
+}
+
+/* ---- Flerbildskonsensus -------------------------------------------------
+ *
+ * DET SOM STOD HÄR FÖRUT VAR INTE EN OMRÖSTNING.
+ *
+ * Den gamla regeln var "samma svar två gånger inom sex sekunder". Den lät som
+ * en omröstning men var något annat, och skillnaden bet:
+ *
+ *   • Första svaret som råkade dyka upp två gånger vann. Avvikande läsningar
+ *     jämfördes aldrig mot varandra — de låg som separata poster i samma lista
+ *     och tävlade inte.
+ *   • En systematisk felläsning — samma sudd, samma smuts, samma bildruta —
+ *     upprepar sig lika villigt som den rätta och uppfyllde kravet lika lätt.
+ *   • En läsning som motorn var 12 % säker på vägde exakt lika mycket som en
+ *     den var 94 % säker på.
+ *   • Listan var gemensam för hela läsaren. Två bilar i bild röstade i samma
+ *     urna, åtskilda bara av att hasharna skilde sig.
+ *
+ * DET SOM STÅR HÄR NU
+ *
+ * En urna per spår, vikter i stället för antal, och ett krav på försprång.
+ *
+ * VIKTEN. Motorns säkerhet 40 % ger 0,30, 90 % eller mer ger 0,60, och
+ * däremellan rakt av. Målet är 1,0. Uppmätt, med blekningen inräknad och
+ * ungefär 300 ms mellan läsningarna — se avsnittet om TAKTEN nedan för vad
+ * som händer när läsningarna kommer glesare, vilket de gör i drift:
+ *
+ *     två säkra läsningar (92 %)     → klar på 2 bildrutor
+ *     tre medelbra (65 %)            → klar på 3
+ *     fem osäkra (20 %)              → klar på 5
+ *
+ * Talen är inte 2/3/4 som en rak summa hade gett, och det är blekningen som
+ * gör skillnaden — en röst som är tre bildrutor gammal väger inte längre fullt.
+ * Trappan är det som ombads: ett säkert svar får komma tidigt, ett osäkert får
+ * kosta fler bildrutor.
+ *
+ * Taket 0,60 är det viktigaste talet här: EN läsning kan aldrig räcka, hur
+ * säker motorn än säger sig vara. Det var premissen från början och den står
+ * kvar — en enstaka gissning är en gissning.
+ *
+ * FÖRSPRÅNGET. Vinnaren måste leda tvåan med 0,30, alltså med minst en hel
+ * osäker läsning. Utan det räcker det att en felläsning hinner före; med det
+ * måste den faktiskt slå de andra svaren. Det är den delen som gör det till en
+ * omröstning i stället för ett kappränning.
+ *
+ * FÖNSTRET 2,5 SEKUNDER, OCH BLEKNINGEN. Föraren kör. I 50 km/h täcks 35 meter
+ * på 2,5 sekunder, och en läsning från början av det fönstret gjordes på ett
+ * helt annat avstånd, i en annan vinkel, i ett annat ljus — det är i praktiken
+ * en bild av något annat. Sex sekunder, som förut, är över 80 meter. Rösterna
+ * bleknar dessutom linjärt med åldern i stället för att falla bort på en
+ * gräns, så det som just lästes väger tyngst. Det är exakt den viktning en
+ * bilburen sökare vill ha.
+ *
+ * VARFÖR INTE MAJORITET TECKEN FÖR TECKEN. Det vore starkare, och det går inte
+ * att göra här. Teckenvis röstning kräver att numren ligger läsbara mellan
+ * bildrutor, och det enda som får korsa en bildrutegräns i den här modulen är
+ * en saltad hash. Att bygga teckenröstning hade byggt tillbaka precis den
+ * klartextlista som togs bort. Vikterna och försprånget är vad som går att få
+ * utan att offra det, och de räcker.
+ *
+ * TAKTEN, OCH VARFÖR KRAVET INTE GICK ATT UPPFYLLA.
+ *
+ * Trappan ovan är räknad på 300 ms mellan läsningarna. Så tätt läser appen
+ * aldrig: `intervalMs` är 700 ms och OCR-slingan väntar dessutom ut resten av
+ * varvtiden, så det verkliga avståndet är max(700, varvtid) — och en läsning
+ * under 80 % säkerhet drar igång en andra OCR-körning, så just de varv som
+ * ger LÅG vikt är också de längsta, ofta 1,1 s och på en telefon gärna 1,2.
+ *
+ * Med ett fast fönster på 2500 ms rymdes då bara fyra röster, och deras
+ * bleknade summa toppade på 2,32 gånger röstvikten. Det gav ett hårt tak:
+ * under 62 % motorsäkerhet kunde summan ALDRIG nå 1,0, hur länge föraren än
+ * låg bakom bilen. Vid 1,2 s varvtid nådde inte ens en läsning på 100 %
+ * säkerhet fram — ingenting annonserades någonsin. Det var inte "svaret kommer
+ * senare", det var "svaret kommer inte", och filens egen kommentar om att
+ * motorn "ibland rapporterar 0 % även för en läsning som stämmer" beskriver
+ * precis de läsningar som tystades.
+ *
+ * Två ändringar, båda så att talen mäter verkligheten i stället för en takt
+ * som inte finns:
+ *
+ *   1. Fönstret följer takten: minst `fonsterVarv` läsningar ska rymmas i det,
+ *      och fler när `krav` är högre. Vid 300 ms ändrar det ingenting (2500 ms
+ *      räcker gott), vid 1,2 s växer det med takten.
+ *   2. Målet kapas av vad som FAKTISKT ryms i fönstret. Kravet får aldrig
+ *      ligga över det uppnåeliga — ett krav som inte går att uppfylla är inte
+ *      ett högt krav, det är en trasig funktion. Golvet `malGolv` står kvar
+ *      över `viktHog`, så en enda läsning kan fortfarande aldrig räcka. Det
+ *      var premissen från början och den ändras inte.
+ */
+export const ROST = {
+  malVikt: 0.5,          // per enhet av `krav`; krav 2 ⇒ mål 1,0
+  vinstMarginal: 0.30,
+  viktLag: 0.30,
+  viktHog: 0.60,
+  sakerhetLag: 40,
+  sakerhetHog: 90,
+  fonsterMs: 2500,       // golv för fönstret
+  fonsterVarv: 5,        // ...men minst så många OCR-varv ska rymmas
+  varvMs: 300,           // antagen takt tills anroparen säger något annat
+  malMarginal: 0.95,     // takten är aldrig helt jämn; ta inte i till kanten
+  malGolv: 0.65,         // > viktHog, så en enda läsning aldrig räcker
+  maxUrnor: 8,
+};
+
+/** Vad en enskild läsning väger, utifrån vad motorn sa om sin egen säkerhet. */
+export function rostvikt(sakerhet, k = ROST) {
+  const spann = Math.max(1, k.sakerhetHog - k.sakerhetLag);
+  const t = Math.min(1, Math.max(0, (sakerhet - k.sakerhetLag) / spann));
+  return k.viktLag + (k.viktHog - k.viktLag) * t;
+}
+
+/**
+ * Viktad omröstning per spår.
+ *
+ * Innehåller bara hashar och tidpunkter. Inget nummer, ingen text, ingenting
+ * som går att läsa — samma regel som resten av modulen.
+ */
+export class Rostrakning {
+  constructor(opt = {}) {
+    this.k = { ...ROST, ...opt };
+    this.urnor = new Map();
+  }
+
+  nollstall() { this.urnor.clear(); }
+
+  /**
+   * Fönstrets verkliga längd: golvet, eller så långt som `fonsterVarv`
+   * läsningar i den takt anroparen faktiskt läser i behöver. Se ROST.
+   *
+   * Fönstret växer också med `krav`. Utan det tappar knappen sin mening vid
+   * långsam takt: höjer man kravet från två till tre men fönstret rymmer
+   * fortfarande bara sex läsningar, kapas målet ner till samma tal igen och
+   * "krav 3" beter sig exakt som "krav 2". Ett fönster som rymmer fler
+   * läsningar när fler krävs är det enda sättet att låta båda talen betyda
+   * det de säger.
+   */
+  fonster(krav = 2) {
+    const varv = this.k.fonsterVarv * Math.max(1, krav) / 2;
+    return Math.max(this.k.fonsterMs, varv * this.k.varvMs);
+  }
+
+  /**
+   * Högsta vikt som över huvud taget går att samla i fönstret, om varenda
+   * läsning är den svagaste sorten.
+   *
+   * n röster med `dt` emellan bleknar till (1 - i·dt/F) var, alltså
+   * n - dt·n(n-1)/(2F) gånger röstvikten.
+   */
+  takVikt(krav = 2) {
+    const F = this.fonster(krav);
+    const dt = Math.max(1, this.k.varvMs);
+    const n = Math.max(2, Math.floor(F / dt) + 1);
+    return this.k.viktLag * (n - dt * n * (n - 1) / (2 * F));
+  }
+
+  /**
+   * Målvikt för ett givet `krav`. krav 2 ⇒ 1,0, krav 3 ⇒ 1,5 — men aldrig
+   * mer än vad takten hinner samla ihop, och aldrig under `malGolv`.
+   */
+  mal(krav = 2) {
+    const onskat = Math.max(this.k.malVikt, krav * this.k.malVikt);
+    const uppnaeligt = this.takVikt(krav) * this.k.malMarginal;
+    return Math.max(this.k.malGolv, Math.min(onskat, uppnaeligt));
+  }
+
+  /**
+   * Lägger en röst och svarar om urnan är avgjord.
+   *
+   * @param {string|number} urnaId  spårets id — en urna per fordon i bild
+   * @param {string} hash           saltad hash av läsningen
+   * @param {number} sakerhet       motorns säkerhet, 0–100
+   * @returns {{klar:boolean, vikt:number, tvaa:number, roster:number, mal:number}}
+   */
+  rosta(urnaId, hash, sakerhet, { krav = 2, nu = Date.now() } = {}) {
+    // Urnor för spår som inte finns kvar ska inte ligga och minnas. Två
+    // fönster utan en röst betyder att fordonet är ur bild.
+    for (const [id, u] of this.urnor) {
+      if (nu - u.sist > this.fonster(krav) * 2) this.urnor.delete(id);
+    }
+    let u = this.urnor.get(urnaId);
+    if (!u) {
+      u = { roster: [], sist: nu };
+      this.urnor.set(urnaId, u);
+      // Håll listan kort även om spår-id:n rullar snabbt.
+      while (this.urnor.size > this.k.maxUrnor) {
+        const aldst = [...this.urnor.entries()].sort((a, b) => a[1].sist - b[1].sist)[0];
+        if (!aldst || aldst[0] === urnaId) break;
+        this.urnor.delete(aldst[0]);
+      }
+    }
+    u.sist = nu;
+    const F = this.fonster(krav);
+    u.roster = u.roster.filter(r => nu - r.t < F);
+    u.roster.push({ h: hash, t: nu, v: rostvikt(sakerhet, this.k) });
+
+    // Blekning: en röst tappar sin vikt linjärt över fönstret.
+    const summa = new Map();
+    for (const r of u.roster) {
+      const bleknad = r.v * (1 - (nu - r.t) / F);
+      if (bleknad <= 0) continue;
+      summa.set(r.h, (summa.get(r.h) || 0) + bleknad);
+    }
+
+    let vinnare = null, vikt = 0, tvaa = 0;
+    for (const [h, v] of summa) {
+      if (v > vikt) { tvaa = vikt; vikt = v; vinnare = h; }
+      else if (v > tvaa) tvaa = v;
+    }
+
+    const mal = this.mal(krav);
+    // Vinnaren måste vara den vi just läste. Annars annonserar vi ett gammalt
+    // svar i samma ögonblick som bilden säger något annat.
+    const klar = vinnare === hash && vikt >= mal && (vikt - tvaa) >= this.k.vinstMarginal;
+    if (klar) u.roster = [];
+    return { klar, vikt, tvaa, mal, roster: u.roster.length };
+  }
+}
+
+/* ---- Mätning ------------------------------------------------------------
+ *
+ * "Snabbare" är inte en känsla, det är ett tal. Före den här klassen mättes
+ * bara sökningen — det billigaste steget i hela kedjan — och siffran skickades
+ * till en händelse ingen lyssnade på. OCR-tiden, som är en till två tiopotenser
+ * dyrare, mättes ingenstans, och överhoppade OCR-varv räknades inte alls.
+ *
+ * Nu mäts varje steg, och två tider till första godkända läsning:
+ *   franStart  — från att kameran startade. Det föraren upplever.
+ *   franSpar   — från att skylten först syntes i bild. Det som går att jämföra
+ *                mellan två versioner av koden, eftersom det inte innehåller
+ *                hur lång tid föraren tog på sig att komma ikapp bilen framför.
+ */
+class Matvarde {
+  constructor() { this.antal = 0; this.summa = 0; this.senast = 0; this.max = 0; }
+  lagg(ms) {
+    this.antal++; this.summa += ms; this.senast = ms;
+    if (ms > this.max) this.max = ms;
+  }
+  get medel() { return this.antal ? this.summa / this.antal : 0; }
+  varden() {
+    return {
+      antal: this.antal,
+      senast: Math.round(this.senast * 10) / 10,
+      medel: Math.round(this.medel * 10) / 10,
+      max: Math.round(this.max * 10) / 10,
+    };
   }
 }
 
@@ -1525,9 +3024,19 @@ export class PlateReader extends EventTarget {
   constructor({ settings, register } = {}) {
     super();
     this.settings = Object.assign({
-      intervalMs: 700,        // hur ofta en bildruta skickas till OCR
-      krav: 2,                // så många överens innan vi tror på den
-      fonsterMs: 6000,        // ...inom det här tidsfönstret
+      intervalMs: 700,        // kortaste tid mellan två OCR-varv
+      /*
+       * `krav` är inte längre ett antal läsningar utan ett antal SÄKRA
+       * läsningar: målvikten blir krav × 0,5, och en läsning väger 0,30–0,60
+       * beroende på hur säker motorn var. Förvalet 2 betyder därför precis vad
+       * det alltid har betytt — två säkra räcker — men tre osäkra krävs nu där
+       * två osäkra förut släpptes igenom. Se `Rostrakning`.
+       */
+      krav: 2,
+      // Rösternas livslängd — ett GOLV, inte ett tak. Läser slingan glesare än
+      // 300 ms växer fönstret med takten, annars vore målet omöjligt att nå.
+      // Se `Rostrakning` och ROST.
+      fonsterMs: 2500,
       franvaroMs: 8000,       // så länge måste en skylt ha varit borta för att räknas som ny
       pip: true,
       zoomLage: 'auto',      // 'auto' eller 'manuell'
@@ -1537,6 +3046,7 @@ export class PlateReader extends EventTarget {
       sokMs: 120,             // hur ofta bilden genomsöks efter kandidater
       sokBredd: 400,          // arbetsbredd för sökningen, i pixlar
       bildrutorForLas: MALSOK.bildrutorForLas,
+      bildrutorForLasAnkrad: MALSOK.bildrutorForLasAnkrad,
       tappForLas: MALSOK.tappForLas,
       minPoang: MALSOK.minPoang,
       brandForsok: MALSOK.brandForsok,
@@ -1594,7 +3104,16 @@ export class PlateReader extends EventTarget {
      * tid — utan det blir `sedd` en liggande förteckning över varje främmande
      * bil sedan starten, hashad men ändå en förteckning.
      */
-    this.senaste = [];          // {h, t} — hash, inte nummer
+    /*
+     * `varvMs` är rösträkningens enda kunskap om hur tätt appen faktiskt
+     * läser. Utan den räknade den på 300 ms medan slingan gick på 700, och
+     * målet blev omöjligt att nå för allt utom de säkraste läsningarna. Se
+     * ROST, avsnittet om TAKTEN.
+     */
+    this.rostning = new Rostrakning({
+      fonsterMs: this.settings.fonsterMs,
+      varvMs: this.settings.intervalMs,
+    });
     this.sedd = new Map();      // hash -> {sistSedd, annonserad}
     this.register = register || null;
     this.antalLasta = 0;        // ren räknare, nollas vid stop. Ingen historik.
@@ -1609,6 +3128,7 @@ export class PlateReader extends EventTarget {
 
     this.malsokare = new Malsokare({
       bildrutorForLas: this.settings.bildrutorForLas,
+      bildrutorForLasAnkrad: this.settings.bildrutorForLasAnkrad,
       tappForLas: this.settings.tappForLas,
       minPoang: this.settings.minPoang,
       brandForsok: this.settings.brandForsok,
@@ -1619,6 +3139,7 @@ export class PlateReader extends EventTarget {
     this.lutningsgivare = new Lutningsgivare();
     this.sokMsSenast = 0;
     this.sokMsMedel = 0;      // rullande medel, för mätning i fält
+    this.#nollstallMatning();
     this._sistLast = 0;
     this._sisteStatus = null;
 
@@ -1678,12 +3199,14 @@ export class PlateReader extends EventTarget {
 
     this.running = true;
     this.malsokare.nollstall();
+    this.#nollstallMatning();
+    this.matning.startAt = performance.now();
     this.#status('Söker skylt…');
     this.#rita();
     // setInterval, inte requestAnimationFrame: rAF står stilla så fort
     // skärmen slocknar eller fliken hamnar i bakgrunden, och då slutade
     // dashcamen spela in mitt i en resa. Samma fälla gäller här.
-    this._ocrTimer = setInterval(() => this.#steg(), this.settings.intervalMs);
+    this.#startaOcrSlinga();
     this._ritTimer = setInterval(() => this.#rita(), 100);
     // Sökningen går i egen takt, mycket snabbare än OCR:en. Den är billig och
     // det är den som avgör hur snabbt låset kan sitta — ett lås som byggs av
@@ -1695,9 +3218,37 @@ export class PlateReader extends EventTarget {
     haMotor().catch(e => this.#fel(e));
   }
 
+  /**
+   * OCR-slingan schemalägger sig själv i stället för att ligga på setInterval.
+   *
+   * Med setInterval fanns en tyst förlust: tog en läsning längre tid än
+   * `intervalMs` slog nästa tick i återinträdesspärren och försvann utan spår.
+   * Vid 700 ms mellan tickarna och en läsning på 900 ms betyder det att
+   * VARANNAN läsning aldrig blev av, och ingen mätning hade kunnat visa det.
+   *
+   * Nu väntar slingan i stället ut resten av intervallet efter att läsningen
+   * blev klar. `intervalMs` blir ett GOLV för hur tätt vi läser, inte ett
+   * schema som läsningen måste hinna in i. Går en läsning snabbt kommer nästa
+   * i tid; går den långsamt startar nästa direkt efteråt i stället för att
+   * hoppas över. Två följder på köpet: en ändrad `intervalMs` slår igenom utan
+   * omstart, och det finns inget läge kvar där läsaren ser död ut för att alla
+   * tick landat i spärren.
+   */
+  #startaOcrSlinga() {
+    const varv = async () => {
+      if (!this.running) return;
+      const t0 = performance.now();
+      try { await this.#steg(); } catch (e) { this.#fel(e); }
+      if (!this.running) return;
+      const gick = performance.now() - t0;
+      this._ocrTimer = setTimeout(varv, Math.max(0, this.settings.intervalMs - gick));
+    };
+    this._ocrTimer = setTimeout(varv, 0);
+  }
+
   stop() {
     this.running = false;
-    clearInterval(this._ocrTimer); clearInterval(this._ritTimer); clearInterval(this._sokTimer);
+    clearTimeout(this._ocrTimer); clearInterval(this._ritTimer); clearInterval(this._sokTimer);
     this._ocrTimer = this._ritTimer = this._sokTimer = null;
     this.malsokare.nollstall();
     this.kandidater = [];
@@ -1710,7 +3261,62 @@ export class PlateReader extends EventTarget {
 
   /** Nollar rösträkningen. Det finns ingen lista att rensa längre. */
   rensa() {
-    this.senaste = []; this.sedd.clear(); this.antalLasta = 0;
+    this.rostning.nollstall(); this.sedd.clear(); this.antalLasta = 0;
+  }
+
+  #nollstallMatning() {
+    this.matning = {
+      startAt: 0,
+      sok: new Matvarde(),          // en sökning över bildrutan
+      hitta: new Matvarde(),        // lokalisering inne i rutan (ljusstapelvägen)
+      forbehandla: new Matvarde(),  // beskär, räta upp, tröskla
+      ocr: new Matvarde(),          // en recognize() i arbetaren
+      varv: new Matvarde(),         // hela OCR-varvet, vägg-mot-vägg
+      ocrVarv: 0,
+      ocrKorningar: 0,
+      ankradeVarv: 0,
+      giltiga: 0,
+      ogiltiga: 0,
+      /*
+       * Överhoppade varv. Tog förra läsningen längre tid än intervalMs
+       * droppades nästa tick förut helt tyst — ingen kö, ingen logg, ingen
+       * räknare. Det såg ut som att läsaren dött. Nu räknas det, och med den
+       * självschemaläggande slingan i `start()` ska talet dessutom vara noll.
+       */
+      overhoppade: 0,
+      lastAt: 0,
+      forstaLasMs: null,            // start → första låset
+      forstaGiltigMs: null,         // start → första giltiga OCR-läsningen
+      forstaTraffFranStart: null,   // start → första godkända (röstade) läsningen
+      forstaTraffFranSpar: null,    // skylten syns → första godkända läsningen
+    };
+  }
+
+  /**
+   * Mätvärdena, färdiga att skriva ut. Det här är svaret på "blev det
+   * snabbare" — en siffra, inte en känsla.
+   */
+  matdata() {
+    const m = this.matning;
+    const rund = v => (v == null ? null : Math.round(v));
+    return {
+      sok: m.sok.varden(),
+      hitta: m.hitta.varden(),
+      forbehandla: m.forbehandla.varden(),
+      ocr: m.ocr.varden(),
+      varv: m.varv.varden(),
+      ocrVarv: m.ocrVarv,
+      ocrKorningar: m.ocrKorningar,
+      ocrPerVarv: m.ocrVarv ? Math.round(m.ocrKorningar / m.ocrVarv * 100) / 100 : 0,
+      ankradeVarv: m.ankradeVarv,
+      giltiga: m.giltiga,
+      ogiltiga: m.ogiltiga,
+      overhoppade: m.overhoppade,
+      forstaLasMs: rund(m.forstaLasMs),
+      forstaGiltigMs: rund(m.forstaGiltigMs),
+      forstaTraffFranStart: rund(m.forstaTraffFranStart),
+      forstaTraffFranSpar: rund(m.forstaTraffFranSpar),
+    };
   }
 
   /** Zoom via kameran när telefonen kan, annars digitalt genom en snävare ruta. */
@@ -1876,10 +3482,16 @@ export class PlateReader extends EventTarget {
     this.sokMsMedel = this.sokMsMedel
       ? this.sokMsMedel * 0.9 + this.sokMsSenast * 0.1
       : this.sokMsSenast;
+    this.matning.sok.lagg(this.sokMsSenast);
 
     const { spar, last } = this.malsokare.mata(kand);
     this.kandidater = spar;
-    if (last) this._sistLast = Date.now();
+    if (last) {
+      this._sistLast = Date.now();
+      if (this.matning.forstaLasMs == null) {
+        this.matning.forstaLasMs = performance.now() - this.matning.startAt;
+      }
+    }
     // "Ser ABC 123 — bekräftar…" ska hinna läsas. Utan spärren skriver
     // sökningen över den 120 ms senare och texten blinkar förbi.
     if (Date.now() > (this._statusLas || 0)) this.#status(this.#lagesText());
@@ -1903,8 +3515,11 @@ export class PlateReader extends EventTarget {
     const kandidater = this.kandidater.map(s => ({
       id: s.id, x: s.x, y: s.y, w: s.w, h: s.h,
       poang: s.poang, traffar: s.traffar, tappade: s.tappade,
-      brand: s.brand, last: !!s.last,
-      mognad: Math.min(1, s.traffar / this.settings.bildrutorForLas),
+      brand: s.brand, last: !!s.last, ankrad: !!s.ankrad,
+      // Mätaren ska visa vägen till DET HÄR spårets lås. Ett ankrat spår har
+      // tre bildrutor kvar till målet, inte åtta, och en mätare som räknar mot
+      // fel mål ljuger om hur nära låset är.
+      mognad: Math.min(1, s.traffar / this.malsokare.krav(s)),
       canvas: till(s),
     }));
     return {
@@ -1915,6 +3530,8 @@ export class PlateReader extends EventTarget {
       utsnitt: u,
       sokMs: Math.round(this.sokMsMedel * 10) / 10,
       lasKrav: this.settings.bildrutorForLas,
+      ankrade: kandidater.filter(k => k.ankrad).length,
+      matning: this.matdata(),
     };
   }
 
@@ -2133,39 +3750,129 @@ export class PlateReader extends EventTarget {
    * står kvar bakom den.
    */
   async #steg() {
-    if (!this.running || this.arbetar || !this.video.videoWidth) return;
+    if (!this.running || !this.video.videoWidth) return;
+    // Kan inte längre inträffa med den självschemaläggande slingan, men om det
+    // någonsin gör det ska det synas i mätningen och inte försvinna tyst.
+    if (this.arbetar) { this.matning.overhoppade++; return; }
 
+    const m = this.matning;
     const last = this.malsokare.last;
-    let roi = null, lasId = null, matt = null;
+    let roi = null, lasId = null, matt = null, forstSedd = 0;
     if (last) {
       lasId = last.id;
+      forstSedd = last.forstSedd || 0;
       matt = { w: last.w, h: last.h, rw: last.matt?.rw, rh: last.matt?.rh };
       // Kopia, inte spåret självt: sökningen skriver om spåret medan
       // läsningen pågår, och rutan skulle glida ifrån bilden vi beskar.
       roi = { x: last.x, y: last.y, w: last.w, h: last.h };
+      /*
+       * Är spårets senaste mätning ankrad följer skyltens uppmätta kanter,
+       * vinkel och bandbredd med in i läsningen.
+       *
+       * Här används den RÅA mätningen, inte spårets utjämnade ruta. Utjämningen
+       * finns för att siktet inte ska darra på skärmen, och den är rätt till
+       * det — men den ligger drygt en sökbildruta efter sanningen, och i
+       * landsvägsfart hinner skylten flytta sig så mycket på den tiden att
+       * beskärningen hamnar bredvid. Den utjämnade rutan ritas, den råa läses.
+       */
+      if (last.matt?.ankrad) {
+        /*
+         * HELA rutan tas från den råa mätningen, inte bara den vridna
+         * rektangeln. Förut skrevs cx/cy/rw/rh över men x/y/w/h lämnades
+         * utjämnade, och de två beskrev då olika ögonblick. Vid vinkel 0 —
+         * skylt rakt framifrån, det vanligaste läget som finns — är det
+         * x/y/w/h som beskärs, alltså den eftersläpande rutan, precis det
+         * kommentaren ovan lovar att den inte gör.
+         */
+        Object.assign(roi, {
+          ankrad: true,
+          x: last.matt.x, y: last.matt.y, w: last.matt.w, h: last.matt.h,
+          vinkel: last.matt.vinkel,
+          cx: last.matt.cx, cy: last.matt.cy,
+          rw: last.matt.rw, rh: last.matt.rh,
+          euAndel: last.matt.euAndel,
+        });
+      }
     } else if (this.settings.centrumFallback && this._roi &&
                Date.now() - this._sistLast > this.settings.fallbackMs) {
       roi = this._roi;
+      const t0 = performance.now();
       matt = hittaPlat(this.video, this._roi);
+      m.hitta.lagg(performance.now() - t0);
     }
     if (!roi) return;
 
     this.arbetar = true;
+    const tVarv = performance.now();
     try {
       // Skyltens storlek styr autozoomen, oavsett om den gick att läsa. En
       // skylt som hittas men är för liten är precis det fall zoomen finns för.
       this.#justeraZoom(matt);
 
-      const { plat, sakerhet } = lasId
+      /*
+       * `matt` skickas med. Utan det letade `lasRuta` upp skylten en gång
+       * till inne i exakt samma ruta som vi just sökt igenom — samma
+       * nedskalning, samma flödesfyllning, en gång per OCR-varv, till ingen
+       * nytta. Är `matt` null beter sig anropet precis som förut.
+       */
+      const svar = lasId
         ? await lasKandidat(this.video, roi)
-        : await lasRuta(this.video, roi);
+        : await lasRuta(this.video, roi, { fardigMatt: matt });
+      const { plat, sakerhet, tider } = svar;
+
+      /*
+       * Kameran kan ha släckts medan läsningen pågick. Utan den här kontrollen
+       * kunde en läsning som var i luften när `stop()` kördes fylla på
+       * rösträkningen efter att `rensa()` tömt den — och då ligger hashar kvar
+       * i minnet med kameran av. Litet, men det biter mot regeln om att
+       * ingenting ska finnas kvar när läsaren är avstängd.
+       */
+      if (!this.running) return;
+
+      m.ocrVarv++;
+      if (tider) {
+        m.ocrKorningar += tider.ocrAntal;
+        if (tider.ocrAntal) m.ocr.lagg(tider.ocrMs / tider.ocrAntal);
+        if (tider.forbMs) m.forbehandla.lagg(tider.forbMs);
+        if (tider.hittaMs) m.hitta.lagg(tider.hittaMs);
+        if (tider.ankrad) m.ankradeVarv++;
+      }
+      if (plat) {
+        m.giltiga++;
+        if (m.forstaGiltigMs == null) m.forstaGiltigMs = performance.now() - m.startAt;
+      } else {
+        m.ogiltiga++;
+      }
+
+      /*
+       * Hashen tas fram här och inte inne i `#rosta`, därför att BÅDA behöver
+       * den: rösträkningen för att räkna, och brandmekanismen för att se om
+       * spåret läser samma skylt igen eller hittar på en ny varje varv. Att
+       * hasha två gånger vore samma arbete två gånger — och att skicka numret
+       * vidare i klartext i stället är precis det modulen inte gör.
+       */
+      let h = null;
+      if (plat) { try { h = await this.#hasha(plat); } catch {} }
+
       // Ett lås som aldrig ger en giltig skylt ska brinna upp, inte sitta
       // kvar. Rapporten är det som gör det.
-      if (lasId) this.malsokare.rapporteraLasning(lasId, !!plat);
-      if (plat) await this.#rosta(plat, sakerhet);
+      if (lasId) this.malsokare.rapporteraLasning(lasId, !!plat, h);
+      if (plat) await this.#rosta(plat, sakerhet, lasId ?? 'mitten', forstSedd, h);
     } catch (e) {
       this.#fel(e);
     } finally {
+      const varvMs = performance.now() - tVarv;
+      m.varv.lagg(varvMs);
+      /*
+       * Rösträkningen måste veta hur tätt vi verkligen läser, inte hur tätt vi
+       * tänkt oss. Det verkliga avståndet mellan två röster är golvet
+       * `intervalMs` eller varvtiden, det som är längst. En läsning under 80 %
+       * säkerhet drar igång en andra OCR-körning och gör varvet nästan dubbelt
+       * så långt — alltså blir takten som glesast just när rösterna är som
+       * svagast, och det är den kombinationen som förut gjorde målet omöjligt.
+       */
+      this.rostning.k.varvMs =
+        Math.max(this.settings.intervalMs, Math.round(varvMs)) || ROST.varvMs;
       this.arbetar = false;
     }
   }
@@ -2190,11 +3897,13 @@ export class PlateReader extends EventTarget {
    * eget fordon. Är det någon annans slutar det här, i samma bildrutecykel
    * som det lästes.
    */
-  async #rosta(plat, sakerhet) {
+  async #rosta(plat, sakerhet, urnaId = 'mitten', forstSedd = 0, fardigHash = null) {
     const nu = Date.now();
 
-    let h = null;
-    try { h = await this.#hasha(plat); } catch {}
+    // Hashen kan redan vara framtagen av anroparen — brandmekanismen behöver
+    // samma värde, och två hashningar av samma läsning är ren dubbelkörning.
+    let h = fardigHash;
+    if (!h) { try { h = await this.#hasha(plat); } catch {} }
     if (!h) {
       /*
        * Utan hashning går det varken att rösta eller att avgöra om skylten är
@@ -2238,11 +3947,14 @@ export class PlateReader extends EventTarget {
     }
     syn.sistSedd = nu;
 
-    this.senaste = this.senaste.filter(r => nu - r.t < this.settings.fonsterMs);
-    this.senaste.push({ h, t: nu });
-
-    const antal = this.senaste.filter(r => r.h === h).length;
-    if (antal < this.settings.krav) {
+    /*
+     * En urna per spår. Två bilar i bild röstade förut i samma urna, åtskilda
+     * bara av att hasharna skilde sig — nu räknas de var för sig, och en
+     * felläsning av den ena kan inte längre störa den andra.
+     */
+    const rost = this.rostning.rosta(urnaId, h, sakerhet,
+                                     { krav: this.settings.krav, nu });
+    if (!rost.klar) {
       // Statusraden sa förut vilken skylt som höll på att bekräftas. Det var
       // en logg över främmande fordon, målad direkt i gränssnittet.
       this._statusLas = nu + 1500;
@@ -2254,6 +3966,14 @@ export class PlateReader extends EventTarget {
     if (syn.annonserad) return;
     syn.annonserad = true;
     this.antalLasta++;
+
+    const m = this.matning;
+    if (m.forstaTraffFranStart == null) {
+      m.forstaTraffFranStart = performance.now() - m.startAt;
+      // Från att skylten först syntes, inte från att kameran startade. Det är
+      // det talet som går att jämföra mellan två versioner av koden.
+      if (forstSedd) m.forstaTraffFranSpar = nu - forstSedd;
+    }
 
     const traff = this.register ? this.register.slaUppHash(h) : null;
     if (!traff) {
