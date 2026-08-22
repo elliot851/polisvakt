@@ -125,6 +125,7 @@
      *     ort:   'Västerås',               // läggs till i geokodfrågan
      *     omrade:'Västmanland',            // bara för att känna igen texten
      *     ruta:  [15.10, 59.30, 17.30, 60.30],   // lonMin, latMin, lonMax, latMax
+     *     notis: true,                     // valfritt, se nedan. Förval true.
      *   }
      *
      * ruta är gruppens geografiska avgränsning och är OBLIGATORISK så fort
@@ -140,6 +141,44 @@
      *
      * Listan är enklast att låta appen skriva: Inställningar →
      * Facebook-grupper → "Kopiera inställning till bryggan".
+     *
+     *
+     * DEN HÄR LISTAN ÄR SANNINGEN OM VILKA GRUPPER SOM LÄSES.
+     *
+     * Två program läser den, och båda läser exakt den här raden:
+     *
+     *   Användarskriptet    du sitter i det nu. Läser CONFIG.groupIds direkt.
+     *   tools\brygg-daemon.ps1   klipper ut läsdelen ur den här filen och
+     *                       plockar dessutom UT den här listan (se
+     *                       Plocka-Grupper där) för att veta vilka flikar den
+     *                       ska öppna och vilken ruta varje grupp har.
+     *
+     * Daemonen hade fram till 2.4 en EGEN uppfattning om geografin: den
+     * injicerade ett naket groupId och fick då Västmanlands ruta för varje
+     * grupp, oavsett vilken. En Stockholmsgrupp slog alltså upp "Sveavägen,
+     * Västerås", fick tomt svar och loggade "okänd-plats" — tyst, och exakt
+     * likt en lugn kväll. Två kopior av samma sanning driver isär; nu finns
+     * bara den här.
+     *
+     * Appens inställningssida är INTE en tredje kopia. Den är en REDIGERARE:
+     * den skriver aldrig något som körs, dess enda utgång är knappen
+     * "Kopiera inställning till bryggan", och det den lägger i urklipp är
+     * ordagrant den text som ska ersätta raderna nedan.
+     *
+     *
+     * notis: false — kartan ja, push till låst skärm nej.
+     *
+     * Notisvägen på servern (fbmejl_push_mottagare i supabase\fbmejl.sql) har
+     * ingen geografi alls: den skickar varje ny rapport till VARENDA
+     * prenumerant. Med bara Västeråsgruppen ansluten spelade det ingen roll.
+     * Ansluter man en grupp i en annan stad börjar Sergels torg dyka upp på
+     * låsskärmen hos folk i Västerås, och det är en riktig produktskada.
+     *
+     * Tills rapportraden bär en region och notisurvalet filtrerar på den ska
+     * en grupp utanför den egna staden ha notis: false. Då skrivs rapporten
+     * med anon-nyckeln rakt till reports — den syns på kartan och i appens
+     * röst — men den går aldrig genom fbmejl_ta_emot, och alltså aldrig ut
+     * som push. Det är den ärliga mellanstationen, inte en tystad varning.
      */
     // "Här Står Polisen - Västerås", privat grupp, ~18 000 medlemmar.
     // Gruppen har inget eget namn i adressen, bara siffrorna — därför är
@@ -153,6 +192,51 @@
         omrade: 'Västmanland',
         ruta: [15.10, 59.30, 17.30, 60.30],
       },
+
+      /*
+       * STOCKHOLM — färdig att koppla in, avstängd med flit.
+       *
+       * Ta bort kommentarstecknen runt EN av raderna nedan och starta om
+       * bryggan (tools\polisvakt-brygga.ps1). Daemonen öppnar då en andra
+       * flik i samma bryggfönster och sveper båda grupperna i samma tick.
+       *
+       * VARFÖR DE LIGGER AVSTÄNGDA OCH INTE PÅSLAGNA:
+       *
+       *   1. Den grupp som faktiskt har volymen — 563061233834062,
+       *      "Poliskontroller Stockholm", 32 561 medlemmar, ~45 inlägg i
+       *      månaden mot Västeråsgruppens 24 — är PRIVAT, och ägaren är inte
+       *      medlem. En privat grupp lämnar inte ut ett enda inlägg till en
+       *      icke-medlem: sidan renderar, sessionen är inloggad, flödet är
+       *      tomt. Att gå med är ägarens beslut, inte bryggans. Bryggan
+       *      säger numera ifrån EN gång när en ansluten grupp aldrig ger
+       *      något — se vakthunden i brygg-daemon.ps1 — i stället för att
+       *      tiga.
+       *   2. Den offentliga gruppen 280649102036931 GÅR att läsa utan
+       *      medlemskap (mätt, riktig inläggstext hämtad). Men dess flöde är
+       *      till stor del administratörens automatposter, så den reella
+       *      takten är långt under de 31 inlägg i månaden som räknaren visar.
+       *   3. Båda står med notis: false av skälet ovanför.
+       *
+       * Rutan är samma som appens "Stockholms län" i FB_REGIONER (js\app.js),
+       * med flit: två tabeller som säger olika saker om samma län är samma
+       * sorts fel som den här filen just slutade göra.
+       */
+      // {
+      //   id: '563061233834062',
+      //   namn: 'Poliskontroller Stockholm',
+      //   ort: 'Stockholm',
+      //   omrade: 'Stockholms län',
+      //   ruta: [17.20, 58.80, 19.30, 60.20],
+      //   notis: false,
+      // },
+      // {
+      //   id: '280649102036931',
+      //   namn: 'Var är polisen i Stockholms län?',
+      //   ort: 'Stockholm',
+      //   omrade: 'Stockholms län',
+      //   ruta: [17.20, 58.80, 19.30, 60.20],
+      //   notis: false,
+      // },
     ],
 
     /*
@@ -309,6 +393,14 @@
         ort: String(kalla.ort || '').trim(),
         omrade: String(kalla.omrade || '').trim(),
         ruta: giltigRuta(kalla.ruta) ? kalla.ruta.map(Number) : null,
+        /*
+         * Förvalet är true, och det är inte en slarvig default. Fältet är
+         * nytt i 2.4; varje befintlig rad saknar det, och de raderna ska
+         * bete sig precis som förut. Att låta en saknad nyckel betyda
+         * "skicka ingen notis" hade tystat Västeråsgruppen vid uppgradering
+         * — det värsta tänkbara sättet att införa en ny inställning.
+         */
+        notis: (kalla.notis === undefined || kalla.notis === null) ? true : !!kalla.notis,
       });
     }
 
@@ -358,20 +450,147 @@
   /* ================= Parser (kopia av js/parser.js) ================= */
 
   const TYPE_WORDS = [
-    // ordning spelar roll: mest specifik först
-    { type: 'camera',   words: ['fartkamera', 'fartkameror', 'atk', 'trafiksäkerhetskamera', 'kamera'] },
+    // Gruppordningen är numera bara tie-break. findType väger träffens
+    // KVALITET först (exakt slår böjning slår sammansättning), annars hade
+    // "Polisen står vid Hälla med kroppskameror" blivit en vägrad
+    // kameraträff i stället för en polisvarning.
+    { type: 'camera',   words: ['fartkamera', 'fartkameror', 'atk', 'trafiksäkerhetskamera',
+                                // kamera->kameror är oregelbunden plural: "trafikkameror"
+                                // slutar inte på "kamera". Därför står 'kameror' som eget ord.
+                                'kamera', 'kameror',
+                                // 'kamerasläp' och 'kameravagn' är huvudfinala på "släp"
+                                // respektive "vagn", inte på "kamera" — ändelsematchningen
+                                // når dem aldrig, precis som den inte når 'blåljusbil'.
+                                // MOBILA_TYPORD nedan gör dem till kamera:'mobil' utan att
+                                // något mobilord behöver stå bredvid.
+                                'kamerasläp', 'kameravagn'] },
     { type: 'control',  words: ['trafikkontroll', 'fartkontroll', 'hastighetskontroll',
                                 'laserkontroll', 'poliskontroll', 'kontroll', 'razzia', 'laser'] },
     { type: 'unmarked', words: ['civilbil', 'civilbilar', 'civilpolis', 'civilpoliser', 'civil polis',
                                 'civila bilar', 'civil', 'civila'] },
     { type: 'police',   words: ['polis', 'polisen', 'poliser', 'polisbil', 'polisbilar', 'snut', 'snutar',
-                                'snuten', 'blåljus', 'piket', 'mc-polis', 'motorcykelpolis'] },
+                                // 'blåljusbil' är huvudfinalt på "bil", inte på "blåljus", och
+                                // kan därför inte härledas ur 'blåljus' med ändelsematchning.
+                                'snuten', 'blåljus', 'blåljusbil', 'piket', 'mc-polis',
+                                'motorcykelpolis'] },
   ];
 
-  const ALL_TYPE_WORDS = new Set(TYPE_WORDS.flatMap(g => g.words.flatMap(w => w.split(' '))));
-
+  // Avblåsningsorden matchas ord mot ord även fortsättningsvis. Ett för brett
+  // avblåsningsord skapar ingen rapport — det SLÄCKER en som finns.
   const CLEAR_WORDS = ['borta', 'åkte', 'åkt', 'iväg', 'försvunnit', 'försvann', 'fritt',
                        'lugnt', 'avblåst', 'packat', 'tomt'];
+
+  /*
+   * ORDMATCHNINGEN. Ordagrann kopia av js/parser.js — ändras den ena MÅSTE
+   * den andra ändras likadant, annars tolkar bryggan och appen samma inlägg
+   * olika. Hela motiveringen står i js/parser.js; kortversionen:
+   *
+   * Mätt i drift 2026-08-22: "Står en mobil trafikkamera vid första avfarten
+   * Hälla" försvann tyst, för ordlistan hade 'kamera' och inlägget sade
+   * 'trafikkamera'. Svenska sammansättningar är huvudfinala, alltså matchar
+   * vi bakifrån: ett ord träffar ett listord om det SLUTAR på listordet,
+   * eventuellt med en ändelse ur en sluten lista.
+   *
+   * Valt bort: delsträng (fångar "polisanmälan", "kameraövervakning",
+   * "civilstånd"), prefixmatchning (fångar "kontrollera", "kontrollant") och
+   * morfologibibliotek (mer kod än hela parsern, och varje fel blir en tyst
+   * felmatchning i drift).
+   */
+
+  // Ingen -era, -erar, -erat, -erad, -ering: det är hela skillnaden mellan
+  // "kontrollen" och "kontrollera". Tomma strängen = ren sammansättning.
+  const BOJNINGAR = ['', 'n', 'en', 'et', 'er', 'ar', 'or', 'na', 'ns', 'ens', 'ets', 's',
+                     'erna', 'arna', 'orna', 'ernas', 'arnas', 'ornas'];
+
+  // 'atk' är tre bokstäver och en förkortning. 'laser' är värre: "blaser",
+  // ASCII-formen av "blåser", SLUTAR på "laser" — ett blåsprov hade blivit en
+  // trafikkontroll på kartan.
+  const ENDAST_EXAKT = new Set(['atk', 'laser']);
+
+  // "kontroll" är för generiskt för att bära en sammansättning:
+  // biljettkontroll, parkeringskontroll, gränskontroll, fjärrkontroll. De vi
+  // vill ha står redan som egna listord och får sina böjningar därifrån.
+  //
+  // Spärren gäller OCKSÅ böjningar. Den satt först bara i godkantForled,
+  // alltså efter böjningsgrenen, och då matchade 'kontroll' plötsligt
+  // "kontrollen" och "kontrollerna": "Föraren tappade kontrollen och körde av
+  // vägen vid Tortuna" blev en publicerad trafikkontroll på en olycksplats.
+  const INGEN_SAMMANSATTNING = new Set(['kontroll', 'kontroller']);
+
+  // Kortare förled är oftast ingen sammansättning utan en bokstav som råkar
+  // stå före ordet ("b" + "laser").
+  const MIN_FORLED = 3;
+
+  // Förled som gör sammansättningen till något annat. Kameraorden väger
+  // tyngst: en kameraträff VÄGRAS, så ett falskt utslag där raderar en
+  // rapport i stället för att skapa en. Foge-s stryks före uppslaget.
+  const KAMERA_FEL_FORLED = [
+    'övervakning', 'overvakning', 'säkerhet', 'sakerhet', 'webb', 'web', 'dash', 'back',
+    'bak', 'front', 'vilt', 'jakt', 'kropp', 'mobil', 'telefon', 'video', 'action',
+    'digital', 'system', 'reserv', 'drönar', 'dronar', 'film', 'foto', 'natur', 'fågel',
+    'fagel', 'skol', 'butik', 'dörr', 'dorr', 'port', 'ring', 'spel',
+  ];
+  const FEL_FORLED = {
+    kamera: KAMERA_FEL_FORLED,
+    kameror: KAMERA_FEL_FORLED,
+    fartkamera: KAMERA_FEL_FORLED,
+    fartkameror: KAMERA_FEL_FORLED,
+    'trafiksäkerhetskamera': KAMERA_FEL_FORLED,
+    // "metropolis", "akropolis", "nekropolis" slutar på 'polis'.
+    polis: ['metro', 'akro', 'nekro', 'necro', 'megalo', 'kosmo'],
+  };
+
+  function godkantForled(forled, listord) {
+    // INGEN_SAMMANSATTNING testas överst i matchaOrd i stället, så att
+    // spärren också gäller böjningsgrenen. Se motiveringen vid listan.
+    const rent = forled.replace(/[-_]+$/, '');
+    if (rent.length < MIN_FORLED) return false;
+    const fel = FEL_FORLED[listord];
+    if (!fel) return true;
+    const utanFogeS = rent.endsWith('s') ? rent.slice(0, -1) : rent;
+    return !fel.includes(rent) && !fel.includes(utanFogeS);
+  }
+
+  /*
+   * Matchar ETT ord ur texten mot ETT listord.
+   * Samma funktion används av findType och av extractPlace. Gick de isär
+   * skulle "trafikkamera" bli både typ och plats: platsfrasen fick en
+   * skräpsträng att geokoda OCH hela platsbonusen på +0,3, den enda term som
+   * lyfter en rapport över tröskeln.
+   * @returns {'exakt'|'bojning'|'sammansatt'|null}
+   */
+  function matchaOrd(ord, listord) {
+    if (!ord || !listord) return null;
+    if (ord === listord) return 'exakt';
+    // Båda spärrarna står FÖRE böjningsloopen. Olika skäl, samma verkan här:
+    // ett för generiskt eller för kort listord träffar bara sig självt.
+    if (ENDAST_EXAKT.has(listord) || INGEN_SAMMANSATTNING.has(listord)) return null;
+
+    let basta = null;
+    for (const andelse of BOJNINGAR) {
+      const form = listord + andelse;
+      if (ord.length < form.length) continue;
+      if (ord === form) return 'bojning';        // andelse kan aldrig vara '' här
+      if (!ord.endsWith(form)) continue;
+      if (godkantForled(ord.slice(0, ord.length - form.length), listord)) basta = 'sammansatt';
+    }
+    return basta;
+  }
+
+  /*
+   * Exakt ord eller böjning av det — men aldrig en sammansättning.
+   *
+   * Egen jämförelse, INTE matchaOrd. Skillnaden är avsiktlig: matchaOrd bär
+   * typordens spärrar (ENDAST_EXAKT, INGEN_SAMMANSATTNING) som ska hålla
+   * nätet som SKAPAR rapporter smalt, medan den här används av
+   * nykterhetsspärren, som ska vara bred. Gick de via samma väg skulle
+   * 'kontroll' i INGEN_SAMMANSATTNING tyst släppa igenom "drog kontrollen".
+   */
+  const arBojningAv = (ord, bas) => {
+    if (!ord || !bas) return false;
+    if (ord === bas) return true;
+    return BOJNINGAR.some(a => a && ord === bas + a);
+  };
 
   /*
    * Nykterhetskontroller rapporteras inte. Punkt.
@@ -405,7 +624,10 @@
    * "polisen drog vidare" är en avblåsning, inte en kontroll.
    */
   const SOBRIETY_STAMMAR = [
-    'nykter', 'alkohol', 'alko', 'promille', 'rattfyll',
+    // 'nyckter' är felstavningen av 'nykter'. Den är inget svenskt ord och
+    // kostar därför ingenting; utan den gick "Nyckterhetsrazzia vid Bäckby"
+    // förbi hela stamlistan.
+    'nykter', 'nyckter', 'alkohol', 'alko', 'promille', 'rattfyll',
     'utandnings', 'sållnings', 'sallnings',
     'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
   ];
@@ -428,7 +650,33 @@
     'rattfylla', 'drog', 'droger', 'utandnings', 'sållnings', 'sallnings',
     'narkotika', 'narko',
   ];
-  const SOBRIETY_HEAD = ['kontroll', 'kontroller', 'test', 'prov', 'kollar', 'koll'];
+  /*
+   * Huvudorden matchas med arBojningAv(), inte med exakt likhet.
+   *
+   * MÄTT HÅL, samma dag som kameran försvann: "Polisen har drog kollen på
+   * E18" blev en vanlig polisrapport. 'drog' är med flit inget stamord, och
+   * 'kollen' fanns inte i listan — bara 'koll'. Bestämd form saknades
+   * genomgående: kontrollen, kontrollerna, testet, provet, kollen.
+   * Böjningslistan täcker dem alla och växer med typorden i stället för att
+   * halka efter dem.
+   *
+   * VARFÖR LISTAN VÄXTE I SAMMA ÄNDRING SOM TYPORDEN
+   *
+   * Reglerna nedan finns i praktiken bara för ordet 'drog' — alla andra
+   * förled är också stammar och fångas en rad tidigare. Frågan är alltså:
+   * vilket ord efter "drog" gör det till en drogkontroll? Listan hade sex
+   * svar och behövde fler, för breddningen av typorden gav dem betydelse:
+   * 'razzia' står som typord i control-gruppen, så "Drograzzia vid Erikslund"
+   * blev en publicerad kontroll med notis där samma mening förut gav
+   * ingenting alls. Samma sak för drogpolisen ('polis') och drogpiketen
+   * ('piket'). Serverns migration hade redan pekat ut razzia, sök och hund.
+   *
+   * PRISET, uträknat och accepterat: "Nu drog polisen från Erikslund" vägras.
+   * Det är en AVBLÅSNING som tystnar — en varning som ligger kvar sin TTL ut,
+   * aldrig en varning som uteblir. Riktningen är hela regeln.
+   */
+  const SOBRIETY_HEAD = ['kontroll', 'kontroller', 'test', 'prov', 'kollar', 'koll',
+                         'razzia', 'sök', 'sok', 'hund', 'polis', 'poliser', 'piket'];
 
   /* Bindestreck skiljer ord, inte bara blanksteg. normalize() behåller
      bindestreck för gatunamns skull, vilket gjorde att "drog-kontroll" blev
@@ -446,7 +694,66 @@
     'varning', 'varnar', 'obs', 'info', 'tips', 'akta', 'se', 'upp', 'kolla', 'observera', 'pass',
     'nyss', 'sedan', 'sen', 'igen', 'också', 'även', 'typ', 'ca', 'cirka', 'ungefär', 'liksom',
     'gubbarna', 'gubbar', 'grabbar', 'killar', 'folk', 'någon', 'nån', 'dem', 'dej', 'er', 'oss',
+    // Räkneorden kom med driftfallet: "vid FÖRSTA avfarten Hälla" gav
+    // platsen "första hälla", som ingen geokodning hittar.
+    'första', 'andra', 'tredje', 'fjärde', 'femte', 'sista',
+    'man', 'du', 'ni', 'jag', 'vi', 'kommer', 'kör', 'åker', 'svänger', 'sväng', 'av',
+    // Tidsorden och de vanligaste fyllnadsorden. De är aldrig en plats, och
+    // förr blev de det: "Poliskontroll idag som ligger vid Hälla" gav platsen
+    // "idag", eftersom ordet både överlevde rensningen och utlöste
+    // bisatsgränsen innan ortnamnet hann läsas.
+    'idag', 'dag', 'imorgon', 'ikväll', 'inatt', 'igår', 'pågår', 'ute', 'fortfarande',
   ]);
+
+  /*
+   * Ord som inleder en bisats. Efter dem beskriver meningen något annat än
+   * var polisen står: "...avfarten Hälla OM MAN KOMMER FRÅN STOCKHOLM".
+   * Gränsen gäller bara när vi redan fått något att gå på — "Polisen SOM står
+   * vid Hälla" börjar med bisatsordet, och där är det bara ett stoppord.
+   */
+  const KLAUSULORD = new Set(['om', 'när', 'ifall', 'eftersom', 'medan', 'som', 'men']);
+
+  /*
+   * Ord som gör en kamera flyttbar. Se kameraregeln i parseReportText.
+   * Exakta ord med flit, ingen prefixmatchning: "jag såg den i mobilen"
+   * skulle annars göra varje fast fartkamera till en mobil.
+   *
+   * ORDET MÅSTE STÅ INTILL KAMERAORDET. Regeln letade först efter dem var som
+   * helst i inlägget, och ett enda räckte för att göra en FAST kamera till en
+   * publicerad trafikkontroll med 60 minuters TTL och röstnotis:
+   *   "Fartkameran vid Bäckby blixtrade, jag har bilden i min mobil"
+   *   "Nya fartkameran vid Erikslund, se den tillfälliga skylten"
+   *   "Trafikkameran vid Skiljebo, jag stod med släpet bakom"
+   * Alla tre mättes över tröskeln 0,65. På avstånd från kameraordet betyder
+   * orden något helt annat — telefonen, skylten, släpet bakom bilen.
+   */
+  const MOBIL_KAMERA_ORD = new Set([
+    'mobil', 'mobila', 'mobilt', 'flyttbar', 'flyttbara', 'flyttbart',
+    'tillfällig', 'tillfälliga', 'tillfälligt', 'skåpbil', 'skåpbilen',
+    'släpvagn', 'släpet', 'kameravagn', 'kamerasläp', 'trailer',
+  ]);
+
+  // Står något av dem intill kameraordet är kameran fast, hur många mobilord
+  // som än står längre bort i meningen.
+  const FAST_KAMERA_ORD = new Set(['fast', 'fasta', 'fastmonterad', 'fastmonterade']);
+
+  // Listord som ÄR en mobil kamera i sig — inget grannord behövs.
+  const MOBILA_TYPORD = new Set(['kamerasläp', 'kameravagn']);
+
+  // Hur långt från kameraordet ett mobilord får stå. Två ord, inte ett:
+  // "fartkamera I skåpbil" och "kamera PÅ ETT släp" har småord emellan.
+  const KAMERA_FONSTER = 2;
+
+  /** Står något ord ur mängden inom fönstret runt ordet på plats idx? */
+  function narOrdet(words, idx, mangd) {
+    if (!(idx >= 0)) return false;
+    const forsta = Math.max(0, idx - KAMERA_FONSTER);
+    const sista = Math.min(words.length - 1, idx + KAMERA_FONSTER);
+    for (let i = forsta; i <= sista; i++) {
+      if (i !== idx && mangd.has(words[i])) return true;
+    }
+    return false;
+  }
 
   const DIRECTION_HINTS = new Set(['norrut', 'söderut', 'österut', 'västerut', 'infart', 'avfart',
     'påfart', 'avfarten', 'påfarten', 'rondellen', 'rondell', 'korsningen', 'bron', 'rampen']);
@@ -456,6 +763,12 @@
     'hej', 'hallå', 'okej', 'vakt', 'hey',
     'mörk', 'mörkblå', 'ljus', 'vit', 'svart', 'grå', 'blå', 'röd', 'silver',
     'bil', 'bilen', 'skåpbil', 'volvo', 'passat', 'golf', 'bmw', 'audi', 'buss',
+    // Beskriver utrustningen, inte platsen: "en MOBIL trafikkamera vid Hälla".
+    ...MOBIL_KAMERA_ORD, ...FAST_KAMERA_ORD,
+    // 'kontroll' står i INGEN_SAMMANSATTNING och plockas därför inte längre
+    // bort av arTypord i böjd form. Utan de här raderna hamnar "kontrollen" i
+    // platsfrasen som geokodningen får slå upp.
+    'kontroll', 'kontrollen', 'kontroller', 'kontrollerna',
   ]);
 
   const normalize = s => (s || '').toLowerCase()
@@ -470,40 +783,120 @@
     if (SOBRIETY_WORDS.some(w => words.includes(w) || text.includes(w) || hopskrivet.includes(w))) return true;
     if (SOBRIETY_STAMMAR.some(s => words.some(w => w.startsWith(s)) || hopskrivet.includes(s))) return true;
 
-    // Isärskrivet: förled + huvudord som två ord bredvid varandra.
+    // Isärskrivet: förled + huvudord som två ord bredvid varandra. Båda leden
+    // får nu vara böjda ("nykterhets kontrollen", "drog testet"). Förr krävdes
+    // exakt likhet i båda leden, och då räckte ett -en för att gå förbi hela
+    // spärren.
     for (let i = 0; i < words.length - 1; i++) {
-      if (SOBRIETY_PREFIX.includes(words[i]) && SOBRIETY_HEAD.includes(words[i + 1])) {
-        return true;
+      const forled = SOBRIETY_PREFIX.some(f => arBojningAv(words[i], f));
+      if (forled && SOBRIETY_HEAD.some(h => arBojningAv(words[i + 1], h))) return true;
+    }
+
+    /*
+     * Hopskrivet: förled + huvudord i ETT ord, där huvudordet är böjt.
+     * "drogkollen" gick igenom allt annat — 'drog' är inget stamord (det är
+     * också imperfekt av "dra"), 'drogkoll' står inte i ordlistan, och regeln
+     * ovan letar efter två ord. Här delas ordet vid förledet i stället och
+     * resten prövas som huvudord. Foge-s stryks.
+     */
+    for (const w of words) {
+      for (const f of SOBRIETY_PREFIX) {
+        if (w.length <= f.length || !w.startsWith(f)) continue;
+        const rest = w.slice(f.length).replace(/^s/, '');
+        if (SOBRIETY_HEAD.some(h => arBojningAv(rest, h))) return true;
       }
     }
     return false;
   }
 
+  const TRAFF_RANG = { exakt: 3, bojning: 2, sammansatt: 1 };
+
+  /*
+   * Hittar det BÄSTA typordet, inte det första. Förr vann första träffen i
+   * gruppordning; med sammansättningar är det farligt, eftersom kameragruppen
+   * står först och en kameraträff vägras. Ordningen är träffkvalitet först,
+   * sedan gruppordningen, sedan listordets längd. Gruppordningen står före
+   * längden med flit: den är ett produktbeslut, och med den ordningen svarar
+   * parsern exakt som förut på inlägg där alla träffar är exakta.
+   */
   function findType(text, words) {
-    const set = new Set(words);
-    for (const group of TYPE_WORDS) {
+    let basta = null;
+    for (let gi = 0; gi < TYPE_WORDS.length; gi++) {
+      const group = TYPE_WORDS[gi];
       for (const w of group.words) {
-        const hit = w.includes(' ') ? text.includes(w) : set.has(w);
-        if (hit) return { type: group.type, word: w };
+        let traff = null;
+        // Var i meningen ordet stod. Kameraregeln behöver det för att kunna
+        // fråga vad som står BREDVID kameraordet i stället för var som helst.
+        let idx = -1;
+        if (w.includes(' ')) {
+          // Flerordsfraser matchas mot hela texten som förut: de är två ord,
+          // och en ändelsematchning per ord behöver veta vilket som är huvudet.
+          // De finns bara i unmarked-gruppen, alltså aldrig i kameraregeln,
+          // och saknar därför ordindex utan att något går förlorat.
+          if (text.includes(w)) traff = 'exakt';
+        } else {
+          for (let oi = 0; oi < words.length; oi++) {
+            const m = matchaOrd(words[oi], w);
+            if (m && (!traff || TRAFF_RANG[m] > TRAFF_RANG[traff])) { traff = m; idx = oi; }
+          }
+        }
+        if (!traff) continue;
+        const kandidat = { type: group.type, word: w, traff, gi, idx };
+        if (!basta || arBattreTraff(kandidat, basta)) basta = kandidat;
       }
     }
-    return null;
+    return basta;
+  }
+
+  function arBattreTraff(a, b) {
+    if (TRAFF_RANG[a.traff] !== TRAFF_RANG[b.traff]) return TRAFF_RANG[a.traff] > TRAFF_RANG[b.traff];
+    if (a.gi !== b.gi) return a.gi < b.gi;
+    return a.word.length > b.word.length;
   }
 
   const hasAnyWord = (words, list) => list.some(w => words.includes(w));
   const hasAnyPhrase = (text, list) => list.some(p => text.includes(p));
 
+  const ALLA_TYPORD = [...new Set(TYPE_WORDS.flatMap(g => g.words.flatMap(w => w.split(' '))))];
+
+  // SAMMA matchning som findType, och det är avgörande: vore rensningen kvar
+  // på exakt likhet blev "trafikkamera" både typ och plats. Hela ordet
+  // plockas bort, inte bara ändelsen — ingen "trafik" blir kvar.
+  const arTypord = ord => ALLA_TYPORD.some(w => matchaOrd(ord, w) !== null);
+
+  /*
+   * Vägorden (rondellen, avfarten, rampen) räknas inte som plats — det stod
+   * redan i kommentaren vid DIRECTION_HINTS, men rensningen gjorde det inte
+   * förrän nu. De sparas ändå undan: är de allt vi har är "rondellen norrut"
+   * bättre än ingen plats, för utan plats faller rapporten på tröskeln.
+   */
   function extractPlace(words) {
     const kept = [];
+    const medVagord = [];
     for (const w of words) {
-      if (ALL_TYPE_WORDS.has(w)) continue;
+      if (KLAUSULORD.has(w)) {
+        /*
+         * Bryt bara när vi har ett RIKTIGT platsled, alltså kept och inte
+         * medVagord. Gränsen bröt först på medVagord, och då räckte ett enda
+         * fyllnadsord före bisatsordet för att kasta resten av meningen:
+         * "Poliskontroll idag som ligger vid Hälla" gav platsen "idag", som
+         * ingen geokodning hittar. Vägorden (rondellen, avfarten) är inget
+         * att gå på: "Snutarna vid rondellen som står vid Hälla" ska ge
+         * "hälla".
+         */
+        if (kept.length) break;        // bisatsen beskriver inte platsen
+        continue;                      // ...inleder den meningen är den bara ett stoppord
+      }
+      if (arTypord(w)) continue;
       if (STOPWORDS.has(w)) continue;
       if (NOT_A_PLACE.has(w)) continue;
       if (/^\d{1,2}[:.]\d{2}$/.test(w)) continue;
       if (/^\d+$/.test(w) && w.length > 3) continue;
+      medVagord.push(w);
+      if (DIRECTION_HINTS.has(w)) continue;
       kept.push(w);
     }
-    return kept.join(' ').trim();
+    return (kept.length ? kept : medVagord).join(' ').trim();
   }
 
   function parseReportText(raw) {
@@ -516,9 +909,36 @@
     const t = findType(text, words);
     if (!t) return null;
 
-    // Fartkameror står still, finns redan i appen med rätt koordinat och
-    // mätriktning, och en handmarkerad kamera hamnar nästan alltid fel.
-    if (t.type === 'camera') return { intent: 'refused', reason: 'camera' };
+    /*
+     * FASTA fartkameror står still, finns redan i appen med rätt koordinat
+     * och mätriktning, och en handmarkerad kamera hamnar nästan alltid fel.
+     *
+     * MOBILA kameror är motsatsen på varje punkt: de står där i några timmar,
+     * de finns inte i någon kartdata, och den enda som kan berätta att de
+     * står där är någon som just körde förbi. Driftfallet 2026-08-22 var just
+     * en mobil kamera, som först försvann i ordmatchningen och sedan hade
+     * fastnat här.
+     *
+     * Typen blir 'control', inte 'camera'. 'camera' betyder något bestämt i
+     * resten av appen — TTL ett år, notiser avstängda för användarkällor,
+     * behandlas som fast anläggning — och en mobil kamera med den typen hade
+     * blivit en tyst nål som ligger kvar i ett år. 'control' betyder
+     * "tillfällig hastighetsmätning här och nu": 60 minuter, notis på. Det är
+     * vad en mobil kamera ÄR. Fältet kamera:'mobil' bär ursprunget vidare.
+     */
+    /*
+     * Mobilordet måste höra ihop med kameraordet, inte bara finnas i texten.
+     * Se motiveringen vid MOBIL_KAMERA_ORD: "jag har bilden i min mobil" är
+     * ingen mobil kamera. Två undantag från grannkravet, båda åt rätt håll:
+     * ett listord som SJÄLVT betyder flyttbar kamera (kamerasläp, kameravagn)
+     * behöver inget grannord, och ett "fast" intill kameraordet vinner alltid
+     * över ett mobilord i samma fönster.
+     */
+    const mobilKamera = t.type === 'camera' &&
+      !narOrdet(words, t.idx, FAST_KAMERA_ORD) &&
+      (MOBILA_TYPORD.has(t.word) || narOrdet(words, t.idx, MOBIL_KAMERA_ORD));
+    if (t.type === 'camera' && !mobilKamera) return { intent: 'refused', reason: 'camera' };
+    const type = mobilKamera ? 'control' : t.type;
 
     if (hasAnyPhrase(text, NOISE_PHRASES)) return null;
     if (hasAnyWord(words, NOISE_WORDS) && words.length < 5) return null;
@@ -530,16 +950,25 @@
     if (place.length >= 3) confidence += 0.3;
     if (words.length <= 8) confidence += 0.1;
     else if (words.length > 25) confidence -= 0.2;
-    if (t.type === 'control') confidence += 0.05;
+    if (type === 'control') confidence += 0.05;
     if (words.some(w => DIRECTION_HINTS.has(w))) confidence += 0.05;
 
-    return {
+    // En osäkrare matchning ska ge en osäkrare rapport. Avdraget är litet med
+    // flit: det ska rangordna rapporter mot varandra, inte ensamt fälla dem
+    // under tröskeln 0,65.
+    if (t.traff === 'sammansatt') confidence -= 0.1;
+    else if (t.traff === 'bojning') confidence -= 0.05;
+
+    const svar = {
       intent,
-      type: t.type,
+      type,
       place,
       confidence: Math.max(0, Math.min(1, confidence)),
       raw: String(raw).trim(),
+      traff: t.traff,
     };
+    if (mobilKamera) svar.kamera = 'mobil';
+    return svar;
   }
 
   /* ================= Minneslista ================= */
@@ -716,13 +1145,72 @@
    * gången, så det förutsätter mycket skrollande. Den risken är känd och
    * accepterad, inte förbisedd.
    */
+  /*
+   * TVÅ FLIKAR DELAR DEN HÄR NYCKELN. Skrivningen måste därför slå ihop.
+   *
+   * Sedan brygg-daemonen läser flera grupper står två flikar på facebook.com
+   * samtidigt, en per grupp, med var sin injicerad kopia av den här koden.
+   * De delar localStorage. Den gamla versionen skrev hela objektet rakt av,
+   * alltså: sista skrivningen vann och raderade den andra flikens rader.
+   *
+   * Nycklarna krockar inte — de bär gruppen sedan 2.3, `g:<gid>|…` — så en
+   * hopslagning är entydig och förlustfri. Den som förlorar en rad förlorar
+   * inte en varning direkt, men något värre och tystare: inlägget
+   * registreras om, och är fliken redan kalibrerad kan ett gammalt inlägg då
+   * få en färsk observerad ålder. Det är exakt det fel kalibreringssvepet
+   * finns för att omöjliggöra.
+   *
+   * Två rader för samma nyckel slås ihop ÅT DET FÖRSIKTIGA HÅLLET:
+   *
+   *   f  tidigaste observationen. Inlägget fanns bevisligen redan då.
+   *   s  senaste observationen. Styr gallringen; det som syns hålls levande.
+   *   k  1 om NÅGON av dem såg inlägget under ett kalibreringssvep. Då är
+   *      åldern okänd, och okänd ålder betyder att inget skickas. Motsatt
+   *      regel (k=0 vinner) hade låtit en flik som råkade se inlägget "dyka
+   *      upp" ge det en ålder som den andra flikens mätning motsäger.
+   */
+  function slaIhopForstSedd(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    return { f: Math.min(a.f, b.f), s: Math.max(a.s, b.s), k: (a.k || b.k) ? 1 : 0 };
+  }
+
   function sparaForstSedd() {
     const cutoff = Date.now() - FORSTSEDD_TTL;
-    const rader = Object.entries(forstSedd)
-      .filter(([, v]) => v && Number.isFinite(v.f) && Number.isFinite(v.s) && v.s > cutoff)
-      .sort((a, b) => b[1].s - a[1].s)
-      .slice(0, FORSTSEDD_MAX);
-    forstSedd = Object.fromEntries(rader);
+
+    let lagrat = {};
+    try {
+      const r = JSON.parse(localStorage.getItem(FORSTSEDD_KEY));
+      if (r && typeof r === 'object') lagrat = r;
+    } catch {}
+
+    const samlat = Object.assign({}, lagrat);
+    for (const [k, v] of Object.entries(forstSedd)) samlat[k] = slaIhopForstSedd(lagrat[k], v);
+
+    /*
+     * Taket räknas PER GRUPP, inte över hela listan.
+     *
+     * Med ett delat tak hade en pratsam grupp trängt ut en tyst grupps rader
+     * helt, och den tysta gruppen hade då tappat sin tidsmätning utan att
+     * någon rad i loggen sa varför. Femhundra rader per grupp är samma
+     * utrymme per grupp som förut, och en handfull grupper ryms med god
+     * marginal i localStorage.
+     */
+    const perGrupp = new Map();
+    for (const [k, v] of Object.entries(samlat)) {
+      if (!v || !Number.isFinite(v.f) || !Number.isFinite(v.s) || v.s <= cutoff) continue;
+      const m = /^g:([^|]*)\|/.exec(k);
+      const gid = m ? m[1] : '?';
+      if (!perGrupp.has(gid)) perGrupp.set(gid, []);
+      perGrupp.get(gid).push([k, v]);
+    }
+    const kvar = [];
+    for (const rader of perGrupp.values()) {
+      rader.sort((a, b) => b[1].s - a[1].s);
+      for (const r of rader.slice(0, FORSTSEDD_MAX)) kvar.push(r);
+    }
+
+    forstSedd = Object.fromEntries(kvar);
     forstSeddSkrivet = Date.now();
     try { localStorage.setItem(FORSTSEDD_KEY, JSON.stringify(forstSedd)); } catch {}
   }
