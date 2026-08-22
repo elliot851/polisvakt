@@ -235,15 +235,27 @@ function Logga {
   )
   $stampel = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
   $rad = '{0}  {1,-14} {2}' -f $stampel, $Nivo, $Text
-  Write-Host $rad -ForegroundColor $Farg
+
+  # FILEN FÖRST, KONSOLEN SEDAN — och ordningen är hela poängen.
+  #
+  # Förut stod Write-Host först. Startad från Schemaläggaren finns ingen
+  # konsol att skriva till, och skrivningen kunde då blockera. Följden var en
+  # daemon som såg ut att köra — processen levde, CPU:n tickade — men som inte
+  # skrev en enda rad, inte ens sin egen STARTrad. Sex minuters tystnad, och
+  # ingenting att felsöka på, eftersom felsökningen sker i loggen.
+  #
+  # Nu kan konsolen aldrig tysta filen: raden ligger på disk innan någon
+  # försöker rita den på en skärm som kanske inte finns.
   try {
     # AppendAllText skriver BOM:en bara när filen skapas. Det är precis vad vi
     # vill: ett märke först i filen, inte ett per rad.
     [System.IO.File]::AppendAllText($script:LoggSokvag, $rad + [Environment]::NewLine, $script:LoggKodning)
   } catch {
-    # En trasig logg får inte stoppa bryggan, men tystnaden ska synas.
-    Write-Host ('  (kunde inte skriva loggen: ' + $_.Exception.Message + ')') -ForegroundColor DarkRed
+    # En trasig logg får inte stoppa bryggan. Tystnaden ska synas om det finns
+    # någon att visa den för — och gör det inte det, får den vara tyst.
+    try { Write-Host ('  (kunde inte skriva loggen: ' + $_.Exception.Message + ')') -ForegroundColor DarkRed } catch { }
   }
+  try { Write-Host $rad -ForegroundColor $Farg } catch { }
 }
 
 # =====================================================================
