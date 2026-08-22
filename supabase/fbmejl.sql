@@ -2185,11 +2185,24 @@ begin
       -- — se avsnittet NOTISER: TEXTEN. Skulle någon frestas lägga till
       -- 'note' här är det den ändringen som gör låsskärmen till en kanal där
       -- vem som helst i en Facebook-grupp skriver vad som helst.
+      --
+      -- lat och lon är SEX fält i stället för fyra, och de bryter inte mot
+      -- resonemanget ovan: de går aldrig ut i en notistext. De läses bara av
+      -- fbmejl_notis_ut() för att avgöra VEM som ska få notisen — se
+      -- supabase/migrationer/2026-08-22-notisradie.sql.
+      --
+      -- Utan de här två raderna är hela avståndsfiltret sovande. Grinden får
+      -- då noll punkter, tolkar det som "vet inte var det här hände" och
+      -- skickar till alla, vilket är dagens beteende och alltså osynligt.
+      -- Den dagen den nationella gruppen kopplas in blir samma tystnad till
+      -- en laserkontroll i Malmö klockan sju på morgonen, i Västerås.
       v_nya := v_nya || jsonb_build_array(jsonb_build_object(
         'typ',        v_typ,
         'plats',      left(coalesce(nullif(v_rad->>'label', ''), ''), 60),
         'utrustning', public.fbmejl_utrustning(v_note),
-        'created_at', (v_rad->>'created_at')::bigint
+        'created_at', (v_rad->>'created_at')::bigint,
+        'lat',        (v_rad->>'lat')::double precision,
+        'lon',        (v_rad->>'lon')::double precision
       ));
       insert into public.fbmejl_lasta (nyckel, text_nyckel, message_id, inlaggs_id, utfall, rapport_id)
       values (v_nyckel, v_text_nyckel, v_msg_id, v_rad->>'inlaggs_id', 'rapport', v_id)

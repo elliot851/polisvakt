@@ -590,6 +590,30 @@
       kamerorna utantill och vill se dem på kartan utan att bli tilltalad.</p>
     <div id="notisTyper"></div>
 
+    <!-- Räckvidden hör hemma här, bland de andra "vad vill du höra"-frågorna,
+         och inte nere vid Facebook-rutan. Frågan är densamma som resten av
+         kortet ställer — hur mycket ska appen säga till? — bara för den
+         stund då telefonen ligger i fickan och appen är stängd.
+
+         Två frågor som ser lika ut men inte är det, och som inte får slås
+         ihop: "Var vill du bli varnad?" längre ner styr vad som ritas på
+         kartan medan du kör. Det här styr vad som väcker telefonen när du
+         inte kör. Samma ord, olika rätt svar, därför två reglage. -->
+    <h4 class="sub-head">Notiser när appen är stängd</h4>
+    <label class="row"><span>Var vill du få notiser?</span>
+      <select id="setNotisOmfang">
+        <option value="nara">Nära mig</option>
+        <option value="alla">Hela landet</option>
+      </select>
+    </label>
+    <label class="row" id="notisRadieRow"><span>Räckvidd <b id="setNotisRadieVal">100 km</b></span>
+      <input type="range" id="setNotisRadie" min="25000" max="300000" step="25000" value="100000"></label>
+    <p class="hint">Notisen kommer fram om varningen ligger inom räckvidden från
+      de trakter du brukar köra i. Appen skickar aldrig upp var du står — bara
+      vilken ruta på ungefär tre mil du hör hemma i, och först när telefonen
+      varit där två olika dagar.</p>
+    <p class="hint" id="notisPlatsStatus"></p>
+
     <h4 class="sub-head">Ljud i appen</h4>
     <label class="row"><span>Ljud när du trycker</span><input type="checkbox" id="setLjudPa" checked></label>
     <label class="row"><span>Vibration</span><input type="checkbox" id="setHaptikPa" checked></label>
@@ -683,6 +707,20 @@
     <label class="row"><span>Område</span>
       <select id="fbGruppRegion"></select>
     </label>
+    <!-- Rutan var förut en nödvändighet: notisvägen på servern saknade
+         geografi och skickade varje rapport till varenda prenumerant, så en
+         grupp i en annan stad måste hållas borta från låsskärmen. Numera
+         väljer servern mottagare på avståndet mellan varningen och de
+         trakter telefonen brukar vara i, och rutan är ett val i stället —
+         "den här gruppen ska aldrig kunna väcka någon", oavsett var. Se
+         fbBryggKonfig i js/app.js. -->
+    <label class="row"><span>Notis till låst skärm</span>
+      <input type="checkbox" id="fbGruppNotis" checked>
+    </label>
+    <p class="hint">Låt den vara ikryssad. Vem som väcks styrs av räckvidden du
+      satt under Varningar, så en grupp i en annan stad når bara dem som kör
+      där. Kryssa ur bara om gruppens varningar aldrig ska hamna på någons
+      låsskärm — de syns då ändå på kartan och hörs i appen.</p>
     <div class="row-inline">
       <button class="btn-ghost small" id="btnFbGruppLagg" type="button">Lägg till</button>
       <button class="btn-ghost small" id="btnFbGruppUpptack" type="button">Hitta mina grupper</button>
@@ -694,9 +732,11 @@
       möjligheten att fråga efter grupper 2024.</p>
 
     <h4 class="sub-head">Till bryggan</h4>
-    <p class="hint">Bryggan är ett användarskript i Tampermonkey och läser inte appens
-      inställningar. Kopiera raden nedan och ersätt den som börjar med
-      <code>groupIds:</code> i skriptet.</p>
+    <p class="hint">Listan här är en <b>redigerare</b>, inte det som körs. Grupplistan
+      har ett enda hem: <code>groupIds:</code> i <code>tools/fb-bridge.user.js</code>.
+      Både användarskriptet och bryggan på datorn läser den raden — appen ligger på en
+      annan adress och kan inte skriva till någon av dem. Kopiera raden nedan och ersätt
+      den som börjar med <code>groupIds:</code> i filen, så läser båda samma lista.</p>
     <textarea id="fbGruppKonfig" class="kod-ruta" rows="5" readonly spellcheck="false"></textarea>
     <button class="btn-ghost small" id="btnFbGruppKopiera" type="button">Kopiera inställning till bryggan</button>
     <p class="hint" id="fbGruppStatus"></p>

@@ -90,6 +90,25 @@ const defaults = {
   notiser: null,          // fylls av notiser.js vid behov
 
   /*
+   * Räckvidden för notiser till låst skärm. Bor på servern — de här två är
+   * bara vad telefonen tror, så att rutan kan ritas rätt innan svaret kommit.
+   *
+   * notisFolj är true som förval fastän förvalet på servern är false för
+   * varje rad som fanns före ändringen. Det ser motsägelsefullt ut men är
+   * det inte: servern har ingen hemtrakt att jämföra med förrän telefonen
+   * setts på samma ställe två olika dagar, och tills dess går allt fram.
+   * Ett förval som säger "av" hade fått den som aldrig rört reglaget att tro
+   * att hen missar varningar hen faktiskt får.
+   *
+   * 100 km är mätt och inte gissat: Västerås–Stockholm är ungefär tio mil,
+   * Västerås–Örebro sju och en halv, och hela Västmanland ryms inom sex mil
+   * från Hallstahammar. Med det förvalet får varenda förare i dagens
+   * upptagningsområde fortfarande varenda varning.
+   */
+  notisFolj: true,
+  notisRadieM: 100000,
+
+  /*
    * Facebook-grupper bryggan ska läsa. En rad per grupp, med eget område —
    * en förare i Västerås ska inte få varningar från Stockholm. Se
    * "Facebook-grupper" längre ner.
@@ -331,6 +350,17 @@ function wireGeo() {
     dashcam.overlay.speedKmh = fix.speedKmh;
     vakthund.notera(fix);
     chatt.notera(fix);
+    /*
+     * Samma matning som chatten redan får, och av samma skäl: push.js vill
+     * veta vilken RUTA telefonen brukar vara i, inte var den är just nu.
+     * Ingen ny sensor, ingen ny behörighet, inget nytt anrop per fix — modulen
+     * räknar dagar och hör av sig till servern först när trakten är etablerad.
+     *
+     * Valfritt anrop med flit: push-modulen är fristående och kan saknas i en
+     * avskalad körning. En GPS-fix som kastar här hade tagit med sig navFix,
+     * hastighetsmätaren och kartnålen i fallet.
+     */
+    Push.noteraPosition?.(fix.lat, fix.lon);
     navFix(fix);
     updateSpeedo(fix);
     map.updateMe(fix);
@@ -1272,19 +1302,67 @@ function normaliseraFbGrupper(lista) {
       ort: String(rad.ort || (region ? region.ort : '')).trim(),
       omrade: String(rad.omrade || (region ? region.namn : '')).trim(),
       ruta,
+      /*
+       * Push till låst skärm för den här gruppen.
+       *
+       * Förvalet är true, och en saknad nyckel betyder true — annars hade en
+       * uppgradering tystat den grupp som redan fungerar.
+       *
+       * Raden behövde förut sättas till false för varje grupp i en annan
+       * stad: notisvägen på servern (fbmejl_push_mottagare) hade ingen
+       * geografi alls och skickade varje ny rapport till varenda
+       * prenumerant, så en Stockholmsgrupp lade Sergels torg på låsskärmen
+       * hos folk i Västerås.
+       *
+       * Så är det inte längre. Servern jämför rapportens koordinat med de
+       * trakter prenumeranten brukar vara i och hoppar över dem som ligger
+       * utanför räckvidden (setNotisOmfang i inställningarna). En grupp i en
+       * annan stad kan därför stå kvar på true — den når dem som kör där.
+       *
+       * false är alltså ett val numera, inte en nödvändighet: "den här
+       * gruppen ska aldrig kunna väcka någon." Gruppen syns ändå på kartan
+       * och hörs i appens röst, som filtrerar på avstånd.
+       */
+      notis: (rad.notis === undefined || rad.notis === null) ? true : !!rad.notis,
     });
   }
   return ut;
 }
 
-/** Raden ägaren klistrar in i användarskriptet. */
+/**
+ * Raden ägaren klistrar in i användarskriptet.
+ *
+ * DEN HÄR TEXTEN ÄR APPENS ENDA UTGÅNG, och det är med flit.
+ *
+ * Grupplistan har EN sanning: CONFIG.groupIds i tools/fb-bridge.user.js. Både
+ * användarskriptet och tools/brygg-daemon.ps1 läser den raden och ingen annan.
+ * Listan här i appen är inte en andra sanning utan en REDIGERARE: den ligger i
+ * webbläsarens localStorage, den styr ingenting, och det enda den producerar
+ * är texten nedan.
+ *
+ * Appen kan inte heller vara sanningen även om man ville. Den ligger på ett
+ * annat ursprung än daemonen, har ingen filåtkomst till PC:n, och en synk via
+ * Supabase kräver först att rapportraden bär en region och att notisurvalet
+ * filtrerar på den — annars betyder "fler grupper" bara att alla får allas
+ * städer i låsskärmen.
+ *
+ * Formen måste därför matcha vad de två läsarna förväntar sig, tecken för
+ * tecken. Rundturen mäts i test.html ("konfigurationen är giltig JS i den form
+ * bryggan läser") och tolkarnas regler mäts mot varandra i
+ * `brygg-daemon.ps1 -ProvaGrupper`.
+ */
 function fbBryggKonfig(grupper) {
   const rader = normaliseraFbGrupper(grupper).map(g =>
     '      { id: ' + JSON.stringify(g.id) +
     ', namn: ' + JSON.stringify(g.namn) +
     ', ort: ' + JSON.stringify(g.ort) +
     ', omrade: ' + JSON.stringify(g.omrade) +
-    ', ruta: [' + g.ruta.map(n => n.toFixed(2)).join(', ') + '] },');
+    ', ruta: [' + g.ruta.map(n => n.toFixed(2)).join(', ') + ']' +
+    // Skrivs bara när den är avstängd. En rad som säger samma sak som
+    // förvalet är brus, och den som läser filen ska kunna se på en blick
+    // vilka grupper som inte pushar.
+    (g.notis === false ? ', notis: false' : '') +
+    ' },');
   return 'groupIds: [\n' + rader.join('\n') + '\n    ],';
 }
 
@@ -1356,7 +1434,10 @@ function wireFbGrupper() {
       const under = document.createElement('small');
       // Id:t står med. Det är det ENDA som måste stämma överens med bryggan,
       // och den som felsöker en tyst grupp behöver se det utan att gräva.
-      under.textContent = (g.omrade || 'Utan område') + ' · ' + g.id;
+      // Och står gruppen utan notis ska det synas i listan, inte bara i
+      // filen — annars felsöker man en tystnad man själv valt.
+      under.textContent = (g.omrade || 'Utan område') + ' · ' + g.id +
+        (g.notis === false ? ' · karta, ingen notis' : '');
       txt.appendChild(document.createElement('br'));
       txt.appendChild(under);
       div.appendChild(txt);
@@ -1388,13 +1469,17 @@ function wireFbGrupper() {
 
     const region = fbRegion(sel.value) || FB_REGIONER[0];
     const namn = String($('fbGruppNamn').value || '').trim().slice(0, 80) || id;
+    const notisRuta = $('fbGruppNotis');
+    const notis = notisRuta ? !!notisRuta.checked : true;
     rader.push({ id, namn, region: region.nyckel, ort: region.ort,
-                 omrade: region.namn, ruta: region.ruta.slice() });
+                 omrade: region.namn, ruta: region.ruta.slice(), notis });
     skriv(rader);
     $('fbGruppUrl').value = '';
     $('fbGruppNamn').value = '';
-    status(`${namn} tillagd i ${region.namn}. Kopiera inställningen till bryggan ` +
-      'så börjar den läsa gruppen.');
+    if (notisRuta) notisRuta.checked = true;
+    status(`${namn} tillagd i ${region.namn}` +
+      (notis ? '' : ' (karta ja, notis nej)') +
+      '. Kopiera inställningen till bryggan så börjar den läsa gruppen.');
   });
 
   $('btnFbGruppKopiera').addEventListener('click', async () => {
@@ -2711,6 +2796,10 @@ let synkaGruppnotis = () => {};
    är de fyra oprövade tills en riktig användare hamnar i dem. */
 let ritaGruppnotis = () => {};
 
+/* Och för räckvidden. Samma skäl som ovan: rutan står i inställningarna men
+   ritas om från showView, som ligger på modulnivå. */
+let synkaNotisOmfang = () => {};
+
 function showView(name) {
   document.body.dataset.view = name;
   for (const v of ['map', 'dashcam', 'chatt', 'settings']) {
@@ -2733,7 +2822,7 @@ function showView(name) {
 
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
-  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); }
+  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); }
 }
 
 function renderStatus() {
@@ -4023,6 +4112,186 @@ function wireSettingsUI() {
     };
   }
   renderGruppnotis();
+
+  /* ---- Räckvidd för notiser till låst skärm ----
+   *
+   * Reglaget står i kortet "Varningar", tillsammans med de andra frågorna om
+   * vad appen ska säga till om. Knappen "Tillåt notiser" ligger DÄREMOT
+   * längre ner, i kortet "Påminnelse när du kör" — därför säger texterna här
+   * "längre ner" och inte "ovanför" som gruppnotisrutan gör. Flyttas något av
+   * korten måste de orden med.
+   *
+   * Servern äger sanningen precis som för gruppnotiserna: settings är bara
+   * vad telefonen tror, så att rutan kan ritas direkt vid start i stället för
+   * att stå tom tills nätet svarat. Kommer ett serversvar vinner det.
+   *
+   * Det här reglaget har INGENTING med "Var vill du bli varnad?" att göra,
+   * hur lika de än ser ut. Coverage bestämmer vad som ritas på kartan medan
+   * du kör; det här bestämmer vem servern väcker när appen är stängd. Två
+   * frågor med två olika rätta svar — slå inte ihop dem, och återanvänd inte
+   * settings.coverageRadiusM här.
+   */
+  const kmText = m => Math.round(m / 1000) + ' km';
+
+  /* Hur många trakter servern känner till för den här telefonen. Antalet,
+     aldrig punkterna själva — appen behöver veta ATT den vet var föraren hör
+     hemma, inte var det är. null = vi har inte frågat än. */
+  let antalTrakter = null;
+
+  /*
+   * Servern svarar radie_m och antal_platser. push.js kan ha döpt om dem till
+   * kamelrygg på vägen; läs båda hellre än att låta rutan tystna för att ett
+   * fältnamn översatts i ett annat lager.
+   */
+  const lasOmfang = s => !s ? null : {
+    nadde: s.nadde !== false,
+    finns: !!s.finns,
+    aktiv: !!s.aktiv,
+    folj: !!s.folj,
+    radieM: Number(s.radieM ?? s.radie_m) || settings.notisRadieM,
+    antalPlatser: Number(s.antalPlatser ?? s.antal_platser) || 0,
+  };
+
+  /* Funktionsdeklaration av samma skäl som renderGruppnotis: den anropas
+     från synkaNotisOmfang, som tilldelas längre ner i samma block. */
+  function renderNotisOmfang(svar) {
+    const val = $('setNotisOmfang');
+    const rad = $('setNotisRadie');
+    if (!val || !rad) return;
+    const server = lasOmfang(svar);
+    const l = notisLage();
+    val.disabled = rad.disabled = l.blockerad;
+
+    // Serverns svar skriver om det telefonen trodde — men bara när servern
+    // faktiskt svarat OCH känner igen prenumerationen. Ett "finns: false"
+    // säger ingenting om vad föraren valt, bara att raden inte hittades.
+    if (server?.nadde && server.finns) {
+      settings.notisFolj = server.folj;
+      settings.notisRadieM = server.radieM;
+      antalTrakter = server.antalPlatser;
+      saveSettings();
+    }
+
+    val.value = settings.notisFolj ? 'nara' : 'alla';
+    rad.value = settings.notisRadieM;
+    $('setNotisRadieVal').textContent = kmText(settings.notisRadieM);
+    // Räckvidden är meningslös när allt släpps igenom. Samma grepp som
+    // radiusRow i bevakningsområdet: dölj frågan i stället för att gråa den.
+    $('notisRadieRow').hidden = !settings.notisFolj;
+
+    const status = $('notisPlatsStatus');
+    if (!status || status.dataset.egen === '1') return;
+
+    if (l.blockerad) {
+      status.textContent = l.kanFraga
+        ? 'Slå på notiser först — knappen "Tillåt notiser" längre ner.'
+        : l.text;
+      return;
+    }
+    if (server && !server.nadde) {
+      status.textContent = 'Kunde inte nå servern. Rutan visar det du valde senast.';
+      return;
+    }
+    if (server && !server.finns) {
+      status.textContent = 'Servern känner inte igen den här telefonen. Tryck "Tillåt notiser" längre ner.';
+      return;
+    }
+    // Raden finns men är utslagen. Värt en egen rad här och inte bara nere vid
+    // gruppnotisrutan: korten ligger inte längre bredvid varandra, och en
+    // räckvidd som ser inställd ut medan ingenting går fram är tystnaden i sig.
+    if (server && !server.aktiv) {
+      status.textContent = 'Räckvidden är sparad, men servern når inte den här telefonen. '
+        + 'Slå av och på "Notis när någon skrivit i gruppen" längre ner.';
+      return;
+    }
+    if (!settings.notisFolj) {
+      status.textContent = 'Du får alla varningar, var i landet de än dyker upp.';
+      return;
+    }
+    // Noll trakter är inte ett fel utan ett normalt första dygn — och det
+    // ärliga svaret är att inget filtreras bort än. Säger appen "inom 100 km"
+    // när den ännu inte vet var föraren kör, låter den mer bestämd än den är.
+    if (antalTrakter === 0) {
+      status.textContent = 'Appen håller på att lära sig var du kör — en trakt räknas '
+        + 'först när telefonen varit där två olika dagar. Tills dess får du alla varningar.';
+      return;
+    }
+    // null = servern är inte tillfrågad än. Beskriv inställningen, räkna inte
+    // trakter vi inte fått något tal på.
+    const km = kmText(settings.notisRadieM);
+    status.textContent =
+      antalTrakter > 1  ? `Du får varningar inom ${km} från de ${antalTrakter} trakter du brukar köra i.` :
+      antalTrakter === 1 ? `Du får varningar inom ${km} från den trakt du brukar köra i.` :
+                           `Du får varningar inom ${km} från de trakter du brukar köra i.`;
+  }
+
+  synkaNotisOmfang = async () => {
+    const status = $('notisPlatsStatus');
+    if (status) delete status.dataset.egen;   // serverns svar vinner över gammal egen text
+    if (notisLage().blockerad) { renderNotisOmfang(); return; }
+    // Fångar även att push.js saknar funktionen: då är svaret "vi vet inte",
+    // vilket är sant, och rutan visar det telefonen valde senast.
+    try { renderNotisOmfang(await Push.hamtaNotisomfang()); }
+    catch { renderNotisOmfang({ nadde: false }); }
+  };
+
+  const sparaOmfang = async (folj, radieM) => {
+    const val = $('setNotisOmfang');
+    const rad = $('setNotisRadie');
+    const status = $('notisPlatsStatus');
+    const forra = { folj: settings.notisFolj, radieM: settings.notisRadieM };
+
+    let ok = false;
+    try {
+      const svar = await Push.sattNotisomfang(folj, radieM);
+      // sattGruppnotiser svarar med true/false. Skulle den här svara med
+      // serverns hela objekt i stället duger sanningsvärdet ändå, så länge
+      // ett uttryckligt ok: false inte råkar räknas som lyckat.
+      ok = !!svar && svar.ok !== false;
+    } catch { ok = false; }
+
+    if (!ok) {
+      // Tillbaka till det som faktiskt gäller på servern. Ett reglage som står
+      // kvar på det man drog till lär föraren att inställningen sparades.
+      settings.notisFolj = forra.folj;
+      settings.notisRadieM = forra.radieM;
+      val.value = forra.folj ? 'nara' : 'alla';
+      rad.value = forra.radieM;
+      $('setNotisRadieVal').textContent = kmText(forra.radieM);
+      $('notisRadieRow').hidden = !forra.folj;
+      if (status) {
+        // Egen text vinner tills nästa omritning, annars skrivs den över direkt.
+        status.dataset.egen = '1';
+        status.textContent = Push.permission() === 'granted'
+          ? 'Gick inte att spara. Servern känner kanske inte igen den här telefonen — tryck "Tillåt notiser" längre ner.'
+          : 'Slå på notiser först — knappen "Tillåt notiser" längre ner.';
+      }
+      return;
+    }
+
+    settings.notisFolj = folj;
+    settings.notisRadieM = radieM;
+    saveSettings();
+    if (status) delete status.dataset.egen;
+    renderNotisOmfang();
+  };
+
+  const noVal = $('setNotisOmfang');
+  const noRad = $('setNotisRadie');
+  if (noVal && noRad) {
+    noVal.onchange = () => sparaOmfang(noVal.value === 'nara', +noRad.value);
+    /*
+     * Etiketten följer fingret, men servern hörs av först när reglaget
+     * släpps. oninput smäller till tjugo gånger under ett drag, och tjugo
+     * anrop där det sista ändå vinner är tjugo tillfällen att komma fram i
+     * fel ordning.
+     */
+    noRad.oninput = () => { $('setNotisRadieVal').textContent = kmText(+noRad.value); };
+    noRad.onchange = () => sparaOmfang(noVal.value === 'nara', +noRad.value);
+  }
+  // Rita direkt ur det telefonen minns; showView frågar servern när
+  // inställningarna öppnas.
+  renderNotisOmfang();
 
   /* ---- Rapportpoäng ---- */
   $('btnRepSave').onclick = async () => {
