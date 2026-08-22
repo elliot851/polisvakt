@@ -309,7 +309,8 @@ function notisLage(n) {
 // samma notis, samma väg genom telefonen, samma ljudinställning. Det är den
 // enda provet som bevisar något.
 
-const LJUD_NYCKEL = 'pv.notisljud.v1';   // 'ja' | 'nej' | null (ej frågat)
+// Svaret sparades förut här. Steget som frågade är borttaget (se byggSteg),
+// och en nyckel som ingen skriver är en nyckel som ljuger vid nästa läsning.
 
 /*
  * Menyvägen till ljudinställningen, per plattform.
@@ -348,30 +349,6 @@ function LJUD_VAG() {
     'Leta upp polisvakt.pages.dev och tillåt notiser.',
     'Kolla att datorns eget ljud inte är avstängt.',
   ];
-}
-
-function ljudSvar() {
-  try { return localStorage.getItem(LJUD_NYCKEL); } catch { return null; }
-}
-
-function sattLjudSvar(v) {
-  try { localStorage.setItem(LJUD_NYCKEL, v); } catch { }
-}
-
-/**
- * Läget för ljudsteget.
- *
- * Frågan ställs BARA när notiserna faktiskt är påslagna. Att fråga "hörde du
- * något?" av någon som inte har notiser är att fråga om en notis som aldrig
- * skickades, och ett nej där hade låst guiden i ett steg föraren inte kan
- * lösa.
- */
-function ljudLage(notisLagetNu) {
-  if (notisLagetNu !== 'klart') return null;      // steget visas inte alls
-  const svar = ljudSvar();
-  if (svar === 'ja') return 'klart';
-  if (svar === 'nej') return 'nekat';
-  return 'vantar';
 }
 
 /** Skickar en riktig notis till telefonen, utan server. */
@@ -449,14 +426,28 @@ function byggSteg(st, { tillRad = false } = {}) {
   // och steg 0 säger redan vad som ska göras — två rutor om samma sak är en
   // vägg av text, vilket är precis det den här guiden ska slippa.
   if (!hemskarm) {
-    const nl = notisLage(st.notiser);
-    steg.push({ nyckel: 'notiser', namn: 'Notiser', lage: nl });
-
-    // Ljudsteget kommer SIST och bara när notiserna är påslagna. Se
-    // ljudLage() för varför det inte går att mäta och därför måste frågas.
-    const ll = ljudLage(nl);
-    if (ll) steg.push({ nyckel: 'ljud', namn: 'Ljud', lage: ll });
+    steg.push({ nyckel: 'notiser', namn: 'Notiser', lage: notisLage(st.notiser) });
   }
+
+  /*
+   * INGET LJUDSTEG HÄR. Det provades 23 aug 2026 och låste guiden.
+   *
+   * Felet var inte i ljudsteget självt utan i att det VILLKORADES på ett annat
+   * stegs läge: det lades bara till när notissteget var 'klart'. notisLage()
+   * läses om vid varje ritning, och snabbStatus() och status() kan svara olika
+   * på samma sekund — prenumerationen hinner inte alltid med. Steget dök alltså
+   * upp och försvann mellan två ritningar, och rita() svarar på ett nyckelNu
+   * som inte längre finns i listan genom att hoppa till första ostädade steget.
+   * Det steget var notiser. Föraren tryckte "Klart", kom till ljudsteget, det
+   * försvann, och han var tillbaka på notiser. Om och om igen.
+   *
+   * Lärdomen är generell och gäller varje framtida steg: ETT STEGS EXISTENS
+   * FÅR ALDRIG BERO PÅ ETT ANNAT STEGS LÄGE. Listan måste vara densamma vid
+   * varje ritning i samma session, annars kan navigeringen inte vara stabil.
+   *
+   * Ljudprovet bor nu i inställningarna i stället, under "Hur låter det?",
+   * där det inte kan stå i vägen för någon. Se provaNotisljud() nedan.
+   */
   return steg;
 }
 
@@ -687,26 +678,15 @@ function rita(st) {
     d.fel.hidden = false;
   }
 
-  let egenAndraKnapp = false;
   if (nu.nyckel === 'hemskarm') ritaHemskarm(d, st);
   else if (nu.nyckel === 'plats') ritaPlats(d, st, nu);
-  else if (nu.nyckel === 'ljud') egenAndraKnapp = ritaLjud(d, nu);
   else ritaNotiser(d, st, nu);
 
-  /*
-   * Sista steget? Då är "Inte nu" en stängning, och inget annat.
-   *
-   * egenAndraKnapp finns för ljudsteget, som är det enda där andra knappen
-   * är ett SVAR ("Nej, tyst") och inte ett uppskjutande. Utan undantaget
-   * skrevs svaret över här nere, och ett nej gick inte att lämna alls —
-   * felet fanns i första bygget och hittades genom att läsa ordningen.
-   */
+  // Sista steget? Då är "Inte nu" en stängning, och inget annat.
   const i = steg.findIndex(s => s.nyckel === nyckelNu);
   const finnsFler = i < steg.length - 1;
-  if (!egenAndraKnapp) {
-    d.sen.textContent = finnsFler ? 'Inte nu' : 'Stäng';
-    d.sen.onclick = () => (finnsFler ? nasta() : stang());
-  }
+  d.sen.textContent = finnsFler ? 'Inte nu' : 'Stäng';
+  d.sen.onclick = () => (finnsFler ? nasta() : stang());
   d.stang.onclick = () => stang();
 }
 
@@ -813,87 +793,6 @@ function ritaPlats(d, st, nu) {
 }
 
 /* ---------------------------- Steg 2 ------------------------------- */
-
-/*
- * LJUDSTEGET.
- *
- * Två knappar, och båda är svar — inte "gör det här". Det är hela skillnaden
- * mot resten av guiden: de andra stegen ber föraren om en handling vi kan
- * mäta utfallet av, det här steget ber om en UPPGIFT vi inte kan mäta alls.
- *
- * "Skicka provnotis" ligger som huvudknapp tills provet skickats. Sedan byts
- * kortet till frågan. Att visa ja/nej innan något skickats vore att fråga om
- * en notis som aldrig kom.
- */
-let ljudProvSkickat = false;
-
-function ritaLjud(d, nu) {
-  d.ikon.textContent = '🔊';
-
-  if (nu.lage === 'klart') {
-    d.titel.textContent = 'Ljudet fungerar';
-    d.text.textContent = 'Du har sagt att du hör notiserna. Hör du inget längre — kom tillbaka hit.';
-    d.fin.hidden = true;
-    d.ja.textContent = 'Klart';
-    d.ja.onclick = () => nasta();
-    return false;
-  }
-
-  if (nu.lage === 'nekat') {
-    // Föraren har svarat nej. Här finns ingen knapp som löser det åt hen:
-    // ljudet sitter i telefonens egna notisinställningar, och en webbsida
-    // kan varken läsa eller ändra dem.
-    d.titel.textContent = 'Notisen är ljudlös';
-    d.text.textContent =
-      'Appen kan inte slå på ljudet åt dig — det sitter i telefonens egna ' +
-      'notisinställningar. Så här hittar du det:';
-    d.fin.hidden = true;
-    d.vagrubrik.textContent = 'Slå på ljud för Polisvakt';
-    d.vag.replaceChildren();
-    for (const rad of LJUD_VAG()) d.vag.appendChild(el('li', null, rad));
-    d.vagrubrik.hidden = false;
-    d.vag.hidden = false;
-    d.ja.textContent = 'Prova igen';
-    d.ja.onclick = async () => {
-      ljudProvSkickat = false;
-      sattLjudSvar('');
-      await provaNotisljud();
-      ljudProvSkickat = true;
-      uppdatera();
-    };
-    return false;
-  }
-
-  // lage === 'vantar'
-  if (!ljudProvSkickat) {
-    d.titel.textContent = 'Hör du notiserna?';
-    d.text.textContent =
-      'Notiser är påslagna, men appen kan inte se om telefonen låter. ' +
-      'Tryck här så skickas en riktig notis — lyssna efter den.';
-    d.fin.textContent = 'Ha inte telefonen på ljudlöst när du provar.';
-    d.fin.hidden = false;
-    d.ja.textContent = 'Skicka provnotis';
-    d.ja.onclick = async () => {
-      const r = await provaNotisljud();
-      ljudProvSkickat = true;
-      felText = r.ok ? null : { nyckel: 'ljud', text: 'Provnotisen kunde inte skickas: ' + r.skal };
-      uppdatera();
-    };
-    return false;
-  }
-
-  d.titel.textContent = 'Hörde du den?';
-  d.text.textContent =
-    'En notis skickades nyss. Hörde du ett ljud eller kände en vibration?';
-  d.fin.hidden = true;
-  d.ja.textContent = 'Ja, jag hörde den';
-  d.ja.onclick = () => { sattLjudSvar('ja'); uppdatera(); };
-  // Andra knappen är normalt "Inte nu". Här betyder den "nej" — ett svar,
-  // inte ett uppskjutande — och därför byter den text.
-  d.sen.textContent = 'Nej, tyst';
-  d.sen.onclick = () => { sattLjudSvar('nej'); uppdatera(); };
-  return true;   // vi äger andra knappen, se rita() längre upp
-}
 
 function ritaNotiser(d, st, nu) {
   const n = st.notiser;
@@ -1266,12 +1165,51 @@ function konfigureraPush() {
   try { push.configure({ vapidPublicKey: CONFIG.vapidPublicKey || '' }); } catch {}
 }
 
+/*
+ * Provknappen i inställningarna.
+ *
+ * Provet satt först som ett steg i guiden och LÅSTE den: steget lades bara
+ * till när notissteget var 'klart', och eftersom det läget läses om vid varje
+ * ritning dök steget upp och försvann mellan två ritningar. Guiden hoppade då
+ * tillbaka till första ostädade steget, alltså notiser, och föraren satt fast
+ * i en slinga han inte kunde ta sig ur. Se kommentaren i byggSteg().
+ *
+ * Här kan det inte stå i vägen för någon. Den som vill veta går och kollar;
+ * den som bara vill köra blir inte hindrad.
+ */
+function kopplaNotisprov() {
+  const knapp = document.getElementById('btnProvaNotisljud');
+  if (!knapp || knapp.dataset.kopplat === '1') return;
+  knapp.dataset.kopplat = '1';
+
+  const skriv = t => {
+    const r = document.getElementById('provaNotisStatus');
+    if (r) r.textContent = t;
+  };
+
+  knapp.addEventListener('click', async () => {
+    skriv('Skickar…');
+    const r = await provaNotisljud();
+    if (!r.ok) {
+      skriv('Provnotisen kunde inte skickas: ' + r.skal +
+            '  Är notiser påslagna för appen?');
+      return;
+    }
+    // Menyvägen skrivs ut DIREKT, inte först om föraren säger att det var
+    // tyst. Den som inte hörde något ska inte behöva trycka en gång till för
+    // att få veta vad han ska göra åt det.
+    skriv('Skickad. Hörde du ingenting? Då är ljudet avslaget i telefonen: '
+          + LJUD_VAG().join(' '));
+  });
+}
+
 async function start() {
   konfigureraPush();
   await domRedo();
   injiceraCss();
   bevaka();
   ritaRad();
+  kopplaNotisprov();
 
   pulsBorjade = Date.now();
   puls = setInterval(tick, PULS_MS);

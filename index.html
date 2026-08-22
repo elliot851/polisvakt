@@ -654,6 +654,26 @@
       <button class="btn-ghost small" id="btnProvaVarningsljud" type="button">Spela vald varning</button>
       <button class="btn-ghost small" id="btnProvaKvittensljud" type="button">Spela kvittensljudet</button>
     </div>
+
+    <!-- Notisljudet är en annan sak än ljudet ovanför, och skillnaden är värd
+         en egen rubrik.
+
+         Knapparna ovanför spelar appens EGNA ljud, som appen äger fullt ut.
+         Knappen nedanför skickar en riktig NOTIS till telefonen, och det
+         ljudet ägs av telefonen. Appen kan varken välja det eller läsa av om
+         det är påslaget — Notification-API:t har inget sätt att fråga.
+
+         Mätt 23 aug 2026: en push nådde båda ägarens enheter med noll fel och
+         han hörde ingenting. Det är därför provet finns: det är enda sättet
+         att veta. -->
+    <h4 class="sub-head">Hör du notiserna?</h4>
+    <p class="hint">Det här är ett annat ljud än det ovanför. Notisljudet ägs av
+      telefonen, inte av appen — vi kan varken välja det eller se om det är
+      påslaget. Skicka en riktig notis och lyssna.</p>
+    <div class="row-inline ljudprov">
+      <button class="btn-ghost small" id="btnProvaNotisljud" type="button">Skicka provnotis</button>
+    </div>
+    <p class="hint" id="provaNotisStatus"></p>
     <p class="hint" id="provaLjudStatus"></p>
     <!-- Skrivet här också, inte bara i koden, så frågan inte kommer tillbaka:
          det här ljudet gäller när appen är öppen. En notis med appen stängd
@@ -712,6 +732,29 @@
     <label class="row"><span>Vibration</span><input type="checkbox" id="setHaptikPa" checked></label>
     <p class="hint">Klickljuden är avsiktligt tysta och tystnar helt medan en
       varning läses upp.</p>
+  </section>
+
+  <!-- VARFÖR DEN HÄR RUTAN FINNS.
+
+       Den 23 augusti 2026 kom tre rapporter in medan appen stod öppen. Alla
+       tre hamnade i listan och på kartan. Ingen lästes upp, och ingenting
+       någonstans sa varför. Utifrån gick "inget hände" inte att skilja från
+       "något hände och en grind teg om det" — och därför kunde felet ligga
+       kvar.
+
+       Rutan är svaret. Den visar de senaste besluten kedjan tagit, både det
+       som sades och det som inte sades, med skälet utskrivet. id:t
+       inkommandeSpar läses av renderInkommandeSpar() i js/app.js.
+
+       Nykterhetsregeln gäller också här: en rapport som inte får beskrivas
+       får ingen plats och ingen text i listan, bara ett konstaterande att
+       något stoppades. -->
+  <section class="card">
+    <h3>Vad appen sa senast — och vad den teg om</h3>
+    <p class="hint">Varje rapport som kommer in medan appen är öppen bedöms, och
+      beslutet hamnar här. Läste appen inte upp något du tycker att den borde
+      ha läst upp står skälet på raden.</p>
+    <div id="inkommandeSpar"></div>
   </section>
 
   <section class="card">
