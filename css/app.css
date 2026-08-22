@@ -185,6 +185,13 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
   background: var(--bg-3); border: 1px solid var(--line);
   border-radius: 10px; padding: 11px 12px; font-size: 15px;
 }
+/* Provknapparna för varningsljudet. Två knappar bredvid varandra ryms inte på
+   en smal telefon i liggande text — utan radbrytning kläms den andra ihop
+   till en oläslig remsa. Egen klass och inte .row-inline rakt av, eftersom
+   raden med textfält (gruppnamn, ort) ska fortsätta ligga på EN rad. */
+.ljudprov { flex-wrap: wrap; }
+.ljudprov .btn-ghost { flex: 0 1 auto; }
+
 .group-list:empty { display: none; }
 .group-row {
   display: flex; align-items: center; gap: 8px;

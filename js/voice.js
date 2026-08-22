@@ -254,6 +254,397 @@ function notifySpeaking(on, text) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Varningsljudet                                                      */
+/* ------------------------------------------------------------------ */
+//
+// LÄS DET HÄR INNAN DU FÖRSÖKER GÖRA PUSH-NOTISEN LJUDLIG.
+//
+// Allt nedanför gäller när appen är ÖPPEN. Bara då äger vi högtalaren, och
+// bara då kan vi bestämma hur en varning låter.
+//
+// En webbpush med STÄNGD app kan inte bära ett eget ljud. Notification-API:ts
+// sound-fält är dött i alla webbläsare som räknas, och på iPhone finns det
+// inte ens på pappret: en webbpush spelar telefonens systemljud för notiser,
+// punkt slut. sw.js kan skicka title, body, icon, badge, tag och data — det
+// finns inget fält att lägga ett ljud i, och inget knep runt det. Det går
+// alltså INTE att:
+//   • skicka med en ljudfil i pushen,
+//   • starta Web Audio från service workern (den har ingen AudioContext),
+//   • hålla en tyst ljudslinga igång i bakgrunden för att "ta över" ljudet
+//     (iOS stoppar den så fort appen lämnar förgrunden, och Android dödar
+//     den när batterisparläget slår till).
+// Den som vill ändra ljudet för en stängd app får bygga en riktig app till
+// App Store. Lägg inte tid på det här igen om ett halvår.
+//
+//
+// VARFÖR DET GAMLA LJUDET INTE DUGDE
+//
+// Två rena sinustoner, 1046 → 784 Hz, 270 ms, toppnivå 0,22 rakt in i
+// destination. Tre fel på en gång:
+//
+//   1. För svagt. Klickljuden i ljud.js toppar på 0,45 × 0,75 = 0,3375 — ett
+//      knapptryck lät alltså STARKARE än en polisvarning. Se kommentaren på
+//      ljud.js:219.
+//   2. Fel riktning. Tonerna FÖLL. Ett fallande intervall läser örat som
+//      "klart, avslutat". En varning ska luta framåt, inte avrundas.
+//   3. Ingen kropp. En ren sinus har all sin energi på en enda frekvens.
+//      Hamnar just den frekvensen i en dal i kupéns rumsakustik, eller under
+//      en gitarr i musiken som spelar, försvinner hela ljudet.
+//
+//
+// TALEN, OCH VARFÖR JUST DE
+//
+// Frekvensfönstret 1100–1600 Hz (grundtonerna nedan).
+//   Under 500 Hz ligger allt som bullrar i en bil: motor, däck, vind — och
+//   det mesta av musikens energi. Dessutom orkar en telefonhögtalare knappt
+//   producera något där; membranet är för litet. Över ~4 kHz börjar örat
+//   tappa känslighet igen och billiga högtalare blir gälla. 1–2 kHz är där
+//   örat är känsligast (samma band som talets konsonanter) och där kupén är
+//   som tystast. Därför ligger grundtonerna där, och deras övertoner lägger
+//   sig i 2–5 kHz där det också är rent.
+//
+// Övertoner 1 : 0,45 : 0,22 (grundton, oktav, kvint över oktaven).
+//   Det här är skillnaden mellan "pip" och "signal". Tre partialer ger ljudet
+//   en kropp som liknar ett blåsinstrument eller en tågsignal — något gjort
+//   av metall, inte av en leksak. Lika viktigt: energin ligger nu på tre
+//   frekvenser i stället för en, så en dal i kupéakustiken eller en ton i
+//   musiken kan inte äta upp hela ljudet. Fyrkantvåg övervägdes och valdes
+//   bort — den har övertoner ända upp i diskanten och låter billig och
+//   sprucken i en telefonhögtalare, alltså precis "leksak".
+//
+// Attack 4 ms på varningen.
+//   Örat känner igen ett ljud på anslaget. 4 ms är hårt nog att låta som ett
+//   anslag och mjukt nog att inte knäppa i högtalaren (under ~2 ms hörs ett
+//   klick från själva hoppet i vågformen). Kvittensen har 16 ms — mjukt,
+//   rundat, uppenbart en annan sorts ljud redan i första hundradelen.
+//
+// Tre pulser, 105 ms mellan anslagen (~9,5 Hz pulstakt).
+//   Ett pulsat ljud läses som varning, ett utdraget som besked. Det är därför
+//   varenda riktig varningssignal pulsar. Två korta och en längre gör att
+//   identiteten sitter redan i puls ett och två — alltså inom en tiondels
+//   sekund, vilket var kravet — medan puls tre bär tonhöjdslyftet.
+//
+// Kvart uppåt, 1175 → 1568 Hz (D6 → G6).
+//   Uppåt = något närmar sig, något ska hända. Kvarten är dessutom det mest
+//   igenkännbara "kalla på någon"-intervallet vi har (samma som en signalhorn
+//   fanfar). Nedåt sparas åt kvittensen — se ack nedan.
+//
+// Total längd 350 ms.
+//   Inte en slump: alerts.js pling:ar och lägger sedan uppläsningen i en
+//   setTimeout på 380 ms. Ljudet måste alltså vara HELT slut före 380 ms,
+//   annars ligger svansen kvar under första ordet och äter det. 350 ms ger
+//   30 ms marginal. Ändras 380 i alerts.js måste det här talet följa med.
+//   Ingen efterklang, ingen svans: en varning ska sluta tvärt så rösten får
+//   rent bord.
+//
+// Toppnivå 0,90 för varningen mot 0,26 för kvittensen.
+//   Varningen ska höras genom motorljud och musik. 0,90 är 12 dB över det
+//   gamla 0,22 och 8,5 dB över klickljuden i ljud.js — nu är rangordningen
+//   äntligen den rätta: varning > knapptryck > kvittens. Avståndet ner till
+//   kvittensen är 11 dB, alltså mer än dubbelt så starkt upplevt. 0,90 och
+//   inte 1,0 för att lämna plats åt förarens huvudvolym; begränsaren sist i
+//   kedjan fångar det som ändå råkar gå över.
+//
+//
+// ALERT MOT ACK — SEX SAKER SKILJER DEM ÅT
+//
+//   register  hög (1175/1568 Hz)      mot  låg (587/784 Hz), en oktav under
+//   form      tre hårda pulser        mot  en enda sammanhängande ton
+//   attack    4 ms, ett anslag        mot  16 ms, ett mjukt insvep
+//   riktning  kvart UPPÅT             mot  ett litet lyft på slutet
+//   klang     tre partialer, metall   mot  nästan ren sinus, rund
+//   nivå      0,80                    mot  0,30
+//
+// Sex skillnader samtidigt, inte en. Ett enda kännetecken kan drunkna i
+// vägbuller; sex kan det inte. Föraren behöver aldrig titta.
+//
+//
+// UPPMÄTT (OfflineAudioContext, 48 kHz, förval ljudVolym 0,75, volume 1)
+//
+//   alert   topp 0,738   RMS 0,325   3 pulser   sista ljudet vid 348 ms
+//   ack     topp 0,204   RMS 0,105   1 puls     sista ljudet vid 189 ms
+//   listen  topp 0,182   RMS 0,083   2 pulser   sista ljudet vid 158 ms
+//
+// Ingenting klipper, inte ens med alla reglage i botten (topp 0,82 vid
+// ljudVolym 1). Varningen ligger 11 dB över kvittensen och 10,5 dB över det
+// gamla plinget. Ändrar du ett tal: mät om, klipp inte, och håll dig under
+// 380 ms — annars äter svansen första ordet i uppläsningen.
+
+/** Nyckeln app.js sparar sina inställningar under. Vi LÄSER bara. */
+const APP_INSTALLNINGAR_NYCKEL = 'pv.settings.v1';
+
+/**
+ * Förarens ljudinställningar.
+ *
+ * Varför localStorage och inte ett anrop från app.js: app.js bygger sin egen
+ * Ljud-instans och skickar inställningar dit, men Speaker skapas innan
+ * inställningarna är lästa och får dem aldrig. Att lägga till en väg in hade
+ * krävt en ändring i app.js, och den filen ägs av någon annan. Läsningen är
+ * billig (ett par gånger i minuten på sin höjd) och helt utan biverkningar.
+ * Saknas nyckeln — första starten, privat läge — gäller förvalen.
+ */
+function ljudInstallningar() {
+  const forval = { ljudPa: true, ljudVolym: 0.75, volume: 1 };
+  try {
+    const s = JSON.parse(localStorage.getItem(APP_INSTALLNINGAR_NYCKEL) || '{}') || {};
+    const tal = (v, f) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : f;
+    };
+    return {
+      ljudPa: s.ljudPa !== false,
+      ljudVolym: tal(s.ljudVolym, forval.ljudVolym),
+      volume: tal(s.volume, forval.volume),
+    };
+  } catch {
+    return forval;
+  }
+}
+
+/**
+ * Recepten.
+ *
+ *   niva        toppnivå för hela ljudet, före förarens volym
+ *   attack      anslagstid i sekunder
+ *   slapp       avklingning i sekunder, räknas in i pulsens langd
+ *   partialer   relativa styrkor för grundton, oktav, kvint-över-oktav
+ *   pulser      { f, f2?, vid, langd, niva } — vid och langd i sekunder
+ *   granssnitt  true = ett ljud föraren själv utlöste, lyder "Ljud när du
+ *               trycker". false = en varning om verkligheten utanför
+ *               vindrutan, och den stängs inte av av ett reglage för klick.
+ */
+const LJUDRECEPT = {
+  // Polis, kontroll eller kamera framför. Se hela resonemanget ovanför.
+  alert: {
+    niva: 0.90,
+    attack: 0.004,
+    slapp: 0.030,
+    partialer: [1, 0.45, 0.22],
+    granssnitt: false,
+    pulser: [
+      { f: 1175, vid: 0.000, langd: 0.075, niva: 0.85 },
+      { f: 1175, vid: 0.105, langd: 0.075, niva: 0.85 },
+      { f: 1568, vid: 0.210, langd: 0.140, niva: 1.00 },
+    ],
+  },
+
+  /*
+   * Kvittens på något föraren själv gjorde: rapporten gick fram.
+   *
+   * En enda mjuk ton som lyfter från 587 till 784 Hz. Lyftet finns för att
+   * ett fallande slut hade låtit som ett fel — ljud.js 'fel' faller, och två
+   * ljud som båda faller i mörkt register går inte att hålla isär i en bil.
+   * Lyftet är litet med flit: en kvart som glider är inte samma sak som en
+   * kvart som hoppar, och det är hoppet som är varningens signatur.
+   *
+   * Nästan ren sinus (andra partialen på 0,10) för att göra den rund och
+   * ofarlig. Det är motsatsen till varningens metall.
+   */
+  ack: {
+    niva: 0.26,
+    attack: 0.016,
+    slapp: 0.090,
+    partialer: [1, 0.10],
+    granssnitt: true,
+    pulser: [
+      { f: 587, f2: 784, vid: 0.000, langd: 0.230, niva: 1.00 },
+    ],
+  },
+
+  /*
+   * Mikrofonen slogs på eller av. Två snabba steg uppåt i mellanregistret,
+   * lågt satt: det här är ett kvitto på ett knapptryck, inte en varning, och
+   * det kommer ofta flera gånger under en körning.
+   */
+  listen: {
+    niva: 0.24,
+    attack: 0.008,
+    slapp: 0.040,
+    partialer: [1, 0.15],
+    granssnitt: true,
+    pulser: [
+      { f: 660, vid: 0.000, langd: 0.070, niva: 0.90 },
+      { f: 990, vid: 0.070, langd: 0.100, niva: 1.00 },
+    ],
+  },
+};
+
+const SLUT_NIVA = 0.0001;     // exponentiella ramper kan inte gå till noll
+const LOOKAHEAD_S = 0.006;    // så första samplet inte kapas av schemaläggaren
+
+/**
+ * Kedjan: toner → volym → lågpass → begränsare → högtalare.
+ *
+ * Lågpasset på 7 kHz tar bort det gälla i tredje partialen på billiga
+ * telefonhögtalare utan att röra det som bär ljudet (1–5 kHz).
+ *
+ * Begränsaren är ett skyddsnät, inte en effekt. Den finns för att tre
+ * partialer i fas summerar till en topp som ligger nära 1,0, och för att
+ * varningen kan råka spelas samtidigt som ett klickljud eller en röst — allt
+ * summeras i destination, och en summa över 1,0 klipper. Ett klippt ljud
+ * låter sprucket, inte starkt.
+ *
+ * TALEN, OCH EN FÄLLA SOM KOSTADE EN MÄTNING:
+ *
+ * DynamicsCompressorNode i Chrome lägger på en egen uppräkning (makeup gain)
+ * som räknas fram ur tröskeln. Med tröskel −12 dB och 4:1 blir en svag signal
+ * FYRA decibel STARKARE på väg ut — 0,20 in gav 0,33 ut, uppmätt. Det låter
+ * bra tills man inser vad det gör med balansen: varningen (som ligger över
+ * tröskeln) trycktes ner samtidigt som kvittensen (som ligger under) trycktes
+ * upp, och skillnaden mellan dem krympte från 12 dB till 5. Hela poängen med
+ * att de ska låta olika starkt gick förlorad i en nod som skulle "hjälpa".
+ *
+ * Därför ligger tröskeln nu på −1,5 dB med 12:1. Då gör noden ingenting alls
+ * förrän signalen närmar sig taket, uppräkningen blir försumbar, och nivåerna
+ * i recepten betyder exakt vad de säger. Attack 2 ms och knä 3 dB så att ett
+ * anslag inte rundas av — anslaget är halva igenkänningen.
+ *
+ * En kedja per AudioContext, inte en per ljud: telefoner har tak på antalet
+ * noder och contexten är delad med resten av appen.
+ */
+let ljudkedja = null;
+function haLjudkedja(ctx) {
+  if (ljudkedja && ljudkedja.ctx === ctx) return ljudkedja;
+  const master = ctx.createGain();
+  master.gain.value = 1;
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 7000;
+  const gransare = ctx.createDynamicsCompressor();
+  try {
+    gransare.threshold.value = -1.5;
+    gransare.knee.value = 3;
+    gransare.ratio.value = 12;
+    gransare.attack.value = 0.002;
+    gransare.release.value = 0.06;
+  } catch { /* äldre motorer saknar en del av parametrarna */ }
+  master.connect(lp).connect(gransare).connect(ctx.destination);
+  ljudkedja = { ctx, master };
+  return ljudkedja;
+}
+
+/**
+ * Spela ett av ljuden ovan.
+ *
+ * @param {'alert'|'ack'|'listen'} sort
+ * @param {{volym?:number, tvinga?:boolean, tystad?:boolean}} opts
+ *        volym  = Speaker.volume, förarens huvudvolym (förval: inställningen)
+ *        tvinga = provknappen. Går förbi både tystnad och "Ljud när du
+ *                 trycker" — ett prov som inte låter bevisar ingenting.
+ *        tystad = "Tyst i 15 minuter" är påslagen
+ * @returns {{hordes:boolean, orsak:string}}
+ */
+export function spelaVarningsljud(sort = 'alert', opts = {}) {
+  const recept = LJUDRECEPT[sort] || LJUDRECEPT.alert;
+  const inst = ljudInstallningar();
+  const tvinga = !!opts.tvinga;
+
+  /*
+   * Grindarna, i den ordning de biter.
+   *
+   * Den gamla chime() hade inga alls: den spelade även med uppläsningen
+   * avslagen och mitt under "Tyst i 15 minuter". Det gick att leva med när
+   * ljudet var svagare än ett knapptryck. Med ett ljud som är byggt för att
+   * höras genom motorljud går det inte — den som tystat appen ska inte
+   * plötsligt få ett STARKARE ljud i örat än förut.
+   */
+  if (!tvinga && opts.tystad) return { hordes: false, orsak: 'appen-tystad' };
+
+  /*
+   * "Ljud när du trycker" (ljudPa) stänger av kvittenserna men INTE
+   * varningen. Reglaget heter det det heter i gränssnittet — det handlar om
+   * klickljud — och en polisvarning som tystnar för att någon slog av
+   * knappljuden är exakt den tysta app som hela filen finns för att
+   * förhindra. Varningen lyder volymen, inte strömbrytaren för klick.
+   */
+  if (!tvinga && recept.granssnitt && !inst.ljudPa) {
+    return { hordes: false, orsak: 'granssnittsljud-av' };
+  }
+
+  const ctx = haLjudkontext();
+  if (!ctx) return { hordes: false, orsak: 'ingen-ljudmotor' };
+
+  /*
+   * Förarens volym.
+   *
+   * Kvittenser följer ljudVolym rakt av — de får gärna bli tysta.
+   * Varningen får ett golv: ljudVolym 0 sänker den till 60 %, inte till
+   * ingenting. Skälet är detsamma som ovan. Vill man ha tyst finns "Tyst i
+   * 15 minuter", som är ett medvetet och tidsbegränsat val, till skillnad
+   * från en slider som råkade hamna längst ner.
+   */
+  const huvudvolym = Number.isFinite(opts.volym) ? Math.min(1, Math.max(0, opts.volym)) : inst.volume;
+  const installningsvolym = recept.granssnitt
+    ? inst.ljudVolym
+    : 0.6 + 0.4 * inst.ljudVolym;
+  const niva = recept.niva * huvudvolym * installningsvolym;
+  if (niva <= SLUT_NIVA * 4) return { hordes: false, orsak: 'volym-noll' };
+
+  // Summan av partialerna normaliseras, annars skulle tre toner i fas ge tre
+  // gånger den nivå receptet säger — och kompressorn skulle jobba sig svettig
+  // på ett problem vi själva skapade.
+  const summa = recept.partialer.reduce((a, b) => a + b, 0) || 1;
+
+  /*
+   * En suspenderad context hörs inte: tonerna schemaläggs mot en klocka som
+   * står stilla. haLjudkontext() har redan bett om resume, men svaret kommer
+   * först efter att den här funktionen är klar. Vi spelar ändå — hinner den
+   * vakna hörs det — och bokför sanningen så en tyst app går att felsöka.
+   */
+  const upplast = ctx.state === 'running';
+
+  try {
+    const { master } = haLjudkedja(ctx);
+    const t0 = ctx.currentTime + LOOKAHEAD_S;
+
+    for (const puls of recept.pulser) {
+      const start = t0 + puls.vid;
+      const slut = start + puls.langd;
+      const slappStart = Math.max(start + recept.attack + 0.001, slut - recept.slapp);
+      const topp = niva * (puls.niva ?? 1);
+
+      recept.partialer.forEach((del, i) => {
+        const styrka = (topp * del) / summa;
+        if (styrka <= SLUT_NIVA) return;
+        const n = i + 1;
+
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        // Sinus per partial, inte en färdig sågtand: då bestämmer vi själva
+        // exakt hur mycket av varje överton som får vara med. En sågtand hade
+        // tagit med allt ända upp i diskanten.
+        o.type = 'sine';
+        o.frequency.setValueAtTime(puls.f * n, start);
+        if (puls.f2) o.frequency.exponentialRampToValueAtTime(puls.f2 * n, slut);
+
+        g.gain.setValueAtTime(SLUT_NIVA, start);
+        g.gain.exponentialRampToValueAtTime(styrka, start + recept.attack);
+        g.gain.setValueAtTime(styrka, slappStart);
+        g.gain.exponentialRampToValueAtTime(SLUT_NIVA, slut);
+        g.gain.setValueAtTime(0, slut + 0.004);
+
+        o.connect(g).connect(master);
+        // Nod-städning: utan disconnect ligger de kvar tills contexten dör,
+        // och appen kan plinga hundratals gånger under en körning.
+        o.onended = () => { try { o.disconnect(); g.disconnect(); } catch {} };
+        o.start(start);
+        o.stop(slut + 0.02);
+      });
+    }
+  } catch {
+    return { hordes: false, orsak: 'fel-i-ljudmotorn' };
+  }
+
+  return { hordes: upplast, orsak: upplast ? 'ok' : 'ljudet-inte-upplast' };
+}
+
+/** Hur länge ett ljud låter, i millisekunder. Provknappen väntar ut det. */
+export function varningsljudLangdMs(sort = 'alert') {
+  const r = LJUDRECEPT[sort] || LJUDRECEPT.alert;
+  return Math.round(1000 * r.pulser.reduce((m, p) => Math.max(m, p.vid + p.langd), 0));
+}
+
 export class Speaker {
   constructor() {
     this.enabled = true;
@@ -466,18 +857,20 @@ export class Speaker {
      * rutan och say() föll igenom tyst på raden i say(). Det såg ut som att
      * provet gick igenom — och det är exakt den sak provet ska bevisa.
      */
+    // tvinga: ett prov ska alltid höras, även med "Tyst i 15 minuter" på och
+    // även med klickljuden avslagna. Samma skäl som i say-fallet nedan.
     if (!this.enabled) {
-      this.chime(kind === 'report' ? 'ack' : 'alert');
+      this.chime(kind === 'report' ? 'ack' : 'alert', { tvinga: true });
       return 'Läs upp varningar är avslaget, så det här är bara plinget. Slå på uppläsning för att höra hela varningen.';
     }
     if (!voiceOutputSupported) {
-      this.chime(kind === 'report' ? 'ack' : 'alert');
+      this.chime(kind === 'report' ? 'ack' : 'alert', { tvinga: true });
       return 'Den här webbläsaren kan inte läsa upp text, så varningar kommer bara som pling och text.';
     }
 
     const wasMuted = this.muteUntil;
     this.muteUntil = 0;                       // ett prov ska alltid höras
-    this.chime(kind === 'report' ? 'ack' : 'alert');
+    this.chime(kind === 'report' ? 'ack' : 'alert', { tvinga: true });
     setTimeout(() => {
       this.say(text, { priority: 2, interrupt: true });
       this.muteUntil = wasMuted;
@@ -493,38 +886,77 @@ export class Speaker {
     this.onSpeakingChange(false);
   }
 
-  /** Kort pling före en varning så föraren hinner lyssna. */
-  chime(kind = 'alert') {
-    const ctx = haLjudkontext();
-    if (!ctx) return this.#bokforLjud('pling', false, 'ingen-ljudmotor');
-    this._ctx = ctx;      // kvar under sitt gamla namn, nu den delade contexten
+  /**
+   * Kort signal före en varning så föraren hinner lyssna.
+   *
+   * Själva syntesen ligger i spelaVarningsljud() på modulnivå. Skälet är inte
+   * städning: provknappen i inställningarna behöver kunna spela exakt samma
+   * ljud utan att hitta appens Speaker-instans, och två kopior av ett recept
+   * är två recept som glider isär.
+   *
+   * @param {'alert'|'ack'|'listen'} kind
+   * @param {{tvinga?:boolean}} opts  tvinga = prov, gå förbi tystnad
+   */
+  chime(kind = 'alert', opts = {}) {
+    const sort = kind === 'ack' ? 'ack' : kind === 'listen' ? 'listen' : 'alert';
+    const svar = spelaVarningsljud(sort, {
+      volym: this.volume,
+      tystad: this.muted,
+      tvinga: !!opts.tvinga,
+    });
+    // Kvar under sitt gamla namn: provbänkarna läser speaker._ctx.
+    this._ctx = haLjudkontext({ skapa: false }) || this._ctx;
+    return this.#bokforLjud('pling', svar.hordes, svar.orsak);
+  }
+}
 
-    /*
-     * En suspenderad context hörs inte: tonerna schemaläggs mot en klocka som
-     * står stilla. haLjudkontext() har redan bett om resume, men svaret kommer
-     * först efter att den här funktionen är klar. Vi spelar ändå — hinner den
-     * vakna hörs det — och bokför sanningen så en tyst app går att felsöka.
-     */
-    const upplast = ctx.state === 'running';
-    try {
-      const now = ctx.currentTime;
-      const tones = kind === 'ack' ? [880] : kind === 'listen' ? [660, 990] : [1046, 784];
-      tones.forEach((f, i) => {
-        const o = ctx.createOscillator();
-        const g = ctx.createGain();
-        o.type = 'sine';
-        o.frequency.value = f;
-        g.gain.setValueAtTime(0.0001, now + i * 0.13);
-        g.gain.exponentialRampToValueAtTime(0.22 * this.volume, now + i * 0.13 + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.13 + 0.12);
-        o.connect(g).connect(ctx.destination);
-        o.start(now + i * 0.13);
-        o.stop(now + i * 0.13 + 0.14);
-      });
-    } catch {
-      return this.#bokforLjud('pling', false, 'fel-i-ljudmotorn');
-    }
-    return this.#bokforLjud('pling', upplast, upplast ? 'ok' : 'ljudet-inte-upplast');
+/* ------------------------------------------------------------------ */
+/* Provknappen i inställningarna                                       */
+/* ------------------------------------------------------------------ */
+//
+// Kopplas härifrån och inte från app.js. Knappen gör en enda sak — spelar
+// ljudet som definieras i den här filen — och då hör kopplingen hemma i
+// samma fil som receptet. app.js är dessutom 6000 rader och ägs av någon
+// annan.
+//
+// Provet går förbi tystnaden med flit: den som trycker på en knapp som heter
+// "Spela varningsljudet" vill höra ljudet. Ett prov som tiger bevisar
+// ingenting, och det var precis det felet demo() hade innan.
+
+const LJUDPROV_KNAPPAR = [
+  ['btnProvaVarningsljud', 'alert', 'Så låter en varning: polis, kontroll eller kamera framför dig.'],
+  ['btnProvaKvittensljud', 'ack', 'Så låter en kvittens: din rapport gick fram. Mörkare, mjukare, tystare.'],
+];
+
+const LJUDPROV_FEL = {
+  'ingen-ljudmotor': 'Den här enheten har ingen ljudmotor för webbsidor.',
+  'ljudet-inte-upplast': 'Webbläsaren har inte släppt fram ljudet än. Tryck en gång till.',
+  'fel-i-ljudmotorn': 'Ljudmotorn svarade inte. Ladda om sidan.',
+  'volym-noll': 'Volymen står på noll.',
+};
+
+function kopplaLjudprov() {
+  if (typeof document === 'undefined') return;
+  for (const [id, sort, text] of LJUDPROV_KNAPPAR) {
+    const knapp = document.getElementById(id);
+    if (!knapp || knapp.dataset.ljudprovKopplat === '1') continue;
+    knapp.dataset.ljudprovKopplat = '1';
+    knapp.addEventListener('click', () => {
+      // Trycket ÄR gesten. Låser upp ljudet om det inte redan är gjort —
+      // därför ligger anropet här och inte i en setTimeout, där gesten är död.
+      lasUppLjud();
+      const svar = spelaVarningsljud(sort, { tvinga: true });
+      const ruta = document.getElementById('provaLjudStatus');
+      if (ruta) ruta.textContent = svar.hordes ? text : (LJUDPROV_FEL[svar.orsak] || 'Ljudet kom inte fram.');
+    });
+  }
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', kopplaLjudprov, { once: true });
+  } else {
+    kopplaLjudprov();
   }
 }
 

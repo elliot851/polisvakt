@@ -612,6 +612,36 @@
     <p class="hint">Volymen följer telefonens, och varningen kommer som ett
       trafikmeddelande — musiken dämpas och kommer tillbaka efteråt.</p>
 
+    <!-- Prova ljudet utan att vänta på en polis.
+
+         Knapparna kopplas i js/voice.js, inte i js/app.js: de spelar receptet
+         som bor i den filen, och en koppling som ligger i en annan fil än
+         ljudet den spelar är en koppling som glider isär. Byt inte id:na —
+         LJUDPROV_KNAPPAR i js/voice.js letar efter exakt btnProvaVarningsljud
+         och btnProvaKvittensljud, och provaLjudStatus för svarsraden.
+
+         Två knappar och inte en, fastän bara varningen är den som ska höras
+         i 90 km/h: hela poängen med ljudet är att det INTE går att förväxla
+         med en kvittens. Den skillnaden går bara att höra genom att höra
+         båda, efter varandra, i den bil man faktiskt kör. -->
+    <h4 class="sub-head">Hur låter det?</h4>
+    <p class="hint">Varningen är byggd för att gå igenom motorljud och musik:
+      tre hårda pulser som stiger. Kvittensen är motsatsen — mörk, mjuk och
+      tyst. Prova båda i bilen, med musiken igång, så vet du vilken som är
+      vilken innan det gäller.</p>
+    <div class="row-inline ljudprov">
+      <button class="btn-ghost small" id="btnProvaVarningsljud" type="button">Spela varningsljudet</button>
+      <button class="btn-ghost small" id="btnProvaKvittensljud" type="button">Spela kvittensljudet</button>
+    </div>
+    <p class="hint" id="provaLjudStatus"></p>
+    <!-- Skrivet här också, inte bara i koden, så frågan inte kommer tillbaka:
+         det här ljudet gäller när appen är öppen. En notis med appen stängd
+         spelar telefonens systemljud, och en webbsida kan inte byta det. -->
+    <p class="hint">Det här ljudet gäller när appen är öppen. Kommer en notis
+      när appen är stängd spelar telefonen sitt eget notisljud — det kan
+      Polisvakt inte byta, men du kan välja det själv i telefonens
+      inställningar.</p>
+
     <h4 class="sub-head">Vad du vill höra</h4>
     <p class="hint">Alla behöver inte allt. Den som kör E18 varje dag kan
       kamerorna utantill och vill se dem på kartan utan att bli tilltalad.</p>

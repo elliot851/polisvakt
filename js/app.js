@@ -4,7 +4,7 @@ import { shortDistance, relativeTime, debounce, normalize, isDark } from './util
 import { parseReportText, TYPE_LABEL, TYPE_ICON } from './parser.js';
 import { GeoTracker, currentPosition } from './geo.js';
 import { initGeocoder, geocode, reverseGeocode, learnPlace, listLearned, forgetPlace } from './geocode.js';
-import { ReportStore, deviceId, setIdentity, isMine } from './store.js';
+import { ReportStore, deviceId, setIdentity, isMine, TTL_MINUTES } from './store.js';
 import { Speaker, Listener, voiceInputSupported } from './voice.js';
 import { AlertEngine } from './alerts.js';
 import { HazardMap } from './map.js';
@@ -326,6 +326,7 @@ async function boot() {
   wireUpdates();
   wireUpdateBanner();
   wireSedanSist();
+  wireInkommandeUpplasning();
   wireCoverage();
   wireRoute();
   wireWinter();
@@ -6259,6 +6260,320 @@ function wireSedanSist() {
   });
 
   renderSedanSist();
+}
+
+/* ================= Uppläsning vid inkommande rapport =================
+ *
+ * Kommer en varning in från servern medan appen är öppen ska den HÖRAS, inte
+ * bara dyka upp i listan. Bannern "3 nya rapporter sedan sist" är tyst med
+ * flit — den är byggd för den som tittar. Den som kör tittar inte.
+ *
+ * Varningsmotorn i alerts.js täcker inte det här. Den hänger på GPS-fixar och
+ * kräver att bilen rullar (fem km/h för polis, femton för kamera), vilket är
+ * rätt för "du närmar dig något" men fel för "något har hänt". Står bilen
+ * still i en rondell, vid en rödljuskö eller på en rastplats säger motorn
+ * ingenting, hur nära polisen än står.
+ *
+ * VAD SOM INTE GÅR, OCH SOM INGEN SKA FÖRSÖKA IGEN OM ETT HALVÅR:
+ * En webbpush kan inte bära ett eget ljud. Notification-API:ts sound-fält är
+ * dött i alla webbläsare som räknas, och service workern kan bara skicka
+ * titel, text, ikon, badge, tagg och data vidare till systemet. Ljudet för en
+ * push med STÄNGD app är telefonens systemljud, punkt. Det vi äger fullt ut
+ * är ljudet när appen är ÖPPEN — och det är exakt det den här filen gör.
+ */
+
+/*
+ * Bursten samlas ihop innan något sägs.
+ *
+ * En pollning kan skriva in flera rapporter, och store sänder 'change' en
+ * gång per omgång — men två omgångar kan komma tätt (hämtning plus en egen
+ * skrivning som slår igenom). Ett och ett halvt sekunders fördröjning kostar
+ * ingenting för föraren och gör skillnaden mellan en mening och fyra pling.
+ */
+const INKOMMANDE_SAMLA_MS = 1500;
+
+/*
+ * Åldersgränsen: halva livslängden för sin typ.
+ *
+ * Talet är inte valt fritt. sammanfattning.js aktualitet() byter ton exakt
+ * där: under 0,5 heter det "Den kan ha hunnit flytta på sig", över 0,5 blir
+ * det "Så gammal att den troligen inte står kvar". Att läsa upp något som
+ * appen i samma andetag kallar borta är precis det brus som lär föraren att
+ * ignorera nästa uppläsning — den som gällde.
+ *
+ * Gränsen uttrycks som ANDEL av TTL_MINUTES, inte som ett fast antal minuter.
+ * En fast kvart hade gjort en civil polisbil (livslängd 30 min) notisvärd
+ * halva sitt liv och en trafikkontroll (60 min) bara en fjärdedel. Ett tal på
+ * ett ställe, i store.js, är hela poängen.
+ */
+const INKOMMANDE_MAX_ANDEL = 0.5;
+
+/*
+ * Taket ovanpå andelen, i minuter.
+ *
+ * Andelen ensam räcker inte, och kameran är hela skälet. TTL_MINUTES.camera är
+ * ett år — en användartillagd kamera lever tills någon tar bort den — så halva
+ * livslängden blir ett halvår. En kamerarapport från i vintras hade alltså
+ * kunnat läsas upp som en nyhet första gången den dyker upp i listan, till
+ * exempel när föraren slår PÅ kamera under "Vad du vill höra" mitt under
+ * körningen, eller när täckningsfiltret släpper in ett nytt län.
+ *
+ * TTL och notisvärdhet svarar på olika frågor. TTL svarar på "står den kvar?",
+ * och för en fast kamera är svaret ja i ett år. Grinden här svarar på "är det
+ * här en NYHET?", och det är ingenting efter en halvtimme, oavsett typ.
+ *
+ * Taket räknas ur de rörliga typerna i stället för att skrivas som en siffra,
+ * så att det följer med när någon justerar dem i store.js. Det är samma tal
+ * och samma resonemang som fbmejl_ttl_tak_minuter() på serversidan (se
+ * supabase/migrationer/2026-08-22-aldersgrind-for-notiser.sql) — server och app
+ * ska inte kunna svara olika på samma rapport.
+ */
+const INKOMMANDE_TTL_TAK = Math.max(
+  TTL_MINUTES.police ?? 45,
+  TTL_MINUTES.control ?? 60,
+  TTL_MINUTES.unmarked ?? 30,
+);
+
+/*
+ * Samma tolerans som sammanfattning.js har för stämplar som ligger framåt i
+ * tiden. En telefon med fel klocka ska inte kunna skicka något som låter
+ * färskt för alltid, men två minuters skev klocka ska inte tysta en riktig
+ * rapport heller.
+ */
+const INKOMMANDE_FRAMTID_MS = 2 * 60000;
+
+/*
+ * Taket på minnet av vad som redan lästs upp. Ett dygns hårt trafikerat flöde
+ * ryms väl inom det; vid taket byggs minnet om från det som faktiskt finns
+ * kvar i flödet (se inkommandeStadaMinnet).
+ */
+const INKOMMANDE_MINNE_TAK = 500;
+
+const inkommandeSedda = new Set();     // id:n vi redan tagit ställning till
+const inkommandeKo = new Map();        // id -> { h, talat, avstand }, väntar på att sägas
+let inkommandeOmgangar = 0;
+let inkommandeTimer = null;
+
+/**
+ * Är rapporten färsk nog att läsas upp?
+ *
+ * Okänd eller orimlig tidsstämpel är ett nej. Vi kan inte avgöra om den är
+ * från nyss eller från i förrgår, och en gissning åt fel håll är exakt det
+ * fel den här grinden finns för att inte göra. Den syns fortfarande på kartan
+ * och i listan — det är bara högtalaren som håller tyst.
+ */
+function inkommandeArFarsk(h, nu = Date.now()) {
+  const t = Number(h?.createdAt);
+  if (!Number.isFinite(t) || t <= 0) return false;
+  if (t - nu > INKOMMANDE_FRAMTID_MS) return false;
+
+  // Kapad TTL: se INKOMMANDE_TTL_TAK. En kamera med ett års livslängd får
+  // samma notisfönster som en trafikkontroll, alltså under en halvtimme.
+  const ttl = Math.min(TTL_MINUTES[h.type] ?? 45, INKOMMANDE_TTL_TAK);
+  if (!(ttl > 0)) return false;
+  const minuter = Math.max(0, (nu - t) / 60000);
+  return minuter < ttl * INKOMMANDE_MAX_ANDEL;
+}
+
+/**
+ * Går igenom flödet, bokför vad som setts och plockar ut det som ska sägas.
+ *
+ * Flödet hämtas via allHazards({ forAlerts: true }) och inte ur store direkt.
+ * Det är avgörande: den vägen har redan passerat produktreglerna (nykterhet
+ * finns inte), kvalitetsgraderingen (undanhållet stannar undanhållet),
+ * täckningsfiltret och förarens egna notisinställningar. En rapport som
+ * föraren ställt på "bara kartan" ska inte kunna smyga ut genom högtalaren
+ * bara för att den kom in via en annan dörr. Ruttvakten får säga sitt av
+ * samma skäl som motorn får det — den har redan claimat delar av sträckan.
+ */
+function inkommandeSok() {
+  const fix = geo.position;
+  const nu = Date.now();
+
+  let lista, ruttensKvar;
+  try {
+    lista = allHazards({ forAlerts: true });
+    /*
+     * Bokföringen går på hela flödet, urvalet på det ruttvakten lämnat kvar.
+     *
+     * Skillnaden spelar roll. filterHazards() döljer det som ligger bakom
+     * eller vid sidan av rutten, och hade bokföringen gått på den kortare
+     * listan hade allt dolt kommit tillbaka som "nytt" i samma sekund som
+     * navigeringen avslutades — alltså en skur av uppläsningar när föraren
+     * just parkerat.
+     */
+    ruttensKvar = new Set(routeGuide.filterHazards(lista).map(h => h.id));
+  } catch {
+    // Uppläsningen får aldrig kunna välta en pollning. Kan vi inte bygga
+    // listan säger vi ingenting den här omgången.
+    return;
+  }
+
+  for (const h of lista) {
+    // Faran bär klusterledarens id. Alla id:n i klustret måste bokföras,
+    // annars räknas samma polis som ny igen så fort ledarskapet byter hand.
+    const ids = [h.id, ...(h.klusterIds || [])].filter(Boolean);
+    const sedd = ids.some(id => inkommandeSedda.has(id));
+    for (const id of ids) inkommandeSedda.add(id);
+
+    if (sedd) continue;
+
+    /*
+     * De två första omgångarna är tysta.
+     *
+     * Den första är det som redan låg i telefonens lagring när appen
+     * startade. Den andra är serverns första hämtning — hela trakten på en
+     * gång. Ingetdera är en händelse; det är ett utgångsläge. Utan den här
+     * raden möts föraren av "Ytterligare nio rapporter kom in" i samma
+     * sekund som appen öppnas.
+     */
+    if (inkommandeOmgangar < 2) continue;
+
+    if (h.fixed) continue;                       // fasta kameror händer inte
+    if (arMin(h)) continue;                      // det man själv nyss skrev in
+    if (!inkommandeArFarsk(h, nu)) continue;     // gammalt är brus, inte varning
+    if (!ruttensKvar.has(h.id)) continue;        // ruttvakten har claimat den
+    if (engine.agerFaran(h, fix, h.klusterIds)) continue;   // motorn tar den
+
+    /*
+     * Tom sträng får aldrig bli en yttring. sammanfattaTal() svarar tomt för
+     * det som inte får beskrivas — nykterhets- och drogkontroller — och för
+     * rapporter som inte går att formulera alls. speaker.say() sväljer visst
+     * tom text, men att förlita sig på det vore att lägga produktregeln i en
+     * annan fil än den som bryter mot den.
+     */
+    const talat = sammanfattaTal(h, { egen: false });
+    if (!talat) continue;
+
+    inkommandeKo.set(h.id, {
+      h, talat,
+      avstand: fix ? haversineFix(fix, h) : Infinity,
+    });
+  }
+
+  inkommandeStadaMinnet(lista);
+
+  if (inkommandeOmgangar < 2) inkommandeOmgangar++;
+  if (!inkommandeKo.size || inkommandeTimer) return;
+  inkommandeTimer = setTimeout(inkommandeSag, INKOMMANDE_SAMLA_MS);
+}
+
+/**
+ * Håller minnet litet.
+ *
+ * Minnet finns bara för att samma sak inte ska sägas två gånger. Det som
+ * fallit ur flödet kan inte komma tillbaka som nytt utan att först passera
+ * åldersgrinden, så vid taket räcker det med de id:n som fortfarande finns
+ * kvar. En kö som växer hela dagen i en app som står på i tolv timmar är
+ * inget minnesproblem i sig — men ett obegränsat Set är ett löfte man inte
+ * behöver ge.
+ */
+function inkommandeStadaMinnet(lista) {
+  if (inkommandeSedda.size <= INKOMMANDE_MINNE_TAK) return;
+  inkommandeSedda.clear();
+  for (const h of lista) {
+    for (const id of [h.id, ...(h.klusterIds || [])]) if (id) inkommandeSedda.add(id);
+  }
+  for (const id of inkommandeKo.keys()) inkommandeSedda.add(id);
+}
+
+/**
+ * Säger den närmaste och räknar resten.
+ *
+ * Tio rapporter i en synk blir en mening plus en siffra, aldrig tio
+ * uppläsningar. Samma form som varningsmotorn använder när flera faror
+ * triggar samtidigt, så att de två låter som samma app.
+ */
+function inkommandeSag() {
+  inkommandeTimer = null;
+  const raposter = [...inkommandeKo.values()];
+  inkommandeKo.clear();
+  if (!raposter.length) return;
+
+  /*
+   * GRINDARNA KÖRS OM, HÄR, MOT EN FÄRSK FIX.
+   *
+   * Frågan "tar varningsmotorn den här?" ställdes vid inläggningen i kön, och
+   * mellan den och det här ögonblicket ligger INKOMMANDE_SAMLA_MS plus 380 ms
+   * till say(). På nästan två sekunder hinner världen ändras: AlertEngine
+   * körs på VARJE GPS-fix och ruttvakten claimar löpande.
+   *
+   * Fallet som gjorde det här nödvändigt: bilen står i en rödljuskö, farten är
+   * noll, en polisrapport 800 m bort kommer in. agerFaran svarar nej — motorn
+   * är tyst med flit när bilen står still — så rapporten hamnar i kön. Grönt
+   * ljus, nästa fix säger 6 km/h, motorn triggar och säger "Varning. Polis vid
+   * …". En halv sekund senare säger den här vägen exakt samma polis igen.
+   * Samma sak när geo.position var null vid inläggningen och första fixen
+   * kommer inom ett och ett halvt sekund.
+   *
+   * Att i stället förlänga spärren i motorn valdes bort: motorn får inte
+   * bokföra en fara den inte varnat för (se agerFaran i alerts.js). Den som
+   * kör sist ska vara den som avgör, och det är den här funktionen.
+   *
+   * Grinden vid inläggningen är kvar som billig förfiltrering — den håller kön
+   * liten — men den avgör ingenting längre.
+   */
+  const nu = Date.now();
+  const fix = geo.position;
+  const poster = raposter.filter(p => {
+    if (arMin(p.h)) return false;
+    if (!inkommandeArFarsk(p.h, nu)) return false;          // hann bli gammalt i kön
+    if (routeGuide.isClaimed(p.h.id)) return false;         // ruttvakten hann claima
+    if (engine.agerFaran(p.h, fix, p.h.klusterIds)) return false;  // motorn hann ta den
+    return true;
+  });
+  if (!poster.length) return;
+
+  // Samma grind som varningsmotorn står bakom. Utan giltigt abonnemang är
+  // hela varningssidan avstängd, och den här vägen ska inte vara en bakdörr
+  // in i den.
+  if (!billing.allowed) return;
+
+  /*
+   * Tyst är tyst — även plinget.
+   *
+   * chime() i voice.js kollar varken enabled eller muted; det är medvetet
+   * där, eftersom demoknappen ska låta även med uppläsningen avslagen. Här
+   * gäller motsatsen: har föraren tryckt "Tyst i 15 minuter" eller slagit av
+   * uppläsningen är ett pling ur ingenstans precis det hen bad om att slippa.
+   */
+  if (!speaker.enabled || speaker.muted) return;
+
+  // Närmast först. Utan GPS är alla lika långt bort, då får den nyaste gå
+  // först — det är den föraren senast hade kunnat påverkas av.
+  poster.sort((a, b) => (a.avstand - b.avstand)
+                     || (Number(b.h.createdAt || 0) - Number(a.h.createdAt || 0)));
+
+  const forst = poster[0];
+  speaker.chime('alert');
+
+  /*
+   * Prioritet 1 utan avbrott, och bara en gång.
+   *
+   * En inkommande rapport är information, inte en fara framför vindrutan.
+   * Kön i voice.js sorterar på prioritet, så en skarp närhetsvarning (2) går
+   * ändå före och får avbryta. Upprepningen som prioritet 1 normalt ger är
+   * till för det man måste hinna uppfatta i vägbuller när man närmar sig
+   * något — det här är inte det, och tjat är också brus.
+   *
+   * Fördröjningen på 380 ms är samma som i alerts.js: plinget ska hinna klart
+   * innan rösten börjar, annars hörs varken det ena eller det andra.
+   */
+  setTimeout(() => {
+    speaker.say(forst.talat, { priority: 1, ganger: 1 });
+    if (poster.length > 1) {
+      const kvar = poster.length - 1;
+      speaker.say(kvar === 1
+        ? 'Ytterligare en rapport kom in.'
+        : `Ytterligare ${kvar} rapporter kom in.`, { priority: 0 });
+    }
+  }, 380);
+}
+
+function wireInkommandeUpplasning() {
+  // Första genomgången bokför det som redan finns utan att säga något.
+  inkommandeSok();
+  store.addEventListener('change', inkommandeSok);
 }
 
 function wireUpdateBanner() {
