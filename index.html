@@ -600,9 +600,23 @@
          kartan medan du kör. Det här styr vad som väcker telefonen när du
          inte kör. Samma ord, olika rätt svar, därför två reglage. -->
     <h4 class="sub-head">Notiser när appen är stängd</h4>
+    <!-- "Nära mig" är förvalt, och selected står utskrivet fastän alternativet
+         redan ligger först. En webbläsare väljer nämligen första alternativet
+         av sig själv, men den som flyttar en rad i listan i framtiden ska
+         behöva ta bort ordet selected för att ändra förvalet — inte råka
+         ändra det genom att kasta om två rader.
+
+         Varför "Nära mig" och inte "Hela landet": en varning från Malmö säger
+         ingenting till den som kör i Hallstahammar, och en telefon som piper
+         för sådant blir en telefon man stänger av. Då tystnar också den
+         varning som gällde. Räckvidden är tio mil, alltså större än hela
+         upptagningsområdet, så förvalet smalnar i praktiken inte av något
+         för dagens förare — det håller bara dörren stängd för bruset den dag
+         appen finns i fler län. Koden håller samma förval: notisFolj i
+         js/app.js står på true. -->
     <label class="row"><span>Var vill du få notiser?</span>
       <select id="setNotisOmfang">
-        <option value="nara">Nära mig</option>
+        <option value="nara" selected>Nära mig</option>
         <option value="alla">Hela landet</option>
       </select>
     </label>

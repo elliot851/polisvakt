@@ -33,20 +33,60 @@
 
 let harInteragerat = false;
 
-function markeraInteraktion() {
-  harInteragerat = true;
-  for (const namn of ['pointerdown', 'keydown', 'touchstart']) {
-    window.removeEventListener(namn, markeraInteraktion, true);
-  }
-}
+const GEST_HANDELSER = ['pointerdown', 'keydown', 'touchstart'];
 
-if (typeof window !== 'undefined') {
-  for (const namn of ['pointerdown', 'keydown', 'touchstart']) {
+/*
+ * Uppgifter som MÅSTE köras inuti ett levande fingertryck.
+ *
+ * Webbläsare släpper bara fram vissa saker om anropet ligger i en
+ * användargest: AudioContext.resume(), speechSynthesis första yttrande,
+ * platsrutan i Safari. Ett setTimeout på 300 ms räcker för att gesten ska ha
+ * gått ut — och då händer ingenting alls, utan felmeddelande.
+ *
+ * Registret ligger i den här filen och inte i voice.js av ett enda skäl:
+ * ljud.js äger redan frågan "har föraren rört sidan?", och den frågan ska ha
+ * exakt ett svar i appen. En andra kopia av gest-bokföringen är precis den
+ * sortens sak som glider isär.
+ *
+ * En uppgift som returnerar false får ligga kvar och provas i nästa tryck.
+ * Det är inte teoretiskt: AudioContext.resume() är asynkron, så contexten
+ * hinner sällan bli 'running' i samma gest som den släpptes fram.
+ */
+const gestUppgifter = new Set();
+
+function lyssnaEfterGest() {
+  if (typeof window === 'undefined') return;
+  for (const namn of GEST_HANDELSER) {
     // capture: vi vill hinna före appens egna klickhanterare, så att ett
     // ljud som begärs i samma tryck faktiskt får spela.
     window.addEventListener(namn, markeraInteraktion, { capture: true, passive: true });
   }
 }
+
+function slutaLyssna() {
+  if (typeof window === 'undefined') return;
+  for (const namn of GEST_HANDELSER) {
+    window.removeEventListener(namn, markeraInteraktion, true);
+  }
+}
+
+function korGestUppgifter() {
+  for (const fn of [...gestUppgifter]) {
+    let klar = false;
+    try { klar = fn() !== false; } catch { klar = false; }
+    if (klar) gestUppgifter.delete(fn);
+  }
+  // Finns något kvar att göra måste lyssnarna sitta kvar till nästa tryck.
+  if (gestUppgifter.size) lyssnaEfterGest();
+  else if (harInteragerat) slutaLyssna();
+}
+
+function markeraInteraktion() {
+  harInteragerat = true;
+  korGestUppgifter();
+}
+
+lyssnaEfterGest();
 
 /** Sant så fort föraren tryckt, tangentat eller nuddat sidan en gång. */
 export function anvandarenHarInteragerat() {
@@ -54,6 +94,24 @@ export function anvandarenHarInteragerat() {
   // Webbläsarens egen bokföring duger lika bra när den finns — den överlever
   // till exempel en interaktion som skedde innan modulen laddades.
   return !!(typeof navigator !== 'undefined' && navigator.userActivation?.hasBeenActive);
+}
+
+/**
+ * Kör `fn` inuti nästa användargest, och fortsätt vid varje nytt tryck tills
+ * den returnerar något annat än false.
+ *
+ * @param {() => boolean|void} fn  false = inte klar, prova igen nästa tryck
+ * @returns {() => void} avregistrering
+ */
+export function narGest(fn) {
+  if (typeof fn !== 'function') return () => {};
+  gestUppgifter.add(fn);
+  // Har föraren redan tryckt kan gesten fortfarande vara levande — modulen
+  // kan ha laddats färdigt mitt i samma tryck. Prova direkt; misslyckas det
+  // ligger uppgiften kvar till nästa tryck.
+  if (harInteragerat) korGestUppgifter();
+  else lyssnaEfterGest();
+  return () => { gestUppgifter.delete(fn); };
 }
 
 /* ------------------------------------------------------------------ */

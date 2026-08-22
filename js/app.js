@@ -49,6 +49,29 @@ const SETTINGS_KEY = 'pv.settings.v1';
 /* ================= Inställningar ================= */
 
 const defaults = {
+  /*
+   * LJUDET ÄR PÅSLAGET FRÅN BÖRJAN, INTE AVSTÄNGT.
+   *
+   * Skälet är att blicken redan är upptagen. Den här appen används av någon
+   * som kör bil, och en varning som bara ritas ut på en skärm i en hållare är
+   * en varning som kommer fram efter att den behövdes. Örat är den enda kanal
+   * som är ledig, och därför är det den som ska vara öppen som förval.
+   *
+   * Motargumentet — "låt användaren välja" — håller inte här. Den som stänger
+   * av ljudet har valt, och det valet respekteras. Den som aldrig öppnat
+   * inställningarna har inte valt tystnad, hen har bara inte tittat. Ett
+   * förval som står på "av" gör tystnaden till normalläget och lägger arbetet
+   * med att slå på skyddet på precis den person som ännu inte vet att skyddet
+   * finns. Det är fel person att lägga det på.
+   *
+   * volume styr BÅDE uppläsningen och plinget (voice.js: 0.22 * volume).
+   * Den ligger på 1 och har med flit inget reglage i gränssnittet: förarens
+   * volymknapp sitter på telefonens sida och är redan ett bättre reglage än
+   * något vi kan rita. En app som sänker volymen åt någon i förväg tystar sig
+   * själv i en bil på E18 utan att någonstans säga att det var det som hände.
+   *
+   * rate påverkar bara tempot, inte om det hörs.
+   */
   tts: true,
   volume: 1,
   rate: 1.05,
@@ -62,6 +85,21 @@ const defaults = {
   pollSeconds: 30,
   theme: 'auto',
   keepAwake: true,
+
+  /*
+   * Nedanför följer en familj av reglage som var för sig kan tysta EN sorts
+   * varning: fartgränsen (limitOn/speedWarn), smällen (impactOn), de kända
+   * platserna (hotspotVoice), körpausen (driveReminder), halkan och viltet
+   * (winterOn), rutten (routeOn) och skyltläsarens pip (plPip). De står alla
+   * på true av samma skäl som huvudreglaget ovan.
+   *
+   * Det är värt att säga rakt ut varför de inte börjar avstängda "för att
+   * inte störa": var och en av dem är en egen tystnad, och tystnaderna syns
+   * inte var för sig. Slås tre av dem av i förväg upplever föraren inte att
+   * hen fått en lugnare app — hen upplever att appen missade tre saker.
+   * Bruset går att klaga på och stänga av i efterhand. En varning som aldrig
+   * kom går inte att sakna, för man vet inte om den.
+   */
   limitOn: true,
   speedWarn: true,
   speedMargin: 7,
@@ -82,16 +120,41 @@ const defaults = {
   plKrav: 2,
   plPip: true,
   plZoomLage: 'auto',
+  /*
+   * Gränssnittsljud och vibration är också på från början, men av ett annat
+   * skäl än varningarna: de är kvittot på att ett tryck gick fram. Utan dem
+   * trycker föraren en gång till på en knapp som redan lyssnade, och det är
+   * ett tryck till med blicken nere.
+   *
+   * De konkurrerar inte med varningen — ljud.js får speaker med sig och
+   * kliver undan medan något läses upp (se instansen längre ner). Därför
+   * kostar påslaget ingenting i hörbarhet där det räknas.
+   *
+   * 0,75 och inte 1: klicken ska höras, inte höras mest.
+   */
   ljudPa: true,
   ljudVolym: 0.75,
   chattLastAt: 0,          // när chatten senast lästes, för antalet olästa
   morktLage: true,         // släck skärmen under körning när ingen rör den
-  haptikPa: true,
-  notiser: null,          // fylls av notiser.js vid behov
+  haptikPa: true,          // vibrationen når fram även när bilen är högljudd
+
+  /*
+   * null betyder inte "inget valt ljud" utan "inget frånval gjort". Läses
+   * som Notiser.DEFAULT_NOTISER, där polis, kontroll, civil bil och kamera
+   * alla står på NIVA_ROST — alltså uppläst. Den som vill se en typ på
+   * kartan utan att bli tilltalad ställer om den själv; appen gissar inte
+   * åt någon vilka kameror hen redan kan utantill.
+   */
+  notiser: null,
 
   /*
    * Räckvidden för notiser till låst skärm. Bor på servern — de här två är
    * bara vad telefonen tror, så att rutan kan ritas rätt innan svaret kommit.
+   *
+   * notisFolj: true ÄR förvalet "Nära mig" i rutan setNotisOmfang
+   * (index.html), eftersom renderNotisOmfang längre ner översätter true till
+   * 'nara' och false till 'alla'. Samma förval står utskrivet som selected i
+   * markupen, så rutan visar rätt sak redan innan den här filen kört.
    *
    * notisFolj är true som förval fastän förvalet på servern är false för
    * varje rad som fanns före ändringen. Det ser motsägelsefullt ut men är
@@ -4172,6 +4235,12 @@ function wireSettingsUI() {
       saveSettings();
     }
 
+    /*
+     * Har servern inte svarat, eller inte känt igen prenumerationen, står
+     * klientens förval kvar — och det förvalet är notisFolj: true, alltså
+     * "Nära mig". Rutan faller alltså aldrig tillbaka på "Hela landet" bara
+     * för att nätet var borta; den visar det förval föraren annars hade fått.
+     */
     val.value = settings.notisFolj ? 'nara' : 'alla';
     rad.value = settings.notisRadieM;
     $('setNotisRadieVal').textContent = kmText(settings.notisRadieM);

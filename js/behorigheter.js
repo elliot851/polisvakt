@@ -40,7 +40,10 @@
 //    faktiskt be om positionen och se vad telefonen svarar.
 //
 // Ingen funktion här rör DOM:en. Modulen levererar ett statusobjekt och tre
-// funktioner som ber om saker; hur det ritas är UI:ts problem (js/tour.js).
+// funktioner som ber om saker; hur det ritas är UI:ts problem. Två filer ritar
+// numera: js/tour.js (hela genomgången) och js/platsstart.js (första starten
+// och remsan som visar att plats saknas). Båda läser härifrån — ingen av dem
+// har en egen uppfattning om vad som är tillåtet.
 // -------------------------------------------------------------------------
 
 import * as push from './push.js';
@@ -111,6 +114,40 @@ function kommIhagPlats(state) {
 }
 
 let platsAbonnerad = false;
+
+/**
+ * Vad vi MINNS om platstillståndet, utan att fråga webbläsaren.
+ *
+ * Synkron med flit. js/geo.js måste kunna avgöra "är det här allra första
+ * starten?" i samma ögonblick som start() anropas, alltså innan något await
+ * hunnit köra — annars hinner watchPosition väcka platsrutan ändå, vilket är
+ * precis det grinden i geo.js finns för att förhindra.
+ *
+ * @returns {string|null} 'granted' | 'denied' | 'prompt' | null om vi inte vet
+ */
+export function platsMinne() {
+  return load().plats?.state || null;
+}
+
+/**
+ * Har appen någon gång ställt platsfrågan på den här enheten?
+ *
+ * Skiljer sig från platsMinne(): föraren kan ha tryckt "Inte nu" utan att
+ * webbläsarens ruta ens visades, och då finns inget tillstånd att minnas — men
+ * frågan är ändå ställd, och ska inte ställas om vid varje start.
+ */
+export function platsFragad() {
+  const st = load();
+  return !!(st.platsFragad?.at || st.plats?.at);
+}
+
+/** Kom ihåg att vi visat frågan, oavsett vad föraren svarade. */
+export function markeraPlatsFragad() {
+  const st = load();
+  if (st.platsFragad?.at) return;
+  st.platsFragad = { at: Date.now() };
+  save(st);
+}
 
 /**
  * Nuvarande platstillstånd.

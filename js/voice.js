@@ -15,11 +15,173 @@
 
 import { normalize } from './util.js';
 import { parseReportText } from './parser.js';
+import { narGest, anvandarenHarInteragerat } from './ljud.js';
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
 export const voiceInputSupported = !!SR;
 export const voiceOutputSupported = 'speechSynthesis' in window;
+
+/* ------------------------------------------------------------------ */
+/* Ljudupplåsning                                                      */
+/* ------------------------------------------------------------------ */
+//
+// Det här är det som avgör om appen gör någon nytta alls, och det är värt de
+// här raderna att förklara.
+//
+// Scenariot appen är byggd för: telefonen sitter i hållaren, appen är öppen,
+// bilen rullar — och föraren har INTE rört skärmen. Då gäller två spärrar, och
+// båda är helt tysta:
+//
+//   1. En AudioContext som skapas utan föregående användargest föds
+//      'suspended'. Plingets toner schemaläggs mot en klocka som står stilla
+//      och hörs aldrig. ctx.resume() utan gest avvisas — och det avvisade
+//      löftet syns ingenstans, eftersom ett try/catch bara fångar kast.
+//   2. speechSynthesis.speak() kräver på iOS att det FÖRSTA yttrandet ligger
+//      inuti en levande gest. Missas det får varje kommande yttrande 'error'
+//      istället för ljud, och kön töms tyst, en varning i taget.
+//
+// Ingen kodväg i appen råkade uppfylla kraven: både provknappen och de skarpa
+// varningarna lägger say() i en setTimeout på 320–380 ms, och då är gesten
+// död. Resultatet var en varningsapp som kunde vara helt tyst med varenda
+// reglage påslaget, utan att något syntes i gränssnittet.
+//
+// Därför låser vi upp båda sakerna i FÖRSTA trycket, vilket tryck som helst:
+// friskrivningens knapp, ett flikbyte, en tangent. Gesten kommer från ljud.js
+// som redan äger frågan "har föraren rört sidan?".
+//
+// Varför en tyst yttring och inte bara "vi provar när det behövs": det första
+// yttrandet är det enda som måste ligga i en gest. Är det avklarat får alla
+// senare yttranden komma från en timer, en GPS-händelse eller vad som helst.
+// Ett tyst yttrande i första trycket köper alltså resten av resan.
+
+/** Vad vi vet om upplåsningen. Läses av gränssnitt och provbänk. */
+const ljudlas = {
+  ctx: false,          // AudioContext är 'running'
+  rost: false,         // speechSynthesis har fått sitt första yttrande
+  forsokt: 0,
+  tid: 0,
+  orsak: 'inte-forsokt',
+};
+
+let ljudCtx = null;
+let rostPrimad = false;
+let taltIGang = 0;     // riktiga yttranden i luften just nu
+
+/**
+ * Den delade contexten för pling — EN för hela sidan.
+ *
+ * Tidigare hade varje Speaker sin egen (this._ctx), och plate.js och larm.js
+ * har fortfarande sina. Telefoner har ett tak på antalet contexts, och en
+ * context som ingen resumar är en context som aldrig låter.
+ */
+export function haLjudkontext({ skapa = true } = {}) {
+  if (!ljudCtx) {
+    if (!skapa) return null;
+    const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+    if (!AC) return null;
+    try { ljudCtx = new AC(); } catch { ljudCtx = null; return null; }
+    // Contexten säger själv till när den börjat köra. Utan den här skulle
+    // ljudlas.ctx stå kvar på false, eftersom resume() svarar först efter att
+    // gesten är avklarad.
+    try { ljudCtx.onstatechange = () => { ljudlas.ctx = ljudCtx.state === 'running'; }; } catch {}
+  }
+  if (ljudCtx.state === 'suspended') {
+    // resume() lämnar ett LÖFTE. Utan användaraktivering avvisas det, och ett
+    // avvisat löfte fångas inte av try/catch — det blev tidigare ett ohanterat
+    // fel i konsolen varje gång appen försökte plinga för tidigt.
+    try { ljudCtx.resume()?.catch?.(() => {}); } catch {}
+  }
+  ljudlas.ctx = ljudCtx.state === 'running';
+  return ljudCtx;
+}
+
+/**
+ * Ett tyst yttrande, bara för att låsa upp talsyntesen.
+ *
+ * Volym 0 så ingen hör det, och en punkt istället för tom sträng: Chrome
+ * svarar 'synthesis-failed' på tom text, och en misslyckad upplåsning är inte
+ * en upplåsning. Skyddsnätet nedanför städar bort yttrandet om det mot
+ * förmodan skulle bli hängande och stå i vägen för en riktig varning.
+ */
+function primaRosten() {
+  if (!voiceOutputSupported) { ljudlas.rost = true; return true; }   // inget att låsa upp
+  if (rostPrimad) return true;
+  try {
+    if (speechSynthesis.speaking || speechSynthesis.pending) {
+      // Appen pratar redan, alltså är rösten uppenbart upplåst. Ett extra
+      // yttrande skulle bara ställa sig i kön framför en varning.
+      rostPrimad = true;
+      ljudlas.rost = true;
+      return true;
+    }
+    const u = new SpeechSynthesisUtterance('.');
+    u.lang = 'sv-SE';
+    u.volume = 0;
+    u.rate = 2;
+    speechSynthesis.speak(u);
+    rostPrimad = true;
+    ljudlas.rost = true;
+    setTimeout(() => {
+      // Bara om ingen RIKTIG uppläsning är i luften. Annars vore en cancel()
+      // här exakt det fel filen finns för att undvika: en varning som klipps.
+      if (taltIGang === 0 && (speechSynthesis.speaking || speechSynthesis.pending)) {
+        try { speechSynthesis.cancel(); } catch {}
+      }
+    }, 1500);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lås upp ljudet. Måste köras inuti en användargest.
+ *
+ * @returns {boolean} true = klart, false = prova igen vid nästa tryck
+ */
+export function lasUppLjud() {
+  ljudlas.forsokt++;
+  ljudlas.tid = Date.now();
+
+  const ctx = haLjudkontext();
+  const rostKlar = primaRosten();
+
+  ljudlas.orsak =
+    !ctx ? 'ingen-ljudmotor'
+    : !rostKlar ? 'rosten-slapptes-inte-fram'
+    : ljudlas.ctx ? 'upplast'
+    : 'vantar-pa-ljudmotorn';
+
+  if ((!ctx || ljudlas.ctx) && rostKlar) return true;
+  // Fem tryck utan att det lossnar: webbläsaren tänker inte släppa fram
+  // ljudet, och att köra funktionen vid varje tryck resten av resan hjälper
+  // inte. chime() ber om resume ändå varje gång den spelar.
+  return ljudlas.forsokt >= 5;
+}
+
+/** Läsbart läge för gränssnitt och felsökning. */
+export function ljudlasStatus() {
+  const klart = ljudlas.ctx && ljudlas.rost;
+  return {
+    ...ljudlas,
+    klart,
+    text: klart ? 'Ljudet är upplåst.'
+      : !anvandarenHarInteragerat() ? 'Ljudet väntar på första trycket på skärmen.'
+      : ljudlas.orsak === 'ingen-ljudmotor' ? 'Enheten har ingen ljudmotor för webbsidor.'
+      : 'Webbläsaren har inte släppt fram ljudet än.',
+  };
+}
+
+if (typeof window !== 'undefined') narGest(lasUppLjud);
+
+if (typeof document !== 'undefined') {
+  // Telefonen suspenderar contexten när appen legat i bakgrunden. Utan det här
+  // är appen tyst efter varje gång föraren tittat på en karta i en annan app.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') haLjudkontext({ skapa: false });
+  });
+}
 
 /* ------------------------------------------------------------------ */
 /* Uppläsning                                                          */
@@ -103,6 +265,11 @@ export class Speaker {
     this.current = null;      // det som lases upp just nu
     this.muteUntil = 0;
     this.onSpeakingChange = () => {};
+    // Bokföring av tystnad. ljud.js har haft det här länge för
+    // gränssnittsljuden; varningsvägen svalde allt i tomma catch-block, och då
+    // gick ett fältfel inte att felsöka i efterhand.
+    this.senasteLjud = null;
+    this.tystnader = 0;
     audioSession.background();
     if (voiceOutputSupported) {
       const pick = () => { this.voice = this.#pickVoice(); };
@@ -189,10 +356,17 @@ export class Speaker {
     u.volume = this.volume;
     if (this.voice) u.voice = this.voice;
     this.speaking = true;
+    taltIGang++;
     audioSession.duck();   // sänk musiken, operativsystemet höjer tillbaka
     notifySpeaking(true, item.text);  // och stäng mikrofonen så vi inte hör oss själva
     this.onSpeakingChange(true);
+    let avslutad = false;
     const done = () => {
+      // onend OCH onerror kan båda komma. Utan spärren skulle kön drivas två
+      // steg framåt och en varning hoppas över.
+      if (avslutad) return;
+      avslutad = true;
+      taltIGang = Math.max(0, taltIGang - 1);
       this.speaking = false;
       this.current = null;
       notifySpeaking(false, item.text);
@@ -212,9 +386,42 @@ export class Speaker {
       // likadana i rad flyter ihop till en enda obegriplig ramsa.
       setTimeout(() => this.#drain(), item.kvar > 1 ? 700 : 120);
     };
-    u.onend = done;
-    u.onerror = done;
-    try { speechSynthesis.speak(u); } catch { done(); }
+    u.onend = () => { this.#bokforLjud('tal', true, 'ok'); done(); };
+    u.onerror = e => {
+      /*
+       * Hit kommer vi när talsyntesen vägrade. Det är den tystnad som gjorde
+       * appen värdelös utan att synas: föraren tror att ingen varning fanns.
+       * 'canceled' och 'interrupted' är vi själva (say med interrupt, eller
+       * stop) och inget att bokföra som ett fel.
+       */
+      const fel = e?.error || 'okant';
+      const vart = fel === 'canceled' || fel === 'interrupted';
+      this.#bokforLjud('tal', vart, vart ? 'avbruten' : 'rosten-nekades:' + fel);
+      done();
+    };
+    try {
+      speechSynthesis.speak(u);
+    } catch {
+      this.#bokforLjud('tal', false, 'speak-kastade');
+      done();
+    }
+  }
+
+  /**
+   * Bokför om ett ljud faktiskt hördes, och varför inte.
+   *
+   * Samma tanke som #beslut() i ljud.js: en app som är tyst ska kunna svara på
+   * frågan varför, i efterhand, utan att någon sitter med en telefon i handen.
+   */
+  #bokforLjud(vad, hordes, orsak) {
+    if (!hordes) this.tystnader++;
+    this.senasteLjud = { vad, hordes: !!hordes, orsak, tid: Date.now() };
+    return this.senasteLjud;
+  }
+
+  /** Varför hördes (eller hördes inte) det senaste ljudet? */
+  ljudDiagnos() {
+    return { ...ljudlasStatus(), senaste: this.senasteLjud, tystnader: this.tystnader };
   }
 
   /**
@@ -245,6 +452,29 @@ export class Speaker {
       hotspot:  'Här brukar det stå polis vid den här tiden.',
     };
     const text = samples[kind] || samples.police;
+
+    // Provknappen är ett fingertryck, alltså rätt tillfälle att låsa upp
+    // ljudet om det inte redan skett. Ligger say() 380 ms bort är gesten död
+    // när den körs — det var just därför provet inte kunde låsa upp rösten på
+    // iOS, hur många gånger man än tryckte.
+    lasUppLjud();
+
+    /*
+     * Ett prov som ljuger är värre än inget prov.
+     *
+     * Med "Läs upp varningar" avslaget spelades plinget, meningen skrevs ut i
+     * rutan och say() föll igenom tyst på raden i say(). Det såg ut som att
+     * provet gick igenom — och det är exakt den sak provet ska bevisa.
+     */
+    if (!this.enabled) {
+      this.chime(kind === 'report' ? 'ack' : 'alert');
+      return 'Läs upp varningar är avslaget, så det här är bara plinget. Slå på uppläsning för att höra hela varningen.';
+    }
+    if (!voiceOutputSupported) {
+      this.chime(kind === 'report' ? 'ack' : 'alert');
+      return 'Den här webbläsaren kan inte läsa upp text, så varningar kommer bara som pling och text.';
+    }
+
     const wasMuted = this.muteUntil;
     this.muteUntil = 0;                       // ett prov ska alltid höras
     this.chime(kind === 'report' ? 'ack' : 'alert');
@@ -265,9 +495,18 @@ export class Speaker {
 
   /** Kort pling före en varning så föraren hinner lyssna. */
   chime(kind = 'alert') {
+    const ctx = haLjudkontext();
+    if (!ctx) return this.#bokforLjud('pling', false, 'ingen-ljudmotor');
+    this._ctx = ctx;      // kvar under sitt gamla namn, nu den delade contexten
+
+    /*
+     * En suspenderad context hörs inte: tonerna schemaläggs mot en klocka som
+     * står stilla. haLjudkontext() har redan bett om resume, men svaret kommer
+     * först efter att den här funktionen är klar. Vi spelar ändå — hinner den
+     * vakna hörs det — och bokför sanningen så en tyst app går att felsöka.
+     */
+    const upplast = ctx.state === 'running';
     try {
-      const ctx = this._ctx || (this._ctx = new (window.AudioContext || window.webkitAudioContext)());
-      if (ctx.state === 'suspended') ctx.resume();
       const now = ctx.currentTime;
       const tones = kind === 'ack' ? [880] : kind === 'listen' ? [660, 990] : [1046, 784];
       tones.forEach((f, i) => {
@@ -282,7 +521,10 @@ export class Speaker {
         o.start(now + i * 0.13);
         o.stop(now + i * 0.13 + 0.14);
       });
-    } catch {}
+    } catch {
+      return this.#bokforLjud('pling', false, 'fel-i-ljudmotorn');
+    }
+    return this.#bokforLjud('pling', upplast, upplast ? 'ok' : 'ljudet-inte-upplast');
   }
 }
 
