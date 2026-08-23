@@ -610,12 +610,20 @@
      Varningsytan ligger som eget syskon direkt på body, ovanför alla
      vyer (z 905) — den täcker butiken precis som den täcker kartan. -->
 <div id="view-butik" class="view scroll" hidden>
-  <h1 class="page-title">Butik</h1>
-  <p class="hint">Saker som gör appen bättre i bilen. Köpet öppnas i en egen
-    flik hos kassan — appen tar aldrig dina kortuppgifter.</p>
-  <div class="shop" id="butikLista"></div>
-  <p class="hint" id="butikTomt" hidden>Hyllan kunde inte läsas in.
-    Kontrollera uppkopplingen och öppna fliken igen.</p>
+  <!-- Hyllan. id:na butikHylla-* göms av js/butik.js när en produkt öppnas,
+       så landningssidan (#butikDetalj) får hela vyn för sig själv. -->
+  <div id="butikHylla">
+    <h1 class="page-title" id="butikHyllaTitel">Butik</h1>
+    <p class="hint" id="butikHyllaText">Saker som gör appen bättre i bilen. Köpet
+      öppnas i en egen flik hos kassan — appen tar aldrig dina kortuppgifter.</p>
+    <div class="shop" id="butikLista"></div>
+    <p class="hint" id="butikTomt" hidden>Hyllan kunde inte läsas in.
+      Kontrollera uppkopplingen och öppna fliken igen.</p>
+  </div>
+
+  <!-- Landningssidan för en enskild produkt. Fylls och visas av js/butik.js;
+       tom och dold tills man trycker på ett kort. -->
+  <div id="butikDetalj" hidden></div>
 </div>
 
 <div id="view-settings" class="view scroll" hidden>

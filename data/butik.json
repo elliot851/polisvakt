@@ -1,13 +1,25 @@
 {
-  "_las_mig": "SÅ LÄGGER DU TILL EN PRODUKT: kopiera ett block i 'produkter', byt värdena, spara — klart. Ingen kod ska röras. FÄLTEN: id = unikt, små bokstäver, ändras aldrig (intresselistan pekar på det). namn = rubriken på kortet. rad = EN mening under namnet. pris = kronor, bara siffran. ikon = en emoji som visas när bild saknas. bild = valfri sökväg till en produktbild i projektet (t.ex. 'public/butik/hallare.jpg'), annars null. lank = hela https-adressen till kassan där man köper — null tills länken kommit. status = 'live' (kan köpas — kräver att lank är ifylld), 'coming' (kommer snart) eller 'idea' (på idéstadiet). NÄR KÖPLÄNKEN KOMMER: klistra in adressen i 'lank' och byt 'status' till 'live'. Appen visar då köpknappen av sig själv — utan länk visar kortet 'Snart i lager' och en intresseanmälan i stället.",
+  "_las_mig": "SÅ LÄGGER DU TILL EN PRODUKT: kopiera ett block i 'produkter', byt värdena, spara — klart, ingen kod rörs. FÄLT: id = unikt, små bokstäver, ändras aldrig (intresselistan pekar på det). namn = rubrik. rad = EN mening som visas på hyllkortet. pris = kronor, bara siffran. ikon = emoji som visas när bild saknas. LANDNINGSSIDAN visas när man trycker på ett kort och läser dessa fält om de finns: bilder = lista med sökvägar (t.ex. 'butik/hallare-1.jpg'), första blir huvudbild — utelämna för att falla tillbaka på 'bild' eller ikonen. beskrivning = längre stycke. punkter = säljpunkter, en rad var. lager = antal i lager (visas bara när status är 'live'). leverans = t.ex. '2–4 arbetsdagar'. frakt = t.ex. 'Fri frakt över 199 kr'. garanti = t.ex. '30 dagars öppet köp'. lank = hela https-adressen till kassan — null tills den kommit. status = 'live' (kan köpas, KRÄVER ifylld lank), 'coming' (snart) eller 'idea'. NÄR KÖPLÄNKEN KOMMER: klistra in adressen i 'lank' och byt status till 'live'; köpknappen och lagersiffran dyker upp av sig själva.",
   "produkter": [
     {
       "id": "holder",
       "namn": "Polisvakt Mobilhållare",
-      "rad": "Magnetfäste som lyfter telefonen mot vindrutan — så bakkameran filmar vägen, inte motorhuven.",
+      "rad": "360° roterbar hållare med halkfri bottenplatta — står stadigt på instrumentbrädan och vrids dit du ser bäst.",
       "pris": 299,
       "ikon": "📱",
-      "bild": null,
+      "bild": "butik/hallare-ref.jpg",
+      "bilder": ["butik/hallare-ref.jpg"],
+      "beskrivning": "Byggd för att Polisvakt ska kunna göra sitt jobb. Telefonen sitter still och rakt på instrumentbrädan, så bakkameran filmar vägen och varningarna hörs och syns medan du kör — utan att du håller i något. Den halkfria bottenplattan sitter kvar genom gupp, kurvor och inbromsningar, och 360°-leden låter dig vrida skärmen mot dig med ett finger.",
+      "punkter": [
+        "360° vridbar — vänd skärmen mot dig med ett finger, utan att lyfta hållaren.",
+        "Halkfri bottenplatta — sitter kvar genom gupp, kurvor och hårda inbromsningar.",
+        "Öppen ram — laddkabeln når kontakten och knapparna är fria.",
+        "Passar alla telefoner — justerbart fäste för både små och stora modeller."
+      ],
+      "lager": 60,
+      "leverans": "2–4 arbetsdagar",
+      "frakt": "Fri frakt över 199 kr",
+      "garanti": "30 dagars öppet köp",
       "lank": null,
       "status": "coming"
     },
@@ -18,6 +30,8 @@
       "pris": 99,
       "ikon": "⬛",
       "bild": null,
+      "leverans": "2–4 arbetsdagar",
+      "frakt": "Fri frakt över 199 kr",
       "lank": null,
       "status": "coming"
     },
