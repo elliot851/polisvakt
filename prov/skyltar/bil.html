@@ -1,0 +1,561 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bil-linsen: var sitter skylten på bilen?</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{margin:0;padding:16px 14px 60px;background:#0b0f14;color:#eef4fa;
+      font:13px/1.5 ui-monospace,monospace}
+ h1{font-size:17px;margin:0 0 6px} h2{font-size:14px;margin:18px 0 4px;color:#8fd0ff}
+ table{border-collapse:collapse;width:100%;font-size:12px;margin:6px 0 14px}
+ th,td{padding:3px 6px;border-bottom:1px solid #1a232d;text-align:right}
+ th:first-child,td:first-child{text-align:left}
+ th{color:#93a4b6;font-size:11px;text-transform:uppercase}
+ pre{background:#101820;border:1px solid #1e2a36;padding:9px;overflow:auto;
+     font-size:11px;color:#bcd;max-height:60vh}
+ .g{color:#2fd07a}.r{color:#ff7070}.o{color:#ffb020}.d{color:#6b7d8f}
+</style>
+<h1>Bil-linsen — skyltens läge på BILEN, och vad bilen låter sökningen hoppa över</h1>
+<div id="summa">Startar…</div>
+<div id="ut"></div>
+
+<script type="module">
+/* ===========================================================================
+ * VAD DEN HÄR SIDAN ÄR, OCH VAD DEN INTE ÄR
+ * ---------------------------------------------------------------------------
+ * Uppgiften: mät var registreringsskylten sitter i förhållande till BILEN, inte
+ * till bildrutan. Bildrutan är fotografens val; bilen är en fysisk sak med
+ * fasta mått, och det är den som gör ett tal värt att bära med sig.
+ *
+ * TVÅ SORTERS TAL, OCH DE FÅR INTE BLANDAS IHOP:
+ *
+ *   AUTOMATISKT MÄTTA. Lyktparet hittas av rödgrinden nedan (kopierad ur
+ *   bakvagn.html, som i sin tur speglar blågrinden i plate.js). Allt som
+ *   uttrycks i lyktparets koordinater — u, v, w, dy/sep — är mätt av kod och
+ *   går att köra om. Ingen människa har pekat.
+ *
+ *   HANDANNOTERADE. BILRUTAN är avläst för hand mot ett 5 %-rutnät i
+ *   _overlag.html, en bild i taget. Det finns ingen bildetektor här och ska
+ *   inte finnas någon — inget nytt beroende, ingen hämtad modell. Rutorna är
+ *   alltså MINA AVLÄSNINGAR, inte en mätning. Läsfelet är ungefär en halv
+ *   rutnätsruta, ±0,02 av bildbredden på varje kant, alltså ±0,04 på en bredd.
+ *   På den smalaste bilen (2039174f, bredd 0,38) är det ±11 % av bilbredden.
+ *   ALLA tal som har `bil` i namnet bär det felet. De duger till att peka ut
+ *   ETT OMRÅDE. De duger inte till att sätta en gräns på tredje decimalen.
+ *
+ * SKYLTRUTORNA är facit från granskning.html / matning.html, oförändrade.
+ * Inga nya rutor har satts.
+ *
+ * HUR TUNT UNDERLAGET ÄR (läs det här innan något tal används):
+ *   22 foton. Av dem har 13 en bil vars YTTERKANTER ALLA syns i bildrutan.
+ *   Åtta av de 13 är rakt bakifrån. Det är alltså ÅTTA bilar som bär varje
+ *   "rakt bakifrån"-median nedan. Bilarna är dessutom inte ett urval ur
+ *   trafiken: fyra Saab 9-5 kombi, tre Mercedes, två Polestar 4, två VW.
+ *   Sedan-, lastbils- och släpvagnsgeometri finns inte alls i underlaget.
+ *   För att lita på ett tal på tredje decimalen skulle det behövas ungefär
+ *   200 bilar bakifrån, dragna ur riktig dashcam-video (inte pressbilder),
+ *   fördelade över kaross-typ, och med bilrutan satt av två personer
+ *   oberoende så att avläsningsfelet går att mäta i stället för att uppskattas.
+ *
+ * DET SOM MÄTS HÄR FÅR ALDRIG BLI EN STRYKNING. Se PRIOR-avsnittet sist.
+ * =========================================================================*/
+
+/* ---- Facit: skyltrutor (andel av bilden) — från granskning.html --------- */
+const FACIT = {
+ 'YBK70UD.jpg':                      [0.3831,0.5773,0.2887,0.0918],
+ 'polestar-4-madrid-gold.jpg':       [0.1606,0.5908,0.1455,0.0947],
+ 'polestar-4-bak.webp':              [0.4408,0.7225,0.1650,0.0620],
+ 'enlarged.jpg':                     [0.3887,0.5030,0.2206,0.0838],
+ '2039174f.avif':                    [0.4692,0.5171,0.1144,0.0357],
+ '7751f94d.avif':                    [0.4303,0.5660,0.1442,0.0415],
+ '721ab0d6.avif':                    [0.3851,0.5152,0.1730,0.0274],
+ '0c4d9b68.jpg':                     [0.2451,0.4801,0.1729,0.0363],
+ '9487480d.avif':                    [0.3595,0.5695,0.2600,0.0425],
+ '3b979c11.avif':                    [0.4065,0.5600,0.1975,0.0558],
+ 'images.jpg':                       [0.3840,0.3355,0.2940,0.1085],
+ '1728543597268.jpg':                [0.1707,0.6481,0.1155,0.0563],
+ '521e24d0.avif':                    [0.2906,0.6844,0.0969,0.0479],
+ 'Regpl-Heden.jpg':                  [0.6247,0.5779,0.1482,0.0651],
+ 'Regplat-URK.jpg':                  [0.2265,0.4222,0.5520,0.3245],
+ '2560.webp':                        [0.1775,0.4595,0.6417,0.2342],
+ 'renummer-131122.jpg':              [0.0980,0.2540,0.7220,0.5150],
+ 'nya-regnummer-sverige.webp':       [0.1984,0.4291,0.5641,0.1712],
+ 'Reg-nr-fram-flaggor.jpg':          [0.2417,0.4217,0.5767,0.1250],
+ 'nya-skyltar-transportstyrelsen.png':[0.3658,0.1170,0.6342,0.5244],
+ 'd54eac78.png':                     [0.4115,0.5807,0.1910,0.0507],
+ 'image.png':                        [0.2633,0.3342,0.1590,0.1233],
+};
+
+/* ---- BILRUTAN: handavläst mot 5 %-rutnätet i _overlag.html --------------
+ * x0,x1,y0,y1 = bilens ytterkanter som andel av bildbredd/bildhöjd.
+ * `bredd:false` betyder att bilen är KAPAD i sidled av bildrutan — då finns
+ * ingen bilbredd att mäta. `hojd:false` likaså uppåt eller nedåt.
+ * `vinkel` styr vilka medianer raden räknas in i: en snett tagen bil har en
+ * "bredd" som mest är bilens LÄNGD, och den får aldrig blandas med en bil
+ * rakt bakifrån.
+ */
+const BIL = {
+ 'YBK70UD.jpg':                {x0:0.115,x1:0.905,y0:0.085,y1:0.890,vinkel:'bak',       bredd:true, hojd:true,  anm:'Porsche 911, studio'},
+ 'polestar-4-madrid-gold.jpg': {x0:0.055,x1:0.870,y0:0.110,y1:0.860,vinkel:'snett-bak', bredd:true, hojd:true,  anm:'trekvartsvy, "bredd" = bilens längd'},
+ 'polestar-4-bak.webp':        {x0:0.245,x1:0.815,y0:0.115,y1:0.925,vinkel:'bak',       bredd:true, hojd:true,  anm:''},
+ 'enlarged.jpg':               {x0:0.175,x1:0.825,y0:0.085,y1:0.950,vinkel:'bak',       bredd:true, hojd:true,  anm:'Mercedes E kombi'},
+ '2039174f.avif':              {x0:0.335,x1:0.715,y0:0.325,y1:0.830,vinkel:'bak',       bredd:true, hojd:true,  anm:'smalast i bildrutan → störst avläsningsfel'},
+ '7751f94d.avif':              {x0:0.275,x1:0.725,y0:0.345,y1:0.860,vinkel:'bak',       bredd:true, hojd:true,  anm:''},
+ '721ab0d6.avif':              {x0:0.205,x1:0.700,y0:0.365,y1:0.655,vinkel:'bak',       bredd:true, hojd:true,  anm:'Saab 9-5 kombi'},
+ '0c4d9b68.jpg':               {x0:0.105,x1:0.755,y0:0.305,y1:0.635,vinkel:'snett-bak', bredd:true, hojd:true,  anm:'trekvartsvy'},
+ '9487480d.avif':              {x0:0.115,x1:0.835,y0:0.335,y1:0.775,vinkel:'bak',       bredd:true, hojd:true,  anm:'Saab 9-5 kombi'},
+ '3b979c11.avif':              {x0:0.225,x1:0.790,y0:0.215,y1:0.885,vinkel:'bak',       bredd:true, hojd:true,  anm:'Saab 9-5 kombi, svart'},
+ 'images.jpg':                 {x0:0.075,x1:0.955,y0:null, y1:null, vinkel:'bak',       bredd:true, hojd:false, anm:'taket kapat av bildrutan; sidkanterna osäkra'},
+ '1728543597268.jpg':          {x0:0.095,x1:0.800,y0:0.285,y1:0.795,vinkel:'snett-fram',bredd:true, hojd:true,  anm:'Skoda Enyaq, trekvart framifrån'},
+ '521e24d0.avif':              {x0:0.245,x1:0.720,y0:0.255,y1:0.795,vinkel:'snett-fram',bredd:true, hojd:true,  anm:'VW Caddy, trekvart framifrån'},
+ 'Regpl-Heden.jpg':            {x0:0.505,x1:0.955,y0:null, y1:null, vinkel:'fram',      bredd:true, hojd:false, anm:'HÖGRA bilen (den facit pekar på); taket kapat'},
+ 'd54eac78.png':               {x0:0.225,x1:0.790,y0:0.260,y1:0.800,vinkel:'bak',       bredd:true, hojd:true,  anm:'VW Passat kombi, studio'},
+ // Ingen bilruta går att sätta i de här. Det är en LUCKA, inte ett bortval.
+ 'image.png':                          {bredd:false,hojd:false,vinkel:'snett-bak',anm:'extrem närbild, bilen kapad uppåt/höger/nedåt'},
+ 'Regplat-URK.jpg':                    {bredd:false,hojd:false,vinkel:'fram', anm:'närbild på front, bilen fyller bildrutan'},
+ '2560.webp':                          {bredd:false,hojd:false,vinkel:'bak',  anm:'närbild på baklucka'},
+ 'renummer-131122.jpg':                {bredd:false,hojd:false,vinkel:'fram', anm:'närbild på grill'},
+ 'nya-regnummer-sverige.webp':         {bredd:false,hojd:false,vinkel:'snett-fram',anm:'närbild på front'},
+ 'Reg-nr-fram-flaggor.jpg':            {bredd:false,hojd:false,vinkel:'fram', anm:'närbild på grill'},
+ 'nya-skyltar-transportstyrelsen.png': {bredd:false,hojd:false,vinkel:'bak',
+   anm:'pressbild: facitrutan är en INKLISTRAD skylt-grafik, den riktiga bilen längre bort i bildrutan hör inte ihop med rutan'},
+};
+
+/* ===========================================================================
+ * RÖDGRINDEN OCH LYKTPARET — oförändrad kopia ur bakvagn.html.
+ * Kopierad i stället för importerad för att den här sidan ska gå att köra
+ * ensam. Ändras tröskeln på ett ställe måste den ändras på båda.
+ * =========================================================================*/
+const ROD = { mattnadMin:0.30, mattnadRen:0.68, kromaMin:38,
+              nyansMin:-42, nyansMax:34, vMin:0.20, vMax:1.0 };
+const LYKTA = { minArea:5, minSida:2, maxAndelB:0.34, minFyllnad:0.26, maxKvot:6, tak:24 };
+const PAR   = { dyAvSep:0.28, areaKvot:4.0, hojdKvot:3.0, minSepAvLykta:1.4,
+                minSepAndel:0.06 };
+const AB = 400;                                  // samma arbetsbredd som sokKandidater
+
+function svep(kalla, arbetsbredd){
+  const B=kalla.width,H=kalla.height;
+  const skala=Math.min(1,arbetsbredd/B);
+  const b=Math.max(8,Math.round(B*skala)), h=Math.max(4,Math.round(H*skala));
+  const c=document.createElement('canvas'); c.width=b; c.height=h;
+  const g=c.getContext('2d',{willReadFrequently:true});
+  g.drawImage(kalla,0,0,B,H,0,0,b,h);
+  const px=g.getImageData(0,0,b,h).data, n=b*h;
+  const rodMask=new Uint8Array(n);
+  for(let i=0,p=0;i<n;i++,p+=4){
+    const r=px[p],g2=px[p+1],b2=px[p+2];
+    if(r<=g2||r<=b2) continue;
+    const mn=g2<b2?g2:b2, delta=r-mn;
+    if(delta<=0||r<ROD.vMin*255) continue;
+    const mattnad=delta/r;
+    if(mattnad<ROD.mattnadMin) continue;
+    if(mattnad<ROD.mattnadRen && delta<ROD.kromaMin) continue;
+    const nyans=60*(g2-b2)/delta;
+    if(nyans<ROD.nyansMin||nyans>ROD.nyansMax) continue;
+    rodMask[i]=1;
+  }
+  return {b,h,skala,rodMask};
+}
+function maskBlobbar(mask,b,h){
+  const n=b*h,besokt=new Uint8Array(n),stack=new Int32Array(n),ut=[];
+  for(let start=0;start<n;start++){
+    if(besokt[start]||!mask[start]) continue;
+    let sp=0; stack[sp++]=start; besokt[start]=1;
+    let minX=b,maxX=-1,minY=h,maxY=-1,area=0,sx=0,sy=0;
+    while(sp){ const i=stack[--sp],x=i%b,y=(i/b)|0;
+      area++;sx+=x;sy+=y;
+      if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y;
+      if(x>0&&!besokt[i-1]&&mask[i-1]){besokt[i-1]=1;stack[sp++]=i-1;}
+      if(x<b-1&&!besokt[i+1]&&mask[i+1]){besokt[i+1]=1;stack[sp++]=i+1;}
+      if(y>0&&!besokt[i-b]&&mask[i-b]){besokt[i-b]=1;stack[sp++]=i-b;}
+      if(y<h-1&&!besokt[i+b]&&mask[i+b]){besokt[i+b]=1;stack[sp++]=i+b;}}
+    const bw=maxX-minX+1,bh=maxY-minY+1;
+    ut.push({minX,minY,bw,bh,area,cx:sx/area,cy:sy/area,fyllnad:area/(bw*bh)});
+  }
+  return ut;
+}
+function hittaLyktpar(rodMask,b,h){
+  const alla=maskBlobbar(rodMask,b,h);
+  let lyktor=alla.filter(l=> l.area>=LYKTA.minArea && l.bw>=LYKTA.minSida &&
+    l.bh>=LYKTA.minSida && l.bw<=LYKTA.maxAndelB*b && l.bh<=LYKTA.maxAndelB*b &&
+    l.fyllnad>=LYKTA.minFyllnad && Math.max(l.bw/l.bh,l.bh/l.bw)<=LYKTA.maxKvot);
+  if(lyktor.length>LYKTA.tak) lyktor=[...lyktor].sort((a,c)=>c.area-a.area).slice(0,LYKTA.tak);
+  let bast=null;
+  for(let i=0;i<lyktor.length;i++) for(let j=i+1;j<lyktor.length;j++){
+    let a=lyktor[i],c=lyktor[j];
+    if(a.cx>c.cx){const t=a;a=c;c=t;}
+    const sep=c.cx-a.cx;
+    if(sep<PAR.minSepAndel*b) continue;
+    if(sep<PAR.minSepAvLykta*((a.bw+c.bw)/2)) continue;
+    const dy=Math.abs(a.cy-c.cy);
+    if(dy>PAR.dyAvSep*sep) continue;
+    const ak=Math.max(a.area/c.area,c.area/a.area); if(ak>PAR.areaKvot) continue;
+    const hk=Math.max(a.bh/c.bh,c.bh/a.bh);        if(hk>PAR.hojdKvot) continue;
+    const poang=(a.area+c.area)/(ak*hk)*(1-dy/(PAR.dyAvSep*sep)*0.5);
+    if(!bast||poang>bast.poang) bast={a,c,sep,dy,poang,
+      midx:(a.cx+c.cx)/2, lampy:(a.cy+c.cy)/2,
+      vansterY:a.cy, hogerY:c.cy, vansterH:a.bh, hogerH:c.bh};
+  }
+  return bast;
+}
+
+/* ---- statistik ---------------------------------------------------------- */
+const median=a=>{if(!a.length)return null;const s=[...a].sort((x,y)=>x-y);
+  const m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;};
+const en=(v,d=3)=>v==null?'–':(Math.round(v*10**d)/10**d).toString().replace('.',',');
+
+/**
+ * UTELÄMNA-ETT. Kärnan i uppdraget: ett tal som rör sig när en enda bild
+ * försvinner beskriver den bilden, inte svenska bilar.
+ * Körs över ALLA 22 filnamnen, inte bara de som bidrar — att medianen står
+ * still när en icke-bidragande bild tas bort är också ett svar, och det gör
+ * antalet utelämningar ärligt (22, inte n).
+ */
+function utelamnaEtt(poster){            // poster: [{fil, v}]
+  const alla=poster.map(p=>p.v);
+  const m0=median(alla);
+  const rader=[];
+  for(const fil of Object.keys(FACIT)){
+    const kvar=poster.filter(p=>p.fil!==fil).map(p=>p.v);
+    const m=median(kvar);
+    rader.push({fil, median:m, avvikelse:(m==null||m0==null)?0:Math.abs(m-m0)});
+  }
+  const looMedianer=rader.map(r=>r.median).filter(x=>x!=null);
+  const varst=Math.max(...rader.map(r=>r.avvikelse));
+  /*
+   * VARFÖR "VÄRSTA BILDEN" OFTA ÄR MENINGSLÖS ATT NAMNGE.
+   * Med JÄMNT n är medianen medelvärdet av de två mittersta. Tar man bort
+   * VILKEN SOM HELST av de bidragande bilderna landar medianen på antingen
+   * det ena eller det andra mittvärdet — avvikelsen blir EXAKT densamma för
+   * varenda utelämning. Att peka ut en "värsta bild" i det läget är att peka
+   * på den som råkar stå först i listan. Därför rapporteras SPANNET av de 22
+   * omräknade medianerna, och en bild namnges bara när den är ensam värst.
+   */
+  const tie=rader.filter(r=>Math.abs(r.avvikelse-varst)<1e-12).length;
+  return {median:m0, n:alla.length,
+          min:alla.length?Math.min(...alla):null,
+          max:alla.length?Math.max(...alla):null,
+          looMaxAvvikelse:varst,
+          looMedianMin:looMedianer.length?Math.min(...looMedianer):null,
+          looMedianMax:looMedianer.length?Math.max(...looMedianer):null,
+          looVarstFil: tie===1 ? rader.find(r=>r.avvikelse===varst).fil
+                               : `${tie} bilder lika (jämnt n → alla flyttar lika mycket)`,
+          rader};
+}
+
+const ladda=f=>new Promise((ok,nej)=>{const i=new Image();
+  i.onload=()=>ok(i); i.onerror=()=>nej(new Error(f)); i.src='./'+encodeURIComponent(f);});
+const tillCanvas=img=>{const c=document.createElement('canvas');
+  c.width=img.naturalWidth;c.height=img.naturalHeight;
+  c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0);return c;};
+
+/* ===========================================================================
+ * MÄTNINGEN
+ * =========================================================================*/
+const rader=[];
+const summa=document.getElementById('summa'), ut=document.getElementById('ut');
+
+for(const [fil,[fx,fy,fw,fh]] of Object.entries(FACIT)){
+  summa.textContent=`Mäter ${rader.length+1}/22: ${fil}…`;
+  const bil=BIL[fil]||{bredd:false,hojd:false,vinkel:'?'};
+  const r={fil, vinkel:bil.vinkel, anm:bil.anm||''};
+  const img=await ladda(fil);
+  const W=img.naturalWidth, H=img.naturalHeight;
+  r.px=`${W}×${H}`;
+
+  /* --- skyltrutan i bildrutan ------------------------------------------ */
+  const scx=fx+fw/2, scy=fy+fh/2;
+  r.skyltKvot=(fw*W)/(fh*H);              // b/h i PIXLAR, inte i andelar
+  r.skyltBreddAvBild=fw;
+
+  /* --- skyltens läge på BILEN (handavläst ruta) ------------------------- */
+  if(bil.bredd){
+    const bw=bil.x1-bil.x0;
+    r.bilBredd=bw;
+    r.skyltXpaBil=(scx-bil.x0)/bw;        // 0 = vänster bilkant, 1 = höger
+    r.skyltBreddAvBil=fw/bw;
+    // hur mycket ±0,02 på VARJE bilkant flyttar talen
+    r.skyltBreddAvBil_osakerhet=Math.abs(fw/(bw-0.04)-fw/(bw+0.04))/2;
+  }
+  if(bil.hojd){
+    const bh=bil.y1-bil.y0;
+    r.bilHojd=bh;
+    r.skyltYpaBil=(scy-bil.y0)/bh;        // 0 = tak, 1 = under bilen
+    r.skyltHojdAvBil=fh/bh;
+  }
+
+  /* --- lyktparet, automatiskt ------------------------------------------ */
+  const kalla=tillCanvas(img);
+  const s=svep(kalla,AB);
+  const par=hittaLyktpar(s.rodMask,s.b,s.h);
+  r.par=!!par;
+  if(par){
+    // arbetsbildens pixlar -> andel av bildbredden
+    r.lyktSepAvBild=par.sep/s.b;
+    r.lyktDyAvSep=par.dy/par.sep;                       // 0 = exakt samma höjd
+    r.lyktHojdKvot=Math.max(par.vansterH,par.hogerH)/Math.min(par.vansterH,par.hogerH);
+    const pcx=scx*W*s.skala, pcy=scy*H*s.skala;
+    r.u=(pcx-par.midx)/par.sep;                         // + = skylten till höger om lyktmitten
+    r.v=(pcy-par.lampy)/par.sep;                        // + = skylten under lyktorna
+    r.wAvSep=(fw*W*s.skala)/par.sep;                    // skyltbredd / lyktavstånd
+    r.hAvSep=(fh*H*s.skala)/par.sep;
+    if(bil.bredd) r.lyktSepAvBil=(par.sep/s.b)/(bil.x1-bil.x0);
+
+    /* --- ÄR DET VERKLIGEN ETT LYKTPAR? ---------------------------------
+     * Rödgrinden hittar RÖDA FLÄCKAR, inte baklyktor. På den här bänken
+     * levererar den minst fyra par som inte är lyktor alls:
+     *   YBK70UD      studiogolvets röda ränder, vänster och höger om bilen
+     *   521e24d0     röd skåpbil — karossen själv är den största röda fläcken
+     *   Regpl-Heden  två röda bilar bredvid varandra: en lykta ur varje bil
+     *   nya-regnummer en närbild utan lyktor alls
+     * Två prov skiljer sant från falskt, och båda finns i appen:
+     *   (1) skyltens bredd i lyktavstånd, w — ett par som ligger 8 skyltbredder
+     *       isär är inte en bils lyktor;
+     *   (2) skyltens läge i parets koordinater, u och v.
+     * Gränserna är bakvagn.html:s fönster, oförändrade — inget nytt tal sätts
+     * här. `trovardigt` är alltså inte en ny gräns, det är den befintliga.
+     * OBS: YBK70UD passerar ändå, för det falska paret råkar ligga symmetriskt
+     * kring skylten. Provet fångar var paret SITTER, inte vad det ÄR.
+     */
+    r.trovardigt = Math.abs(r.u)<=0.45 && r.v>=-0.30 && r.v<=0.65 &&
+                   r.wAvSep>=0.24 && r.wAvSep<=0.58;
+    // Ett par vars avstånd är bredare än hela bilen kan inte vara bilens lyktor.
+    // Bara ett DIAGNOSTISKT prov: bilbredden finns inte i appen.
+    if(r.lyktSepAvBil!=null) r.parBredareAnBilen = r.lyktSepAvBil > 1.0;
+  }
+  rader.push(r);
+}
+
+/* ---- plocka ut serier -------------------------------------------------- */
+const serie=(filter,falt)=>rader.filter(r=>filter(r)&&r[falt]!=null&&isFinite(r[falt]))
+                                .map(r=>({fil:r.fil,v:r[falt]}));
+const bak=r=>r.vinkel==='bak';
+const alla=()=>true;
+const trov=r=>r.trovardigt===true;         // bara par som klarar bakvagnsfönstret
+
+const MATT=[
+  {namn:'skyltmitt X / bilbredd — rakt bakifrån', s:serie(bak,'skyltXpaBil'),
+   dagens:'—', kom:'0,5 = mitt på bilen. Handavläst bilruta.'},
+  {namn:'skyltmitt X / bilbredd — alla vinklar', s:serie(alla,'skyltXpaBil'),
+   dagens:'—', kom:'trekvartsvyer drar isär: skylten hamnar i bilens ena ände'},
+  {namn:'skyltmitt Y / bilhöjd — rakt bakifrån', s:serie(bak,'skyltYpaBil'),
+   dagens:'—', kom:'0 = tak, 1 = mark. Handavläst bilruta.'},
+  {namn:'skyltbredd / bilbredd — rakt bakifrån', s:serie(bak,'skyltBreddAvBil'),
+   dagens:'—', kom:'520 mm / ~1820 mm karossbredd = 0,286 teoretiskt'},
+  {namn:'skyltbredd / bilbredd — alla vinklar', s:serie(alla,'skyltBreddAvBil'), dagens:'—', kom:''},
+  {namn:'lyktavstånd / bilbredd — rakt bakifrån', s:serie(bak,'lyktSepAvBil'),
+   dagens:'—', kom:'kontroll på bilrutan: sprids det här sprids mina avläsningar'},
+  {namn:'lyktparets höjdskillnad / lyktavstånd — alla par', s:serie(alla,'lyktDyAvSep'),
+   dagens:'PAR.dyAvSep 0,28 (gräns)', kom:'AUTOMATISKT MÄTT. 0 = exakt samma höjd.'},
+  {namn:'lyktparets höjdskillnad / lyktavstånd — trovärdiga par', s:serie(trov,'lyktDyAvSep'),
+   dagens:'PAR.dyAvSep 0,28 (gräns)', kom:'AUTOMATISKT MÄTT'},
+  {namn:'skyltmitt − lyktmitt, i sidled / lyktavstånd (u) — alla par', s:serie(alla,'u'),
+   dagens:'F.uMax 0,45 (bakvagn.html)', kom:'AUTOMATISKT MÄTT'},
+  {namn:'skyltmitt − lyktmitt, i sidled / lyktavstånd (u) — trovärdiga', s:serie(trov,'u'),
+   dagens:'F.uMax 0,45', kom:'AUTOMATISKT MÄTT'},
+  {namn:'skyltmitt − lyktmitt, i höjdled / lyktavstånd (v) — alla par', s:serie(alla,'v'),
+   dagens:'F.vMin −0,30 / F.vMax 0,65', kom:'AUTOMATISKT MÄTT. + = under lyktorna.'},
+  {namn:'skyltmitt − lyktmitt, i höjdled / lyktavstånd (v) — trovärdiga', s:serie(trov,'v'),
+   dagens:'F.vMin −0,30 / F.vMax 0,65', kom:'AUTOMATISKT MÄTT'},
+  {namn:'skyltbredd / lyktavstånd (w) — alla par', s:serie(alla,'wAvSep'),
+   dagens:'F.wMin 0,24 / F.wMax 0,58', kom:'AUTOMATISKT MÄTT'},
+  {namn:'skyltbredd / lyktavstånd (w) — trovärdiga', s:serie(trov,'wAvSep'),
+   dagens:'F.wMin 0,24 / F.wMax 0,58', kom:'AUTOMATISKT MÄTT'},
+  {namn:'skyltens kvot b/h i pixlar — alla 22', s:serie(alla,'skyltKvot'),
+   dagens:'SKYLT_KVOT 4,73', kom:'facitrutan, inte plåten: rutan är axelparallell'},
+  {namn:'skyltens kvot b/h i pixlar — bara rakt bakifrån', s:serie(bak,'skyltKvot'),
+   dagens:'SKYLT_KVOT 4,73', kom:'snedvyer trycker ihop kvoten, det är projektion inte skylt'},
+];
+
+const sammanst=MATT.map(m=>({namn:m.namn, dagens:m.dagens, kom:m.kom, ...utelamnaEtt(m.s)}));
+
+/* ===========================================================================
+ * FRÅGAN: hur mycket av bildrutan kan sökningen hoppa över?
+ * Två svar, och de är olika mycket värda.
+ *
+ * A) OM BILRUTAN VORE KÄND (den är den inte i appen — det finns ingen
+ *    bildetektor). Räknas som den minsta rektangeln i bil-koordinater som
+ *    rymmer ALLA skyltar i underlaget, med marginal.
+ * B) OM BARA LYKTPARET ÄR KÄNT (det ÄR det — rödgrinden hittar det i kod).
+ *    Fönstret är bakvagn.html:s: mitt på lyktmitten, 1,5 sep brett,
+ *    1,15 sep högt, ovankant 0,40 sep över lyktorna.
+ * =========================================================================*/
+/* A: UNIONEN AV SKYLTRUTORNA I BIL-KOORDINATER.
+ * Inte "mitten ± största bredden" — det är en överskattning som inte hör
+ * ihop med någon enskild bild. Här läggs varje bilds FAKTISKA skyltruta in i
+ * den bildens bil-koordinater och rektanglarnas union tas.
+ */
+const Arader=rader.filter(r=>bak(r)&&r.skyltXpaBil!=null&&r.skyltYpaBil!=null&&
+                             r.skyltBreddAvBil!=null&&r.skyltHojdAvBil!=null);
+const A={n:Arader.length,
+  xMin:Math.min(...Arader.map(r=>r.skyltXpaBil-r.skyltBreddAvBil/2)),
+  xMax:Math.max(...Arader.map(r=>r.skyltXpaBil+r.skyltBreddAvBil/2)),
+  yMin:Math.min(...Arader.map(r=>r.skyltYpaBil-r.skyltHojdAvBil/2)),
+  yMax:Math.max(...Arader.map(r=>r.skyltYpaBil+r.skyltHojdAvBil/2))};
+A.andelAvBilrutan=(A.xMax-A.xMin)*(A.yMax-A.yMin);
+// Samma union men med den värsta bilden utelämnad, en i taget — hur mycket
+// beror rektangeln på en enda bild?
+A.utelamnaEtt=Arader.map(u=>{
+  const k=Arader.filter(r=>r!==u);
+  const a=(Math.max(...k.map(r=>r.skyltXpaBil+r.skyltBreddAvBil/2))-
+           Math.min(...k.map(r=>r.skyltXpaBil-r.skyltBreddAvBil/2)))*
+          (Math.max(...k.map(r=>r.skyltYpaBil+r.skyltHojdAvBil/2))-
+           Math.min(...k.map(r=>r.skyltYpaBil-r.skyltHojdAvBil/2)));
+  return {utan:u.fil, andel:+a.toFixed(3)};
+}).sort((p,q)=>p.andel-q.andel);
+
+/* B: LYKTFÖNSTRET. Andel av bildrutan, och om skyltmitten ligger i det. */
+let bTraff=0,bMiss=0; const bAndelar=[], bMissar=[], bAndelarTrov=[];
+for(const r of rader){
+  if(!r.par) continue;
+  const sep=r.lyktSepAvBild;                       // i andel av bildBREDDen
+  const kvot=(function(){const q=r.px.split('×');return +q[0]/+q[1];})(); // B/H
+  // fönstret: 1,5·sep brett, 1,15·sep högt — båda mätta i bildBREDDer, så
+  // höjden blir ×(B/H) när den uttrycks som andel av bildHÖJDen.
+  const andel=Math.min(1,1.5*sep)*Math.min(1,1.15*sep*kvot);
+  bAndelar.push(andel);
+  if(r.trovardigt) bAndelarTrov.push(andel);
+  const inne=Math.abs(r.u)<=0.75 && r.v>=-0.40 && r.v<=0.75;
+  if(inne) bTraff++; else {bMiss++; bMissar.push(`${r.fil} u=${en(r.u)} v=${en(r.v)}`);}
+}
+/* C: VAD FÖNSTRET SKULLE GE PÅ AVSTÅND — och varför bänken inte kan svara.
+ * Fönstrets andel växer med sep². Bänken är idel närbilder: sep är 0,2–0,9 av
+ * bildbredden, och då täcker fönstret halva bildrutan. En dashcam ser en bil
+ * tio–tjugo meter fram med lyktavstånd 5–12 % av bildbredden. Räkningen nedan
+ * är REN GEOMETRI på fönsterformeln, INTE en mätning — det finns inte ett
+ * enda foto på avstånd i mappen, och det är den viktigaste luckan i hela
+ * underlaget.
+ */
+const C=[0.05,0.08,0.12,0.20,0.35].map(sep=>({
+  lyktavstand_av_bildbredd:sep,
+  fonster_andel_16x9:+(Math.min(1,1.5*sep)*Math.min(1,1.15*sep*(16/9))).toFixed(4),
+  raknat:'geometri, inte mätt — bänken saknar foton på avstånd'
+}));
+
+/* ---- utskrift ----------------------------------------------------------- */
+const t=(rubrik,kolumner,rader2)=>{
+  let s=`<h2>${rubrik}</h2><table><tr>${kolumner.map(k=>`<th>${k}</th>`).join('')}</tr>`;
+  for(const rr of rader2) s+=`<tr>${rr.map(c=>`<td>${c}</td>`).join('')}</tr>`;
+  return s+'</table>';
+};
+let html='';
+html+=t('Per bild',
+  ['fil','vinkel','bilruta','skylt X/bil','skylt Y/bil','skyltb/bilb','sep/bilb','lyktpar','u','v','w','dy/sep','kvot b/h'],
+  rader.map(r=>[r.fil, r.vinkel,
+    (r.bilBredd?en(r.bilBredd,2):'<span class=d>–</span>')+'×'+(r.bilHojd?en(r.bilHojd,2):'<span class=d>–</span>'),
+    en(r.skyltXpaBil), en(r.skyltYpaBil), en(r.skyltBreddAvBil),
+    (r.parBredareAnBilen?'<span class=r>':'')+en(r.lyktSepAvBil)+(r.parBredareAnBilen?' !</span>':''),
+    !r.par?'<span class=r>nej</span>':(r.trovardigt?'<span class=g>ja</span>':'<span class=o>ja, otrov.</span>'),
+    en(r.u), en(r.v), en(r.wAvSep), en(r.lyktDyAvSep), en(r.skyltKvot,2)]));
+
+html+=t('Storheter — median, spann, n, och utelämna-ett över alla 22 bilder',
+  ['storhet','median','min','max','n','LOO max Δ','LOO-medianens spann','ensam värst?','dagens värde'],
+  sammanst.map(m=>[m.namn, `<b>${en(m.median)}</b>`, en(m.min), en(m.max), m.n,
+    en(m.looMaxAvvikelse,4),
+    `${en(m.looMedianMin)} – ${en(m.looMedianMax)}`,
+    m.looVarstFil||'–', m.dagens]));
+
+html+=`<h2>Hur mycket kan hoppas över?</h2><pre>${JSON.stringify({
+  A_om_bilrutan_vore_kand:{
+    n:A.n,
+    union_av_skyltrutorna_i_bilkoordinater:{
+      x:[+A.xMin.toFixed(3),+A.xMax.toFixed(3)], y:[+A.yMin.toFixed(3),+A.yMax.toFixed(3)]},
+    andel_av_bilrutan:+A.andelAvBilrutan.toFixed(3),
+    utelamna_ett:A.utelamnaEtt,
+    varning:'bilrutan finns INTE i appen — det finns ingen bildetektor och ska '+
+            'inte finnas någon (inget nytt beroende). Talet är en ÖVRE GRÄNS '+
+            'för vad en sådan skulle kunna ge, inte en vinst som går att hämta hem.'
+  },
+  B_med_bara_lyktparet:{
+    n:bAndelar.length, traff:bTraff, miss:bMiss,
+    fonster_andel_av_bildrutan_median:+median(bAndelar).toFixed(3),
+    fonster_andel_min:+Math.min(...bAndelar).toFixed(3),
+    fonster_andel_max:+Math.max(...bAndelar).toFixed(3),
+    fonster_andel_median_bara_trovardiga:+median(bAndelarTrov).toFixed(3),
+    missar:bMissar
+  },
+  C_samma_fonster_pa_avstand:C
+},null,1)}</pre>`;
+
+/* ---------------------------------------------------------------------------
+ * ÄR BILRUTAN SYSTEMATISKT FÖR SMAL? Ett prov som går att köra.
+ * Geometrin säger 520 mm skylt / ~1820 mm kaross = 0,286. Medianen nedan
+ * ligger högre. Om felet ligger i MIN avläsning och inte i verkligheten ska
+ * det växa med hur mycket av bildrutan bilen fyller: ju närmare bilen är,
+ * desto mer syns dess sidor i profil och desto lättare läser ögat kanten
+ * innanför den sanna silhuetten. Här mäts sambandet i stället för att
+ * påstås.
+ */
+function pearson(xs,ys){
+  const n=xs.length, mx=xs.reduce((a,b)=>a+b,0)/n, my=ys.reduce((a,b)=>a+b,0)/n;
+  let sxy=0,sxx=0,syy=0;
+  for(let i=0;i<n;i++){const dx=xs[i]-mx,dy=ys[i]-my;sxy+=dx*dy;sxx+=dx*dx;syy+=dy*dy;}
+  return sxy/Math.sqrt(sxx*syy);
+}
+const bakB=rader.filter(r=>bak(r)&&r.skyltBreddAvBil!=null);
+const BIAS={
+  n:bakB.length,
+  teoretiskt_520_av_1820:0.286,
+  matt_median:+median(bakB.map(r=>r.skyltBreddAvBil)).toFixed(3),
+  overskott_procent:+(((median(bakB.map(r=>r.skyltBreddAvBil))/0.286)-1)*100).toFixed(1),
+  korrelation_med_hur_mycket_bilen_fyller_bildrutan:
+    +pearson(bakB.map(r=>r.bilBredd),bakB.map(r=>r.skyltBreddAvBil)).toFixed(3),
+  slutsats:'Positiv korrelation = felet är sannolikt MITT, i avläsningen av '+
+           'bilkanten, inte i skylten. Talet duger som PRIOR (rangordning), '+
+           'inte som absolut mått på karossbredd.'
+};
+html+=`<h2>Prov på om bilrutan är systematiskt för smal</h2><pre>${JSON.stringify(BIAS,null,1)}</pre>`;
+
+/* ===========================================================================
+ * HUR DET HÄR FÅR ANVÄNDAS — och läxan från i morse.
+ * ---------------------------------------------------------------------------
+ * I morse vann en horisontregel på bänken (topp1 12→15) och dog utanför den:
+ * på en bild där bara stötfångaren syns föll låsen 15/20 → 1/20. Regeln var
+ * en STRYKNING. Allt här ska verka som PRIOR eller RANGORDNING.
+ *
+ * DET SOM FÅR BÄRAS VIDARE, i fallande ordning efter hur väl det står:
+ *
+ *  1. SKYLTEN SITTER MITT PÅ BILEN I SIDLED. 0,504 av bilbredden, spann
+ *     0,488–0,539 på tio bilar rakt bakifrån, och medianen rör sig 0,0008 när
+ *     en bild utelämnas. Det är den stabilaste storheten i hela mätningen.
+ *     ANVÄNDNING: en kandidat vars mitt sammanfaller med bakvagnens mitt får
+ *     poäng. En som inte gör det får INTE strykas — trekvartsvyerna i samma
+ *     underlag ligger på 0,19–0,35, och en bil sedd snett är det normala
+ *     fallet i trafik, inte undantaget.
+ *
+ *  2. LYKTORNA SITTER I SAMMA HÖJD. Höjdskillnaden är 4 % av lyktavståndet i
+ *     median. Dagens PAR.dyAvSep 0,28 är alltså SJU gånger så vidöppen som
+ *     medianbilen behöver. Det är rätt: gränsen ska rymma snedvyer och lutande
+ *     kamera. Talet säger bara att en RANGORDNING på dy/sep har något att ta i.
+ *
+ *  3. SKYLTEN ÄR DRYGT EN TREDJEDEL AV BILENS BREDD, och knappt halva
+ *     lyktavståndet (w 0,44). Den kvoten låser skalan: hittas lyktparet vet
+ *     man ungefär hur bred skylten ska vara, och en kandidat med fel skala kan
+ *     rankas ned. Men se BIAS ovan — det absoluta talet bär ett systematiskt fel.
+ *
+ * DET SOM INTE FÅR BÄRAS VIDARE:
+ *
+ *  ×  SKYLTENS HÖJD PÅ BILEN. 0,565 av bilhöjden låter precist, men spannet är
+ *     0,42–0,79. En SUV och en sportkupé lägger skylten på helt olika höjd i
+ *     karossen. Nio bilar. Det finns ingen höjdregel att hämta här.
+ *
+ *  ×  "SKYLTEN MÅSTE SITTA I LYKTFÖNSTRET." Fyra av arton par i den här
+ *     mappen är INTE baklyktor (studiogolvets röda ränder, en röd skåpbil,
+ *     två röda bilar bredvid varandra, en närbild utan lyktor). Ett fönster
+ *     lagt kring ett falskt par pekar åt fel håll. Fönstret får LYFTA en
+ *     kandidat som ligger i det. Det får aldrig sänka en som ligger utanför
+ *     till under låsgränsen, och det får aldrig avgöra var sökningen tittar
+ *     när det är det enda beviset.
+ * =========================================================================*/
+
+html+=`<h2>Rådata</h2><pre>${JSON.stringify({rader,sammanst:sammanst.map(({rader,...x})=>x)},null,1)}</pre>`;
+ut.innerHTML=html;
+
+const medBil=rader.filter(r=>r.bilBredd!=null).length;
+const medHojd=rader.filter(r=>r.bilHojd!=null).length;
+summa.innerHTML=`22 foton · bilbredd mätbar på <b>${medBil}</b> · bilhöjd på <b>${medHojd}</b> `+
+  `· lyktpar hittat på <b>${rader.filter(r=>r.par).length}</b>`;
+window.__resultat={rader,sammanst,A,B:{n:bAndelar.length,traff:bTraff,miss:bMiss,
+  medianAndel:median(bAndelar),missar:bMissar}};
+window.__klar=true;
+document.title='KLAR bil.html';
+</script>

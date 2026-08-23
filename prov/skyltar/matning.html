@@ -260,6 +260,7 @@ async function matEnBild(f) {
   }
   rad.ocrMs = performance.now() - t1;
   rad.plat = svar.plat || null;
+  rad.exaktSex = !!svar.exaktSex;
   rad.sakerhet = svar.sakerhet || 0;
   if (svar.tider) {
     rad.hittaMs = svar.tider.hittaMs;
@@ -272,13 +273,20 @@ async function matEnBild(f) {
   rad.ratt = !!(rad.plat && facitTexter.includes(bar(rad.plat)));
   rad.falskLasning = !!(rad.plat && !rad.ratt);
 
-  /* --- Steg 3: omröstningen — hur många läsningar innan svaret sägs ---- */
+  /* --- Steg 3: omröstningen — hur många läsningar innan svaret sägs ----
+   *
+   * `exakt` skickas med precis som produktionen gör: ett stillfoto ger samma
+   * läsning varje varv, så ett foto vars enda läsning är en delsträngs-
+   * räddning får ALDRIG `klar` här — det är delsträngsgrinden i
+   * Rostrakning.rosta, och den är avsiktlig. Kostnaden räknas i summeringen
+   * som `tystaDelstrangsratt` i stället för att gömmas.
+   */
   if (rad.plat) {
     const rost = new Rostrakning({ fonsterMs: 2500, varvMs: INTERVAL_MS });
     let n = 0, klar = false, nu = Date.now();
     while (n < 10 && !klar) {
       n++;
-      klar = rost.rosta(1, 'h', rad.sakerhet, { krav: 2, nu }).klar;
+      klar = rost.rosta(1, 'h', rad.sakerhet, { krav: 2, nu, exakt: rad.exaktSex }).klar;
       nu += INTERVAL_MS;
     }
     rad.lasningarForSvar = klar ? n : null;
@@ -381,6 +389,10 @@ function tabell(rader) {
   const toppRatt = rader.filter(r => r.toppKandidatIoU >= 0.5).length;
   const ratt = rader.filter(r => r.ratt).length;
   const falska = rader.filter(r => r.falskLasning).length;
+  // Rätta läsningar som kom ur en delsträng (7–8 tecken ur motorn) och som
+  // på ett stillfoto därför aldrig annonseras utan en sextecken-bekräftelse.
+  // Det är delsträngsgrindens uppmätta pris i bänken. Se Rostrakning.rosta.
+  const tystaDelstrangsratt = rader.filter(r => r.ratt && !r.exaktSex).length;
   const nagonText = rader.filter(r => r.plat).length;
   // Bilder där facit över huvud taget har en läsbar skylt.
   const lasbara = rader.filter(r => (r.facit || []).some(x => x.lasbar && x.text)).length;
@@ -423,7 +435,7 @@ function tabell(rader) {
     hittad, lasPaRattSkylt: lasRatt,
     skyltFannsIKandidatlistan: kandidatHittad,
     hogstRankadeKandidatenVarSkylten: toppRatt,
-    ratt, falskaLasningar: falska, gavNagonText: nagonText,
+    ratt, falskaLasningar: falska, tystaDelstrangsratt, gavNagonText: nagonText,
     medianSokMs: median(sokMs), maxSokMs: Math.max(...sokMs),
     medianOcrMs: median(ocrMs),
     medianTotalMs: median(totMs),
@@ -439,6 +451,7 @@ function tabell(rader) {
     ` läsbara skyltar</span> · lås på rätt skylt: ${lasRatt}/${totalt}` +
     ` · något lås alls: ${hittad}/${totalt}` +
     ` · falska läsningar: ${falska}` +
+    ` · rätt men tysta utan sextecken-bekräftelse: ${tystaDelstrangsratt}` +
     ` · median sök ${en(median(sokMs))} ms, OCR ${en(median(ocrMs), 0)} ms` +
     ` · motorsäkerhet > 0 på ${sakerhetOver0}/${totalt} bilder`;
 

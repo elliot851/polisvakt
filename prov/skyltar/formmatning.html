@@ -1,0 +1,704 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Formmätning — vad 22 svenska skyltar FAKTISKT har för form</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{background:#0b0f14;color:#eef4fa;font:12.5px/1.5 ui-monospace,monospace;padding:14px;margin:0}
+ h1{font:600 17px/1.3 system-ui;margin:0 0 8px}
+ pre{white-space:pre;overflow-x:auto;margin:0}
+ canvas{image-rendering:pixelated;border:1px solid #223}
+ #bilder{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}
+ figure{margin:0;font:10px/1.3 ui-monospace,monospace;color:#8fa6bd}
+</style>
+<h1>Formmätning — 22 foton, facitrutorna från granskning.html / matning.html</h1>
+<pre id="ut">Startar…</pre>
+<div id="bilder"></div>
+<script type="module">
+/* =========================================================================
+ * FORMMÄTNING AV 22 SVENSKA SKYLTAR
+ *
+ * Ingen ny facitruta sätts här. Rutorna är kopierade rakt ur
+ * granskning.html (samma tal som matning.html) och vinkeletiketten är
+ * matning.html:s egen.
+ *
+ * FRÅGAN: vilket spann måste formgrinden släppa igenom för att aldrig missa
+ * en riktig skylt i de vinklar en dashcam ser?
+ *
+ * TVÅ OBEROENDE MÄTVÄGAR, för att en av dem bevisligen går sönder:
+ *
+ *   A. FACITRUTAN SJÄLV. bredd/höjd i pixlar. Ingen segmentering alls,
+ *      alltså inget som kan läcka. Det är också exakt vad en axelparallell
+ *      formgrind ser. Solid.
+ *
+ *   B. DEN MÖRKA TECKENRADEN inne i rutan. Tecknen är mörka mot ljus plåt
+ *      oavsett vad som finns UTANFÖR skylten. Ur teckenradens klumpar faller
+ *      lutning, teckenhöjd, teckenradens spann och en gir-mätning ut, och
+ *      inget av det kan förgiftas av en vit bilkaross eller en vit
+ *      studiobakgrund.
+ *
+ *   (C. Den ljusa plåtmasken mättes först, och den LÄCKER: på YBK70UD växer
+ *      den ut i den vita karossen, på Regplat-URK och
+ *      nya-skyltar-transportstyrelsen ut i den vita studiobakgrunden. Den
+ *      räknas fortfarande, men varje rad där masken fyller mer än 92 % av
+ *      utsnittet märks SAMMANVÄXT och hålls utanför medianerna. Det är den
+ *      ärliga luckan i den här mätningen, inte ett tal att lita på.)
+ *
+ * UNDERLAGET ÄR TUNT OCH SNETT. 22 foton, mest närbilder och pressbilder.
+ * Sex är rena studiobilder på en lös skylt. Ingen enda är tagen genom en
+ * vindruta i fart, och ingen är under 87 px skyltbredd — en dashcam ser
+ * 10–25 px. Talen härifrån duger som PRIOR och som RANGORDNING, aldrig som
+ * veto. För att lita på dem på riktigt behövs några hundra bildrutor ur
+ * verklig dashcamfilm, i mörker och regn, med skylten 10–30 px bred.
+ * ========================================================================= */
+
+/* ---- FACIT (kopierat, ej nysatt) ---------------------------------------- */
+const FACIT = {
+ 'YBK70UD.jpg':                      {r:[0.3831,0.5773,0.2887,0.0918], v:'rakt-bakifran',  s:'latt'},
+ 'polestar-4-madrid-gold.jpg':       {r:[0.1606,0.5908,0.1455,0.0947], v:'snett-bak',      s:'svar'},
+ 'polestar-4-bak.webp':              {r:[0.4408,0.7225,0.1650,0.0620], v:'rakt-bakifran',  s:'latt'},
+ 'enlarged.jpg':                     {r:[0.3887,0.5030,0.2206,0.0838], v:'rakt-bakifran',  s:'latt'},
+ '2039174f.avif':                    {r:[0.4692,0.5171,0.1144,0.0357], v:'rakt-bakifran',  s:'medel'},
+ '7751f94d.avif':                    {r:[0.4303,0.5660,0.1442,0.0415], v:'rakt-bakifran',  s:'medel'},
+ '721ab0d6.avif':                    {r:[0.3851,0.5152,0.1730,0.0274], v:'rakt-bakifran',  s:'latt'},
+ '0c4d9b68.jpg':                     {r:[0.2451,0.4801,0.1729,0.0363], v:'snett-bak',      s:'medel'},
+ '9487480d.avif':                    {r:[0.3595,0.5695,0.2600,0.0425], v:'rakt-bakifran',  s:'latt'},
+ '3b979c11.avif':                    {r:[0.4065,0.5600,0.1975,0.0558], v:'rakt-bakifran',  s:'svar'},
+ 'images.jpg':                       {r:[0.3840,0.3355,0.2940,0.1085], v:'rakt-bakifran',  s:'medel'},
+ '1728543597268.jpg':                {r:[0.1707,0.6481,0.1155,0.0563], v:'snett-fram',     s:'medel'},
+ '521e24d0.avif':                    {r:[0.2906,0.6844,0.0969,0.0479], v:'snett-fram',     s:'medel'},
+ 'Regpl-Heden.jpg':                  {r:[0.6247,0.5779,0.1482,0.0651], v:'rakt-framifran', s:'svar'},
+ 'Regplat-URK.jpg':                  {r:[0.2265,0.4222,0.5520,0.3245], v:'rakt-framifran', s:'latt'},
+ '2560.webp':                        {r:[0.1775,0.4595,0.6417,0.2342], v:'rakt-bakifran',  s:'latt'},
+ 'renummer-131122.jpg':              {r:[0.0980,0.2540,0.7220,0.5150], v:'rakt-framifran', s:'medel'},
+ 'nya-regnummer-sverige.webp':       {r:[0.1984,0.4291,0.5641,0.1712], v:'snett-fram',     s:'medel'},
+ 'Reg-nr-fram-flaggor.jpg':          {r:[0.2417,0.4217,0.5767,0.1250], v:'rakt-framifran', s:'latt'},
+ 'nya-skyltar-transportstyrelsen.png':{r:[0.3658,0.1170,0.6342,0.5244],v:'rakt-bakifran',  s:'svar'},
+ 'd54eac78.png':                     {r:[0.4115,0.5807,0.1910,0.0507], v:'rakt-bakifran',  s:'latt'},
+ 'image.png':                        {r:[0.2633,0.3342,0.1590,0.1233], v:'snett-bak',      s:'medel'},
+};
+
+/* ---- små hjälpare -------------------------------------------------------- */
+const ut=document.getElementById('ut');let txt='';
+const skriv=s=>{txt+=s+'\n';ut.textContent=txt;};
+const n=(v,d=2)=>v==null||!isFinite(v)?'–':(+v).toFixed(d).replace('.',',');
+const sortera=a=>[...a].sort((x,y)=>x-y);
+function median(a){const v=sortera(a);if(!v.length)return NaN;const m=v.length>>1;
+  return v.length%2?v[m]:(v[m-1]+v[m])/2;}
+function kvantil(a,q){const v=sortera(a);if(!v.length)return NaN;
+  const i=(v.length-1)*q,lo=Math.floor(i),hi=Math.ceil(i);
+  return lo===hi?v[lo]:v[lo]+(v[hi]-v[lo])*(i-lo);}
+const ladda=f=>new Promise((ok,nej)=>{const i=new Image();
+  i.onload=()=>ok(i);i.onerror=()=>nej(new Error('kunde ej ladda '+f));
+  i.src='./'+encodeURIComponent(f);});
+
+function arBla(r,g,b){
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;
+  if(mx<30)return false;
+  if(d===0)return false;
+  if((d/mx)<0.28)return false;
+  if(b!==mx)return false;
+  let h=(60*(4+(r-g)/d)+360)%360;
+  return h>=195&&h<=265;
+}
+function otsu(hist,tot){
+  let sum=0;for(let i=0;i<256;i++)sum+=i*hist[i];
+  let sumB=0,wB=0,bast=-1,tro=127;
+  for(let t=0;t<256;t++){
+    wB+=hist[t];if(!wB)continue;const wF=tot-wB;if(wF<=0)break;
+    sumB+=t*hist[t];
+    const mB=sumB/wB,mF=(sum-sumB)/wF,v=wB*wF*(mB-mF)*(mB-mF);
+    if(v>bast){bast=v;tro=t;}
+  }
+  return tro;
+}
+function konvexHolje(p){
+  if(p.length<3)return p.slice();
+  const s=[...p].sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const kryss=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+  const ned=[],upp=[];
+  for(const q of s){while(ned.length>=2&&kryss(ned[ned.length-2],ned[ned.length-1],q)<=0)ned.pop();ned.push(q);}
+  for(let i=s.length-1;i>=0;i--){const q=s[i];
+    while(upp.length>=2&&kryss(upp[upp.length-2],upp[upp.length-1],q)<=0)upp.pop();upp.push(q);}
+  ned.pop();upp.pop();return ned.concat(upp);
+}
+function minstaRektangel(holje){
+  if(holje.length<3)return null;
+  let bast=null;
+  for(let i=0;i<holje.length;i++){
+    const a=holje[i],b=holje[(i+1)%holje.length];
+    const dx=b[0]-a[0],dy=b[1]-a[1],len=Math.hypot(dx,dy);
+    if(len<1e-9)continue;
+    const ux=dx/len,uy=dy/len;
+    let u0=Infinity,u1=-Infinity,v0=Infinity,v1=-Infinity;
+    for(const p of holje){
+      const u=p[0]*ux+p[1]*uy, v=-p[0]*uy+p[1]*ux;
+      if(u<u0)u0=u;if(u>u1)u1=u;if(v<v0)v0=v;if(v>v1)v1=v;
+    }
+    const w=u1-u0,h=v1-v0,area=w*h;
+    if(!bast||area<bast.area)bast={area,w,h,vinkel:Math.atan2(uy,ux)*180/Math.PI};
+  }
+  if(!bast)return null;
+  const L=Math.max(bast.w,bast.h),K=Math.max(1e-9,Math.min(bast.w,bast.h));
+  let vk=bast.w>=bast.h?bast.vinkel:bast.vinkel+90;
+  while(vk>=90)vk-=180;while(vk<-90)vk+=180;
+  return {L,K,area:bast.area,vinkel:vk};
+}
+/* Minsta-kvadrat-linje y = k·x + m, returnerar lutningen i grader. */
+function linje(pts){
+  const N=pts.length;if(N<2)return null;
+  let sx=0,sy=0,sxx=0,sxy=0;
+  for(const [x,y] of pts){sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;}
+  const d=N*sxx-sx*sx;if(Math.abs(d)<1e-9)return null;
+  const k=(N*sxy-sx*sy)/d, m=(sy-k*sx)/N;
+  let rest=0;for(const [x,y] of pts)rest+=Math.abs(y-(k*x+m));
+  return {k,m,grader:Math.atan(k)*180/Math.PI,rest:rest/N};
+}
+/* Sammanhängande klumpar (8-grannar) i en 0/1-mask. */
+function klumpar(mask,w,h){
+  const et=new Int32Array(w*h).fill(-1),stack=new Int32Array(w*h);
+  const lista=[];
+  for(let i=0;i<w*h;i++){
+    if(!mask[i]||et[i]>=0)continue;
+    const id=lista.length;let sp=0;stack[sp++]=i;et[i]=id;
+    let a=0,x0=1e9,y0=1e9,x1=-1e9,y1=-1e9,sx=0,sy=0;
+    while(sp){const q=stack[--sp];const qx=q%w,qy=(q/w)|0;
+      a++;sx+=qx;sy+=qy;
+      if(qx<x0)x0=qx;if(qx>x1)x1=qx;if(qy<y0)y0=qy;if(qy>y1)y1=qy;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        if(!dx&&!dy)continue;
+        const nx=qx+dx,ny=qy+dy;
+        if(nx<0||ny<0||nx>=w||ny>=h)continue;
+        const ni=ny*w+nx;
+        if(mask[ni]&&et[ni]<0){et[ni]=id;stack[sp++]=ni;}
+      }}
+    lista.push({id,area:a,x0,y0,x1,y1,w:x1-x0+1,h:y1-y0+1,cx:sx/a,cy:sy/a});
+  }
+  return {et,lista};
+}
+
+/* ========================================================================
+ * MÄTNING AV EN SKYLT
+ * ====================================================================== */
+function mat(img,fr){
+  const W=img.naturalWidth,H=img.naturalHeight;
+  const bx=fr[0]*W,by=fr[1]*H,bw=fr[2]*W,bh=fr[3]*H;
+
+  /* Utsnittet: facitrutan plus 20 % marginal, uppskalat så rutan blir
+   * ~300 px bred. Marginalen finns bara för att plåtmasken (väg C) ska ha
+   * rum att växa ut, så att man SER när den läcker. */
+  const mar=0.20;
+  const sx=Math.max(0,bx-bw*mar), sy=Math.max(0,by-bh*mar);
+  const ex=Math.min(W,bx+bw*(1+mar)), ey=Math.min(H,by+bh*(1+mar));
+  const sw=ex-sx, sh=ey-sy;
+  const k=Math.min(6,300/bw);
+  const cw=Math.max(30,Math.round(sw*k)), ch=Math.max(14,Math.round(sh*k));
+  const c=document.createElement('canvas');c.width=cw;c.height=ch;
+  const g=c.getContext('2d',{willReadFrequently:true});
+  g.imageSmoothingQuality='high';
+  g.drawImage(img,sx,sy,sw,sh,0,0,cw,ch);
+  const p=g.getImageData(0,0,cw,ch).data, N=cw*ch;
+
+  const fx0=Math.round((bx-sx)*k), fy0=Math.round((by-sy)*k);
+  const fx1=Math.min(cw,Math.round((bx+bw-sx)*k)), fy1=Math.min(ch,Math.round((by+bh-sy)*k));
+  const fw=fx1-fx0, fh=fy1-fy0;
+
+  const V=new Uint8Array(N), bla=new Uint8Array(N);
+  for(let i=0;i<N;i++){
+    const r=p[i*4],gg=p[i*4+1],b=p[i*4+2];
+    V[i]=Math.max(r,gg,b);
+    if(arBla(r,gg,b))bla[i]=1;
+  }
+
+  /* ---- Otsu BARA inne i facitrutan. Bakgrunden utanför får inte flytta
+   *      tröskeln — det var precis det som förgiftade första försöket. */
+  const hR=new Uint32Array(256);let totR=0;
+  let vMin=255,vMax=0,vSum=0;
+  for(let y=fy0;y<fy1;y++)for(let x=fx0;x<fx1;x++){
+    const v=V[y*cw+x];hR[v]++;totR++;vSum+=v;
+    if(v<vMin)vMin=v;if(v>vMax)vMax=v;
+  }
+  const tro=otsu(hR,totR);
+  const kontrast=vMax-vMin;
+
+  /* ---- Andelar inne i rutan: plåt kontra ram ---------------------------- */
+  let ljusR=0,morkR=0,blaR=0;
+  for(let y=fy0;y<fy1;y++)for(let x=fx0;x<fx1;x++){
+    const i=y*cw+x;
+    if(bla[i])blaR++;
+    if(V[i]>=tro)ljusR++;else morkR++;
+  }
+
+  /* ======================================================================
+   * VÄG B — DEN MÖRKA TECKENRADEN
+   * ==================================================================== */
+  const mork=new Uint8Array(N);
+  for(let y=fy0;y<fy1;y++)for(let x=fx0;x<fx1;x++){
+    const i=y*cw+x;
+    if(V[i]<tro && !bla[i]) mork[i]=1;   // det blå bandet är inte ett tecken
+  }
+  const {lista:mk}=klumpar(mork,cw,ch);
+  /* En teckenklump: hög nog att vara en siffra, smal nog att inte vara ramen,
+   * och den får inte klistra i rutans över- eller underkant (då är det ramen). */
+  let tecken=mk.filter(o=>
+      o.h>=fh*0.22 && o.h<=fh*0.92 &&
+      o.w>=Math.max(1,fw*0.012) && o.w<=fw*0.30 &&
+      o.area>=o.w*o.h*0.18 &&
+      o.x0>=fx0-1 && o.x1<=fx1+1 && o.y0>=fy0-1 && o.y1<=fy1+1);
+  /* Bara den dominerande raden: klumpar vars mitt ligger inom en halv
+   * medianteckenhöjd från medianmitten. Skiljer bort landsbokstäver,
+   * besiktningsmärken och en andra skylt som råkat komma med. */
+  let radInfo=null;
+  if(tecken.length>=3){
+    const mCy=median(tecken.map(o=>o.cy)), mH=median(tecken.map(o=>o.h));
+    tecken=tecken.filter(o=>Math.abs(o.cy-mCy)<=mH*0.6);
+  }
+  if(tecken.length>=3){
+    tecken.sort((a,b)=>a.cx-b.cx);
+    const mitt=tecken.map(o=>[o.cx,o.cy]);
+    const bas =tecken.map(o=>[o.cx,o.y1]);   // teckenfötterna
+    const tak =tecken.map(o=>[o.cx,o.y0]);   // teckentopparna
+    const lm=linje(mitt), lb=linje(bas), lt=linje(tak);
+    const hojder=tecken.map(o=>o.h);
+    const halvt=Math.max(1,Math.floor(tecken.length/3));
+    const hV=median(hojder.slice(0,halvt)), hH=median(hojder.slice(-halvt));
+    const tx0=Math.min(...tecken.map(o=>o.x0)), tx1=Math.max(...tecken.map(o=>o.x1));
+    radInfo={
+      antal:tecken.length,
+      lutning:lm?lm.grader:null,
+      basLutning:lb?lb.grader:null,
+      takLutning:lt?lt.grader:null,
+      /* Gir/keystone ur tecknen: växer tecknen på ena sidan är skylten
+       * vriden. Bakgrundsoberoende, till skillnad från plåtmasken. */
+      teckenKeystone:Math.max(hV,hH)/Math.max(1e-9,Math.min(hV,hH)),
+      /* Perspektivet syns också som att fot- och topplinjen INTE är
+       * parallella. Skillnaden i grader är ett rent gir-/tippmått. */
+      linjeSpretning:(lb&&lt)?Math.abs(lb.grader-lt.grader):null,
+      teckenhojdAndel:median(hojder)/fh,
+      textbreddAndel:(tx1-tx0+1)/fw,
+      textMittAndel:((tx0+tx1)/2-fx0)/fw,
+      radRakhet:lm?lm.rest/Math.max(1e-9,median(hojder)):null,
+    };
+  }
+
+  /* ======================================================================
+   * VÄG A/C — DEN LJUSA PLÅTMASKEN (läcker; märks SAMMANVÄXT)
+   * ==================================================================== */
+  const ljus=new Uint8Array(N);
+  for(let i=0;i<N;i++) ljus[i]=(V[i]>=tro||bla[i])?1:0;
+  const {et,lista:lk}=klumpar(ljus,cw,ch);
+  const inne=new Float64Array(lk.length);
+  for(let y=fy0;y<fy1;y++)for(let x=fx0;x<fx1;x++){
+    const e=et[y*cw+x];if(e>=0)inne[e]++;
+  }
+  let vald=-1,b2=0;
+  for(let i=0;i<lk.length;i++) if(inne[i]>b2){b2=inne[i];vald=i;}
+  let plat=null, sammanvaxt=true;
+  if(vald>=0){
+    const o=lk[vald];
+    /* SAMMANVÄXT: masken slickar utsnittets kant i båda led, alltså har den
+     * ätit sig ut i kaross eller studiobakgrund. */
+    sammanvaxt = (o.w>=cw*0.92 && o.h>=ch*0.92);
+    const pts=[];
+    for(let y=o.y0;y<=o.y1;y++)for(let x=o.x0;x<=o.x1;x++){
+      if(et[y*cw+x]!==vald)continue;
+      const kant=(x===0||y===0||x===cw-1||y===ch-1)||
+        et[y*cw+x-1]!==vald||et[y*cw+x+1]!==vald||
+        et[(y-1)*cw+x]!==vald||et[(y+1)*cw+x]!==vald;
+      if(kant)pts.push([x,y]);
+    }
+    const rekt=minstaRektangel(konvexHolje(pts));
+    if(rekt) plat={
+      kvot:rekt.L/rekt.K, lutning:rekt.vinkel,
+      rakhet:o.area/Math.max(1e-9,rekt.area),
+      breddKvot:o.w/Math.max(1e-9,fw), hojdKvot:o.h/Math.max(1e-9,fh),
+      L:rekt.L,K:rekt.K,
+    };
+  }
+
+  /* ---- EU-bandet, mätt inne i rutan från vänsterkanten ------------------ */
+  let euKol=0;
+  for(let x=fx0;x<fx1;x++){
+    let b=0,t=0;
+    for(let y=fy0;y<fy1;y++){t++;if(bla[y*cw+x])b++;}
+    if(b>=t*0.45)euKol++;else if(x-fx0>fw*0.35)break;else if(euKol>0)break;
+  }
+
+  return {
+    /* VÄG A — ren geometri ur facitrutan, ingen segmentering */
+    kvotRuta: bw/bh,
+    breddPx: bw, hojdPx: bh,
+    /* andelar inne i rutan */
+    ljusandel: ljusR/totR, ramandel: morkR/totR, blaandel: blaR/totR,
+    kontrast, tro,
+    euAndel: euKol/fw,
+    /* VÄG B — teckenraden */
+    rad: radInfo,
+    /* VÄG C — plåtmasken, ev. sammanvuxen */
+    plat, sammanvaxt,
+    _rit:{c,cw,ch,fx0,fy0,fw,fh,et,vald,tecken},
+  };
+}
+
+/* ========================================================================
+ * KÖR
+ * ====================================================================== */
+skriv('serviceWorker.controller = '+String(navigator.serviceWorker?.controller));
+skriv('');
+
+const rad=[];
+for(const [fil,f] of Object.entries(FACIT)){
+  let m;
+  try{ m=mat(await ladda(fil),f.r); }
+  catch(e){ skriv('FEL '+fil+': '+e.message); continue; }
+  m.fil=fil;m.vinkel=f.v;m.svarighet=f.s;
+  rad.push(m);
+}
+
+/* ========================================================================
+ * LUTNINGEN DRAR DEN AXELPARALLELLA LÅDAN MOT KVADRAT
+ *
+ * En rektangel med långsidan L och kortsidan K, vriden θ grader, får en
+ * axelparallell låda
+ *      B = L·cosθ + K·sinθ      H = L·sinθ + K·cosθ
+ * alltså kvoten
+ *      kA = (R·cosθ + sinθ) / (R·sinθ + cosθ)      där R = L/K
+ *
+ * Det är HELA förklaringen till varför de lutade skyltarna i bänken mäter
+ * 1,9–2,6 i en axelparallell låda fast de är vanliga 4,7-skyltar. Grinden
+ * ser inte en squat skylt, den ser en vriden.
+ *
+ * Vänds sambandet får man tillbaka skyltens EGEN kvot ur lådan plus en
+ * lutningsmätning:
+ *      R = (kA·cosθ − sinθ) / (cosθ − kA·sinθ)
+ *
+ * Teckenradens lutning är en sådan mätning, och den är gratis: den faller
+ * ut ur samma teckenklumpar som ändå ska räknas.
+ */
+const grad=g=>g*Math.PI/180;
+function lutningsInflation(R,thetaGrader){
+  const c=Math.cos(grad(Math.abs(thetaGrader))), s=Math.sin(grad(Math.abs(thetaGrader)));
+  return (R*c+s)/(R*s+c);
+}
+function aterstalldKvot(kA,thetaGrader){
+  const c=Math.cos(grad(Math.abs(thetaGrader))), s=Math.sin(grad(Math.abs(thetaGrader)));
+  const namn=c-kA*s;
+  if(namn<=1e-6)return null;            // lådan är redan kvadratisk, går ej vända
+  const R=(kA*c-s)/namn;
+  return R>0?R:null;
+}
+for(const r of rad){
+  r.kvotAterstalld = r.rad ? aterstalldKvot(r.kvotRuta, r.rad.lutning) : null;
+  r.inflation = r.rad ? r.kvotRuta/lutningsInflation(4.73, r.rad.lutning) : null;
+}
+
+/* ---- utelämna-ett: alla 22 utelämningarna, för varje storhet ------------ */
+function sammanfatta(namn,valj,dagens){
+  const par=rad.map(r=>({fil:r.fil,v:valj(r)})).filter(o=>o.v!=null&&isFinite(o.v));
+  const alla=par.map(o=>o.v);
+  if(!alla.length)return {namn,n:0,med:NaN,dagens};
+  const med=median(alla);
+  /* Utelämna varje BILD i tur och ordning (alla 22, även de som inte bidrar
+   * till just den här storheten — då står medianen stilla, vilket är rätt
+   * svar). */
+  let uMin=Infinity,uMax=-Infinity,varstFil='–',varstD=-1;
+  for(const r of rad){
+    const u=par.filter(o=>o.fil!==r.fil).map(o=>o.v);
+    if(!u.length)continue;
+    const mu=median(u);
+    if(mu<uMin)uMin=mu;if(mu>uMax)uMax=mu;
+    const d=Math.abs(mu-med);
+    if(d>varstD){varstD=d;varstFil=r.fil;}
+  }
+  return {namn,n:alla.length,med,
+    min:Math.min(...alla),max:Math.max(...alla),
+    p10:kvantil(alla,0.10),p90:kvantil(alla,0.90),
+    uMin,uMax,rorelse:varstD,varstFil,dagens,alla};
+}
+
+const M=[
+ sammanfatta('kvot_ruta  b/h i pixlar',       r=>r.kvotRuta,            'SKYLT_KVOT 4,73'),
+ sammanfatta('kvot_plat  plåtens egna axlar', r=>r.sammanvaxt?null:r.plat?.kvot, 'SKYLT_KVOT 4,73'),
+ sammanfatta('kvot_atersk  låda + teckenlutn', r=>r.kvotAterstalld,       'SKYLT_KVOT 4,73'),
+ sammanfatta('lutning °  teckenradens mitt',  r=>r.rad?.lutning),
+ sammanfatta('|lutning| °',                   r=>r.rad?Math.abs(r.rad.lutning):null),
+ sammanfatta('|lutning| ° plåtmasken',        r=>r.sammanvaxt?null:Math.abs(r.plat?.lutning)),
+ sammanfatta('linjespretning ° fot mot topp', r=>r.rad?.linjeSpretning),
+ sammanfatta('teckenkeystone  vä/hö höjd',    r=>r.rad?.teckenKeystone),
+ sammanfatta('radrakhet  restspridning/h',    r=>r.rad?.radRakhet),
+ sammanfatta('teckenhojd / rutans höjd',      r=>r.rad?.teckenhojdAndel, 'antaget 70/110 = 0,64'),
+ sammanfatta('textbredd / rutans bredd',      r=>r.rad?.textbreddAndel),
+ sammanfatta('textmitt / rutans bredd',       r=>r.rad?.textMittAndel),
+ sammanfatta('rakhet  plåtmask/rektangel',    r=>r.sammanvaxt?null:r.plat?.rakhet),
+ sammanfatta('ljusandel av rutan (plåt)',     r=>r.ljusandel),
+ sammanfatta('ramandel av rutan (mörkt)',     r=>r.ramandel,            'morkandel 0,12–0,56'),
+ sammanfatta('kontrast i rutan (vMax-vMin)',  r=>r.kontrast,            'kontrastMin 30'),
+ sammanfatta('eu_andel  bandbredd/rutbredd',  r=>r.euAndel>0?r.euAndel:null, 'euMin 0,03 euMax 0,22'),
+ sammanfatta('blåandel av rutans yta',        r=>r.blaandel),
+ sammanfatta('plåtmask bredd / rutbredd',     r=>r.sammanvaxt?null:r.plat?.breddKvot),
+ sammanfatta('plåtmask höjd / ruthöjd',       r=>r.sammanvaxt?null:r.plat?.hojdKvot),
+];
+
+skriv('bilder som mättes:            '+rad.length+' av '+Object.keys(FACIT).length);
+skriv('plåtmasken växte ihop med bakgrunden (utanför plåttalen): '+
+      (rad.filter(r=>r.sammanvaxt).map(r=>r.fil).join(', ')||'inga'));
+skriv('teckenraden kunde inte hittas (utanför teckentalen):      '+
+      (rad.filter(r=>!r.rad).map(r=>r.fil).join(', ')||'inga'));
+skriv('');
+skriv('STORHET'.padEnd(30)+'  n  median     min      max      p10      p90  | utelämna-ett       rörelse  värst utan');
+skriv('-'.repeat(132));
+for(const m of M){
+  if(!m.n){skriv(m.namn.padEnd(30)+'   0   (kunde inte mätas)');continue;}
+  const d=/kontrast/.test(m.namn)?0:3;
+  skriv(m.namn.padEnd(30)+' '+String(m.n).padStart(2)+' '+
+    n(m.med,d).padStart(8)+' '+n(m.min,d).padStart(8)+' '+n(m.max,d).padStart(8)+' '+
+    n(m.p10,d).padStart(8)+' '+n(m.p90,d).padStart(8)+'  | '+
+    (n(m.uMin,d)+'–'+n(m.uMax,d)).padStart(17)+' '+
+    n(m.rorelse,d===0?2:4).padStart(8)+'  '+m.varstFil);
+  if(m.dagens) skriv(' '.repeat(30)+'   idag i koden: '+m.dagens);
+}
+
+/* ---- per vinkeletikett --------------------------------------------------- */
+skriv('');
+skriv('PER VINKELETIKETT (matning.html:s egen etikett)');
+skriv('vinkel'.padEnd(16)+'  n  kvot_ruta med (spann)        |lutning| med  teckenkeystone med  linjespretning med');
+const grp={};for(const r of rad)(grp[r.vinkel]??=[]).push(r);
+for(const [v,g] of Object.entries(grp)){
+  const kr=g.map(r=>r.kvotRuta);
+  const lu=g.filter(r=>r.rad).map(r=>Math.abs(r.rad.lutning));
+  const ks=g.filter(r=>r.rad).map(r=>r.rad.teckenKeystone);
+  const ls=g.filter(r=>r.rad).map(r=>r.rad.linjeSpretning);
+  skriv(v.padEnd(16)+' '+String(g.length).padStart(2)+'  '+
+    (n(median(kr),2)+' ('+n(Math.min(...kr),2)+'–'+n(Math.max(...kr),2)+')').padEnd(26)+' '+
+    n(median(lu),1).padStart(11)+'° '+n(median(ks),3).padStart(18)+' '+
+    n(median(ls),2).padStart(18)+'°');
+}
+
+/* ---- rad för rad --------------------------------------------------------- */
+skriv('');
+skriv('RAD FÖR RAD');
+skriv('fil'.padEnd(35)+'vinkel'.padEnd(15)+'brPx  kvRuta kvPlåt kvÅter  lutn  spret  keyst  radrak  tknH  txtBr  ljus   ram  kontr euAnd  tkn');
+for(const r of rad){
+  skriv(r.fil.padEnd(35)+r.vinkel.padEnd(15)+
+    String(Math.round(r.breddPx)).padStart(4)+' '+
+    n(r.kvotRuta,2).padStart(6)+' '+
+    (r.sammanvaxt?'  SAMV':n(r.plat?.kvot,2).padStart(6))+' '+
+    n(r.kvotAterstalld,2).padStart(6)+' '+
+    n(r.rad?.lutning,1).padStart(5)+' '+
+    n(r.rad?.linjeSpretning,2).padStart(6)+' '+
+    n(r.rad?.teckenKeystone,2).padStart(6)+' '+
+    n(r.rad?.radRakhet,3).padStart(7)+' '+
+    n(r.rad?.teckenhojdAndel,2).padStart(5)+' '+
+    n(r.rad?.textbreddAndel,2).padStart(6)+' '+
+    n(r.ljusandel,2).padStart(5)+' '+
+    n(r.ramandel,2).padStart(5)+' '+
+    String(r.kontrast).padStart(5)+' '+
+    n(r.euAndel,3).padStart(5)+' '+
+    String(r.rad?.antal??0).padStart(4));
+}
+
+/* ---- vad grinden måste släppa igenom ------------------------------------- */
+skriv('');
+skriv('FORMGRINDENS SPANN — härlett ur mätningen, avsett som PRIOR/RANGORDNING');
+{
+  const kr=rad.map(r=>r.kvotRuta);
+  const kp=rad.filter(r=>!r.sammanvaxt&&r.plat).map(r=>r.plat.kvot);
+  skriv('  mätt kvot_ruta  '+n(Math.min(...kr),2)+' – '+n(Math.max(...kr),2)+'   median '+n(median(kr),2)+
+        '   n='+kr.length);
+  skriv('  mätt kvot_plåt  '+n(Math.min(...kp),2)+' – '+n(Math.max(...kp),2)+'   median '+n(median(kp),2)+
+        '   n='+kp.length);
+  skriv('  dagens hårda grind: SKYLT_KVOT_MIN 2,5 – SKYLT_KVOT_MAX 7,0');
+  const ute=rad.filter(r=>r.kvotRuta<2.5||r.kvotRuta>7.0);
+  skriv('  FACITSKYLTAR SOM DAGENS HÅRDA GRIND SKULLE KASTA (kvot_ruta):');
+  if(!ute.length)skriv('    inga');
+  for(const r of ute)
+    skriv('    '+r.fil.padEnd(36)+n(r.kvotRuta,2)+'   '+r.vinkel+'   '+r.svarighet);
+  /* Vad måste spannet vara för att inte kasta någon av de 22? */
+  skriv('  spann som krävs för att INTE kasta någon av de 22: '+
+        n(Math.min(...kr),2)+' – '+n(Math.max(...kr),2));
+}
+
+skriv('');
+skriv('VARFÖR DE LÅGA KVOTERNA ÄR LÅGA — lutningen, inte skylten');
+{
+  const raka=rad.filter(r=>r.rad&&Math.abs(r.rad.lutning)<3);
+  const lutade=rad.filter(r=>r.rad&&Math.abs(r.rad.lutning)>=3);
+  const kr=a=>a.map(r=>r.kvotRuta);
+  skriv('  |lutning| < 3°   n='+raka.length+'   kvot_ruta '+
+        n(Math.min(...kr(raka)),2)+' – '+n(Math.max(...kr(raka)),2)+
+        '   median '+n(median(kr(raka)),2));
+  skriv('  |lutning| >= 3°  n='+lutade.length+'   kvot_ruta '+
+        n(Math.min(...kr(lutade)),2)+' – '+n(Math.max(...kr(lutade)),2)+
+        '   median '+n(median(kr(lutade)),2));
+  const ka=rad.map(r=>r.kvotAterstalld).filter(v=>v);
+  skriv('  efter att lutningen räknats bort: kvot_atersk '+
+        n(Math.min(...ka),2)+' – '+n(Math.max(...ka),2)+'   median '+n(median(ka),2)+
+        '   n='+ka.length);
+  skriv('');
+  skriv('  Vad lutningen ensam gör med en PERFEKT 4,73-skylts axelparallella låda:');
+  let s1='    lutning ',s2='    kvot_låda';
+  for(const t of [0,2,5,8,10,12,15,20,25,30])
+    {s1+=String(t+'°').padStart(7);s2+=n(lutningsInflation(4.73,t),2).padStart(7);}
+  skriv(s1);skriv(s2);
+  skriv('    Vid 20° har en 4,73-skylt redan tappat till '+n(lutningsInflation(4.73,20),2)+
+        ' i lådan, vid 30° till '+n(lutningsInflation(4.73,30),2)+'.');
+  skriv('    En AXELPARALLELL grind som ska klara ±25° lutning måste alltså gå');
+  skriv('    ned till '+n(lutningsInflation(4.73,25),2)+' av det skälet ALLENA, före all perspektivförkortning.');
+}
+
+skriv('');
+skriv('DELMÄNGDEN DÄR RUTAN SITTER TÄTT OCH SKYLTEN STÅR RAKT');
+{
+ /* Talen ovan blandar två saker: hur skylten ser ut, och hur väl facitrutan
+  * sitter. Här hålls bara de bilder kvar där teckenraden lutar under 3° och
+  * plåtmasken inte växte ihop med bakgrunden. Det är den delmängd där ett
+  * tal om SKYLTENS proportioner går att jämföra med normen 520/110. */
+ const t=rad.filter(r=>r.rad&&Math.abs(r.rad.lutning)<3&&!r.sammanvaxt);
+ const v=(f)=>{const a=t.map(f).filter(x=>x!=null&&isFinite(x));return a;};
+ const visa=(namn,f,d,dagens)=>{
+   const a=v(f);if(!a.length)return;
+   /* utelämna-ett också här, över delmängdens bilder */
+   let uMin=Infinity,uMax=-Infinity;
+   for(let i=0;i<t.length;i++){
+     const u=t.filter((_,j)=>j!==i).map(f).filter(x=>x!=null&&isFinite(x));
+     if(!u.length)continue;const m=median(u);
+     if(m<uMin)uMin=m;if(m>uMax)uMax=m;}
+   skriv('  '+namn.padEnd(30)+' n='+String(a.length).padStart(2)+
+     '  median '+n(median(a),d).padStart(7)+
+     '  spann '+(n(Math.min(...a),d)+'–'+n(Math.max(...a),d)).padStart(15)+
+     '  utelämna-ett '+(n(uMin,d)+'–'+n(uMax,d)).padStart(15)+
+     (dagens?'   idag: '+dagens:''));
+ };
+ skriv('  bilder i delmängden: '+t.map(r=>r.fil).join(', '));
+ visa('kvot_ruta',r=>r.kvotRuta,2,'SKYLT_KVOT 4,73');
+ visa('kvot_atersk',r=>r.kvotAterstalld,2,'SKYLT_KVOT 4,73');
+ visa('teckenhojd / ruthöjd',r=>r.rad.teckenhojdAndel,3,'antaget 0,64');
+ visa('textbredd / rutbredd',r=>r.rad.textbreddAndel,3);
+ visa('eu_andel',r=>r.euAndel>0?r.euAndel:null,3,'euMin 0,03 euMax 0,22');
+ visa('ramandel (mörkt)',r=>r.ramandel,3,'morkandel 0,12–0,56');
+ visa('ljusandel (plåt)',r=>r.ljusandel,3);
+ visa('teckenkeystone',r=>r.rad.teckenKeystone,3);
+ visa('|lutning| °',r=>Math.abs(r.rad.lutning),2);
+}
+
+skriv('');
+skriv('SVAR PÅ FRÅGAN: vilket spann måste en AXELPARALLELL formgrind släppa');
+skriv('igenom för att aldrig missa en riktig skylt i de vinklar en dashcam ser?');
+{
+ /* Två vinklar staplas på varandra och de blandas ofta ihop:
+  *   GIR (yaw)  — bilen står snett i sidled. Skyltens EGEN kvot krymper:
+  *                R = 4,73 · cos(gir).
+  *   ROLL       — telefonen står inte i våg, eller vägen lutar. Skyltens
+  *                egen kvot är oförändrad, men den AXELPARALLELLA lådan
+  *                dras mot kvadrat.
+  * Mätningen ovan visar att bänkens låga kvoter nästan helt är ROLL, inte
+  * gir: bland de 12 bilder där teckenraden lutar under 3° är kvot_ruta
+  * 3,07–5,02, bland de 9 där den lutar mer är den 1,93–3,82.
+  * Tabellen är rent geometrisk, inte mätt, och står här för att den avgör
+  * vad grinden måste tåla. */
+ const gir=[0,20,35,50], roll=[0,5,10,15,20,25];
+ skriv('  kvot på den AXELPARALLELLA lådan, för en 4,73-skylt:');
+ skriv('    gir\\roll'+roll.map(t=>String(t+'°').padStart(7)).join(''));
+ for(const gy of gir){
+   const R=4.73*Math.cos(grad(gy));
+   skriv('      '+String(gy+'°').padEnd(7)+
+     roll.map(t=>n(lutningsInflation(R,t),2).padStart(7)).join('')+
+     '     (egen kvot '+n(R,2)+')');
+ }
+ skriv('  En grind som ska klara gir 35° OCH roll 15° måste släppa ned till '+
+   n(lutningsInflation(4.73*Math.cos(grad(35)),15),2)+'.');
+ skriv('  Klara gir 50° och roll 20°: ned till '+
+   n(lutningsInflation(4.73*Math.cos(grad(50)),20),2)+'.');
+ skriv('  Uppåt: skylten sedd snett uppifrån/underifrån, ingen roll, ger som');
+ skriv('  mest 4,73/cos 48° = '+n(4.73/Math.cos(grad(48)),2)+'. Roll drar den NEDÅT igen,');
+ skriv('  så det övre taket 7,0 är inte det som klämmer. Det gör det nedre.');
+ skriv('');
+ skriv('  SLUTSATS FÖR FORMGRINDEN:');
+ skriv('    · mät kvoten på skyltens EGNA axlar (egenvärden / roterad rektangel),');
+ skriv('      precis som BAND redan gör för det blå bandet sedan lutningsbuggen.');
+ skriv('      Då räcker [2,5; 7,0] med marginal — mätt kvot_plåt håller sig');
+ skriv('      inom 2,06–5,63 på de 20 mätbara.');
+ skriv('    · mäts den axelparallella lådan i stället måste nedre gränsen ned');
+ skriv('      till ca 1,6 för att inte kasta en 4,73-skylt vid 25° roll, och');
+ skriv('      det är så brett att grinden slutar betyda något. Det är skälet');
+ skriv('      att flytta mätningen, inte att flytta talet.');
+}
+
+skriv('');
+skriv('VAD FORMGRINDEN BÖR SLÄPPA IGENOM — förslag, som prior och rangordning');
+{
+  const kr=rad.map(r=>r.kvotRuta);
+  const lag=Math.min(...kr), hog=Math.max(...kr);
+  skriv('  mätt lägsta '+n(lag,2)+', mätt högsta '+n(hog,2)+' på 22 foton.');
+  skriv('  Med 35 % marginal åt bägge håll, för att 22 foton inte får bli en vägg:');
+  skriv('    släpp igenom  '+n(lag/1.35,2)+' – '+n(hog*1.35,2));
+  skriv('  Dagens SKYLT_KVOT_MIN 2,5 ligger ÖVER tre av de 22 mätta skyltarna.');
+  skriv('  Full poäng (prior 1,0) bör ligga där det är tätt: '+
+        n(kvantil(kr,0.25),2)+' – '+n(kvantil(kr,0.75),2)+' (kvartilerna).');
+  skriv('  Utanför det: sjunkande prior, ALDRIG noll. Se läxan i');
+  skriv('  granskning.html om horisontregeln som tog topp1 12->15 på bänken');
+  skriv('  och 15/20 -> 1/20 utanför den.');
+}
+
+skriv('');
+skriv('DET SOM INTE GICK ATT MÄTA, OCH VARFÖR');
+skriv('  1. PLÅTENS EGEN YTTERKANT på YBK70UD.jpg och');
+skriv('     nya-skyltar-transportstyrelsen.png. Skylten sitter på en vit');
+skriv('     Porschestötfångare respektive mot vit studiobakgrund, och den');
+skriv('     ljusa masken växer rakt igenom kanten. Ingen tröskel skiljer vit');
+skriv('     plåt från vit kaross. Det krävs en kantdetektor eller en');
+skriv('     mörkramsökning, och den finns inte i den här mätningen.');
+skriv('     kvot_plåt saknas därför för 2 av 22.');
+skriv('  2. TECKENRADEN på images.jpg. Kontrasten i rutan är 175 mot 233 i');
+skriv('     median och tecknen flyter ihop med plåten efter Otsu. Alla');
+skriv('     teckenbaserade tal saknas för den bilden, 1 av 22.');
+skriv('  3. EU-BANDET på renummer-131122.jpg (0,000) och');
+skriv('     nya-regnummer-sverige.webp (0,003). Bandet mäts kolumnvis och');
+skriv('     kräver att en hel bildkolumn är blå. Skylten lutar 10° respektive');
+skriv('     13,5°, så ingen kolumn blir det. Måttet är alltså inte fel — det');
+skriv('     är fel MÄTT, och samma lutningsbugg som BAND-kvoten redan haft.');
+skriv('     Rätt sätt är att mäta bandet längs skyltens egna axlar.');
+skriv('  4. SANN GIR I GRADER. Det finns ingen kalibrering och ingen känd');
+skriv('     brännvidd, så perspektivet går inte att lösa upp i grader. Det');
+skriv('     som mäts är teckenkeystone och linjespretning, som är MONOTONA');
+skriv('     med gir men inte kan översättas till grader.');
+skriv('  5. RIKTIG DASHCAM-SKALA. Minsta skylt i bänken är 87 px bred');
+skriv('     (image.png), median '+Math.round(median(rad.map(r=>r.breddPx)))+' px. En dashcam ser 10–25 px.');
+skriv('     Ingenting i den här mätningen säger något om hur formen beter sig');
+skriv('     där, och det är den viktigaste luckan av alla.');
+skriv('  6. NATT, REGN OCH SMUTS. Alla 22 är dagsljus och rena. De mörkrets');
+skriv('     fall granskning.html syntetiserar är inte mätta här.');
+skriv('  7. MOTORCYKELSKYLTAR OCH TVÅRADIGA SKYLTAR finns inte i underlaget');
+skriv('     alls. En svensk mc-skylt är 155x115 mm, kvot 1,35, och den skulle');
+skriv('     falla under varje gräns som diskuteras ovan.');
+skriv('  8. ramandel/kontrast ovan mäts med Otsu INNE i facitrutan. Koden');
+skriv('     mäter morkandel och kontrast på sin egen kandidatruta med sin');
+skriv('     egen tröskel. Talen är besläktade men inte utbytbara — jämför');
+skriv('     riktning och storleksordning, inte siffra mot siffra.');
+
+window.__form={rad,M};
+skriv('');
+skriv('KLAR');
+
+/* ---- bilder att granska med ögat ---------------------------------------- */
+const box=document.getElementById('bilder');
+for(const r of rad){
+  const {c,cw,ch,fx0,fy0,fw,fh,et,vald,tecken}=r._rit;
+  const d=document.createElement('canvas');
+  const sk=Math.min(1,330/cw);
+  d.width=Math.round(cw*sk);d.height=Math.round(ch*sk);
+  const g=d.getContext('2d');
+  g.imageSmoothingEnabled=false;
+  g.drawImage(c,0,0,d.width,d.height);
+  g.save();g.scale(sk,sk);
+  g.strokeStyle='#00ff88';g.lineWidth=1/sk;g.strokeRect(fx0,fy0,fw,fh);
+  g.strokeStyle='#ff3b6b';
+  for(const o of (tecken||[]))g.strokeRect(o.x0,o.y0,o.w,o.h);
+  g.restore();
+  const fig=document.createElement('figure');fig.appendChild(d);
+  const cap=document.createElement('figcaption');
+  cap.textContent=r.fil+'  kvR='+n(r.kvotRuta,2)+
+    (r.sammanvaxt?' SAMV':' kvP='+n(r.plat?.kvot,2))+
+    '  lut='+n(r.rad?.lutning,1)+'°  tkn='+(r.rad?.antal??0);
+  fig.appendChild(cap);box.appendChild(fig);
+}
+</script>

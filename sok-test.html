@@ -95,8 +95,28 @@ function skyltbild(text, bredd, { smuts = 0, band = '#003399' } = {}) {
   const r = Math.max(1, Math.round(h * 0.03));
   x.fillStyle = '#f4f4f0'; x.fillRect(r, r, bredd - r * 2, h - r * 2);
 
-  // EU-bandet: en tiondel av bredden, hela höjden innanför ramen.
-  const bw = Math.round(bredd * 0.105);
+  /*
+   * EU-bandet: en tiondel av bredden, hela höjden innanför ramen.
+   *
+   * TALET VAR 0,105 OCH ÄR 0,100, OCH DEN ÄNDRINGEN ÄR VIKTIGARE ÄN DEN SER
+   * UT. Avsnitt 5 nedan kontrollerade att läsaren får tillbaka just 0,105 —
+   * alltså mätte provet sin egen penna och kallade svaret facit. Det gick att
+   * se genom att jämföra med plate.js, som sa två olika saker om samma band:
+   * kommentaren vid PLATTGRIND.euMin sa 45/520 = 0,087 medan
+   * `matSkyltFranBand` sa "nominellt 52/110", alltså 52/520 = 0,100.
+   *
+   * Uppmätt på de 22 fotona i prov/skyltar, tre oberoende mätningar:
+   * färgmätningen 0,1000 (n=27 rutor, p10 0,079, p90 0,120, utelämna-ett
+   * 0,0042), formmätningen 0,093 på den raka delmängden och teckenmätningen
+   * 0,098. Modulens eget euAndel via sokAnkare ger 0,0971 på de foton där
+   * ankaret träffar. 0,100 är alltså det mätta värdet; 0,087 var en normsiffra
+   * för ett 45 mm band och 0,105 var det här provets egen penna.
+   *
+   * Toleransen ±0,04 nedan står kvar oförändrad, men det ska sägas rakt ut att
+   * den är ungefär tio gånger vidare än den verkliga spridningen mellan foton
+   * (p10–p90 spänner 0,079–0,120, alltså ±0,021 kring medianen).
+   */
+  const bw = Math.round(bredd * 0.100);
   x.fillStyle = band; x.fillRect(r, r, bw - r, h - r * 2);
 
   // Tolv stjärnor i ring, och landsbokstaven under.
@@ -591,16 +611,21 @@ for (const f of formfall) {
 
 const t5 = avsnitt('5. Mäts EU-bandet, eller gissas det?',
   'Förut vitmålades en fast tiondel av vänsterkanten, oavsett vad som faktiskt ' +
-  'fanns där. Nu mäter ankaret bandets bredd. Facit är 0,105 av skyltens bredd. ' +
+  'fanns där. Nu mäter ankaret bandets bredd. Provet ritar sitt band på 0,100 ' +
+  'av skyltens bredd och kontrollerar att läsaren får tillbaka det — alltså ' +
+  'mäter det sin egen penna, inte en svensk skylt. Talet 0,100 är däremot ' +
+  'hämtat ur mätningen av de 22 fotona (median 0,100, p10 0,079, p90 0,120, ' +
+  'n=27 rutor) och inte, som förut, ur provets egen ritfunktion. ' +
   'Godkänt är inom ±0,04 — bredare fel än så äter antingen ett tecken eller ' +
-  'lämnar stjärnor kvar åt motorn.');
+  'lämnar stjärnor kvar åt motorn. Den toleransen är ungefär tio gånger vidare ' +
+  'än spridningen mellan riktiga foton.');
 rad(t5, ['skyltbredd i bild', { t: 'uppmätt andel', kl: 'n' }, { t: 'fel', kl: 'n' }, 'inom ±0,04']);
 
 for (const bredd of [520, 360, 260, 180]) {
   const s = scen([bil(0.5, 0.5, 620, 300),
     { typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.62, bredd }]);
   const a = sokAnkare(s.canvas).find(k => traff(k, s.ytor[0]));
-  const fel = a ? Math.abs(a.euAndel - 0.105) : null;
+  const fel = a ? Math.abs(a.euAndel - 0.100) : null;
   const tresiffrig = v => (v == null ? '–' : v.toFixed(3).replace('.', ','));
   rad(t5, [`${bredd} px`,
            { t: tresiffrig(a ? a.euAndel : null), kl: 'n' },
@@ -658,7 +683,7 @@ function kor(lasningar, { krav = 2, urna = 'a', steg = 300 } = {}) {
   let nu = 1000;
   for (let i = 0; i < lasningar.length; i++) {
     const [h, sak] = lasningar[i];
-    const svar = r.rosta(urna, h, sak, { krav, nu });
+    const svar = r.rosta(urna, h, sak, { krav, nu, exakt: true });
     if (svar.klar) return i + 1;
     nu += steg;
   }
@@ -693,8 +718,8 @@ for (const f of rostfall) {
   const r = new Rostrakning();
   let nu = 1000, klarA = false, klarB = false;
   for (let i = 0; i < 2; i++) {
-    klarA = r.rosta(1, 'A', 92, { nu }).klar || klarA;
-    klarB = r.rosta(2, 'B', 92, { nu }).klar || klarB;
+    klarA = r.rosta(1, 'A', 92, { nu, exakt: true }).klar || klarA;
+    klarB = r.rosta(2, 'B', 92, { nu, exakt: true }).klar || klarB;
     nu += 300;
   }
   rad(t7, ['två fordon i bild, egna urnor', { t: '2', kl: 'n' }, 'båda klara',
@@ -703,8 +728,8 @@ for (const f of rostfall) {
 // Röster bleknar: samma svar två gånger men med fyra sekunder emellan.
 {
   const r = new Rostrakning();
-  r.rosta('c', 'A', 92, { nu: 1000 });
-  const sen = r.rosta('c', 'A', 92, { nu: 1000 + ROST.fonsterMs + 1500 });
+  r.rosta('c', 'A', 92, { nu: 1000, exakt: true });
+  const sen = r.rosta('c', 'A', 92, { nu: 1000 + ROST.fonsterMs + 1500, exakt: true });
   rad(t7, [`samma svar men ${en((ROST.fonsterMs + 1500) / 1000)} s isär`,
            { t: '2', kl: 'n' }, 'inte klar', dom(!sen.klar)]);
 }

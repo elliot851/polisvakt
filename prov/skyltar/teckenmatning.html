@@ -1,0 +1,984 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Teckenmätning — hur svenska skyltar stavas i pixlar</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{background:#0b0f14;color:#eef4fa;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;
+      margin:0;padding:16px 14px 90px}
+ h1{font:600 17px/1.3 system-ui,sans-serif;margin:0 0 2px}
+ p.sub{color:#93a4b6;font:13px/1.55 system-ui,sans-serif;max-width:62em;margin:0 0 14px}
+ pre{white-space:pre-wrap;margin:0}
+ .ok{color:#2fd07a}.fel{color:#ff6b6b}.varn{color:#ffb020}.dim{color:#6d7d8e}
+ canvas{image-rendering:pixelated;border:1px solid #26323f;margin:2px 6px 2px 0;vertical-align:top}
+ #galleri{margin-top:18px}
+ .rad{border-top:1px solid #1a232d;padding:6px 0}
+</style>
+
+<h1>Teckenmätning: teckenhöjd, teckenbredd, mellanrum, och luckan efter tredje tecknet</h1>
+<p class="sub">
+  Facitrutorna är INTE satta på nytt — de är kopierade rakt av ur
+  <code>matning.html</code> (samma tal som <code>granskning.html</code> använder).
+  Varje foto läggs på en canvas i full upplösning, skyltrutan skärs ut, det blå
+  EU-bandet mäts och kapas, kroppen tröskas med Otsu och delas i sammanhängande
+  mörka klumpar. Klumparna som är teckenformade sorteras i x-led. Allt mäts i
+  pixlar och redovisas som andel av SKYLTHÖJDEN, eftersom skylthöjden är det
+  enda mått som inte ändras av att bandet är olika brett i olika foton.
+  Utelämna-ett körs på bildnivå: 22 omräkningar per storhet.
+</p>
+<pre id="ut">Kör…</pre>
+<div id="galleri"></div>
+
+<script type="module">
+/* ==========================================================================
+ * FACIT — kopierat ur matning.html, rad för rad. Inga nya rutor.
+ * x,y = övre vänstra hörnet, b,h = bredd och höjd, allt i andel av bilden.
+ * ======================================================================== */
+const FACIT = [
+ { fil:'YBK70UD.jpg', vinkel:'rakt-bakifran',
+   skyltar:[{text:'YBK 70U',x:0.3831,y:0.5773,b:0.2887,h:0.0918,lasbar:true}] },
+ { fil:'polestar-4-madrid-gold.jpg', vinkel:'snett-bak',
+   skyltar:[{text:'FAP 18M',x:0.1606,y:0.5908,b:0.1455,h:0.0947,lasbar:true}] },
+ { fil:'polestar-4-bak.webp', vinkel:'rakt-bakifran',
+   skyltar:[{text:'FAP 18M',x:0.4408,y:0.7225,b:0.165,h:0.062,lasbar:true}] },
+ { fil:'enlarged.jpg', vinkel:'rakt-bakifran',
+   skyltar:[{text:'UTX 153',x:0.3887,y:0.503,b:0.2206,h:0.0838,lasbar:true}] },
+ { fil:'2039174f.avif', vinkel:'rakt-bakifran',
+   skyltar:[{text:'CHK 49S',x:0.4692,y:0.5171,b:0.1144,h:0.0357,lasbar:true}] },
+ { fil:'7751f94d.avif', vinkel:'rakt-bakifran',
+   skyltar:[{text:'ZPD 710',x:0.4303,y:0.566,b:0.1442,h:0.0415,lasbar:true}] },
+ { fil:'721ab0d6.avif', vinkel:'rakt-bakifran',
+   skyltar:[{text:'XTU 097',x:0.3851,y:0.5152,b:0.173,h:0.0274,lasbar:true}] },
+ { fil:'0c4d9b68.jpg', vinkel:'snett-bak',
+   skyltar:[{text:'XWE 623',x:0.2451,y:0.4801,b:0.1729,h:0.0363,lasbar:true}] },
+ { fil:'9487480d.avif', vinkel:'rakt-bakifran',
+   skyltar:[{text:'ABU 773',x:0.3595,y:0.5695,b:0.26,h:0.0425,lasbar:true}] },
+ { fil:'3b979c11.avif', vinkel:'rakt-bakifran',
+   skyltar:[{text:'GRE 101',x:0.4065,y:0.56,b:0.1975,h:0.0558,lasbar:true},
+            {text:'EZN 242',x:0.0127,y:0.5745,b:0.0738,h:0.0535,lasbar:true},
+            {text:'PMD 578',x:0.1719,y:0.4819,b:0.044,h:0.0126,lasbar:false}] },
+ { fil:'images.jpg', vinkel:'rakt-bakifran',
+   skyltar:[{text:'HNL 210',x:0.384,y:0.3355,b:0.294,h:0.1085,lasbar:true}] },
+ { fil:'1728543597268.jpg', vinkel:'snett-fram',
+   skyltar:[{text:'EEL 62J',x:0.1707,y:0.6481,b:0.1155,h:0.0563,lasbar:true}] },
+ { fil:'521e24d0.avif', vinkel:'snett-fram',
+   skyltar:[{text:'RUR 017',x:0.2906,y:0.6844,b:0.0969,h:0.0479,lasbar:true},
+            {text:'OOT 63Z',x:0.9039,y:0.4538,b:0.0469,h:0.0121,lasbar:false}] },
+ { fil:'Regpl-Heden.jpg', vinkel:'rakt-framifran',
+   skyltar:[{text:'YDR 167',x:0.0624,y:0.5187,b:0.1035,h:0.0592,lasbar:true},
+            {text:'YDR 168',x:0.6247,y:0.5779,b:0.1482,h:0.0651,lasbar:true}] },
+ { fil:'Regplat-URK.jpg', vinkel:'rakt-framifran',
+   skyltar:[{text:'URK 924',x:0.2265,y:0.4222,b:0.552,h:0.3245,lasbar:true}] },
+ { fil:'2560.webp', vinkel:'rakt-bakifran',
+   skyltar:[{text:'NWA 780',x:0.1775,y:0.4595,b:0.6417,h:0.2342,lasbar:true}] },
+ { fil:'renummer-131122.jpg', vinkel:'rakt-framifran',
+   skyltar:[{text:'NJK 447',x:0.098,y:0.254,b:0.722,h:0.515,lasbar:true}] },
+ { fil:'nya-regnummer-sverige.webp', vinkel:'snett-fram',
+   skyltar:[{text:'HET 69A',x:0.1984,y:0.4291,b:0.5641,h:0.1712,lasbar:true}] },
+ { fil:'Reg-nr-fram-flaggor.jpg', vinkel:'rakt-framifran',
+   skyltar:[{text:'ABC 123',x:0.2417,y:0.4217,b:0.5767,h:0.125,lasbar:true}] },
+ { fil:'nya-skyltar-transportstyrelsen.png', vinkel:'rakt-bakifran',
+   skyltar:[{text:'MLB 84A',x:0.3658,y:0.117,b:0.6342,h:0.5244,lasbar:false},
+            {text:'',x:0.4192,y:0.7274,b:0.0242,h:0.0133,lasbar:false}] },
+ { fil:'d54eac78.png', vinkel:'rakt-bakifran',
+   skyltar:[{text:'YAA 120',x:0.4115,y:0.5807,b:0.191,h:0.0507,lasbar:true}] },
+ { fil:'image.png', vinkel:'snett-bak',
+   skyltar:[{text:'MLB 84A',x:0.2633,y:0.3342,b:0.159,h:0.1233,lasbar:true}] },
+];
+
+/* Kodens alfabet, kopierat ur js/plate.js så att bilderna kan prövas mot det. */
+const BOKSTAV     = 'ABCDEFGHJKLMNOPRSTUWXYZ';
+const SISTBOKSTAV = 'ABCDEFGHJKLMNPRSTUWXYZ';
+const TILL_BOKSTAV = { 0:'O', 2:'Z', 4:'A', 5:'S', 6:'G', 8:'B' };
+const TILL_SIFFRA  = { O:'0', D:'0', Q:'0', I:'1', L:'1', Z:'2',
+                       A:'4', S:'5', G:'6', T:'7', B:'8' };
+
+/* ---- småverktyg -------------------------------------------------------- */
+const med = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y);
+  const m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
+const n = (v,d=3) => v==null||!isFinite(v) ? '  –  '
+  : (Math.round(v*10**d)/10**d).toFixed(d).replace('.',',');
+const ladda = f => new Promise((ok,nej)=>{ const i=new Image();
+  i.onload=()=>ok(i); i.onerror=()=>nej(new Error('avkodning misslyckades: '+f));
+  i.src='./'+encodeURIComponent(f); });
+
+/** Otsu på ett grå-histogram. Ger tröskeln 0..255. */
+function otsu(gra){
+  const h=new Uint32Array(256); for(const g of gra) h[g]++;
+  const N=gra.length; let sum=0; for(let i=0;i<256;i++) sum+=i*h[i];
+  let sumB=0,wB=0,bast=0,t=127;
+  for(let i=0;i<256;i++){ wB+=h[i]; if(!wB) continue; const wF=N-wB; if(!wF) break;
+    sumB+=i*h[i];
+    const mB=sumB/wB, mF=(sum-sumB)/wF, v=wB*wF*(mB-mF)*(mB-mF);
+    if(v>bast){ bast=v; t=i; } }
+  return t;
+}
+
+/** 8-grannad komponentmärkning över en binär mask. Ger bboxar. */
+function klumpar(mask,W,H){
+  const lbl=new Int32Array(W*H).fill(-1); const ut=[];
+  const stack=new Int32Array(W*H);
+  for(let i=0;i<W*H;i++){
+    if(!mask[i]||lbl[i]>=0) continue;
+    const id=ut.length; let sp=0; stack[sp++]=i; lbl[i]=id;
+    let x0=i%W,x1=x0,y0=(i/W)|0,y1=y0,area=0;
+    while(sp){ const p=stack[--sp]; const px=p%W, py=(p/W)|0; area++;
+      if(px<x0)x0=px; if(px>x1)x1=px; if(py<y0)y0=py; if(py>y1)y1=py;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        if(!dx&&!dy) continue;
+        const qx=px+dx, qy=py+dy;
+        if(qx<0||qy<0||qx>=W||qy>=H) continue;
+        const q=qy*W+qx;
+        if(mask[q]&&lbl[q]<0){ lbl[q]=id; stack[sp++]=q; } } }
+    ut.push({x:x0,y:y0,w:x1-x0+1,h:y1-y0+1,area});
+  }
+  return ut;
+}
+
+/* ---- EU-bandet ---------------------------------------------------------
+ * Kolumnvis: hur stor andel av kolumnens pixlar är blå (nyans 195–265°,
+ * mättnad över 0,22, inte kolsvart). Bandet är den längsta löpan av blå
+ * kolumner som börjar inom skyltens vänstra fjärdedel.
+ */
+function bandBredd(d,W,H){
+  const bla=new Uint8Array(W);
+  for(let x=0;x<W;x++){
+    let c=0;
+    for(let y=0;y<H;y++){
+      const i=(y*W+x)*4, r=d[i]/255, g=d[i+1]/255, b=d[i+2]/255;
+      const mx=Math.max(r,g,b), mn=Math.min(r,g,b), df=mx-mn;
+      if(mx<0.05||df<0.10) continue;
+      const s=df/mx; if(s<0.22) continue;
+      let hu; if(mx===r) hu=60*(((g-b)/df)%6); else if(mx===g) hu=60*((b-r)/df+2);
+      else hu=60*((r-g)/df+4); if(hu<0) hu+=360;
+      if(hu>=195&&hu<=265) c++;
+    }
+    bla[x]=c/H>0.40?1:0;
+  }
+  let bast=0;
+  for(let x=0;x<Math.round(W*0.28);x++){
+    if(!bla[x]) continue;
+    let e=x; while(e<W&&bla[e]) e++;
+    // tillåt ett par hål i löpan
+    let hal=0,ee=e; while(ee<W&&hal<Math.max(2,W*0.01)){ if(bla[ee]){e=ee+1;hal=0;} else hal++; ee++; }
+    if(e>bast) bast=e;
+    break;
+  }
+  return bast;
+}
+
+/* ---- den inre linjalen -------------------------------------------------
+ *
+ * VARFÖR FACITRUTANS HÖJD INTE DUGER SOM NÄMNARE.
+ * Facitrutorna är axelriktade och satta för att TRÄFFA skylten, inte för att
+ * mäta den. Uppmätt kvot bredd/höjd i facit: 4,70 för YBK70UD men 1,84 för
+ * den lutande EZN 242 och 2,59 för Regplat-URK. En lutande skylt får en ruta
+ * som är mycket högre än plåten, och en sned skylt får en ruta som är
+ * mycket smalare. Delar man teckenhöjden med RUTANS höjd mäter man därför
+ * hur rutan ritades, inte hur skylten ser ut.
+ *
+ * Den inre linjalen är skyltens egen VITA FÄLTHÖJD, mätt i mellanrummen
+ * mellan tecknen där kolumnen är [kaross][svart ram][vitt][svart ram][kaross].
+ * Den följer perspektivet lokalt och bryr sig inte om hur rutan ritades.
+ */
+function vitfaltshojd(gra,W,H,t,probeX,yc){
+  const ut=[];
+  for(const x of probeX){
+    if(x<1||x>=W-1) continue;
+    // Median över tre kolumner, så en enstaka smutsrand inte kapar löpan.
+    const ljus=y=>{
+      let k=0; for(const dx of [-1,0,1]) if(gra[y*W+x+dx] >= t) k++;
+      return k>=2;
+    };
+    if(!ljus(yc)) continue;
+    let a=yc; while(a>0 && ljus(a-1)) a--;
+    let b=yc; while(b<H-1 && ljus(b+1)) b++;
+    const falt=b-a+1;
+    if(falt < H*0.20) continue;               // sprucket fält, kasta
+    const kantad = (a===0) || (b===H-1);      // löpan tog i bildkanten
+    let rt=0; while(a-1-rt>=0 && !ljus(a-1-rt) && rt<falt*0.25) rt++;
+    let rb=0; while(b+1+rb<H && !ljus(b+1+rb) && rb<falt*0.25) rb++;
+    ut.push({falt, ram:rt+rb, y0:a, y1:b, kantad});
+  }
+  return ut;
+}
+
+/* ---- mät en skylt ------------------------------------------------------ */
+function matSkylt(img, s){
+  const IW=img.naturalWidth, IH=img.naturalHeight;
+  let px=Math.round(s.x*IW), py=Math.round(s.y*IH);
+  let pw=Math.round(s.b*IW), ph=Math.round(s.h*IH);
+  px=Math.max(0,px); py=Math.max(0,py);
+  pw=Math.min(pw,IW-px); ph=Math.min(ph,IH-py);
+  const inbyggdKvot = pw/ph;
+
+  // Skala så att analysen aldrig blir orimligt tung, men aldrig uppskala.
+  const k = Math.min(1, 1100/pw);
+  const W = Math.max(8,Math.round(pw*k)), H = Math.max(4,Math.round(ph*k));
+  const c = document.createElement('canvas'); c.width=W; c.height=H;
+  const g = c.getContext('2d',{willReadFrequently:true});
+  g.imageSmoothingQuality='high';
+  g.drawImage(img, px,py,pw,ph, 0,0,W,H);
+  const d = g.getImageData(0,0,W,H).data;
+
+  const rad = { plattPx:[pw,ph], analysPx:[W,H], kvot:inbyggdKvot, skal:k };
+
+  const bandW = bandBredd(d,W,H);
+  rad.bandandel = bandW/W;
+
+  // Kroppen: höger om bandet, indragen 5 % av skylthöjden för att den tryckta
+  // svarta ramen och hållarkanten inte ska klibba ihop med tecknen.
+  const inset = Math.max(1, Math.round(H*0.05));
+  const bx = Math.min(W-4, bandW + (bandW? Math.round(H*0.02):inset));
+  const bX0 = bx, bY0 = inset, bX1 = W-inset, bY1 = H-inset;
+  const bW = bX1-bX0, bH = bY1-bY0;
+  if(bW<8||bH<6){ rad.fel='kroppen för liten efter bandkap'; return rad; }
+
+  // Grå + Otsu
+  const gra = new Uint8Array(bW*bH);
+  for(let y=0;y<bH;y++)for(let x=0;x<bW;x++){
+    const i=((y+bY0)*W+(x+bX0))*4;
+    gra[y*bW+x] = (d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114)|0;
+  }
+  let lo=255,hi=0; for(const v of gra){ if(v<lo)lo=v; if(v>hi)hi=v; }
+  rad.kroppKontrast = hi-lo;
+  const t0 = otsu(gra);
+  rad.otsu = t0;
+
+  /*
+   * TRÖSKELSVEP. En enda Otsu-tröskel klarar inte alla 22: images.jpg har
+   * en glansig plåt där tecknen bleks ut och smälter ihop med varandra vid
+   * den globala tröskeln. I stället prövas sju trösklar runt Otsu, och den
+   * som ger EXAKT sex teckenformade klumpar väljs — närmast Otsu först.
+   * Att svepa är inte att välja svar: alla trösklar mäter samma plåt, och
+   * vilken som användes skrivs ut per bild.
+   */
+  const Hp = H;
+  const provaTroskel = (t) => {
+    const mask = new Uint8Array(bW*bH);
+    for(let i=0;i<gra.length;i++) mask[i] = gra[i] < t ? 1 : 0;
+    let kl = klumpar(mask,bW,bH).filter(b =>
+          b.h >= 0.28*Hp && b.h <= 0.94*Hp
+       && b.w >= 0.03*Hp && b.w <= 0.95*Hp
+       && b.w <= 0.45*bW
+       && b.area >= 0.10*b.w*b.h
+       && b.area >= 6);
+    if(kl.length < 3) return {mask,kl:[],slagna:[],t};
+    const stora = [...kl].sort((a,b)=>b.h*b.w - a.h*a.w).slice(0,8);
+    const mY = med(stora.map(b=>b.y+b.h/2));
+    const mH = med(stora.map(b=>b.h));
+    kl = kl.filter(b => Math.abs((b.y+b.h/2)-mY) <= 0.28*Hp
+                     && b.h >= 0.55*mH && b.h <= 1.60*mH);
+    kl.sort((a,b)=>a.x-b.x);
+    const slagna=[];
+    for(const b of kl){
+      const f = slagna[slagna.length-1];
+      const overlapp = f ? Math.min(f.x+f.w,b.x+b.w) - Math.max(f.x,b.x) : -1;
+      if(f && overlapp > 0.35*Math.min(f.w,b.w)){
+        const x0=Math.min(f.x,b.x), y0=Math.min(f.y,b.y);
+        const x1=Math.max(f.x+f.w,b.x+b.w), y1=Math.max(f.y+f.h,b.y+b.h);
+        f.x=x0; f.y=y0; f.w=x1-x0; f.h=y1-y0; f.area+=b.area;
+      } else slagna.push({...b});
+    }
+    return {mask,kl,slagna,t,mY};
+  };
+
+  const kandidatTrosklar = [t0, t0-10, t0+10, t0-20, t0+20, t0-32, t0+32]
+        .filter(t=>t>8&&t<248);
+  let bast=null;
+  for(const t of kandidatTrosklar){
+    const f=provaTroskel(t);
+    if(f.slagna.length===6){ bast=f; break; }
+    if(!bast || f.slagna.length>bast.slagna.length) bast=f;
+  }
+  const { mask, slagna, mY } = bast;
+  const t = bast.t;
+  rad.troskelAnvand = t;
+  rad.troskelAvvik = t - t0;
+  rad.morkandel = mask.reduce((a,b)=>a+b,0)/mask.length;
+  rad.klumparRa = bast.kl.length;
+  rad.antalTecken = slagna.length;
+  rad.rutor = slagna.map(b=>({x:b.x,y:b.y,w:b.w,h:b.h}));
+
+  // Ritning för ögat.
+  const vy = document.createElement('canvas');
+  const vs = Math.min(3, Math.max(1, 260/W));
+  vy.width=Math.round(W*vs); vy.height=Math.round(H*vs);
+  const vg = vy.getContext('2d'); vg.imageSmoothingEnabled=false;
+  vg.drawImage(c,0,0,vy.width,vy.height);
+  vg.strokeStyle='#2fd07a'; vg.lineWidth=1;
+  for(const b of slagna) vg.strokeRect((b.x+bX0)*vs,(b.y+bY0)*vs,b.w*vs,b.h*vs);
+  if(bandW){ vg.strokeStyle='#4aa3ff'; vg.strokeRect(0,0,bandW*vs,H*vs); }
+  rad.vy = vy;
+
+  if(slagna.length !== 6){ rad.fel='hittade '+slagna.length+' tecken, inte 6'; return rad; }
+
+  const gap=[]; for(let i=0;i<5;i++) gap.push(slagna[i+1].x - (slagna[i].x+slagna[i].w));
+  rad.gapPx = gap;
+
+  /* ---- DEN INRE LINJALEN: skyltens vita fälthöjd, mätt i mellanrummen ---- */
+  /* Linjalen mäts på HELA utsnittet, inte på den indragna kroppen: den svarta
+   * ramen ligger i indraget, och mäts löpan bara innanför indraget blir svaret
+   * exakt indragets höjd — ett tal som beskriver indraget, inte plåten. Det
+   * felet var byggt och det mättes: teckenhöjden kom då ut på 0,81. */
+  const graFull = new Uint8Array(W*H);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const i=(y*W+x)*4;
+    graFull[y*W+x] = (d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114)|0;
+  }
+  const probe=[];
+  for(let i=0;i<5;i++) probe.push(bX0+Math.round(slagna[i].x+slagna[i].w+gap[i]/2));
+  probe.push(bX0+Math.round(slagna[0].x - Math.max(2,gap[0])));      // vänstermarginal
+  probe.push(bX0+Math.round(slagna[5].x+slagna[5].w + Math.max(2,gap[4]))); // höger
+  const falt = vitfaltshojd(graFull,W,H,t,probe,bY0+Math.round(mY));
+  rad.faltProver = falt.length;
+  rad.faltKantade = falt.filter(f=>f.kantad).length;
+  const faltH = med(falt.map(f=>f.falt));
+  const ramH  = med(falt.map(f=>f.ram));
+  if(!faltH || falt.length < 3){ rad.fel='fick inte fram vitfältshöjden ('+falt.length+' prov)'; return rad; }
+  rad.vitfaltPx = faltH;
+  rad.ramPx = ramH;
+  const Hplat = faltH + ramH;                 // uppmätt SKYLTHÖJD i pixlar
+  rad.uppmattPlatH = Hplat;
+  rad.vitfaltAvRuta = faltH/Hp;               // hur väl facitrutan träffar plåten
+  rad.platAvRuta    = Hplat/Hp;
+  rad.vitfaltAvPlat = faltH/Hplat;            // (110 − 2·ram)/110 på riktig plåt
+
+  /* ---- storheterna. NÄMNAREN ÄR DEN UPPMÄTTA SKYLTHÖJDEN, INTE RUTAN ---- */
+  const hs = slagna.map(b=>b.h), ws = slagna.map(b=>b.w);
+  rad.teckenhojdPx = med(hs);
+  rad.teckenhojd   = med(hs)/Hplat;            // <-- huvudtalet, mot 0,64
+  rad.teckenhojdRuta = med(hs)/Hp;             // samma sak mot facitrutan
+  rad.teckenhojdAvVitfalt = med(hs)/faltH;
+  rad.teckenhojdSpannInom = (Math.max(...hs)-Math.min(...hs))/Hplat;
+  rad.teckenbredd  = med(ws)/Hplat;
+  rad.teckenaspekt = med(slagna.map(b=>b.w/b.h));
+
+  const inom = [gap[0],gap[1],gap[3],gap[4]];
+  rad.gapInom  = med(inom)/Hplat;
+  rad.gapTredje= gap[2]/Hplat;
+  rad.kvotTredje = med(inom)>0 ? gap[2]/med(inom) : null;
+
+  /* PITCH — avståndet mellan två teckens VÄNSTERKANTER. Robustare än gapet,
+   * för pitchen bryr sig inte om hur brett bläcket är: en etta har smalt
+   * bläck och stort gap men samma pitch som en nolla. Det är pitchkvoten
+   * som är den strukturella signalen, inte gapkvoten. */
+  const pitch=[]; for(let i=0;i<5;i++) pitch.push(slagna[i+1].x - slagna[i].x);
+  rad.pitchPx = pitch;
+  const pInom = [pitch[0],pitch[1],pitch[3],pitch[4]];
+  rad.pitchInom = med(pInom)/Hplat;
+  rad.pitchTredje = pitch[2]/Hplat;
+  rad.kvotPitch = med(pInom)>0 ? pitch[2]/med(pInom) : null;
+  rad.pitchInomSpann = (Math.max(...pInom)-Math.min(...pInom))/med(pInom);
+
+  /* CENTRUMPITCH — och det är DEN som är signalen.
+   * Gapet och vänsterkantspitchen mäter bläck, och bläcket flyttar sig: en
+   * etta har smalt bläck mitt i sin ruta, så gapet intill en etta blir
+   * enormt (GRE 101 mäter gap3 = 0,85 skylthöjder) medan gapet intill en
+   * nolla är litet. Mätt på de här 22 bilderna spänner gap3 0,18–0,85 —
+   * ett tal med den spridningen kan ingen grind använda.
+   * Tecknens MITTPUNKTER sitter däremot i rutnätets rutor oavsett vilket
+   * tecken som står där, för skyltfonten centrerar varje glyf i sin ruta. */
+  const cx = slagna.map(b=>b.x+b.w/2);
+  const cpitch=[]; for(let i=0;i<5;i++) cpitch.push(cx[i+1]-cx[i]);
+  rad.cpitchPx = cpitch;
+  const cInom = [cpitch[0],cpitch[1],cpitch[3],cpitch[4]];
+  rad.cpitchInom  = med(cInom)/Hplat;
+  rad.cpitchTredje= cpitch[2]/Hplat;
+  rad.kvotCentrum = med(cInom)>0 ? cpitch[2]/med(cInom) : null;
+  rad.cpitchInomSpridning = med(cInom)>0
+      ? (Math.max(...cInom)-Math.min(...cInom))/med(cInom) : null;
+  // Själva GRUPPLUCKAN: hur mycket extra rutbredd som skjuts in i mitten.
+  rad.gruppluckaExtra = (cpitch[2]-med(cInom))/Hplat;
+
+  /* Är luckan alltid störst? Det är den billigaste formen av signalen:
+   * ingen tröskel, bara "det tredje mellanrummet är det vidaste". */
+  rad.tredjeStorst = cpitch[2] > Math.max(...cInom);
+  rad.tredjeMarginal = cpitch[2] / Math.max(...cInom);
+
+  // Perspektivtåligt: mät luckan i enheter av de två grannteckens bredd.
+  const lokal = i => gap[i] / ((slagna[i].w + slagna[i+1].w)/2);
+  const lokalInom = med([lokal(0),lokal(1),lokal(3),lokal(4)]);
+  rad.gapTredjeLokal = lokal(2);
+  rad.gapInomLokal = lokalInom;
+  rad.kvotTredjeLokal = lokalInom>0 ? lokal(2)/lokalInom : null;
+
+  // Var i skylten luckan sitter (andel av HELA skyltbredden, band inräknat).
+  rad.luckaLage = (bX0 + slagna[2].x + slagna[2].w + gap[2]/2) / W;
+  rad.luckaLageKropp = (slagna[2].x + slagna[2].w + gap[2]/2 + bX0 - bandW) / (W-bandW);
+
+  // Raden i sin helhet
+  const rx0 = bX0 + slagna[0].x, rx1 = bX0 + slagna[5].x + slagna[5].w;
+  rad.radBredd = (rx1-rx0)/W;                      // andel av skyltbredden
+  rad.radBreddAvKropp = (rx1-rx0)/(W-bandW);
+  rad.radBreddAvHojd = (rx1-rx0)/Hplat;
+  rad.vansterMarginal = (rx0 - bandW)/Hplat;       // från bandets slut
+  rad.hogerMarginal = (W - rx1)/Hplat;
+  const topp = bY0 + Math.min(...slagna.map(b=>b.y));
+  const bott = bY0 + Math.max(...slagna.map(b=>b.y+b.h));
+  const faltY0 = med(falt.map(f=>f.y0)), faltY1 = med(falt.map(f=>f.y1));
+  rad.radTopp = (topp-(faltY0-ramH/2))/Hplat;      // från plåtens överkant
+  rad.radBotten = ((faltY1+ramH/2)-bott)/Hplat;
+  rad.radMittAvvik = ((topp+bott)/2 - (faltY0+faltY1)/2)/Hplat;
+
+  // Lutning på teckenraden (grader) — säger hur snett fotot är taget.
+  const cxs = slagna.map(b=>b.x+b.w/2), cys = slagna.map(b=>b.y+b.h/2);
+  const mx=cxs.reduce((a,b)=>a+b)/6, my=cys.reduce((a,b)=>a+b)/6;
+  let sxy=0,sxx=0; for(let i=0;i<6;i++){ sxy+=(cxs[i]-mx)*(cys[i]-my); sxx+=(cxs[i]-mx)**2; }
+  rad.lutning = sxx? Math.atan2(sxy/sxx,1)*180/Math.PI : 0;
+
+  /* TRÖSKELKÄNSLIGHET. En bbox runt en suddig kant växer med tröskeln, och
+   * teckenhöjden är en bbox. Räkna om den vid ±10 grånivåer och skriv ut hur
+   * mycket den rörde sig — det är halons storlek, uttalad i stället för dold. */
+  const kansl=[];
+  for(const dt of [-10,10]){
+    const f=provaTroskel(t+dt);
+    if(f.slagna.length===6) kansl.push(med(f.slagna.map(b=>b.h))/Hplat);
+  }
+  rad.hojdVidLagreTroskel = kansl[0]; rad.hojdVidHogreTroskel = kansl[1];
+  rad.hojdTroskelSpann = kansl.length===2 ? Math.abs(kansl[1]-kansl[0]) : null;
+
+  /* Bredd PER TECKEN, märkt med facittexten. Det är den tabell en segmenterare
+   * behöver: en etta är inte lika bred som en nolla, och den som kräver jämn
+   * bredd på sex rutor kastar bort varannan riktig skylt. */
+  const platText = (s.text||'').replace(/[^A-Z0-9]/gi,'').toUpperCase();
+  if(platText.length===6){
+    rad.perTecken = slagna.map((b,i)=>({ t:platText[i], b:b.w/Hplat, h:b.h/Hplat,
+                                         asp:b.w/b.h, fyll:b.area/(b.w*b.h) }));
+  }
+
+  // Glyferna, normaliserade, för förväxlingsmätningen.
+  const skarGlyf=(b,GW,GH)=>{
+    const bm=new Uint8Array(GW*GH);
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){
+      // Medelvärde över hela källrutan, inte närmaste granne: annars är
+      // nedskalningen ett stickprov och inte en upplösningsförlust.
+      const x0=b.x+Math.floor(x*b.w/GW);
+      const x1=b.x+Math.max(Math.floor((x+1)*b.w/GW), Math.floor(x*b.w/GW)+1);
+      const y0=b.y+Math.floor(y*b.h/GH);
+      const y1=b.y+Math.max(Math.floor((y+1)*b.h/GH), Math.floor(y*b.h/GH)+1);
+      let sum=0,k=0;
+      for(let yy=y0;yy<Math.min(y1,bH);yy++)for(let xx=x0;xx<Math.min(x1,bW);xx++){
+        sum+=mask[yy*bW+xx]; k++; }
+      bm[y*GW+x] = k && sum/k>=0.5 ? 1 : 0;
+    }
+    return bm;
+  };
+  rad.glyfer      = slagna.map(b=>skarGlyf(b,12,20));
+  // Samma glyfer sedda som en dashcam ser dem: teckenhöjd 8 pixlar.
+  rad.glyferGrova = slagna.map(b=>skarGlyf(b,5,8));
+  return rad;
+}
+
+/* ==========================================================================
+ * KÖR
+ * ======================================================================== */
+const ut=document.getElementById('ut'); let txt='';
+const skriv=s=>{ txt+=s+'\n'; ut.textContent=txt; };
+
+skriv('serviceWorker.controller === null  ->  '+(navigator.serviceWorker?.controller===null)
+     +'    origin '+location.origin);
+skriv('');
+
+const rader=[];   // en rad per SKYLT
+for(const b of FACIT){
+  let img;
+  try { img = await ladda(b.fil); }
+  catch(e){ skriv('AVKODNING MISSLYCKADES '+b.fil); continue; }
+  b.skyltar.forEach((s,i)=>{
+    const r = matSkylt(img,s);
+    r.fil=b.fil; r.vinkel=b.vinkel; r.text=s.text; r.lasbar=s.lasbar; r.idx=i;
+    r.bild=[img.naturalWidth,img.naturalHeight];
+    rader.push(r);
+  });
+}
+
+/* Per BILD: den skylt som gav flest pixlar och som gick att dela i 6 tecken. */
+const perBild = new Map();
+for(const r of rader){
+  if(r.antalTecken!==6 || r.fel) continue;
+  const f=perBild.get(r.fil);
+  if(!f || r.plattPx[1]>f.plattPx[1]) perBild.set(r.fil,r);
+}
+
+const STORHETER = [
+ ['TECKENHÖJD / uppmätt skylthöjd','teckenhojd',      '0,64 antaget (70/110 mm)'],
+ ['teckenhöjd / facitrutans höjd', 'teckenhojdRuta',  '(samma sak, sämre nämnare)'],
+ ['teckenhöjd / vita fältets höjd','teckenhojdAvVitfalt','– finns inte i koden'],
+ ['teckenhöjdens spann inom EN skylt','teckenhojdSpannInom','– finns inte i koden'],
+ ['TECKENBREDD / skylthöjd',       'teckenbredd',     '– finns inte i koden'],
+ ['teckenbredd / teckenhöjd',      'teckenaspekt',    '– finns inte i koden'],
+ ['MELLANRUM inom grupp / skylthöjd','gapInom',       '– finns inte i koden'],
+ ['LUCKAN EFTER 3:e / skylthöjd',  'gapTredje',       '– finns inte i koden'],
+ ['LUCKAN EFTER 3:e / inom-grupp (gap)','kvotTredje', '– finns inte i koden'],
+ ['pitch (vänsterkant) inom grupp / skylthöjd','pitchInom','– finns inte i koden'],
+ ['pitch (vänsterkant) över luckan / skylthöjd','pitchTredje','– finns inte i koden'],
+ ['pitchkvot vänsterkant lucka:inom','kvotPitch',     '– finns inte i koden'],
+ ['CENTRUMPITCH inom grupp / skylthöjd','cpitchInom', '– finns inte i koden'],
+ ['CENTRUMPITCH över luckan / skylthöjd','cpitchTredje','– finns inte i koden'],
+ ['CENTRUMPITCHKVOT lucka:inom  <<< SIGNALEN','kvotCentrum','– finns inte i koden'],
+ ['grupplucksbredden extra / skylthöjd','gruppluckaExtra','– finns inte i koden'],
+ ['centrumpitchens spridning inom grupp','cpitchInomSpridning','– finns inte i koden'],
+ ['luckan/största inom-grupp-mellanrum','tredjeMarginal','– finns inte i koden'],
+ ['teckenhöjdens rörelse vid tröskel ±10','hojdTroskelSpann','– finns inte i koden'],
+ ['luckan/teckenbredd (perspektivtåligt)','gapTredjeLokal','– finns inte i koden'],
+ ['inom-grupp/teckenbredd',        'gapInomLokal',    '– finns inte i koden'],
+ ['kvot lucka:inom (perspektivtåligt)','kvotTredjeLokal','– finns inte i koden'],
+ ['LUCKANS LÄGE / skyltbredd (band inräknat)','luckaLage','– finns inte i koden'],
+ ['luckans läge / kroppbredd (utan band)','luckaLageKropp','– finns inte i koden'],
+ ['teckenradens bredd / skyltbredd','radBredd',       '– finns inte i koden'],
+ ['teckenradens bredd / kroppbredd','radBreddAvKropp','– finns inte i koden'],
+ ['teckenradens bredd / skylthöjd','radBreddAvHojd',  '– finns inte i koden'],
+ ['vänstermarginal (bandslut→1:a) / skylthöjd','vansterMarginal','– finns inte i koden'],
+ ['högermarginal / skylthöjd',     'hogerMarginal',   '– finns inte i koden'],
+ ['radens topp / skylthöjd',       'radTopp',         '– finns inte i koden'],
+ ['radens botten / skylthöjd',     'radBotten',       '– finns inte i koden'],
+ ['radens mittavvikelse / skylthöjd','radMittAvvik',  '– finns inte i koden'],
+ ['vita fältet / hela plåthöjden', 'vitfaltAvPlat',   '– finns inte i koden'],
+ ['uppmätt plåthöjd / facitrutans höjd','platAvRuta', '– finns inte i koden'],
+ ['EU-bandets andel av skyltbredden','bandandel',     'euMin 0,03 / euMax 0,22'],
+ ['facitrutans kvot b/h',          'kvot',            'SKYLT_KVOT 4,73'],
+ ['TECKENHÖJD I PIXLAR (upplösning)','teckenhojdPx',  '– finns inte i koden'],
+];
+
+function utelamnaEtt(nyckel, karta){
+  const filer=[...karta.keys()];
+  const alla=filer.map(f=>karta.get(f)[nyckel]).filter(v=>v!=null&&isFinite(v));
+  const m0=med(alla);
+  const meds=[];
+  for(const bort of FACIT.map(b=>b.fil)){
+    const v=filer.filter(f=>f!==bort).map(f=>karta.get(f)[nyckel])
+                 .filter(v=>v!=null&&isFinite(v));
+    if(v.length) meds.push({bort,m:med(v)});
+  }
+  const ms=meds.map(x=>x.m);
+  /* Vilken bild som rör medianen mest är ofta OAVGJORT: med jämnt antal
+   * mätvärden hoppar medianen till samma granne oavsett vilken av halvorna
+   * man tar bort. Räkna hur många bilder som är lika illa, och hur många
+   * OLIKA medianer utelämnandena alls ger — en storhet där 22 utelämnanden
+   * ger två distinkta medianer är stabil, oavsett vad "värsta bilden" heter. */
+  const maxAvvik = Math.max(...meds.map(x=>Math.abs(x.m-m0)));
+  const varstLista = meds.filter(x=>Math.abs(x.m-m0) >= maxAvvik-1e-12);
+  const varst = varstLista[0];
+  const distinkta = new Set(ms.map(v=>Math.round(v*1e9))).size;
+  return { median:m0, n:alla.length, min:Math.min(...alla), max:Math.max(...alla),
+           loMin:Math.min(...ms), loMax:Math.max(...ms),
+           loSpann:Math.max(...ms)-Math.min(...ms),
+           loVarstBild:varst?.bort, loVarstAvvik:maxAvvik,
+           loVarstAntal:varstLista.length, loDistinkta:distinkta,
+           loRelativ: m0? (Math.max(...ms)-Math.min(...ms))/Math.abs(m0) : null };
+}
+
+skriv('BILDER SOM GICK ATT DELA I EXAKT 6 TECKEN: '+perBild.size+' av 22');
+const misslyck = FACIT.map(b=>b.fil).filter(f=>!perBild.has(f));
+skriv('BILDER SOM INTE GICK: '+(misslyck.length?misslyck.join(', '):'inga'));
+skriv('');
+skriv('SKYLT-FÖR-SKYLT (alla '+rader.length+' skyltrutor i facit)');
+skriv('fil                                text     rutapx  rutakvot plåtH band  6?  hojd bredd gapIn  gap3 kvot3 kvotP  lut  dt');
+for(const r of rader){
+  skriv(' '+r.fil.padEnd(34).slice(0,34)
+    +(r.text||'(tom)').padEnd(9)
+    +String(r.plattPx[0]+'x'+r.plattPx[1]).padStart(8)
+    +n(r.kvot,2).padStart(7)
+    +String(r.uppmattPlatH!=null?Math.round(r.uppmattPlatH):'-').padStart(6)
+    +' '+n(r.bandandel,3)
+    +'  '+(r.antalTecken===6?'ja ':'NEJ')
+    +' '+n(r.teckenhojd)+' '+n(r.teckenbredd)+' '+n(r.gapInom)+' '+n(r.gapTredje)
+    +' '+n(r.kvotTredje,2)+' '+n(r.kvotPitch,2)+n(r.lutning,1).padStart(6)
+    +String(r.troskelAvvik??'-').padStart(5)
+    +(r.fel? '   << '+r.fel : ''));
+}
+skriv('');
+skriv('=========================================================================');
+skriv('STORHETER — median, spann, n, och utelämna-ett över alla 22 bilder');
+skriv('=========================================================================');
+skriv('storhet                                        median   spann(min–max)      n   U1-spann  U1 värst bild');
+const sammanfattning={};
+for(const [namn,nyckel,dagens] of STORHETER){
+  const s=utelamnaEtt(nyckel,perBild);
+  sammanfattning[nyckel]={namn,dagens,...s};
+  if(!s.n) { skriv(' '+namn.padEnd(46)+'  – inga mätvärden'); continue; }
+  const d = nyckel==='teckenhojdPx' ? 0 : 3;
+  skriv(' '+namn.padEnd(46)
+   +n(s.median,d).padStart(8)+'  '
+   +(n(s.min,d)+'–'+n(s.max,d)).padStart(17)
+   +String(s.n).padStart(4)+'  '
+   +n(s.loSpann,d).padStart(8)+'  '
+   +(s.loVarstBild||'').slice(0,30)+' (±'+n(s.loVarstAvvik,d)
+   +(s.loVarstAntal>1?', '+s.loVarstAntal+' bilder lika illa':'')
+   +', '+s.loDistinkta+' distinkta medianer)');
+  skriv('   dagens värde i koden: '+dagens);
+}
+
+/* ---- ÄR LUCKAN ALLTID DEN VIDASTE? ------------------------------------- */
+skriv('');
+skriv('=========================================================================');
+skriv('LUCKAN EFTER TREDJE TECKNET — den strukturella signalen, prövad');
+skriv('=========================================================================');
+const bilds=[...perBild.values()];
+const alltid=bilds.filter(r=>r.tredjeStorst).length;
+skriv('bilder där det TREDJE centrummellanrummet är det vidaste av fem: '
+      +alltid+' / '+bilds.length);
+const misstag=bilds.filter(r=>!r.tredjeStorst);
+if(misstag.length) for(const r of misstag)
+  skriv('   INTE störst: '+r.fil+' '+r.text+'  kvot '+n(r.kvotCentrum,2)
+        +'  marginal mot näst vidaste '+n(r.tredjeMarginal,2)+'  lutning '+n(r.lutning,1));
+const marg=bilds.map(r=>r.tredjeMarginal).filter(v=>v!=null).sort((a,b)=>a-b);
+skriv('marginal mot näst vidaste, lägsta fem: '+marg.slice(0,5).map(v=>n(v,2)).join('  '));
+skriv('marginal mot näst vidaste, högsta fem: '+marg.slice(-5).map(v=>n(v,2)).join('  '));
+skriv('');
+skriv('utelämna-ett på "alltid störst"-räkningen: andelen rör sig '
+      + n(1/bilds.length,3) + ' per bild — med '+alltid+'/'+bilds.length
+      + ' blir det '+Math.min(alltid,bilds.length-1)+'/'+(bilds.length-1)
+      + ' eller '+Math.max(0,alltid-1)+'/'+(bilds.length-1)
+      + ' beroende på vilken bild som lämnas ute');
+
+/* ---- BREDD PER TECKEN --------------------------------------------------- */
+skriv('');
+skriv('=========================================================================');
+skriv('BREDD PER TECKEN — vad en segmenterare får förvänta sig av varje glyf');
+skriv('=========================================================================');
+const perT=new Map();
+for(const r of rader) for(const g of (r.perTecken||[])){
+  if(!perT.has(g.t)) perT.set(g.t,[]);
+  perT.get(g.t).push(g);
+}
+skriv('tecken   n   bredd/skylthöjd   bredd/teckenhöjd   fyllnad i bboxen');
+for(const c of [...perT.keys()].sort()){
+  const l=perT.get(c);
+  skriv('  '+c+'    '+String(l.length).padStart(2)+'   '
+    +n(med(l.map(g=>g.b))).padStart(6)+' ('+n(Math.min(...l.map(g=>g.b)),2)
+    +'–'+n(Math.max(...l.map(g=>g.b)),2)+')   '
+    +n(med(l.map(g=>g.b/g.h))).padStart(6)+'             '
+    +n(med(l.map(g=>g.fyll))));
+}
+const smala=[...perT].filter(([c,l])=>med(l.map(g=>g.b/g.h))<0.45).map(([c])=>c);
+skriv('SMALA glyfer (bredd under 0,45 av teckenhöjden): '+(smala.join(' ')||'inga'));
+
+/* ---- FORMAT OCH ALFABET ------------------------------------------------ */
+skriv('');
+skriv('=========================================================================');
+skriv('FORMATET OCH ALFABETET — räknat på facittexterna, inte på pixlar');
+skriv('=========================================================================');
+const texter = FACIT.flatMap(b=>b.skyltar.map(s=>s.text)).filter(t=>t&&t.trim());
+const bar = t=>t.replace(/[^A-Z0-9]/g,'');
+const format = {};
+const bokstavRakn = {}, siffraRakn = {}, sistRakn = {};
+for(const t of texter){
+  const p=bar(t);
+  const f=p.split('').map(c=>/[0-9]/.test(c)?'9':'A').join('');
+  format[f]=(format[f]||0)+1;
+  for(let i=0;i<3;i++) bokstavRakn[p[i]]=(bokstavRakn[p[i]]||0)+1;
+  for(let i=3;i<5;i++) siffraRakn[p[i]]=(siffraRakn[p[i]]||0)+1;
+  sistRakn[p[5]]=(sistRakn[p[5]]||0)+1;
+}
+skriv('antal skyltar med text: '+texter.length+' ('+new Set(texter).size+' unika)');
+skriv('format: '+Object.entries(format).map(([f,c])=>f.replace(/A{3}/,'ABC')+' ×'+c).join('   '));
+skriv('  AAA999 = ABC 123-serien, AAA99A = ABC 12X-serien');
+const anvanda=Object.keys(bokstavRakn).sort().join('');
+skriv('bokstäver på plats 1–3 som förekommer: '+anvanda+'   ('+anvanda.length+' st)');
+skriv('kodens BOKSTAV-alfabet:                '+BOKSTAV+'   ('+BOKSTAV.length+' st)');
+skriv('  i bilderna men INTE i kodens alfabet: '
+  +([...anvanda].filter(c=>!BOKSTAV.includes(c)).join('')||'INGEN — alfabetet håller'));
+skriv('  i kodens alfabet men inte i bilderna: '
+  +([...BOKSTAV].filter(c=>!anvanda.includes(c)).join('')||'inga'));
+skriv('  I, Q, V i bilderna: '+(/[IQV]/.test(texter.map(bar).join(''))?'JA — uteslutningen är FEL':'nej — uteslutningen håller'));
+skriv('sista tecknet: '+Object.entries(sistRakn).sort().map(([c,k])=>c+'×'+k).join(' '));
+skriv('  O på sista plats: '+(sistRakn['O']?'JA — SISTBOKSTAV är fel':'nej — SISTBOKSTAV håller'));
+skriv('siffror på plats 4–5: '+Object.entries(siffraRakn).sort().map(([c,k])=>c+'×'+k).join(' '));
+
+/* ---- FÖRVÄXLINGAR ------------------------------------------------------ */
+skriv('');
+skriv('=========================================================================');
+skriv('FÖRVÄXLINGSBARA TECKENPAR — mätt på glyferna som skars ut ur bilderna');
+skriv('=========================================================================');
+/* Här används ALLA skyltrutor som gick att dela i sex tecken, inte bara en
+ * per bild: förväxlingsfrågan är "hur lika är två glyfer", och den frågan
+ * bryr sig inte om vilken bild glyfen kom ur. Med bara en ruta per bild föll
+ * bokstaven O bort helt, eftersom det enda O:et sitter på den lilla skylten
+ * OOT 63Z längst bort i 521e24d0. */
+const allaSex = rader.filter(r=>r.antalTecken===6 && r.glyfer && bar(r.text||'').length===6);
+function byggMallar(falt, storlek){
+  const mallar=new Map();
+  for(const r of allaSex){
+    const p=bar(r.text);
+    (r[falt]||[]).forEach((bm,i)=>{
+      if(!mallar.has(p[i])) mallar.set(p[i],[]);
+      mallar.get(p[i]).push(bm);
+    });
+  }
+  const snitt=new Map();
+  for(const [c,lista] of mallar){
+    const s=new Float32Array(storlek);
+    for(const bm of lista) for(let i=0;i<storlek;i++) s[i]+=bm[i];
+    for(let i=0;i<storlek;i++) s[i]/=lista.length;
+    snitt.set(c,{s,n:lista.length});
+  }
+  const par=[]; const tkn=[...snitt.keys()].sort();
+  for(let a=0;a<tkn.length;a++)for(let b=a+1;b<tkn.length;b++){
+    const A=snitt.get(tkn[a]).s, B=snitt.get(tkn[b]).s;
+    let d=0; for(let i=0;i<storlek;i++) d+=Math.abs(A[i]-B[i]);
+    par.push({p:tkn[a]+'/'+tkn[b], d:d/storlek,
+              nA:snitt.get(tkn[a]).n, nB:snitt.get(tkn[b]).n});
+  }
+  par.sort((x,y)=>x.d-y.d);
+  return {mallar,par};
+}
+const fin = byggMallar('glyfer',240);
+const grov= byggMallar('glyferGrova',40);
+const par = fin.par, mallar = fin.mallar;
+
+/* Position avgör hur farlig en förväxling är. Plats 1–3 är bokstav, 4–5
+ * siffra, 6 endera. En bokstav förväxlad med en SIFFRA rättas av
+ * normaliseraPlat, och kostar därför ingenting. En bokstav förväxlad med en
+ * annan BOKSTAV går inte att rätta — den blir en giltig men fel skylt. */
+const bokst = c => /[A-Z]/.test(c);
+const farlighet = p => {
+  const [a,b]=p.split('/');
+  if(bokst(a)&&bokst(b)) return 'FARLIG — bokstav/bokstav, formatet kan inte rätta';
+  if(!bokst(a)&&!bokst(b)) return 'FARLIG — siffra/siffra, formatet kan inte rätta';
+  return 'ofarlig på plats 1–5 (formatet rättar), farlig på plats 6';
+};
+
+skriv('glyfer utskurna: '+[...mallar].map(([c,l])=>c+'×'+l.length).sort().join(' '));
+skriv('antal tecken med minst ett exempel: '+mallar.size
+      +' av 33 möjliga (23 bokstäver + 10 siffror)');
+skriv('saknas helt i bilderna: '
+      +[...(BOKSTAV+'0123456789')].filter(c=>!mallar.has(c)).join(' ')
+      +'   — för dem går ingen förväxling att mäta');
+skriv('');
+skriv('de 18 mest LIKA paren vid bänkens upplösning (12×20-mask, låg siffra = lika):');
+for(const x of par.slice(0,18)){
+  const kodat = (TILL_SIFFRA[x.p[0]]===x.p[2]) || (TILL_SIFFRA[x.p[2]]===x.p[0])
+             || (TILL_BOKSTAV[x.p[0]]===x.p[2]) || (TILL_BOKSTAV[x.p[2]]===x.p[0]);
+  skriv('   '+x.p+'  '+n(x.d,3)+'  n='+String(x.nA+'/'+x.nB).padEnd(6)
+        +(kodat?'i kodens tabell  ':'SAKNAS i kodens tabell  ')+farlighet(x.p));
+}
+skriv('');
+skriv('samma sak vid DASHCAM-upplösning (teckenhöjd 8 px, 5×8-mask):');
+for(const x of grov.par.slice(0,14)){
+  const kodat = (TILL_SIFFRA[x.p[0]]===x.p[2]) || (TILL_SIFFRA[x.p[2]]===x.p[0])
+             || (TILL_BOKSTAV[x.p[0]]===x.p[2]) || (TILL_BOKSTAV[x.p[2]]===x.p[0]);
+  skriv('   '+x.p+'  '+n(x.d,3)+'  n='+String(x.nA+'/'+x.nB).padEnd(6)
+        +(kodat?'i kodens tabell  ':'SAKNAS i kodens tabell  ')+farlighet(x.p));
+}
+skriv('');
+skriv('kodens par prövade mot bilderna (rang 1 = mest lika av alla '+par.length+' par):');
+const kodPar=new Set();
+for(const [s,b] of Object.entries(TILL_BOKSTAV)) kodPar.add([s,b].sort().join('/'));
+for(const [b,s] of Object.entries(TILL_SIFFRA)) kodPar.add([b,s].sort().join('/'));
+for(const p of [...kodPar].sort()){
+  const [a,b]=p.split('/');
+  const f=par.find(x=>x.p===[a,b].sort().join('/'));
+  const fg=grov.par.find(x=>x.p===[a,b].sort().join('/'));
+  const rang=f?par.indexOf(f)+1:null;
+  skriv('   '+p.padEnd(5)+(f? 'avstånd '+n(f.d,3)+'  rang '+String(rang).padStart(3)
+        +' av '+par.length+'   grovt: rang '+(grov.par.indexOf(fg)+1)
+        : 'GÅR INTE ATT PRÖVA — minst ett av tecknen saknas i bilderna'));
+}
+skriv('');
+skriv('LEAVE-ONE-OUT PÅ FÖRVÄXLINGSRANGORDNINGEN: hur mycket topplistan rör sig');
+skriv('när en bild lämnas ute (Spearman mot hela listan, 1,00 = oförändrad):');
+{
+  const helRang=new Map(par.map((x,i)=>[x.p,i]));
+  const rader2=[];
+  for(const bortFil of FACIT.map(b=>b.fil)){
+    const kvar = allaSex.filter(r=>r.fil!==bortFil);
+    if(kvar.length===allaSex.length) continue;
+    const mm=new Map();
+    for(const r of kvar){ const p=bar(r.text);
+      r.glyfer.forEach((bm,i)=>{ if(!mm.has(p[i])) mm.set(p[i],[]); mm.get(p[i]).push(bm); }); }
+    const sn=new Map();
+    for(const [c,l] of mm){ const s=new Float32Array(240);
+      for(const bm of l) for(let i=0;i<240;i++) s[i]+=bm[i];
+      for(let i=0;i<240;i++) s[i]/=l.length; sn.set(c,s); }
+    const pp=[]; const tk=[...sn.keys()].sort();
+    for(let a=0;a<tk.length;a++)for(let b=a+1;b<tk.length;b++){
+      let dd=0; const A=sn.get(tk[a]),B=sn.get(tk[b]);
+      for(let i=0;i<240;i++) dd+=Math.abs(A[i]-B[i]);
+      pp.push({p:tk[a]+'/'+tk[b], d:dd/240}); }
+    pp.sort((x,y)=>x.d-y.d);
+    const gem=pp.filter(x=>helRang.has(x.p));
+    let sd=0; gem.forEach((x,i)=>{ const dr=i-[...helRang.keys()]
+       .filter(k=>gem.some(y=>y.p===k)).indexOf(x.p); sd+=dr*dr; });
+    const N=gem.length;
+    rader2.push({bortFil, rho: N>2 ? 1-6*sd/(N*(N*N-1)) : null, N,
+                 topp10Kvar: pp.slice(0,10).filter(x=>par.slice(0,10).some(y=>y.p===x.p)).length});
+  }
+  const rhos=rader2.map(r=>r.rho).filter(v=>v!=null);
+  skriv('   Spearman: median '+n(med(rhos),3)+'  lägsta '+n(Math.min(...rhos),3)
+        +'  (n='+rhos.length+' utelämnanden)');
+  const t10=rader2.map(r=>r.topp10Kvar);
+  skriv('   av topp-10-paren står kvar: median '+med(t10)+'/10  lägsta '+Math.min(...t10)+'/10');
+  const varst2=rader2.sort((a,b)=>a.topp10Kvar-b.topp10Kvar).slice(0,3);
+  for(const v of varst2) skriv('   känsligast för att '+v.bortFil+' tas bort: '
+        +v.topp10Kvar+'/10 kvar');
+}
+
+/* ---- VAD LÄSAREN FAKTISKT FÖRVÄXLAR ------------------------------------
+ * Formmätningen ovan säger vilka glyfer som LIKNAR varandra. Den säger inte
+ * vad OCR:en gör med dem. Det enda som svarar på den frågan är att köra den
+ * riktiga läsvägen och titta på den RÅA strängen, före normaliseraPlat —
+ * efter normaliseringen är varje förväxling antingen redan rättad eller
+ * förkastad, och då syns den inte.
+ *
+ * Körs bara med ?ocr=1, eftersom den hämtar Tesseract över nätet.
+ */
+if(new URLSearchParams(location.search).get('ocr')==='1'){
+  skriv('');
+  skriv('=========================================================================');
+  skriv('RÅ OCR PÅ FACITRUTAN — vad tecknen faktiskt blir, före normalisering');
+  skriv('=========================================================================');
+  /* lasRuta returnerar { plat, sakerhet, bild } och kastar bort `ratext` på
+   * vägen ut. Den råa strängen går ändå att få tag i utan att röra modulen:
+   * `bild` ÄR den förbehandlade canvas som gav det bästa svaret, och
+   * `lasBild` är exporterad. Läs om den canvasen, så syns tecknen som OCR:en
+   * faktiskt såg dem, före normaliseringen. */
+  const { lasKandidat, lasBild, haMotor } = await import('../../js/plate.js');
+  await haMotor();
+  const forvaxlingar=new Map();
+  let lasta=0, exakt=0;
+  window.__raRader=[];
+  for(const b of FACIT){
+    let img; try { img=await ladda(b.fil); } catch(e){ continue; }
+    const cc=document.createElement('canvas');
+    cc.width=img.naturalWidth; cc.height=img.naturalHeight;
+    cc.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0);
+    for(const s of b.skyltar){
+      const facit=bar(s.text||''); if(facit.length!==6) continue;
+      const ruta={ x:s.x*img.naturalWidth, y:s.y*img.naturalHeight,
+                   w:s.b*img.naturalWidth, h:s.h*img.naturalHeight };
+      let sv=null, rasvar=null;
+      try {
+        sv=await lasKandidat(cc,ruta);
+        if(sv?.bild) rasvar=await lasBild(sv.bild);
+      } catch(e){ /* låt raden stå tom hellre än att stoppa bänken */ }
+      const ra=(rasvar?.ratext||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      lasta++;
+      if(ra===facit) exakt++;
+      window.__raRader.push({fil:b.fil, facit, ra, plat:sv?.plat||null});
+      skriv('  '+b.fil.padEnd(34).slice(0,34)+' facit '+facit
+            +'  rått "'+(rasvar?.ratext||'').replace(/\s+/g,' ')+'"'
+            +'  → '+(sv?.plat||'—')
+            +'  säkerhet '+(rasvar?.sakerhet??'—')
+            +(ra===facit?'   RÄTT':(ra?'   AVVIKER':'   TOM')));
+      if(ra.length===facit.length){
+        for(let i=0;i<facit.length;i++) if(ra[i]!==facit[i]){
+          const k=facit[i]+'→'+ra[i];
+          forvaxlingar.set(k,(forvaxlingar.get(k)||0)+1);
+        }
+      }
+    }
+  }
+  skriv('');
+  skriv('råtexten exakt lika med facit: '+exakt+' / '+lasta);
+  /*
+   * LÄNGDEN ÄR DET SOM GÅR SÖNDER, INTE TECKNEN.
+   * Räkna hur felen fördelar sig: rätt längd men fel tecken (en riktig
+   * förväxling), för LÅNG sträng (OCR:en har läst ett tecken som inte finns
+   * — bandkanten, "S":et i bandet, eller besiktningsmärket i grupplyckan),
+   * eller för kort (skylten är delvis utanför rutan eller utbränd).
+   */
+  const langd={ratt:0,forLang:0,forKort:0,tom:0};
+  const forLangaExempel=[];
+  for(const x of window.__raRader){
+    if(!x.ra) { langd.tom++; continue; }
+    if(x.ra.length===6) langd.ratt++;
+    else if(x.ra.length>6){ langd.forLang++;
+      if(x.ra.includes(x.facit)) forLangaExempel.push(x.fil+': "'+x.ra+'" innehåller facit '+x.facit); }
+    else langd.forKort++;
+  }
+  skriv('');
+  skriv('HUR FELEN FÖRDELAR SIG PÅ LÄNGD (det här är dagens dominerande felkälla):');
+  skriv('   rå sträng exakt 6 tecken: '+langd.ratt+' / '+lasta);
+  skriv('   FÖR LÅNG (extra tecken):  '+langd.forLang+' / '+lasta);
+  skriv('   för kort:                 '+langd.forKort+' / '+lasta);
+  skriv('   helt tom:                 '+langd.tom+' / '+lasta);
+  skriv('   av de för långa innehåller facit som delsträng: '+forLangaExempel.length);
+  for(const e of forLangaExempel) skriv('      '+e);
+  skriv('   normaliseraPlat kapar i dag bara ett inledande "S" vid längd 7.');
+  skriv('   Varje rad ovan där facit ligger som delsträng är en läsning som');
+  skriv('   kastades trots att tecknen var rätt.');
+  const fl=[...forvaxlingar].sort((a,b)=>b[1]-a[1]);
+  skriv('teckenförväxlingar som FAKTISKT inträffade (facit→läst), '
+        +'bara jämförbara när längden stämmer:');
+  if(!fl.length) skriv('   INGA — se anmärkningen om vad det betyder');
+  for(const [k,v] of fl){
+    const [a,bb]=k.split('→');
+    const kodat = TILL_SIFFRA[a]===bb||TILL_SIFFRA[bb]===a
+               || TILL_BOKSTAV[a]===bb||TILL_BOKSTAV[bb]===a;
+    skriv('   '+k+' ×'+v+'   '+(kodat?'kodens tabell täcker det':'TÄCKS INTE av kodens tabell'));
+  }
+  window.__ocr={ forvaxlingar:fl, exakt, lasta };
+}
+
+window.__tecken={ rader, perBild:[...perBild.values()], sammanfattning, format,
+                  bokstavRakn, siffraRakn, sistRakn, par, grovPar:grov.par, texter,
+                  perTecken:[...perT].map(([c,l])=>({c,n:l.length,
+                    bredd:med(l.map(g=>g.b)), aspekt:med(l.map(g=>g.b/g.h))})) };
+/* ---- VAD DET HÄR UNDERLAGET INTE RÄCKER TILL --------------------------- */
+skriv('');
+skriv('=========================================================================');
+skriv('VAD SOM INTE GICK ATT MÄTA, OCH VARFÖR');
+skriv('=========================================================================');
+skriv([
+'1. TVÅ AV 22 BILDER GAV INGEN TECKENDELNING ALLS.',
+'   images.jpg: plåten är utbränd av en reflex, och "1" och "0" i HNL 210',
+'   försvinner helt i det vita. Fem klumpar hittas, inte sex. Det är inte',
+'   ett fel i mätningen — tecknen finns inte kvar i pixlarna.',
+'   nya-skyltar-transportstyrelsen.png: facitrutan skär av skylten till',
+'   höger (rutkvot 2,15 mot skyltens 4,73) och en röd pil ligger tvärs över',
+'   plåten. matning.html har redan markerat den lasbar:false.',
+'',
+'2. FEM AV 33 TECKEN HAR BARA ETT ELLER TVÅ EXEMPEL (G, S, C, F, H, L, O, W).',
+'   Varje avstånd som räknats med dem är en enda glyf mot en enda glyf, inte',
+'   en fördelning. 0/G står överst på likhetslistan med n=1 för G. Det talet',
+'   ska inte användas till någonting.',
+'',
+'3. BOKSTÄVERNA I, Q OCH V GÅR INTE ATT PRÖVA ALLS.',
+'   De finns inte på svenska skyltar, så bilderna kan varken bekräfta eller',
+'   motbevisa att OCR:en läser något ANNAT som I, Q eller V. Uteslutningen i',
+'   koden är i den meningen obeprövad åt det farliga hållet.',
+'',
+'4. FORMDISTANSEN FÖRUTSÄGER INTE VAD TESSERACT GÖR.',
+'   Den enda bokstav/bokstav-förväxling som faktiskt inträffade var M→H, och',
+'   M/H ligger inte bland de arton mest lika paren i formmätningen. Listan',
+'   över "liknar varandra" och listan över "förväxlas" är alltså inte samma',
+'   lista. För att mäta den senare på riktigt krävs tusentals riktiga',
+'   läsningar, inte 26.',
+'',
+'5. SÄKERHETSTALET FRÅN OCR:EN ÄR 0 PÅ ALLA RADER.',
+'   data.confidence kommer tom ur den här Tesseract-uppsättningen, så ingen',
+'   viktning efter säkerhet gick att mäta.',
+'',
+'6. UNDERLAGET ÄR 22 STILLBILDER, INTE VIDEO.',
+'   Det är närbilder och pressbilder: teckenhöjden är 18–131 px med median',
+'   43 px. En dashcam på tio meters håll ger 6–10 px. Varje tal här är',
+'   alltså mätt en storleksordning över den upplösning appen körs i.',
+'   VAD SOM SKULLE BEHÖVAS FÖR ATT LITA PÅ TALEN: några hundra bildrutor ur',
+'   en riktig dashcam, i den kamerahöjd och hållarvinkel appen körs i, med',
+'   skyltrutan OCH teckenrutorna uppmätta per bildruta. Då går fördelningen',
+'   för teckenhöjd, pitch och gruppucka att rita vid RÄTT upplösning, och',
+'   först då går en gräns att sätta. Tills dess: prior och rangordning,',
+'   aldrig en strykning.',
+'',
+'7. PERSPEKTIVET ÄR INTE KOMPENSERAT, BARA KRINGGÅTT.',
+'   Sex av tjugo skyltar lutar mer än 4 grader, en (EZN 242) lutar 18. Alla',
+'   längdmått i x-led är mätta på den axelriktade projektionen. Därför',
+'   redovisas centrumpitchen som KVOT mellan två mellanrum i samma skylt —',
+'   en kvot överlever en måttlig snedhet, ett absolut tal gör det inte.',
+].join('\n'));
+
+skriv('');
+skriv('KLAR');
+
+/* ---- galleri för ögat -------------------------------------------------- */
+const gal=document.getElementById('galleri');
+for(const r of rader){
+  if(!r.vy) continue;
+  const div=document.createElement('div'); div.className='rad';
+  const h=document.createElement('div');
+  h.innerHTML='<b>'+r.fil+'</b> '+(r.text||'(tom)')+' — '
+    +(r.antalTecken===6?'<span class="ok">6 tecken</span>':'<span class="fel">'+(r.fel||'')+'</span>');
+  div.appendChild(h); div.appendChild(r.vy); gal.appendChild(div);
+}
+</script>

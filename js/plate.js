@@ -46,6 +46,31 @@
  *
  * Se docs/malsokning.md.
  *
+ * UTSEENDEMODELLEN — VAD EN SVENSK SKYLT SER UT SOM, MÄTT
+ *
+ * Sedan sökningen byggdes har de 22 provfotona i prov/skyltar mätts upp tre
+ * gånger oberoende: form, färg och tecken. Resultatet ligger samlat i
+ * `UTSEENDE` längre ned, med median, spann, n och utelämna-ett-rörelse för
+ * varje storhet, och med de tal som visade sig FELAKTIGA kvar i klartext så
+ * att ingen sätter tillbaka dem. Det korta svaret:
+ *
+ *   Skylten är en nästan perfekt rak rad av sex jämnhöga tecken. Radens
+ *   mittpunkt sitter på 0,537 av skyltbredden — till HÖGER om mitten, för
+ *   EU-bandet äter vänsterkanten. Raden spänner 0,75 av bredden. Tecknen är
+ *   0,68 av plåthöjden höga (75/110, inte kodens gamla 70/110). Mellan tecken
+ *   tre och fyra sitter en LUCKA, och det tredje av de fem centrummellanrummen
+ *   är det vidaste på 20 av 20 uppmätta bilder. Bandet är 0,100 av bredden
+ *   (varken 0,087 eller 0,105 — båda de talen var fel, se `UTSEENDE.euAndel`)
+ *   och ligger på nyans 217° med mättnad 0,84. Plåten är 4,72 lång mot hög
+ *   MÄTT PÅ SINA EGNA AXLAR, vilket bekräftar teoritalet 4,73.
+ *
+ * INGET AV DE TALEN ÄR ETT VETO, OCH DET ÄR INTE ARTIGHET. De verkar som
+ * prior, rangordning eller tidigt avbrott. En regel härledd ur samma 22 foton
+ * — en horisontgräns — vann en gång på bänken (topp1 12 → 15) och DOG utanför
+ * den: en bildruta där bara stötfångaren syns gick från 15/20 lås till 1/20.
+ * 22 dagsljusnärbilder är ett facit för UTSEENDET, inte ett underlag för
+ * gränser. Vad som skulle behövas för att sätta gränser står i `UTSEENDE`.
+ *
  * Punkt 1 krävde länge att skylten hamnade inuti en fast ruta mitt i bilden.
  * Det var ett krav på verkligheten och inte på programmet — telefonen sitter i
  * en hållare och skylten hamnar där den hamnar. Numera letar läsaren upp
@@ -87,14 +112,107 @@ const TILL_SIFFRA  = { O: '0', D: '0', Q: '0', I: '1', L: '1', Z: '2',
 /**
  * Städar en rå OCR-sträng till en svensk skylt, eller null.
  * Rättar bara förväxlingar positionsvis — hittar inte på tecken.
+ *
+ * LÄNGDFEL ÄR DAGENS DOMINERANDE FEL, INTE FÖRVÄXLINGAR — OCH DET ÄR MÄTT.
+ *
+ * Hela läsvägen kördes mot de 22 provfotona (`lasKandidat` på facitrutan och
+ * sedan `lasBild` om på den förbehandlade canvasen, eftersom `lasRuta` kastar
+ * bort råtexten på vägen ut) och råtexten granskades FÖRE normaliseringen. Av
+ * 26 skyltrutor: 13 råtexter har rätt längd, 6 är för långa, 4 för korta,
+ * 3 tomma. Faktiska TECKENFÖRVÄXLINGAR: tre stycken totalt — O→0 två gånger,
+ * som tabellerna ovan redan rättar, och M→H en gång, som formatet aldrig kan
+ * rätta eftersom båda är bokstäver på plats 1–3.
+ *
+ * FEM AV DE SEX FÖR LÅNGA INNEHÅLLER FACIT SOM EXAKT DELSTRÄNG:
+ *   YBK70UN → YBK70U   FAP18MJ → FAP18M   1ZPD710 → ZPD710
+ *   JURK924 → URK924   AABC123 → ABC123
+ * Rätt tecken, kastad läsning. Det extra tecknet kommer från bandkanten, från
+ * S:et i bandet eller från besiktningsmärket i gruppluckan.
+ *
+ * DÄRFÖR PRÖVAS DELSTRÄNGAR. Ur en råtext på 7 eller 8 tecken prövas varje
+ * fönster om sex tecken, var och en genom exakt samma positionsvisa rättning
+ * som förut, och svaret accepteras bara om precis ETT DISTINKT giltigt
+ * nummer faller ut. Kravet "exakt ett" är hela säkringen: "ABU2773" ger både
+ * ABU277 och BUZ773, alltså två olika giltiga skyltar, och då vet vi inte
+ * vilken — läsningen kastas precis som förut.
+ *
+ * DET HÄR ÄR INGEN GRÄNS HÄRLEDD UR DE 22 BILDERNA, det är en avkodningsregel,
+ * och den kan per konstruktion inte tappa något som läses i dag: vägen för
+ * längd 6 är ordagrant oförändrad. Det tal som KAN gå sönder är matning.htmls
+ * "0 falska läsningar", och det är därför det talet mäts efter varje ändring
+ * här.
+ *
+ * MEN "EXAKT ETT DISTINKT NUMMER" ÄR INTE HELA SÄKRINGEN, OCH DET ÄR MÄTT:
+ * en insättning MITT I en riktig skylt ger oftast precis ett giltigt nummer —
+ * fast fel. Därför bär svaret härifrån en källflagga (`tolkaRatext`), och en
+ * delsträngsläsning får aldrig ensam annonseras: se `Rostrakning.rosta`.
  */
 export function normaliseraPlat(ratext) {
-  let s = String(ratext || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return tolkaRatext(ratext).plat;
+}
 
-  // Vissa skyltar läses med landskoden fram ("S ABC123").
-  if (s.length === 7 && s[0] === 'S') s = s.slice(1);
-  if (s.length !== 6) return null;
+/**
+ * Som `normaliseraPlat`, men säger också VARIFRÅN svaret kom: `exaktSex` är
+ * true bara när den städade råtexten var exakt sex tecken lång — alltså när
+ * längden i sig var ett bevis och inte något avkodningen fick återskapa.
+ *
+ * VARFÖR FLAGGAN FINNS — DELSTRÄNGSAVKODNINGEN KAN MYNTA ETT STABILT FEL
+ * NUMMER, OCH DET ÄR MÄTT (nedan i den här filen ändras inget i avkodningen;
+ * det som ändras är vad en delsträngsläsning får BÄRA):
+ *
+ *   Insättning av ett tecken i en ÄNDE av en riktig skylt är ofarlig,
+ *   insättning i MITTEN är det inte. Uttömmande över de 22 facitnumren i
+ *   matning.html och hela OCR-alfabetet (33 tecken, varje position):
+ *     ände (position 0 och 6):   svaret är rätt eller tyst — aldrig fel
+ *     mitten (position 1–5):     merparten formatgiltiga men FEL nummer
+ *   och acceptansytan för rent slumpbrus av längd 7–8 är tvåsiffrig i
+ *   procent, mot promille för längd 6. De uppmätta talen står i kommentaren
+ *   vid `Rostrakning.rosta` och mäts om vid varje ändring här.
+ *
+ *   Längden var alltså appens billigaste falsklärningsfilter, och för längd
+ *   7–8 är det borta. Rösträkningen mildrar (`malGolv` 0,65 > `viktHog`
+ *   0,60) men en SYSTEMATISK mitteninsättning — samma smutsfläck, samma
+ *   bandkant, varje bildruta — ger samma felnummer varje varv och passerar
+ *   omröstningen.
+ *
+ * REGELN SOM FLAGGAN BÄR UPP: en delsträngsläsning får aldrig ENSAM bära ett
+ * svar. Den röstar med låg vikt, och svaret annonseras inte förrän minst en
+ * läsning med exakt sex tecken sagt samma sak. En systematisk insättning får
+ * aldrig den bekräftelsen — appen tiger i stället för att ljuga, vilket är
+ * precis vad dess egen gränssnittstext lovar: "Den gissar inte. Hellre inget
+ * svar än fel svar." Grinden sitter i `Rostrakning.rosta` (flaggan `exakt`)
+ * och kostnaden är mätt där, i bänken och inte i teorin.
+ */
+export function tolkaRatext(ratext) {
+  const s = String(ratext || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (s.length === 6) return { plat: rattaSex(s), exaktSex: true };
+  if (s.length !== 7 && s.length !== 8) return { plat: null, exaktSex: false };
 
+  /*
+   * Vissa skyltar läses med landskoden fram ("S ABC123"). Den grenen låg förut
+   * här som ett särfall och står kvar som snabbväg — den är en delsträng bland
+   * de andra, men den är den vanligaste och kostar en jämförelse.
+   *
+   * OCKSÅ DEN ÄR `exaktSex: false`. Ändinsättningar är visserligen ofarliga i
+   * mätningen ovan, men regeln är billigare att hålla ren än att hålla i
+   * undantag: allt som inte var sex tecken ur motorn behöver en sextecken-
+   * bekräftelse innan det annonseras.
+   */
+  if (s.length === 7 && s[0] === 'S') {
+    const p = rattaSex(s.slice(1));
+    if (p) return { plat: p, exaktSex: false };
+  }
+
+  const funna = new Set();
+  for (let i = 0; i + 6 <= s.length; i++) {
+    const p = rattaSex(s.slice(i, i + 6));
+    if (p) funna.add(p);
+  }
+  return { plat: funna.size === 1 ? [...funna][0] : null, exaktSex: false };
+}
+
+/** Den positionsvisa rättningen, oförändrad. Sex tecken in, skylt eller null ut. */
+function rattaSex(s) {
   const tecken = s.split('');
   let rattade = 0;
   const ratta = (i, nytt) => { if (nytt && nytt !== tecken[i]) { tecken[i] = nytt; rattade++; } };
@@ -590,10 +708,48 @@ function vikVinkel(v) {
  *   blågrå kaross #1d2733      mättnad 0,43   kroma  22   → INGETDERA
  *   asfalt #5a6068             mättnad 0,14   kroma  14   → INGETDERA
  *
- * NYANS 198°–268° är brett med flit. Bandet självt ligger på 220°, men
+ * NYANS 190°–268° är brett med flit. Bandet självt ligger på 220°, men
  * vitbalansen i en telefonkamera flyttar hela bilden flera grader, och en våt
- * eller smutsig skylt drar mot violett. Den nedre gränsen 198° är satt precis
- * ovanför ljus himmelsblå (#87CEEB ligger på 197°), den övre 268° under lila.
+ * eller smutsig skylt drar mot violett. Den övre gränsen 268° ligger under
+ * lila.
+ *
+ * GOLVET ÄR 198°, FLYTTADES TILL 190° PÅ EN MÄTNING OCH ÄR TILLBAKASATT PÅ
+ * EN BÄTTRE. Flytten till 190 motiverades med att images.jpg:s band har
+ * mediannyans 195,6° och klipptes av 198 (bandtäckning 28,1 %, sämst i
+ * materialet), och med påståendet att 190 hämtar in det "utan att en enda
+ * extra pixel någon annanstans blir blå". DET PÅSTÅENDET VAR FALSKT, OMMÄTT
+ * 2026-08-23 på samma 22 foton med exakt samma pixeltest
+ * (prov/skyltar/nyansgolv-matning.html): 198 → 190 ger i sökningens
+ * arbetsbredd 400 +145 blå pixlar INNE i facitrutorna och +2 713 UTANFÖR dem
+ * — 18,7 främmande pixlar per vunnen bandpixel — och i full upplösning
+ * +507 mot +20 067 (39,6 mot 1), värsta enskilda foto Regpl-Heden.jpg med
+ * +19 % större blå yta. Golvet ligger alltså INTE i en ände där ingen annan
+ * sorts blått bor: ljus himmelsblå (#87CEEB) bor på 197°, precis i det spann
+ * som öppnades.
+ *
+ * OCH VINSTEN VAR NOLL, ABLATIONSMÄTT: med golvet tillbaka på 198 är
+ * granskning.html EXAKT oförändrad (lås 118/174, topp1 105/174) och matning/
+ * sok-test likaså. images.jpg:s band hittas ändå — 28,1 % täckning räcker för
+ * formgrindarna. Ett golv som köper noll bänk för 18,7 mot 1 i främmande
+ * pixlar är inte ett golv, det är en öppnad dörr, och den öppnades mot precis
+ * den färg (himmel) som finns i varje utomhusbild. Därför 198 igen: satt
+ * strax ovanför himmelsblått 197°, nu som ett MÄTT val och inte bara ett
+ * resonemang.
+ *
+ * TAKET FLYTTAS INTE NED, TROTS ATT INGEN BANDPIXEL NÅR ÖVER 240°.
+ * Högsta p95 inuti något band i materialet är 240,0, alltså står 268 hela 28°
+ * över det högsta observerade. Frestelsen att dra ned det ska motstås: det
+ * vore en hård strykning härledd ur 22 DAGSLJUSBILDER. En svensk skylt beter
+ * sig omvänt i strålkastarsken — plåten är retroreflekterande och blir
+ * bländande vit medan bandet sjunker mot svart — och det fallet finns inte i
+ * underlaget alls. Vitbalansen är dessutom inte bortnormerad i mätningen (den
+ * räknas på råa pixelvärden, det är dem den här slingan ser), så en del av
+ * spridningen 195,6–228,7° är kameror och inte skyltar.
+ *
+ * VIDARE SPANN PRÖVADES OCH KOSTADE FÖR MYCKET, se `UTSEENDE.bandfarg`:
+ * nyans 190–250 med S ≥ 0,20 höjer bandtäckningen 0,858 → 0,930 för 2,8 gånger
+ * fler blå pixlar, och nyans 173–240 med S ≥ 0,04 når 0,990 för 15 gånger fler
+ * i median och 217 gånger i värsta fotot. Flytta golvet, vidga inte spannet.
  *
  * V_MIN 0,09: under det är pixeln nattsvart och kulören är brus, inte färg.
  * V_MAX 0,98: en utbränd pixel har ingen kulör kvar att mäta.
@@ -610,7 +766,7 @@ function vikVinkel(v) {
 const BLA_MATTNAD_MIN = 0.32;   // golv, alltid
 const BLA_MATTNAD_REN = 0.70;   // ...eller så här ren, då räcker det ensamt
 const BLA_KROMA_MIN   = 30;     // ...eller så här mycket färg i absoluta tal
-const BLA_NYANS_MIN   = 198;
+const BLA_NYANS_MIN   = 198;    // himmelsblått bor på 197°; se docblocket
 const BLA_NYANS_MAX   = 268;
 const BLA_V_MIN       = 0.09;
 const BLA_V_MAX       = 0.98;
@@ -689,7 +845,28 @@ function skannaLjusa(kalla, omrade, arbetsbredd,
     // Kulören, men bara den sektor där blå är störst: 240° ± 60°.
     const nyans = 240 + 60 * (r - g2) / delta;
     if (nyans < BLA_NYANS_MIN || nyans > BLA_NYANS_MAX) continue;
-    blaMask[i] = 1;
+    /*
+     * MASKEN BÄR TVÅ NIVÅER, INTE EN — OCH DET KOSTAR INGEN NY BUFFERT OCH
+     * INGET NYTT SVEP.
+     *
+     * 1 = pixeln klarar grindarna ovan. 2 = den ligger dessutom mitt i det
+     * UPPMÄTTA bandet: nyans 205–230° (uppmätt medianband 216,8°, spann mellan
+     * band 195,6–228,7°), och antingen mättnad ≥ 0,70 (uppmätt 0,844) eller
+     * kroma ≥ 100 (uppmätt 138). ELLER-formen är densamma som i grinden och av
+     * samma skäl: mörker förstör kroman, urblekning förstör mättnaden, aldrig
+     * båda.
+     *
+     * Andelen tvåor i ett band är sedan ett mått på hur RENT bandet är, och
+     * det används till att rangordna ankare — aldrig till att kasta ett. Se
+     * `bandkvalitet`. Allt som läser masken frågar bara efter sanningsvärde,
+     * så tvåan är osynlig för dem: `blaBand`, `matBandHojd` och
+     * `matSkyltFranBand` beter sig bit för bit som förut.
+     */
+    const ren = nyans >= UTSEENDE.bandfarg.renNyans[0] &&
+                nyans <= UTSEENDE.bandfarg.renNyans[1] &&
+                (mattnad >= UTSEENDE.bandfarg.renMattnad ||
+                 delta >= UTSEENDE.bandfarg.renKroma);
+    blaMask[i] = ren ? 2 : 1;
   }
   const trosk = otsu(gra);
 
@@ -765,6 +942,405 @@ function skannaLjusa(kalla, omrade, arbetsbredd,
   return { b, h, skala, gra, trosk, blobbar, blaMask };
 }
 
+/* ==========================================================================
+ * UTSEENDEMODELLEN — vad en svensk skylt SER UT SOM, mätt och inte antaget
+ * ==========================================================================
+ *
+ * VAD DET HÄR ÄR OCH VAD DET INTE ÄR.
+ *
+ * Ägaren gav 22 foton med den uttryckliga motiveringen att de är ett FACIT
+ * FÖR UTSEENDET — "hur registreringsskyltar ser ut, hur de är formade, hur de
+ * stavas" — inte ett prov på räckvidd. Det som föll ut av mätningen är därför
+ * en utseendemodell: mätta fördelningar för form, färg, tecken och placering
+ * som gör att läsaren KÄNNER IGEN en skylt fortare och med mindre arbete.
+ * Måttet på framgång är hur snabbt låset sitter, inte bara om det sitter.
+ *
+ * INGET TAL HÄR FÅR BLI ETT VETO. Varje storhet nedan verkar som PRIOR,
+ * RANGORDNING, SÖKORDNING eller TIDIGT AVBROTT. Skälet är mätt och det
+ * kostade en dag: en horisontregel härledd ur precis det här materialet vann
+ * på bänken (topp1 12 → 15) och DOG utanför den — en bildruta där bara
+ * stötfångaren syns gick från 15/20 lås till 1/20. En gräns som är sann om de
+ * 22 fotona är inte en gräns som är sann om svenska skyltar.
+ *
+ * UNDERLAGET, RAKT UT. 22 foton i prov/skyltar. Alla i dagsljus. Alla rena.
+ * Ingen tagen genom en vindruta i fart. Sex är studiobilder på en lös skylt,
+ * resten handlar- och pressbilder. Medianskylten är omkring 250 px bred och
+ * den minsta 29 px. EN DASHCAM SER 10–25 PX. Det är den viktigaste luckan i
+ * hela modellen: ingenting nedan säger hur något av talen beter sig vid den
+ * upplösning appen faktiskt körs i. Den enda ruta i materialet som ligger i
+ * det skiktet (29 × 9 px) är också den enda där varenda mätning gick sönder:
+ * bandandel 0,29 i stället för 0,10, en enda teckenfläck, kontrast 29.
+ * Det går INTE att simulera genom att skala ner en närbild — nedskalningen
+ * medelvärdesbildar bort just det brus som är problemet.
+ *
+ * VAD SOM SKULLE BEHÖVAS FÖR ATT LITA PÅ TALEN PÅ RIKTIGT: några hundra
+ * bildrutor ur riktig dashcamfilm, i den kamerahöjd och den hållarvinkel
+ * appen faktiskt körs i, i mörker och regn, med skylten 10–30 px bred, och med
+ * både skyltrutan OCH de sex teckenrutorna uppmätta per bildruta. Då går
+ * fördelningarna att rita vid RÄTT upplösning, och först då går en gräns att
+ * sätta. Tills dess är de 22 fotona ett facit för utseendet, inte ett
+ * underlag för gränser.
+ *
+ * HUR TALEN ÄR PRÖVADE: varje storhet räknades om 22 gånger, en bild
+ * utelämnad åt gången. `loo` nedan är hur mycket MEDIANEN rörde sig som mest.
+ * Ett tal som rör sig kraftigt när en bild tas bort beskriver just den bilden
+ * och inte svenska skyltar — de talen är märkta och används inte.
+ *
+ * TRE OBEROENDE MÄTNINGAR gjordes på samma 22 foton med samma facitrutor ur
+ * granskning.html/matning.html: en formmätning, en färgmätning och en
+ * teckenmätning. Där de tre är eniga är talet starkt. Där de skiljer sig står
+ * skillnaden utskriven i stället för att medelvärdesbildas bort.
+ */
+export const UTSEENDE = {
+  /*
+   * PROPORTIONEN 4,73 STÅR — DEN SKA INTE ÄNDRAS.
+   *
+   * Tre oberoende mätningar bekräftar teoritalet 520/110 = 4,7273 till en
+   * hundradel, och alla tre är stenhårda mot utelämna-ett:
+   *   formmätning, rak delmängd (|lutning| < 3°)  4,72   n=11  loo 0,02
+   *   färgmätning, rättvända rutor (rutkvot ≥4,2) 4,72   n=14  loo 0,00
+   *   bilmätning, bilar rakt bakifrån             4,7206 n=12  loo 0,0013
+   *
+   * DET SOM ÄR FEL ÄR INTE TALET UTAN GEOMETRIN DET IBLAND MÄTS PÅ. En vriden
+   * rektangel drar sin omslutande AXELPARALLELLA låda mot kvadrat: en perfekt
+   * 4,73-skylt mäter 2,20 i lådan vid 15° roll, 1,87 vid 20° och 1,62 vid 25°.
+   * Mätt på lådan ger alla 22 fotona median 4,60 med spann 1,93–5,02 — och tre
+   * av bänkens EGNA facitskyltar (2,47 · 2,15 · 1,93) hade fallit på
+   * SKYLT_KVOT_MIN 2,5. Mätt på skyltens egna axlar håller sig hela materialet
+   * inom 2,06–5,63, alltså väl inom [2,5; 7,0].
+   *
+   * plate.js gör redan rätt: `skannaLjusa` och `blaBand` mäter på egenvärden.
+   * Raden står här för att nästa läsare inte ska "förenkla" tillbaka till
+   * bw/bh och tro att grinden måste vidgas.
+   */
+  kvot: { median: 4.72, spann: [4.59, 5.17], n: 14, loo: 0.00,
+          axelparallell: { median: 4.60, spann: [1.93, 5.02], n: 22, loo: 0.010 } },
+
+  /*
+   * EU-BANDETS ANDEL AV SKYLTBREDDEN: 0,100.
+   *
+   * DE TVÅ TAL SOM STOD I KODEN VAR BÅDA FEL, OCH BÅDA SKA STÅ KVAR HÄR SÅ
+   * ATT INGEN SÄTTER TILLBAKA DEM:
+   *
+   *   0,087 — kommentaren vid PLATTGRIND.euMin sa "45/520 = 0,087". Det är en
+   *   NORMSIFFRA för ett 45 mm band, och den motsägs av plate.js SJÄLV:
+   *   kommentaren i `matSkyltFranBand` säger "Nominellt 52/110 = 0,47", alltså
+   *   ett 52 mm band — och 52/520 = 0,100, exakt det uppmätta. Två tal i samma
+   *   modul sa olika saker om samma fysiska band.
+   *
+   *   0,105 — sok-test.html kallade det facit. Det är CIRKULÄRT: provet RITAR
+   *   själv sitt band med `bw = Math.round(bredd * 0.105)` och kontrollerar
+   *   sedan att läsaren får tillbaka 0,105 ± 0,04. Provet mäter sin egen
+   *   penna. Att det ändå hamnar inom 5 % av fotomätningen är tur, och dess
+   *   tolerans ±0,04 är tio gånger vidare än den verkliga spridningen mellan
+   *   foton.
+   *
+   * DET UPPMÄTTA, tre gånger oberoende:
+   *   färgmätning  0,1000  n=27 rutor  p10 0,079  p90 0,120  loo 0,0042
+   *   formmätning  0,093   n=11 raka   spann 0,087–0,100     loo 0,001
+   *   teckenmätning 0,098  n=20        spann 0,065–0,129     loo 0,000
+   * Modulens EGET euAndel via `sokAnkare` ger 0,0971 på de 11 foton där
+   * ankaret träffar skylten — samma svar, mätt av koden själv.
+   *
+   * Dagens hårda grind [0,03; 0,22] rymmer allt uppmätt med 1,7–1,8 gångers
+   * marginal åt vardera hållet och kan alltså inte fälla någonting. Den är en
+   * SÄKRING och ska förbli en säkring. Klockan nedan är rangordningen.
+   */
+  euAndel: { median: 0.100, spann: [0.065, 0.129], n: 27, loo: 0.0042,
+             // Full vikt inne i klockans platå, avtagande utanför. Platån är
+             // satt på p10/p90 ur färgmätningen, kanterna på hela det uppmätta
+             // spannet över alla tre mätningarna.
+             platå: [0.079, 0.120], kant: [0.060, 0.140] },
+
+  /*
+   * BANDETS HÖJD GENOM PLÅTENS HÖJD: 0,988.
+   *
+   * `matSkyltFranBand` räknade `ph = matt.hojd / 0.94`. Uppmätt är 0,988
+   * (n=27, spann 0,700–1,071, loo 0,014) — bandet spänner i praktiken hela
+   * plåtens höjd. 0,94 blåste därför upp den härledda plåthöjden med ungefär
+   * fem procent, och eftersom ALLT nedanför normeras mot ph — provlinjernas
+   * v-lägen, glappet på 0,45 skylthöjder, uMax — förstorades hela den härledda
+   * skyltrutan i höjdled och drog in kaross ovanför och under plåten i
+   * beskärningen.
+   *
+   * OCH TALET ANVÄNDS ÄNDÅ INTE — `anvant` är 0,94, alltså det gamla.
+   * Mätningen är delvis cirkulär: nämnaren är facitrutans höjd, och samma
+   * mätning visar att facitrutorna i median är 14 % KORTARE än plåten
+   * (plåtmask höjd / ruthöjd = 1,138). Att räkna med 0,98 gör den härledda
+   * skyltrutan kortare på precis det sätt som får den att likna facitrutorna
+   * bättre — och det är facitrutorna granskning.html mäter IoU mot.
+   *
+   * BÅDA UTFALLEN ÄR MÄTTA. Med 0,98 gick granskning.html från lås 117/174
+   * och topp1 104 till 121/108, medan matning.html gick från 11/21 rätt med
+   * NOLL falska läsningar till 10/21 med två falska — och med höjdmarginalen
+   * uppskruvad så att OCR-snittet blev exakt lika stort som förut ändå kvar på
+   * en falsk. Det ena måttet frågar hur lik facitrutan man är, det andra om
+   * tecknen går att läsa. Det andra är det som betyder något.
+   *
+   * VAD SOM SKULLE AVGÖRA SAKEN: facitrutor satta mot plåtens ytterkant, eller
+   * dashcam-bildrutor där låset kan mätas på läst text i stället för på IoU.
+   * Se `matSkyltFranBand` för hela härledningen.
+   */
+  bandHojdAvPlat: { median: 0.988, spann: [0.700, 1.071], n: 27, loo: 0.014,
+                    anvant: 0.94, prövat: 0.98 },
+
+  /*
+   * TECKENHÖJD GENOM PLÅTHÖJD: 0,682 — INTE 0,64.
+   *
+   * Koden antog 70/110 = 0,636 med motiveringen "raden är 70 av 110 mm".
+   * Mätt är 0,682, vilket är 75/110 = 0,6818 på pricken. 70 mm är fel siffra
+   * för svenska skyltar.
+   *
+   * TRE MÄTNINGAR, OCH BARA EN AV DEM DUGER — skälet står här för att ingen
+   * ska välja det största talet:
+   *   teckenmätning, mot PIXELMÄTT plåthöjd   0,682  n=20  loo 0,005   ← duger
+   *   formmätning,   mot facitrutans höjd     0,706  n=11  loo 0,002
+   *   färgmätning,   mot facitrutans höjd     0,707  n=27  loo 0,011
+   * De två senare mäter mot facitrutan, och facitrutorna är i median 14 %
+   * KORTARE än plåten (plåtmask höjd / ruthöjd = 1,138). Det är en känd
+   * uppåtbias på några procent. Byt alltså INTE till 0,707.
+   *
+   * Talet är dessutom okänsligt för tröskeln: flyttas Otsu ±10 grånivåer rör
+   * sig medianen 0,000 (värsta enskilda bild 0,024). 0,682 är en mätning, inte
+   * en tröskelartefakt.
+   */
+  teckenhojd: { median: 0.682, spann: [0.561, 0.770], n: 20, loo: 0.005,
+                gammalt: 0.636 },
+
+  /*
+   * TECKENTAKTEN — den enda helt nya signalen, och den kostar ingenting.
+   *
+   * En svensk skylt är tre tecken, en LUCKA, tre tecken. Luckan har aldrig
+   * använts, och skälet är mätt: den söktes som ett GAP mellan bläck, och
+   * bläcket flyttar sig med glyfen. Samma fysiska lucka mäter 0,37 skylthöjder
+   * i "YBK 70U" och 0,85 i "GRE 101", bara för att en etta har smalt bläck
+   * mitt i sin ruta. Gapkvoten spänner 1,69–31,0 och är oanvändbar.
+   *
+   * MÄT MELLAN TECKNENS MITTPUNKTER I STÄLLET, så försvinner problemet helt:
+   *   centrumpitch inom grupp / skylthöjd   0,569  n=20  loo 0,000
+   *      (EN enda distinkt median över alla 22 utelämnanden — det stabilaste
+   *       talet i hela mätserien; 0,569 · 110 ≈ 63 mm rutbredd)
+   *   centrumpitch över luckan / skylthöjd  0,792  n=20  loo 0,002  (≈ 87 mm)
+   *   KVOTEN lucka:inom                     1,406  n=20  loo 0,016
+   *                                         spann 1,244–2,065
+   *   gruppluckans extra bredd / skylthöjd  0,209  n=20  loo 0,001  (≈ 23 mm)
+   *   luckans läge / skyltbredd             0,536  n=20  spann 0,484–0,621
+   *
+   * ÄNNU BILLIGARE OCH ÄNNU STARKARE, och det är den form signalen används i:
+   * på 20 AV 20 bilder är det TREDJE av de fem centrummellanrummen det
+   * VIDASTE, med minst 1,17 gångers marginal till det näst vidaste (median
+   * 1,36). Ingen tröskel alls, bara ordningen. Det håller även för de sex
+   * skyltar som lutar mer än 4° och för den som lutar 18°. Utelämna-ett: 19/19
+   * oavsett vilken bild som lämnas ute.
+   *
+   * VARFÖR DET FÅR LYFTA MEN ALDRIG SÄNKA: signalen kräver att sex tecken alls
+   * går att dela ut. Teckenhöjden i underlaget är 18–131 px (median 43); en
+   * dashcam på tio meter ger 6–10 px och där finns ingen delning att mäta på.
+   * Två av 22 bilder gav ingen delning ens här (images.jpg utbränd av en
+   * reflex, nya-skyltar-transportstyrelsen med avskuren facitruta). En regel
+   * som KRÄVDE sex löpor hade dödat varje skylt på avstånd — alltså exakt det
+   * fall appen finns för.
+   */
+  takt: { kvotMedian: 1.406, kvotSpann: [1.244, 2.065], n: 20, loo: 0.016,
+          marginalMin: 1.17, marginalMedian: 1.36,
+          tredjeVidastAv: [20, 20],
+          pitchInom: { median: 0.569, loo: 0.000 } },
+
+  /*
+   * TECKENFÄLTETS LÄGE — var raden sitter, mätt i skyltens egen bredd.
+   *
+   *   textmitt / skyltbredd    0,537  n=21  spann 0,453–0,610  loo 0,0008
+   *   textbredd / skyltbredd   0,750  n=21  spann 0,510–0,830  loo 0,002
+   *   teckenrad / kroppbredd   0,849  n=20  spann 0,802–0,914  loo 0,001
+   *   vänstermarginal (bandslut → första tecknet) / skylthöjd  0,191
+   *   högermarginal / skylthöjd                                0,329
+   *
+   * 0,537 är det STABILASTE talet i formmätningen: texten sitter systematiskt
+   * 3,7 % till HÖGER om skyltens mitt, för EU-bandet äter vänsterkanten.
+   *
+   * VARNING SOM MÅSTE FÖLJA MED TALET: förskjutningen är en KONSEKVENS av
+   * bandet, inte en egenskap hos texten. På en skylt utan band — utländsk
+   * plåt, eller ett band som klippts av i bildkanten, vilket sok-test.html har
+   * som eget fall — sitter texten centrerat. Talet får därför aldrig sänka en
+   * kandidat som saknar band.
+   */
+  textlage: { mitt: 0.537, mittLoo: 0.0008, bredd: 0.750, breddLoo: 0.002,
+              radAvKropp: 0.849 },
+
+  /*
+   * FÄRGEN PÅ BANDET — mätt på 27 facitrutor i 22 foton.
+   *
+   *   nyans, median per band   216,8°  spann mellan band 195,6–228,7°
+   *                            loo 0,5°   p95 inuti banden når som mest 240,0°
+   *   mättnad, median per band  0,844  spann 0,277–0,987  loo 0,029
+   *   ljushet V, median         0,675  spann 0,325–0,965  loo 0,046
+   *   kroma, median             138    spann 25–237       loo 9
+   *
+   * Dagens BLAGRIND fångar median 85,8 % av ett bands pixlar; sämsta bandet
+   * 28,1 %. Två slutsatser, och de pekar åt olika håll:
+   *
+   *   GOLVET SKULLE INTE HA FLYTTATS NED, OCH DET ÄR OMMÄTT. images.jpg
+   *   ligger på 195,6° och klipps delvis av nyansgolvet 198 (täckning
+   *   28,1 %) — men bandet HITTAS ändå, och ablationen 198↔190 lämnar
+   *   granskning.html bit för bit oförändrad (118/105). Påståendet att 190
+   *   inte gör en enda extra pixel blå var falskt (ommätt 2026-08-23,
+   *   prov/skyltar/nyansgolv-matning.html): +145 pixlar i facitrutor,
+   *   +2 713 utanför (18,7 mot 1) i arbetsbredd 400 — himmelsblått bor på
+   *   197°. Golvet står därför kvar på 198. Se docblocket vid
+   *   `BLA_NYANS_MIN`.
+   *
+   *   TAKET SKA INTE FLYTTAS NED, trots att ingen bandpixel når över 240°.
+   *   Det vore en hård strykning härledd ur 22 DAGSLJUSBILDER. En svensk skylt
+   *   beter sig omvänt i strålkastarsken — plåten är retroreflekterande och blir
+   *   bländande vit medan bandet sjunker mot svart — så marginalen uppåt kan
+   *   behövas i just det fall underlaget inte innehåller. Vitbalansen är
+   *   dessutom INTE bortnormerad i statistiken (den räknas på råa värden, det
+   *   är dem plate.js ser), så en del av spridningen 195,6–228,7° är kameror
+   *   och inte skyltar.
+   *
+   * VIDARE SPANN PRÖVADES OCH FÖRKASTADES, med pris:
+   *   spann B (nyans 190–250, S≥0,20, kroma≥18): täckning 0,858 → 0,930,
+   *      kostnad 2,8× fler blå pixlar (värsta fotot 19,8×).
+   *   spann C (nyans 173–240, S≥0,04, kroma≥5):  täckning → 0,990, kostnad
+   *      15× i median och 217× i värsta fotot — 20,5 % av bildrutan blir blå.
+   *   Svaret på "vilket spann fångar alla 22 band" är alltså: ett som inte är
+   *   värt att ha. Och kostnadstalen är UNDRE gränser — bara ett av 22 foton
+   *   har en stor blå yta i bakgrunden, det finns inte ett enda blått vägmärke
+   *   och ingen blå bil bredvid en skylt.
+   *
+   * FÄRGEN ÄR EN PEKARE, INTE ETT BEVIS — NU MÄTT. Median 77,5 % av alla
+   * pixlar som klarar dagens BLAGRIND ligger UTANFÖR varje skyltruta; i åtta av
+   * 22 foton över 95 %; med ett löst blåtest 96,8 %. Modulens formgrindar
+   * krymper det till median 1 ankare per bildruta, men bara median 0,5 av dem
+   * träffar skylten — ankarvägen landar rätt i 11 av 22 foton. Kommentaren vid
+   * blåmasken påstod redan detta; nu är det mätt och behöver inte mätas igen.
+   */
+  bandfarg: { nyans: 216.8, nyansSpann: [195.6, 228.7], nyansLoo: 0.5,
+              mattnad: 0.844, mattnadLoo: 0.029,
+              kroma: 138, kromaLoo: 9, n: 27,
+              // Klockans platå: inne i den är bandet så rent att ankaret är
+              // det bästa slaget av bevis. Utanför sänks LYFTET, aldrig
+              // kandidaten under låsgränsen. Se `bandkvalitet`.
+              renNyans: [205, 230], renMattnad: 0.70, renKroma: 100 },
+
+  /*
+   * BAKVAGNEN — mätt, men INTE byggd, och skälen ska stå kvar.
+   *
+   * Automatiskt mätt av rödgrinden på 18 lyktpar i materialet (u/v/w är
+   * skyltens läge och bredd uttryckt i lyktavståndet):
+   *   u  (sidled)   0,0069  n=11 trovärdiga par, tio av elva inom ±0,03
+   *   v  (höjdled)  0,0265  — skylten sitter i lyktornas HÖJD, inte under dem
+   *   w  (bredd)    0,4434  spann 0,272–0,469, loo 0,006
+   *   dy/sep        0,0048  — baklyktor sitter på exakt samma höjd
+   *   lyktavstånd / bilbredd  0,772
+   *
+   * DEN ÄR BYGGD, MÄTT OCH BORTTAGEN EN GÅNG REDAN — se det långa stycket
+   * "BAKVAGNSANKARET: BYGGT, MÄTT, BORTTAGET" längre ned. Vinsten var 0 av 22
+   * bilder, kostnaden +4,0 ms per söktick (+59 %). Den nya mätningen ändrar
+   * inte den kalkylen, och lägger till två skäl att inte bygga den nu:
+   *
+   *   1. RÖDGRINDEN HITTAR RÖDA FLÄCKAR, INTE BAKLYKTOR. Fyra av arton "par" i
+   *      materialet är studiogolvets röda ränder (paret är 1,108 gånger
+   *      bredare än hela bilen), en röd skåpbils egen kaross, en lykta ur var
+   *      sin av två bilar bredvid varandra, och en närbild helt utan lyktor.
+   *      Provet som fångar dem — lyktavstånd/bilbredd > 1 — GÅR INTE att köra
+   *      i appen, för bilbredden finns inte där och ingen bildetektor ska
+   *      byggas.
+   *   2. VINSTEN GÅR INTE ATT MÄTA HÄR. På bänken täcker bakvagnsfönstret 52 %
+   *      av bildrutan, för fönstret växer med sep² och bänken är idel
+   *      närbilder. Vid ett lyktavstånd på 8 % av bildbredden — vad en dashcam
+   *      ser tio till tjugo meter fram — vore samma fönster 2,0 % av en
+   *      16:9-ruta. Det är ren geometri på fönsterformeln, inte en mätning:
+   *      det finns inte ett enda foto på avstånd i mappen.
+   *
+   * TALEN STÅR HÄR SÅ ATT DE INTE BEHÖVER MÄTAS OM när det finns
+   * dashcam-material att bygga emot.
+   */
+  bakvagn: { u: 0.0069, v: 0.0265, w: 0.4434, dyAvSep: 0.0048, n: 11 },
+
+  /*
+   * MÄTT OCH FÖRKASTAT — så att nästa person inte mäter samma sak igen.
+   *
+   * GAPET MELLAN TECKEN (bläck till bläck). Median 0,142 skylthöjder, spann
+   *   0,013–0,204, gapkvot 1,69–31,0. Oanvändbart; använd centrumpitch.
+   *
+   * FACITRUTANS HÖJD SOM NÄMNARE. Rutornas kvot b/h spänner 1,93–5,03 mot
+   *   skyltens 4,73 — bara ungefär hälften sitter tätt. Teckenhöjd/ruthöjd
+   *   över alla 21 ger 0,584 med loo 9,3 %; samma tal mot pixelmätt plåthöjd
+   *   ger 0,682 med loo 0,7 %.
+   *
+   * LINJESPRETNING (vinkeln mellan teckenfötternas och teckentopparnas linje).
+   *   Tänkt som perspektivmått, men förorenas av att olika glyfer har olika
+   *   över- och underkant — en sjua mot en nolla. YBK70UD ger 6,78° av ren
+   *   teckenform utan att luta. loo 14 %. Använd teckenkeystone (loo 0,5 %).
+   *
+   * |LUTNING| SOM PRIOR. Median 2,41°, loo 6,0 %. Beskriver hur fotograferna
+   *   stod, inte hur svenska skyltar sitter.
+   *
+   * BILRUTAN OCH ALLT SOM NORMERAS MOT DEN. Skyltmitt X / bilbredd = 0,504
+   *   med loo 0,0008 är det mest lockande talet i hela materialet, och det ska
+   *   ändå inte användas: (a) det kräver en bildetektor som inte finns och
+   *   inte ska byggas, (b) bilrutan är HANDAVLÄST mot ett 5 %-rutnät, ±0,02
+   *   per kant, (c) skyltbredd/bilbredd mäts till 0,339 mot geometrins
+   *   520/1820 = 0,286 — 18,4 % för högt, vilket implicerar en karossbredd på
+   *   1 534 mm, för smalt för varenda bil i mappen, och överskottet korrelerar
+   *   med hur mycket av bildrutan bilen fyller (r = 0,52).
+   *   LÄXAN, OCH DEN GÄLLER HELA DEN HÄR FILEN: PRECISION ÄR INTE RIKTIGHET.
+   *   Det talet har loo 0,0007 och är ändå 18 % fel.
+   *
+   * SKYLTMITT Y / BILHÖJD. Median 0,565, spann 0,416–0,788 — nästan halva
+   *   bilen. Mercedes GLC ger 0,416, Polestar 4 ger 0,788. Karosstypen
+   *   bestämmer. Det finns ingen höjdregel att hämta ur nio bilar.
+   *
+   * FORMLIKHETSLISTAN SOM GRUND FÖR NYA FÖRVÄXLINGSPAR. 528 par mätta på
+   *   12×20-masker gav topplistan 0/G, 0/U, F/P, 8/B, C/G, 7/Z, P/R, 2/7.
+   *   Lägg INTE till dem i TILL_BOKSTAV/TILL_SIFFRA. Den enda
+   *   bokstav/bokstav-förväxling som faktiskt inträffade i den riktiga
+   *   läsvägen var M→H, och M/H ligger inte bland de arton mest lika paren.
+   *   "Liknar varandra" och "förväxlas" är inte samma lista. Åtta av 33 tecken
+   *   har n ≤ 2. För att mäta det på riktigt krävs tusentals läsningar, inte
+   *   26. (Not: kodens 1/L ligger på rang 506 av 528, alltså bland de MINST
+   *   lika paren — mappningen har inget stöd i bilderna, men den kostar heller
+   *   ingenting mätbart och att röra den kan flytta sok-test och matning.
+   *   Lämna.)
+   *
+   * OCR-SÄKERHET SOM VIKT. data.confidence kommer tom ur den här
+   *   Tesseract-uppsättningen — 0 på varenda rad, och matning.html räknar det
+   *   som "motorsäkerhet > 0 på 0/22 bilder". Ingen viktning efter säkerhet
+   *   går att mäta förrän någon först verifierat att uppsättningen alls
+   *   producerar talet.
+   *
+   * KOLUMNVIS BANDMÄTNING. Två av 22 band mättes till 0,000 och 0,003 i
+   *   formmätningen. Det är inte skyltar utan band, det är fel MÄTT: bandet
+   *   söktes kolumnvis och skyltarna lutar 10,2° respektive 13,5°, så ingen
+   *   bildkolumn blir helblå. plate.js gör redan rätt — `matBandHojd` mäter
+   *   längs bandets egna axlar. Bygg inte kolumnvis igen.
+   *
+   * PLATTGRINDENS FYRA TAL BINDER ALDRIG PÅ DET HÄR MATERIALET, och de ska
+   *   ändå inte stramas: kontrastMin 30 mot uppmätt median 168 och lägsta 84;
+   *   morkandel 0,12–0,56 mot uppmätt 0,219–0,619 (exakt en ruta över taket,
+   *   och den är märkt oläsbar i facit); euMin/euMax rymmer allt med 1,7–1,8
+   *   gångers marginal. Alla fyra är SÄKRINGAR, inte rangordnare. Att strama
+   *   dem mot 22 dagsljusnärbilder är horisontregeln en gång till.
+   *
+   * TECKENKEYSTONE OCH RADRAKHET — mätt, stark, men INTE byggd.
+   *   teckenkeystone (vänstra tredjedelens teckenhöjd / högra tredjedelens)
+   *     median 1,024, n=21, loo 0,005; på den raka delmängden 1,022 med spann
+   *     1,000–1,044 — en rak svensk skylt är jämnhög på fyra procent när.
+   *   radrakhet (restspridning kring teckenradens räta linje, i teckenhöjder)
+   *     median 0,045, spann 0,015–0,159, n=21, loo 0,0013.
+   *   Signalen är verklig: bokstäver på en skåpbilssida ligger inte på en rät
+   *   linje inom 4,5 % av en teckenhöjd. Den är ändå inte byggd, och skälet är
+   *   inte att den är svag utan att den kräver teckenklumparnas ÖVER- och
+   *   UNDERKANT. `matSkyltFranBand` samplar elva provlinjer över mittersta
+   *   60 % av höjden, alltså aldrig teckentopparna, och att utvidga det till
+   *   hela höjden drar in ram och kaross i samma mätning. Att bygga den
+   *   kostar ett nytt svep; taktsignalen nedan får samma sorts falsklarm att
+   *   falla och kostar noll. Bygg keystone när taktsignalen visat sig inte
+   *   räcka, inte före.
+   */
+};
+
 /**
  * Räknar hur många gånger en vågrät linje genom området växlar mellan ljust
  * och mörkt.
@@ -783,9 +1359,16 @@ function skannaLjusa(kalla, omrade, arbetsbredd,
  * står på snedden skär bara ett par tecken och en massa botten, och svaret blir
  * noll växlingar — alltså "slät yta", alltså kandidaten dödad. Det var samma
  * fel som den axelparallella lådan, en nivå längre in.
+ *
+ * FLANKARNA KASTADES FÖRUT, OCH DET VAR DÄR TAKTSIGNALEN LÅG BEGRAVD.
+ * Slingan vet exakt VAR varje mörk löpa börjar och slutar — den räknade bara
+ * hur många det blev och slängde lägena. Skickas en tom array in som
+ * `flankar` fylls den nu med de positionerna (högst ett par tiotal tal), och
+ * `taktfaktor` kan läsa av skyltens takt utan en enda extra pixelläsning.
+ * Skickas ingen array in är funktionen bit för bit densamma som förut.
  */
-function raknaTeckenbyten(gra, b, h, box) {
-  if (box.vinkel) return raknaTeckenbytenVriden(gra, b, h, box);
+function raknaTeckenbyten(gra, b, h, box, flankar = null) {
+  if (box.vinkel) return raknaTeckenbytenVriden(gra, b, h, box, flankar);
 
   const y0 = box.minY + Math.max(1, Math.round(box.bh * 0.2));
   const y1 = box.minY + Math.max(2, Math.round(box.bh * 0.8));
@@ -812,8 +1395,8 @@ function raknaTeckenbyten(gra, b, h, box) {
     let mork = 0;
     for (let y = y0; y < y1; y++) if (gra[y * b + x] < trosk) mork++;
     const andel = mork / rader;
-    if (!imork && andel > 0.45) { imork = true; byten++; }
-    else if (imork && andel < 0.2) { imork = false; byten++; }
+    if (!imork && andel > 0.45) { imork = true; byten++; if (flankar) flankar.push(x); }
+    else if (imork && andel < 0.2) { imork = false; byten++; if (flankar) flankar.push(x); }
   }
   return byten;
 }
@@ -823,7 +1406,7 @@ function raknaTeckenbyten(gra, b, h, box) {
  * Punktprovning med närmaste granne — vi räknar växlingar, inte pixlar, och
  * en halv pixels felplacering ändrar ingenting i det svaret.
  */
-function raknaTeckenbytenVriden(gra, b, h, box) {
+function raknaTeckenbytenVriden(gra, b, h, box, flankar = null) {
   if (box.L < 6 || box.W < 3) return 0;
   const rad = box.vinkel * Math.PI / 180;
   const kos = Math.cos(rad), sin = Math.sin(rad);
@@ -860,10 +1443,189 @@ function raknaTeckenbytenVriden(gra, b, h, box) {
     }
     if (!rader) continue;
     const andel = mork / rader;
-    if (!imork && andel > 0.45) { imork = true; byten++; }
-    else if (imork && andel < 0.2) { imork = false; byten++; }
+    if (!imork && andel > 0.45) { imork = true; byten++; if (flankar) flankar.push(u); }
+    else if (imork && andel < 0.2) { imork = false; byten++; if (flankar) flankar.push(u); }
   }
   return byten;
+}
+
+/* ---- TECKENTAKTEN -------------------------------------------------------
+ *
+ * Se `UTSEENDE.takt` för mätningen. Kort: en svensk skylt är tre tecken, en
+ * LUCKA, tre tecken, och luckan är den enda signal i hela materialet som
+ * skiljer en SKYLT från annan text i en enda bildruta — utan att kosta en
+ * pixelläsning, eftersom kolumnprofilen redan gått igenom kroppen.
+ *
+ * DEN MÄTS MELLAN TECKNENS MITTPUNKTER, ALDRIG MELLAN BLÄCKKANTER. Ett gap
+ * mäter avståndet mellan bläck, och bläcket flyttar sig med glyfen: samma
+ * fysiska lucka mäter 0,37 skylthöjder i "YBK 70U" och 0,85 i "GRE 101", bara
+ * för att en etta har smalt bläck mitt i sin ruta. Gapkvoten spänner
+ * 1,69–31,0 och är oanvändbar; centrumpitchkvoten spänner 1,244–2,065 med
+ * utelämna-ett 0,016. Det är förmodligen därför signalen aldrig hittats förut.
+ *
+ * FÖRSTA VERSIONEN KRÄVDE EXAKT SEX LÖPOR, OCH DEN MÄTNINGEN SKA STÅ KVAR
+ * FÖR ATT INGEN SKA BYGGA OM DEN. Teckenmätningen delade skylten i sex
+ * glyfer med Otsu i TVÅ dimensioner och fick 6/6 på 20 av 22 bilder. Men
+ * kolumnprofilen här är endimensionell, och då stämmer inte "löpa = tecken":
+ * en nolla, ett O, ett D, ett B och en åtta är ihåliga och ger TVÅ mörka
+ * löpor var, medan två tecken som nästan nuddar varandra ger EN. Det är
+ * precis därför `teckenbyten` mäts som 10–16 och inte alltid 12. Kravet
+ * "exakt sex löpor" är alltså i praktiken kravet "byten är 12 eller 13", och
+ * uppmätt på de 22 fotona vid arbetsbredd 400 slog signalen till i EN enda
+ * bild av 22. Den formen är riktig men nästan alltid tyst.
+ *
+ * DEN FORM SOM ANVÄNDS ÄR DÄRFÖR REN ORDNING OCH REN POSITION — de två
+ * egenskaper som överlever både splittrade glyfer och grov upplösning:
+ *
+ *   ORDNINGEN — är ETT av mellanrummen tydligt vidast? Marginalen till det
+ *   näst vidaste är minst 1,17 på 20 av 20 uppmätta bilder (median 1,36), och
+ *   splittrade glyfer kan bara GÖRA marginalen större, aldrig mindre: en
+ *   ihålig nolla lägger till ett mycket smalt mellanrum, inte ett brett.
+ *
+ *   LÄGET — sitter det vidaste mellanrummet MITT i teckenraden? Räknat ur de
+ *   uppmätta pitcharna, centrumpitch inom grupp 0,569 skylthöjder och över
+ *   luckan 0,792, ligger teckencentrumen på 0 · p · 2p · 2p+q · 3p+q · 4p+q.
+ *   Luckans mittpunkt är då 2p + q/2 = 1,534 och hela raden 4p + q = 3,068,
+ *   alltså EXAKT 0,500 av radens spann — det följer av symmetrin och är inte
+ *   en tredje mätning. Oberoende bekräftat av att luckans läge mätt mot hela
+ *   skyltbredden är 0,536 (spann 0,484–0,621), där skillnaden mot 0,500 är
+ *   precis EU-bandet på vänsterkanten.
+ *
+ * VAD SOM MÄTTES OCH INTE ANVÄNDS: centrumpitchKVOTEN lucka:inom, median
+ * 1,406 med spann 1,244–2,065. Den är riktig, men den förutsätter att varje
+ * löpa är ett tecken. Splittras en enda glyf halveras nämnaren och kvoten
+ * flyger ur spannet — alltså skulle just de skarpaste, mest högupplösta
+ * skyltarna få minst lyft. Ordningen och läget har inte den svagheten.
+ *
+ * DEN FÅR BARA LYFTA, OCH DET ÄR INTE ARTIGHET UTAN EN MÄTT NÖDVÄNDIGHET.
+ * Signalen kräver att sex tecken alls går att dela ut. Teckenhöjden i
+ * underlaget är 18–131 px (median 43); en dashcam på tio meter ger 6–10 px,
+ * och där finns ingen delning att mäta på. Två av 22 bilder gav ingen delning
+ * ens i det här materialet. En regel som KRÄVDE sex löpor hade dödat varje
+ * skylt på avstånd — alltså exakt det fall appen finns för. Svaret när
+ * delningen inte går är därför varken ja eller nej: faktorn 1,00, samma
+ * neutrala svar som `tecken`-faktorn ger under 24 px bredd.
+ *
+ * VAD DEN FAKTISKT GÖR, MÄTT EFTER BYGGET på de 22 fotona vid arbetsbredd 400
+ * (`sokKandidater` med max 50, sann kandidat = IoU ≥ 0,30 mot facitrutan):
+ *     sanna skyltar som får lyft      13 av 17 funna
+ *     falska kandidater som får lyft   1 av 173
+ * Den enda falska som lyfts ligger i 3b979c11.avif, en bild full av prislappar
+ * i vindrutor. Fördelningen är alltså mycket skev åt rätt håll — men det ska
+ * sägas att den är mätt på samma 22 foton som talen kommer ifrån, alltså inte
+ * ett oberoende prov. Det oberoende provet är granskning.html med sina åtta
+ * förvrängningar: lås 115/174 → 116/174, topp1 103/174 oförändrat, och det
+ * vunna låset är vriden90/2039174f.avif.
+ *
+ * VAD DEN VINNER, uttryckt i tid och inte i poäng: kandidaten "RÖR & VVS AB"
+ * på en vit skåpbilssida ger i dag poäng 1,75 och en formatgiltig läsning
+ * "ROR54B". Den har inte skyltens takt. Hamnar rätt kandidat överst från
+ * början slipper man de upp till tre brända OCR-läsningar
+ * (`MALSOK.brandForsok`) som ett felaktigt lås kostar innan spåret släpps —
+ * och en kandidat som bär ankarets bevis låser på `bildrutorForLasAnkrad` 3
+ * i stället för `bildrutorForLas` 8, alltså 0,36 s i stället för 0,96 s till
+ * första svar.
+ */
+export const TAKT = {
+  lyftMax: 0.25,        // faktorn ligger i [1,00; 1,25] och kan aldrig sänka
+  /*
+   * VAR FULLT LYFT NÅS. HÄR STOD `marginalMin` 1,17 — ETT STICKPROVSMINIMUM,
+   * den minst stabila statistik som finns: nästa foto flyttar det hur långt
+   * som helst nedåt, och bänkens sanna kandidatmarginaler börjar redan under
+   * det (1,098 · 1,127 · 1,188 …). En gräns för fullt förtroende ska inte
+   * hängas på underlagets per definition mest extrema observation.
+   *
+   * ALTERNATIVEN MÄTTES PÅ granskning.html (golv 118 lås / 105 topp1),
+   * 2026-08-23, allt annat lika:
+   *
+   *   full vid medianen 1,36 (rät ramp)          117/105 — tappar låset på
+   *     original/2039174f.avif: en äkta skylt med marginal under medianen
+   *     behövde mer lyft än rampen ger där
+   *   mjuk mättnadskurva 1−exp(−(m−1)/τ),
+   *     τ = (median−1)/5 och /8                  118/104 — konkava kurvor
+   *     lyfter LÅGMARGINAL-kandidater mest, och det är oftast de falska:
+   *     natt/renummer-131122.jpg tappar topp1
+   *   full vid 1,18 = 1 + (median−1)/2 (ramp)    118/105
+   *   full vid 1,25 (ramp)                       118/105 — platå, valet är
+   *     inte knivseggat
+   *   gamla 1,17 (minimum)                       118/105
+   *
+   * DÄRFÖR: rät ramp med full vikt vid HALVA medianmarginalen, härledd ur
+   * medianen (n=20; medianer flyttas inte av en enskild bild) och inte ur
+   * minimum. Tolkningen är rimlig i sig: en lucka som är hälften så tydlig
+   * som en typisk äkta skyltlucka är fortfarande ett starkt ja. Rampen är
+   * fortsatt mjuk under punkten och faktorns golv är 1,00 — ett svagt ja
+   * blir ett mindre lyft, aldrig ett straff.
+   */
+  marginalFull: 1 + (UTSEENDE.takt.marginalMedian - 1) / 2,   // 1,18 — ur medianen
+  /*
+   * Hur många mörka löpor kolumnprofilen får hitta för att frågan alls ska
+   * ställas. Sex tecken ger 5–12 löpor beroende på hur många glyfer som är
+   * ihåliga och hur många som flutit ihop; `KROPP.bytenTak` 18 kapar redan
+   * ankarvägen vid nio. Utanför spannet är det inte en skyltrad vi tittar på,
+   * och svaret är då varken ja eller nej.
+   */
+  loporMin: 5,
+  loporMax: 10,
+  /*
+   * Var luckans mittpunkt ska sitta, som andel av teckenradens spann mellan
+   * första och sista löpans mitt. 0,500 följer av symmetrin i de uppmätta
+   * pitcharna (se rubriken). Platån är satt en tiondel åt vardera hållet, och
+   * nollpunkterna två tiondelar — det är brett med flit: en splittrad glyf i
+   * ena änden flyttar spannets ändpunkt och därmed andelen några procent, och
+   * det ska inte kosta hela signalen.
+   */
+  lageFull: [0.40, 0.60],
+  lageNoll: [0.28, 0.72],
+};
+
+/**
+ * Skyltens takt ur flankarna `raknaTeckenbyten` redan producerat.
+ *
+ * @param {number[]|null} flankar  varannan är en löpas början, varannan dess slut
+ * @returns {number} 1,00 (varken ja eller nej) upp till 1,25 (full skylttakt)
+ */
+function taktfaktor(flankar) {
+  if (!flankar || flankar.length < TAKT.loporMin * 2) return 1;
+  // Sista löpan saknar sitt slut om profilen slutade mitt i ett tecken; den
+  // räknas då inte, precis som en halv bokstav inte är en bokstav.
+  const mitter = [];
+  for (let i = 0; i + 1 < flankar.length; i += 2) {
+    mitter.push((flankar[i] + flankar[i + 1]) / 2);
+  }
+  const n = mitter.length;
+  if (n < TAKT.loporMin || n > TAKT.loporMax) return 1;
+
+  const g = [];
+  for (let i = 0; i < n - 1; i++) {
+    const d = mitter[i + 1] - mitter[i];
+    if (!(d > 0)) return 1;
+    g.push(d);
+  }
+
+  // ORDNINGEN: ett mellanrum ska vara tydligt vidast. Vilket index det har
+  // spelar ingen roll — splittrade glyfer flyttar indexet men inte luckan.
+  let i1 = 0;
+  for (let i = 1; i < g.length; i++) if (g[i] > g[i1]) i1 = i;
+  let nast = 0;
+  for (let i = 0; i < g.length; i++) if (i !== i1 && g[i] > nast) nast = g[i];
+  if (!(nast > 0)) return 1;
+  const marginal = g[i1] / nast;
+  const lyftM = Math.min(1, Math.max(0, (marginal - 1) / (TAKT.marginalFull - 1)));
+  if (!lyftM) return 1;
+
+  // LÄGET: luckans mittpunkt ska sitta mitt i teckenraden.
+  const spann = mitter[n - 1] - mitter[0];
+  if (!(spann > 0)) return 1;
+  const lage = ((mitter[i1] + mitter[i1 + 1]) / 2 - mitter[0]) / spann;
+  const [fMin, fMax] = TAKT.lageFull;
+  const [nMin, nMax] = TAKT.lageNoll;
+  let lyftL;
+  if (lage >= fMin && lage <= fMax) lyftL = 1;
+  else if (lage < fMin) lyftL = Math.max(0, (lage - nMin) / (fMin - nMin));
+  else lyftL = Math.max(0, (nMax - lage) / (nMax - fMax));
+
+  return 1 + TAKT.lyftMax * lyftM * lyftL;
 }
 
 /* ---- Plattgrinden --------------------------------------------------------
@@ -881,8 +1643,13 @@ function raknaTeckenbytenVriden(gra, b, h, box) {
  *   1. MÖRKANDELEN — polariteten, tvåsidig.
  *
  *      En svensk skylt är svart text på vitt. Tecknen täcker 28–35 % av ytan
- *      innanför teckenraden, raden är 70 av 110 mm, och den tryckta svarta
- *      ramen tar ett par procent till: 0,64 · 0,32 + 0,05 ≈ 0,25 mörkt.
+ *      innanför teckenraden, raden är 75 av 110 mm, och den tryckta svarta
+ *      ramen tar ett par procent till: 0,68 · 0,32 + 0,05 ≈ 0,27 mörkt.
+ *      (HÄR STOD 70 av 110 = 0,64 OCH SUMMAN 0,25. Uppmätt teckenhöjd genom
+ *      pixelmätt plåthöjd är 0,682 = 75/110 på pricken, n=20, utelämna-ett
+ *      0,005. Se `UTSEENDE.teckenhojd` — 70 mm var fel siffra för svenska
+ *      skyltar, och den står kvar här för att ingen ska räkna om baklänges
+ *      till den.)
  *
  *      UPPMÄTT på de 18 av 22 provbilder där sökningen alls hittar den sanna
  *      skylten (grindprov.html, arbetsbredd 400): mörkandelen ligger mellan
@@ -985,7 +1752,9 @@ function raknaTeckenbytenVriden(gra, b, h, box) {
  *   täcker hela rutan.
  *
  *   Marginalkorrigeringen — att kapa rutans höjd till löpans höjd delat med
- *   0,64 — föll med den, eftersom den byggde på samma löpa. Den skulle ha
+ *   0,64 (talet är sedan dess uppmätt till 0,682, se `UTSEENDE.teckenhojd`,
+ *   men det ändrar ingenting: måttet föll på löpan och inte på nämnaren)
+ *   — föll med den, eftersom den byggde på samma löpa. Den skulle ha
  *   räddat handlarlisten under plåten i 2039174f, 0c4d9b68 och YBK70UD, och
  *   det problemet står alltså kvar olöst. Låt det stå olöst hellre än att
  *   lösa det med ett mått som mätningen underkände.
@@ -1020,9 +1789,12 @@ export const PLATTGRIND = {
    * också tunna tecken.
    *
    * Räkna på det i stället för att mäta på arton foton: sex tecken med tunna
-   * streck täcker omkring 28 % av teckenradens yta, och raden är 70 av 110
-   * mm. 0,64 · 0,28 ≈ 0,18 är alltså den fysiska botten för en skylt utan
-   * tryckt ram. 0,12 ligger under den. Vad kostar det? Ingenting mätbart: på
+   * streck täcker omkring 28 % av teckenradens yta, och raden är 75 av 110 mm
+   * (UPPMÄTT 0,682, se `UTSEENDE.teckenhojd`; här stod förut 70 av 110 =
+   * 0,64, och det talet var fel). 0,68 · 0,28 ≈ 0,19 är alltså den fysiska
+   * botten för en skylt utan tryckt ram — mot 0,18 med den gamla siffran.
+   * 0,12 ligger under båda, så rättelsen flyttar ingen gräns; den gör bara
+   * härledningen sann. Vad kostar golvet 0,12? Ingenting mätbart: på
    * provmappens 22 foton är utfallet bit för bit identiskt vid 0,12 och 0,20
    * (10/21 rätt, 15/22 lås, 0 falska läsningar i båda). Det som ska filtreras
    * bort i den änden — släta vita ytor utan tecken — fastnar redan på
@@ -1167,8 +1939,34 @@ export const PLATTGRIND = {
   horisontTak: 0.228,
   horisontReserv: 2,
   horisontLutningMax: 30,
-  euMin: 0.03,          // 45/520 = 0,087
+  /*
+   * BANDETS ANDEL. Grinden är en SÄKRING och klockan är rangordningen.
+   *
+   * HÄR STOD "45/520 = 0,087", OCH DET VAR FEL. Talet är en normsiffra för ett
+   * 45 mm band och motsades av plate.js själv: `matSkyltFranBand` säger
+   * "Nominellt 52/110 = 0,47", alltså 52 mm, och 52/520 = 0,100. Den gamla
+   * siffran står kvar här just för att ingen ska sätta tillbaka den.
+   * Det andra talet som var i omlopp, 0,105 i sok-test.html, var cirkulärt:
+   * provet ritade sitt eget band med den bredden och kontrollerade sedan att
+   * läsaren fick tillbaka den. Se `UTSEENDE.euAndel` för de tre oberoende
+   * mätningar som alla landar på 0,098–0,100.
+   *
+   * GRÄNSERNA [0,03; 0,22] RÖRS INTE. De rymmer allt uppmätt med 1,7–1,8
+   * gångers marginal åt vardera hållet och kan alltså inte fälla någonting på
+   * det här materialet — vilket är rätt för en säkring. Att dra åt dem mot
+   * 22 dagsljusnärbilder vore horisontregeln en gång till.
+   *
+   * KLOCKAN ÄR NY OCH DEN RANGORDNAR. `euKlocka` ger full vikt inne i det
+   * uppmätta p10–p90-fönstret och sjunker mot `euKlockaGolv` utanför. Den
+   * finns för att en bildruta kan innehålla flera blå ankare (median 1, spann
+   * 0–3 efter formgrindarna) och det RÄTTA ska gå först till mätning och
+   * beskärning — varje fel ankare kostar upp till tre brända OCR-läsningar.
+   * Golvet 0,88 ligger ÖVER `osakerFaktor` 0,85, alltså är ett band med fel
+   * andel fortfarande ett bättre bevis än ett band som inte gick att mäta.
+   */
+  euMin: 0.03,          // gammal kommentar: "45/520 = 0,087" — fel, se ovan
   euMax: 0.22,
+  euKlockaGolv: 0.88,   // så lågt kan rangordningen dra, aldrig lägre
   euMinLangd: 40,       // under det är bandet 3 px och andelen är brus
   minLangd: 24,         // samma golv som `tecken`-faktorn i poangsattKandidat
   osakerFaktor: 0.85,   // för liten för att mätas: varken ja eller nej
@@ -1177,12 +1975,23 @@ export const PLATTGRIND = {
 /**
  * Den högsta poäng `poangsattKandidat` kan ge, räknad ur funktionen och inte
  * uppmätt: form ≤ 1, storlekstermen ≤ 1, centrum ≤ 1, tecken ≤ 1, rakhet ≤ 1
- * och prior ≤ 1. Det enda som får gå över 1 är `ankarfaktor`, vars största
- * gren är 1,8. Alltså 1,8.
+ * och prior ≤ 1. Två faktorer får gå över 1: `ankarfaktor`, vars största gren
+ * är 1,8, och `taktfaktor`, vars tak är 1,25. Alltså 1,8 · 1,25 = 2,25.
  *
- * Talet används av `horisontstraff` som avbildningens övre ände. Ändras
- * `ankarfaktor` måste det här talet ändras med, annars kan en straffad
- * kandidat gå över sitt tak.
+ * TALET VAR 1,8 TILLS TAKTFAKTORN LADES TILL, och det står här för att visa
+ * att raden nedanför inte är dekoration: ändras en faktors tak MÅSTE det här
+ * talet ändras med. Annars kan en straffad kandidat gå över sitt band, och
+ * klämman i `horisontstraff` skapar i stället en platt zon inne i det nåbara
+ * spannet — exakt det fel som en gång revs ur golvet.
+ *
+ * VAD ÄNDRINGEN 1,8 → 2,25 GÖR, RAKT UT: hårda bandets lutning faller ut ur
+ * ändarna som (horisontTak − g)/(POANG_TAK − g), alltså 0,0415 → 0,0325.
+ * Varje straffad kandidat landar fortfarande i bandet [0,16; 0,228] och
+ * ordningen dem emellan är oförändrad (samma k för alla). Det enda som
+ * faktiskt ändras är var i bandet de hamnar i förhållande till en OSTRAFFAD
+ * kandidat vars poäng råkar ligga inne i samma band — och där är den nya,
+ * hårdare lutningen rätt håll att fela åt. Mätt efter ändringen:
+ * granskning.html lås 115/174 och topp1 103/174, alltså oförändrat.
  *
  * DET UPPMÄTTA TALET, OMMÄTT. Här stod förut "bänkens största uppmätta poäng
  * är 1,352 (d54eac78.png)". Det talet är inte den största poängen utan den
@@ -1194,7 +2003,7 @@ export const PLATTGRIND = {
  * 1,8 är alltså fortfarande ett räknat tak med luft och inte ett mätt — men
  * luften är 14 %, inte 33 %.
  */
-export const POANG_TAK = 1.8;
+export const POANG_TAK = 2.25;
 
 /**
  * Horisontstraffet, som en AVBILDNING av poängen — ett enda steg, och det är
@@ -1277,13 +2086,14 @@ export const POANG_TAK = 1.8;
  *   växande, ingen platt zon" gäller [0; POANG_TAK] och ingenting däröver.
  *   `Math.min(poang, POANG_TAK)` gör T konstant för varje R > POANG_TAK, i
  *   båda banden — en riktig platt zon, utan övre ände. Mätt i ett jämnt svep
- *   över [0; 2,4] med 240 000 steg: 60 000 platta steg per band, alla ovanför
- *   1,8 (första platta steget vid R = 1,80001 — steglängden är 1e−5 och 1,8
- *   träffas exakt på steg 180 000, så steg 180 001…240 000 är platta). Det
- *   stod 59 999 och 1,80002 här; den slingan började ett steg för sent.
- *   Ingenting i sak ändras av det, men ett mätt tal i en kommentar som är fel
- *   är samma sorts fel som en gång gav hela den här regeln fel gräns. Zonen
- *   är onåbar i dag, och det
+ *   över [0; 2,4] med 240 000 steg à 1e−5, omkört mot koden 2026-08-23:
+ *   15 000 platta steg per band, alla ovanför 2,25 (första platta steget vid
+ *   R = 2,25001 — 2,25 träffas exakt på steg 225 000, så steg
+ *   225 001…240 000 är platta; 0 minskande steg i något band). HÄR STOD
+ *   "60 000 platta steg, första vid R = 1,80001": det var mätt mot
+ *   POANG_TAK 1,8 och kördes aldrig om när taket byttes till 2,25 — ett mätt
+ *   tal i en kommentar som är fel är samma sorts fel som en gång gav hela
+ *   den här regeln fel gräns. Zonen är onåbar i dag, och det
  *   är därför klämman kostar noll: `poangsattKandidat` kan per konstruktion
  *   inte ge mer än exakt POANG_TAK (se talets härledning) och bänkens största
  *   uppmätta poäng är 1,5816 över hela 174-svepet, 1,4573 oförvrängt. Får
@@ -1299,9 +2109,12 @@ export const POANG_TAK = 1.8;
  *
  *   HÅRDA, k = (horisontTak − g) / (POANG_TAK − g). Den sätts inte för hand.
  *   Bandet är [g; horisontTak] = [0,16; 0,228] och definitionsmängden är
- *   [g; POANG_TAK] = [0,16; 1,8], så lutningen faller ut ur ändarna:
- *   (0,228 − 0,16)/(1,8 − 0,16) = 0,0415. Se `PLATTGRIND.horisontTak` för var
- *   0,228 kommer ifrån.
+ *   [g; POANG_TAK] = [0,16; 2,25], så lutningen faller ut ur ändarna:
+ *   (0,228 − 0,16)/(2,25 − 0,16) = 0,0325. (HÄR STOD "[0,16; 1,8]" OCH
+ *   "0,0415" KVAR EFTER ATT POANG_TAK BYTTS 1,8 → 2,25 — två tal i samma
+ *   modul om samma lutning, och bara det ena räknade med det nya taket.
+ *   Omkört mot koden 2026-08-23: k = 0,032536.) Se `PLATTGRIND.horisontTak`
+ *   för var 0,228 kommer ifrån.
  *
  * @param {number} poang   kandidatens poäng före straffet
  * @param {boolean} hart   true = hårda bandet, false = mjuka lutningen
@@ -1457,6 +2270,34 @@ function matPlatta(gra, b, h, ruta, bandAndel = 0) {
 }
 
 /**
+ * Bandets andel som RANGORDNING, inte som grind.
+ *
+ * Full vikt inne i `UTSEENDE.euAndel.platå` — p10 till p90 ur färgmätningen,
+ * 0,079–0,120 kring medianen 0,100 (n=27 rutor, utelämna-ett 0,0042, det
+ * stabilaste talet i hela mätserien). Utanför sjunker vikten linjärt till
+ * golvet vid `UTSEENDE.euAndel.kant`, 0,060–0,140, som är hela det spann de
+ * tre oberoende mätningarna tillsammans täcker (0,065–0,129) med en nypa luft.
+ *
+ * DEN KAN INTE STRYKA. Golvet är 0,88, alltså över `osakerFaktor` 0,85 — ett
+ * uppmätt band med fel andel förblir ett starkare bevis än inget band alls.
+ * Talen kommer från 22 dagsljusnärbilder; klockan får därför luta
+ * rangordningen, aldrig avgöra vad som är en skylt.
+ *
+ * @param {number} andel  uppmätt bandbredd genom skyltlängd
+ * @returns {number} vikt i [euKlockaGolv; 1]
+ */
+function euKlocka(andel) {
+  const [pMin, pMax] = UTSEENDE.euAndel.platå;
+  const [kMin, kMax] = UTSEENDE.euAndel.kant;
+  const golv = PLATTGRIND.euKlockaGolv;
+  let t;
+  if (andel >= pMin && andel <= pMax) t = 1;
+  else if (andel < pMin) t = Math.max(0, (andel - kMin) / (pMin - kMin));
+  else t = Math.max(0, (kMax - andel) / (kMax - pMax));
+  return golv + (1 - golv) * t;
+}
+
+/**
  * Grinden, som den anropas från sökningen.
  *
  * @param {Uint8ClampedArray} gra   gråskalan från `skannaLjusa`
@@ -1507,9 +2348,38 @@ function granskaSkyltruta(gra, b, h, ruta,
   }
 
   // Bandets andel, men bara när bandet är stort nog att mätas.
-  if (bandAndel && ruta.L >= PLATTGRIND.euMinLangd &&
-      (bandAndel < PLATTGRIND.euMin || bandAndel > PLATTGRIND.euMax)) {
-    svar.ok = false; svar.skal = 'bandet har fel andel'; return svar;
+  if (bandAndel && ruta.L >= PLATTGRIND.euMinLangd) {
+    if (bandAndel < PLATTGRIND.euMin || bandAndel > PLATTGRIND.euMax) {
+      svar.ok = false; svar.skal = 'bandet har fel andel'; return svar;
+    }
+    /*
+     * ...och rangordningen ovanpå säkringen. Se `UTSEENDE.euAndel` och
+     * `PLATTGRIND.euMin` för mätningen och för varför både 0,087 och 0,105 var
+     * fel. Klockan verkar BARA över `euMinLangd` 40 px: under det är bandet
+     * tre pixlar och andelen är brus — den enda rutan i dashcam-skiktet i
+     * materialet (29 × 9 px) mätte 0,29 i stället för 0,10, alltså precis den
+     * storlek där måttet går sönder.
+     *
+     * KLOCKAN GATE:ADES INTE TILL FLERANKARLÄGET, OCH DET ÄR MÄTT — inte
+     * antaget. Invändningen lät rimlig: bara 3 av 22 provfoton har mer än
+     * ett ankare, och i enankarläget sänker klockan det sanna ankaret i 3 av
+     * sina 12 träffar. Men premissen — att rangordning bara gör nytta mellan
+     * ANKARE — var fel: klockan rangordnar också ankare mot LJUSSTAPEL. Ett
+     * ensamt FALSKT ankare med fel bandandel trycks under den äkta ljusa
+     * skylten, och det är värt en topp1 i bänken. Uppmätt 2026-08-23 på
+     * granskning.html (118/105 är golvet):
+     *
+     *   klockan som den står (ogated)      lås 118/174   topp1 105/174
+     *   gate:ad till flerankarläget        lås 118/174   topp1 104/174
+     *   borttagen helt                     lås 116/174   topp1 103/174
+     *
+     * Ramen som gate:ningen tappar är natt/renummer-131122.jpg — natt, ett
+     * ensamt ankare med fel bandandel, och utan klockan vinner det över den
+     * riktiga skylten. Bandkvaliteten i `ankarfaktor` gate:ades däremot —
+     * där höll premissen (118/105 bit för bit), för den faktorn jämför bara
+     * ankarens inbördes färgkvalitet. Två rangordnare, två uppmätta svar.
+     */
+    svar.faktor *= euKlocka(bandAndel);
   }
 
   // Under 24 px svarar polariteten varken ja eller nej — annars hade varje
@@ -1583,13 +2453,16 @@ export function provaPlattgrind(kalla, omrade = null, { arbetsbredd = 400 } = {}
   };
   for (const a of blaAnkare(s)) {
     ta('ankare', { cx: a.cx, cy: a.cy, L: a.rw, W: a.rh, vinkel: a.vinkel }, a.euAndel,
-       { teckenbyten: a.teckenbyten,
+       { teckenbyten: a.teckenbyten, takt: a.takt, renAndel: a.renAndel,
          lada: { x: yta.x + a.minX * inv, y: yta.y + a.minY * inv,
                  w: a.bw * inv, h: a.bh * inv } });
   }
   for (const bl of s.blobbar) {
+    const flankar = [];
+    const byten = raknaTeckenbyten(s.gra, s.b, s.h, bl, flankar);
     ta('blobb', { cx: bl.cx, cy: bl.cy, L: bl.L, W: bl.W, vinkel: bl.vinkel }, 0,
-       { teckenbyten: raknaTeckenbyten(s.gra, s.b, s.h, bl),
+       { teckenbyten: byten,
+         takt: bl.L >= PLATTGRIND.minLangd ? taktfaktor(flankar) : 1,
          lada: { x: yta.x + bl.minX * inv, y: yta.y + bl.minY * inv,
                  w: bl.bw * inv, h: bl.bh * inv } });
   }
@@ -1768,11 +2641,15 @@ function blaBand(mask, b, h) {
     let sp = 0; stack[sp++] = start; besokt[start] = 1;
     let minX = b, maxX = -1, minY = h, maxY = -1, area = 0;
     let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    // Antalet pixlar som ligger mitt i det uppmätta bandet (maskvärde 2), se
+    // `skannaLjusa`. Ren summa, alltså exakt även efter en hopslagning.
+    let sren = 0;
 
     while (sp) {
       const i = stack[--sp];
       const x = i % b, y = (i / b) | 0;
       area++;
+      sren += mask[i] - 1;
       sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
       if (x < minX) minX = x; if (x > maxX) maxX = x;
       if (y < minY) minY = y; if (y > maxY) maxY = y;
@@ -1781,7 +2658,7 @@ function blaBand(mask, b, h) {
       if (y > 0     && !besokt[i - b] && mask[i - b]) { besokt[i - b] = 1; stack[sp++] = i - b; }
       if (y < h - 1 && !besokt[i + b] && mask[i + b]) { besokt[i + b] = 1; stack[sp++] = i + b; }
     }
-    bitar.push({ minX, minY, maxX, maxY, area, sx, sy, sxx, syy, sxy });
+    bitar.push({ minX, minY, maxX, maxY, area, sren, sx, sy, sxx, syy, sxy });
   }
 
   // Störst först, så en hopslagning alltid växer det största fragmentet.
@@ -1796,7 +2673,7 @@ function blaBand(mask, b, h) {
       if (overlapp < smalast * 0.5 || glapp > 2) continue;
       m.minX = Math.min(m.minX, f.minX); m.maxX = Math.max(m.maxX, f.maxX);
       m.minY = Math.min(m.minY, f.minY); m.maxY = Math.max(m.maxY, f.maxY);
-      m.area += f.area; m.sx += f.sx; m.sy += f.sy;
+      m.area += f.area; m.sren += f.sren; m.sx += f.sx; m.sy += f.sy;
       m.sxx += f.sxx; m.syy += f.syy; m.sxy += f.sxy;
       slogsIhop = true; break;
     }
@@ -1837,7 +2714,10 @@ function blaBand(mask, b, h) {
     const axel = vikVinkel(0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180 / Math.PI);
     const platvinkel = (L / W) >= 1.3 ? vikVinkel(axel - 90) : 0;
 
-    ut.push({ minX: m.minX, minY: m.minY, bw, bh, area: m.area, cx, cy, L, W, platvinkel });
+    ut.push({ minX: m.minX, minY: m.minY, bw, bh, area: m.area, cx, cy, L, W, platvinkel,
+              // Hur stor del av bandet som ligger mitt i det uppmätta
+              // färgfönstret. Rangordning, aldrig grind. Se `bandkvalitet`.
+              renAndel: m.sren / m.area });
   }
   ut.sort((a, c) => c.area - a.area);
   return ut.slice(0, BAND.max);
@@ -1914,11 +2794,54 @@ function matBandHojd(mask, b, h, band, vinkel) {
 function matSkyltFranBand(gra, mask, b, h, band, vinkel) {
   const matt = matBandHojd(mask, b, h, band, vinkel);
   if (!matt) return null;
-  const ph = matt.hojd / 0.94;          // bandet är inramat, skylten är lite högre
+  /*
+   * Bandet är inramat, så skylten är lite högre — men bara lite.
+   *
+   * 0,94 STÅR KVAR, OCH DET ÄR ETT BESLUT MOT EN MÄTNING. Det ska förklaras,
+   * för nästa läsare kommer att hitta mätningen och vilja byta.
+   *
+   * MÄTNINGEN: bandhöjd genom plåthöjd på de 27 facitrutorna i de 22 fotona
+   * ger median 0,988, spann 0,700–1,071, utelämna-ett 0,014. Talet är stabilt,
+   * och tio av 27 rutor mäter till och med ÖVER 1,00.
+   *
+   * VARFÖR DET ÄNDÅ INTE ANVÄNDS: mätningen är delvis CIRKULÄR, och det syns i
+   * dess egen rapport. Plåtmaskens höjd genom facitrutans höjd är 1,138 —
+   * facitrutorna är alltså i median 14 % KORTARE än plåten sträcker sig. Samma
+   * facitrutor är nämnaren i 0,988. Att räkna ph med 0,98 gör därför den
+   * härledda skyltrutan kortare på precis det sätt som får den att LIKNA
+   * facitrutorna bättre. Det är samma sorts fel som gjorde att sok-test.html
+   * ritade sitt eget EU-band med 0,105 och sedan kontrollerade att läsaren fick
+   * tillbaka 0,105.
+   *
+   * DET PRÖVADES, OCH BÅDA UTFALLEN MÄTTES:
+   *   ph = hojd/0,98, höjdmarginal 1,08 mot OCR:
+   *     granskning.html  lås 117/174 → 121/174, topp1 104 → 108   (bättre)
+   *     matning.html     11/21 rätt · 0 falska → 10/21 · TVÅ falska (sämre)
+   *   ph = hojd/0,98, höjdmarginal höjd till 1,13 så att OCR-snittet i
+   *   absoluta tal blir exakt detsamma som förut (1,08 · 0,98/0,94 = 1,126):
+   *     granskning.html  121/108 kvar
+   *     matning.html     11/21 rätt · EN falsk läsning (9487480d: ABU 773 blev
+   *                      BUE773) — fortfarande sämre
+   *
+   * Alltså: talet 0,98 förbättrar överensstämmelsen med de rutor det mättes
+   * mot och försämrar den enda mätning som är OBEROENDE av dem, nämligen om
+   * texten går att läsa. IoU mot en tight facitruta är ett mått på hur lik
+   * facitrutan man är. Att OCR:en får ut rätt tecken är ett mått på om
+   * beskärningen sitter på skylten. Den andra frågan är den riktiga.
+   *
+   * VAD SOM SKULLE AVGÖRA SAKEN: facitrutor satta mot PLÅTENS ytterkant i
+   * stället för snävt kring den, eller dashcam-bildrutor där låset kan mätas
+   * på läst text i stället för på IoU. Tills dess står 0,94 kvar, och det som
+   * ska ändras när beviset kommer är den här raden och inte kommentaren.
+   * Se `UTSEENDE.bandHojdAvPlat`.
+   */
+  const ph = matt.hojd / UTSEENDE.bandHojdAvPlat.anvant;
   if (ph < 6) return null;
 
-  // Bandbredden i förhållande till höjden. Nominellt 52/110 = 0,47; snett
-  // sett krymper den. Långt utanför det är det inte ett skyltband.
+  // Bandbredden i förhållande till höjden. Nominellt 52/110 = 0,47 — och det
+  // är samma 52 mm som ger `UTSEENDE.euAndel` 52/520 = 0,100, till skillnad
+  // från de 45 mm som en gång stod vid PLATTGRIND.euMin. Snett sett krymper
+  // den. Långt utanför det är det inte ett skyltband.
   const bandAndel = band.W / ph;
   if (bandAndel < 0.18 || bandAndel > 1.0) return null;
 
@@ -2085,6 +3008,9 @@ function matSkyltFranBand(gra, mask, b, h, band, vinkel) {
   let byten = 0, imork = false;
   // Var växlingarna ligger, inte bara hur många. Spannet räknas ur det.
   let forstaByte = 0, sistaByte = 0;
+  // Alla flanker, inte bara första och sista: `taktfaktor` läser skyltens
+  // tre–lucka–tre-takt ur dem. Högst ett par tiotal tal, inga extra läsningar.
+  const flankar = [];
   for (let u = u0; u <= uSlut; u += steg) {
     let mork = 0, av = 0;
     for (const v of vRad) {
@@ -2102,6 +3028,7 @@ function matSkyltFranBand(gra, mask, b, h, band, vinkel) {
       if (!byten) forstaByte = u;
       sistaByte = u;
       byten++;
+      flankar.push(u);
     }
   }
   const palitligTeckenrakning = kroppLangd >= 24;
@@ -2133,12 +3060,17 @@ function matSkyltFranBand(gra, mask, b, h, band, vinkel) {
     minX: cx - aw / 2, minY: cy - ah / 2, bw: aw, bh: ah,
     forhallande: pw / ph,
     teckenbyten: byten,
+    // Skyltens takt: tre tecken, lucka, tre tecken. 1,00 när delningen inte
+    // gick — varken ja eller nej. Se `taktfaktor` och `UTSEENDE.takt`.
+    takt: palitligTeckenrakning ? taktfaktor(flankar) : 1,
     palitligTeckenrakning,
     antagenBredd,
     kantstodd,
     // Uppmätt EU-band i andel av skyltens bredd. `forbehandla` slipper då
     // gissa på en fast tiondel.
     euAndel: Math.min(0.3, Math.max(0.04, band.W / pw)),
+    // Bandets egen färgkvalitet, för rangordning av ankare. Se `bandkvalitet`.
+    renAndel: band.renAndel,
   };
 }
 
@@ -2204,21 +3136,113 @@ function blaAnkare(s) {
  * den en svensk skylt har. Saknas något av det är kandidaten fortfarande värd
  * att titta på — den ska bara inte gå före en uppmätt ljus skylt.
  */
-function ankarfaktor(a) {
-  if (!a.palitligTeckenrakning) return 1.15;   // ingen teckenevidens alls
-  let f = a.antagenBredd ? 1.35 : 1.8;         // gissad bredd ⇒ formen är inget bevis
-  if (!a.kantstodd) f = Math.min(f, 1.25);     // bandet sitter mitt i en ljus yta
+function ankarfaktor(a, flera = false) {
+  let f;
+  if (!a.palitligTeckenrakning) f = 1.15;      // ingen teckenevidens alls
+  else {
+    f = a.antagenBredd ? 1.35 : 1.8;           // gissad bredd ⇒ formen är inget bevis
+    if (!a.kantstodd) f = Math.min(f, 1.25);   // bandet sitter mitt i en ljus yta
+    /*
+     * Omvänd riktning: mindre lyft, men inte inget. Uppmätt på en scen vriden
+     * −90° — liggande telefon, ett läge modulen uttryckligen räknar med — läser
+     * den omvända ankarkandidaten ut MLK907 med 87 % säkerhet medan ljusstapeln
+     * på samma skylt inte ger någon läsning alls. Straffas ankaret ända ner till
+     * 1,0 vinner alltså den kandidat som inte går att läsa. 1,5 räcker för att
+     * en rättvänd ankarkandidat alltid ska gå före, och för att den omvända ändå
+     * ska slå en ren ljus fläck.
+     */
+    if (a.omvand) f = Math.min(f, 1.5);
+  }
   /*
-   * Omvänd riktning: mindre lyft, men inte inget. Uppmätt på en scen vriden
-   * −90° — liggande telefon, ett läge modulen uttryckligen räknar med — läser
-   * den omvända ankarkandidaten ut MLK907 med 87 % säkerhet medan ljusstapeln
-   * på samma skylt inte ger någon läsning alls. Straffas ankaret ända ner till
-   * 1,0 vinner alltså den kandidat som inte går att läsa. 1,5 räcker för att
-   * en rättvänd ankarkandidat alltid ska gå före, och för att den omvända ändå
-   * ska slå en ren ljus fläck.
+   * BANDKVALITETEN VERKAR BARA I FLERANKARLÄGET, OCH GOLVET ÄR 1,00.
+   *
+   * Två uppmätta skäl, båda 2026-08-23:
+   *
+   *   1. ARITMETIKVETOT. `bandkvalitet` går ner till 0,85, och 0,85 · 1,15 =
+   *      0,9775 < 1,00 — den svagaste ankargrenen kunde alltså landa UNDER
+   *      neutral: ett ankare blev ett sämre bevis än inget ankare, medan
+   *      kommentaren intill lovade motsatsen. Konkret: en ankrad kandidat med
+   *      baspoäng i [0,1391; 0,1637) låste förut (poäng ≥ minPoang 0,16) och
+   *      låste inte med faktorn 0,9775. Tredje gången i dag samma felklass:
+   *      en rangordnare som multipliceras in blir ett veto via aritmetiken.
+   *      Golvet `Math.max(1, …)` gör vetot omöjligt per konstruktion; inuti
+   *      flerankarläget behåller det ändå nästan hela rangordningen (golvet
+   *      binder först när renAndel < 0,065 i 1,15-grenen).
+   *
+   *      OMFÅNGET PÅ DEN GARANTIN, så att den inte läses bredare än den är:
+   *      golvet gäller ANKARFAKTOR ISOLERAT. Nettot för en ankrad kandidat
+   *      kan fortfarande landa under neutral när euKlocka-golvet 0,88
+   *      multipliceras in: max(1; 1,15·0,85) · 0,88 = 0,88, nåbart i
+   *      flerankarläge med renAndel < 0,065 och bandAndel i [0,03; 0,060)
+   *      eller (0,140; 0,22]. Det är avsiktligt och ingen regression:
+   *      euKlocka är NEGATIV BEVISNING om bandets egen andel (fanns före den
+   *      här rundan), och ablation visar att bänken kräver den — utan
+   *      euKlocka faller granskning.html från 118/105 till 116/103.
+   *
+   *   2. RANGORDNAREN STRAFFADE OFTARE ÄN DEN RANGORDNADE. Rangordning mellan
+   *      ankare gör bara nytta när det finns FLERA ankare i bildrutan — 3 av
+   *      22 provfoton. I resten fanns inget att rangordna, men faktorn drog
+   *      ändå ner det enda (sanna) ankaret i 2 av 22 foton. Utanför
+   *      flerankarläget är den alltså enbart ett straff. Gate:ad hit kostar
+   *      den ingenting där den inte kan vinna något; bänkarna efter ändringen
+   *      står i NIGHT_LOG (granskning 118/105 oförändrat, se dagens rader).
+   *
+   * Alternativet "låt bandkvalitet bara verka från 1,25-grenarna och uppåt"
+   * mättes också: granskning gav samma 118/105, men det lämnar vetot möjligt
+   * att återinföra av nästa gren under 1,18 (1,18 · 0,85 < 1,00) och skyddar
+   * alltså med ett avstånd, inte med en regel. Golvet skyddar med en regel.
    */
-  if (a.omvand) f = Math.min(f, 1.5);
-  return f;
+  const band = flera ? bandkvalitet(a) : 1;
+  return Math.max(1, f * band);
+}
+
+/**
+ * Hur mycket av ankarets lyft som bandets EGEN FÄRG bär.
+ *
+ * DEN SÄNKER LYFTET, DEN LYFTER ALDRIG ÖVER 1. Det är avsiktligt och det är
+ * skillnaden mot hur mätningen först föreslogs (ett spann [0,85; 1,15]).
+ * Rangordningen mellan två ankare blir densamma åt båda hållen, men ett tak på
+ * 1,00 håller `POANG_TAK` och därmed hårda horisontbandets lutning oförändrade
+ * — ett tal som bara ska rangordna ska inte flytta en gräns någon annanstans.
+ *
+ * MÄTNINGEN, 27 bandrutor i 22 foton (se `UTSEENDE.bandfarg`): mediannyans per
+ * band 216,8° (spann mellan band 195,6–228,7°), medianmättnad 0,844
+ * (0,277–0,987), mediankroma 138 (25–237). Ett band som ligger mitt i det —
+ * nyans 205–230° och antingen mättnad ≥ 0,70 eller kroma ≥ 100 — är ett annat
+ * slags bevis än ett som nätt och jämnt tar sig över golven. Dagens BLAGRIND
+ * fångar median 85,8 % av ett bands pixlar men bara 28,1 % i det sämsta, och
+ * de två svagaste banden i materialet ligger under kromaMin 30 respektive
+ * mattnadMin 0,32.
+ *
+ * VARFÖR DET SPELAR ROLL FÖR HASTIGHETEN: median 77,5 % av alla pixlar som
+ * klarar BLAGRIND ligger utanför varje skyltruta, i åtta av 22 foton över
+ * 95 %. Formgrindarna kokar ned det till median ETT ankare per bildruta, men
+ * bara median 0,5 av dem träffar skylten. När det finns flera ska det rätta gå
+ * först till mätning och beskärning — varje fel ankare kostar upp till tre
+ * brända OCR-läsningar (`MALSOK.brandForsok`) innan spåret släpps.
+ *
+ * VARFÖR GOLVET INTE FÅR VARA LÄGRE ÄN 0,85: `BLA_V_MIN` 0,09 är HELT oprövat
+ * — inget av de 22 fotona är taget i mörker, och det är precis det fall golvet
+ * finns för. I strålkastarsken blir plåten bländande vit medan bandet sjunker
+ * mot svart, alltså mörkt OCH urtvättat. En vikt som belönar hög mättnad kan
+ * där systematiskt straffa det äkta bandet. Bandet står för högst 15 % av
+ * ankarets lyft.
+ *
+ * "ETT ANKARE KAN ALDRIG SÄNKAS TILL OANKRAD STATUS AV FÄRGEN" STOD HÄR — OCH
+ * DET VAR FALSKT SÅ LÄNGE FAKTORN MULTIPLICERADES IN OVILLKORLIGT: 0,85 i
+ * svagaste ankargrenen 1,15 gav 0,9775 < 1,00, alltså ett ankare SÄMRE än
+ * inget ankare. Numera görs påståendet sant av `ankarfaktor` själv: faktorn
+ * verkar bara i flerankarläget och den kombinerade produkten golvas vid 1,00.
+ * Se härledningen och mätningen där.
+ */
+function bandkvalitet(a) {
+  const r = a.renAndel;
+  if (!(r >= 0)) return 1;      // inte mätt ⇒ varken ja eller nej
+  // Full vikt när minst hälften av bandets pixlar ligger mitt i det uppmätta
+  // färgfönstret. Halvvägen är satt lågt med flit: uppmätt fångar dagens grind
+  // 85,8 % av ett medianband, men de pixlar som ligger MITT i fönstret är
+  // färre, och ett band sett i skugga eller på håll har färre än så.
+  return 0.85 + 0.15 * Math.min(1, r / 0.5);
 }
 
 /**
@@ -2247,6 +3271,7 @@ export function sokAnkare(kalla, omrade = null, { arbetsbredd = 400 } = {}) {
     kantstodd: a.kantstodd,
     omvand: !!a.omvand,
     euAndel: a.euAndel,
+    takt: a.takt,
   }));
 }
 
@@ -2335,7 +3360,11 @@ export function hittaPlat(kalla, roi) {
   const straffa = (poang, mjukZon) => (mjukZon ? horisontstraff(poang, false) : poang);
 
   let ankare = null, ankarePoang = -1;
-  for (const a of blaAnkare(s)) {
+  // Bandkvaliteten rangordnar bara när det finns flera ankare att rangordna
+  // (euKlockan är kvar ogated — uppmätt i granskaSkyltruta). Se `ankarfaktor`.
+  const ankarLista = blaAnkare(s);
+  const fleraAnkare = ankarLista.length > 1;
+  for (const a of ankarLista) {
     const gr = grinda({ cx: a.cx, cy: a.cy, L: a.rw, W: a.rh, vinkel: a.vinkel },
                       a.euAndel);
     const p = poangsattKandidat({
@@ -2346,8 +3375,9 @@ export function hittaPlat(kalla, roi) {
       cx: a.cx / s.b, cy: a.cy / s.h,
       ytaB: s.b,
       vinkel: a.vinkel,
-      ankare: ankarfaktor(a),
+      ankare: ankarfaktor(a, fleraAnkare),
       prior: gr.prior,
+      takt: a.takt,
     });
     const poang = straffa(p.poang, gr.mjukZon);
     if (poang > ankarePoang) { ankare = a; ankarePoang = poang; }
@@ -2359,16 +3389,20 @@ export function hittaPlat(kalla, roi) {
   let bast = null, bastPoang = -1;
   for (const bl of s.blobbar) {
     const gr = grinda({ cx: bl.cx, cy: bl.cy, L: bl.L, W: bl.W, vinkel: bl.vinkel }, 0);
+    const flankar = [];
     const p = poangsattKandidat({
       forhallande: bl.forhallande,
       fyllnad: bl.fyllnad,
-      teckenbyten: raknaTeckenbyten(s.gra, s.b, s.h, bl),
+      teckenbyten: raknaTeckenbyten(s.gra, s.b, s.h, bl, flankar),
       bredd: bl.L,
       cx: (bl.minX + bl.bw / 2) / s.b,
       cy: (bl.minY + bl.bh / 2) / s.h,
       ytaB: s.b,
       vinkel: bl.vinkel,
       prior: gr.prior,
+      // Under 24 px är kolumnprofilen inte pålitlig nog att dela tecken på —
+      // samma golv som `tecken`-faktorn. Se `taktfaktor`.
+      takt: bl.L >= PLATTGRIND.minLangd ? taktfaktor(flankar) : 1,
     });
     const poang = straffa(p.poang, gr.mjukZon);
     if (poang > bastPoang) { bast = bl; bastPoang = poang; }
@@ -2385,6 +3419,13 @@ export function hittaPlat(kalla, roi) {
       cy: roi.y + ankare.cy * inv0,
       // Ankaret har mätt skyltens kanter, inte en ljus fläcks. Marginalen är
       // därför mindre än i ljusstapelvägen — vi vet var kanten går.
+      //
+      // BÅDA TALEN ÄR PRÖVADE MOT BÄNKEN OCH SKA INTE SKRUVAS PÅ KÄNSLA.
+      // Höjden 1,13 (kompensation för en tänkt bandhöjd 0,98, se
+      // `matSkyltFranBand`) gav ingen förbättring, och bredden 1,07 gjorde
+      // uttryckligen skada: matning.html föll från 11/21 rätt till 9/21,
+      // eftersom ett bredare snitt drar in skyltens ytterram och hållarens
+      // kant i bilden som går till motorn.
       rw: ankare.rw * 1.03 * inv0,
       rh: ankare.rh * 1.08 * inv0,
       euAndel: ankare.euAndel,
@@ -2519,7 +3560,8 @@ export function hittaPlat(kalla, roi) {
  * ligger mitt i vägen.
  */
 function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, ytaB,
-                             vinkel = 0, forvantadVinkel = null, ankare = 1, prior = 1 }) {
+                             vinkel = 0, forvantadVinkel = null, ankare = 1, prior = 1,
+                             takt = 1 }) {
   // Form: svenska skyltar är 520 × 110 mm, alltså 4,7. Avvikelsen mäts i
   // logaritm så att 2,35 och 9,4 straffas lika mycket — en skylt sedd snett
   // trycks ihop i sidled, aldrig i höjdled.
@@ -2611,9 +3653,17 @@ function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, y
    * `ankare` med flit — ankaret är ett
    * bevis kandidaten bär själv, priorn är omgivningens vittnesmål om den.
    */
+  /*
+   * `takt` är skyltens tre–lucka–tre, mätt ur samma kolumnprofil som
+   * `teckenbyten` kommer ur. Den ligger i [1,00; 1,25] och kan bara LYFTA —
+   * se `taktfaktor` för varför den aldrig får sänka: signalen finns inte alls
+   * vid dashcam-upplösning, och en faktor som saknas där skulle straffa
+   * precis det fall appen finns för.
+   */
   return {
-    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken * rakhet * ankare * prior,
-    form, storlek, centrum, tecken, rakhet, ankare, prior,
+    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken * rakhet * ankare *
+           prior * takt,
+    form, storlek, centrum, tecken, rakhet, ankare, prior, takt,
   };
 }
 
@@ -2670,7 +3720,11 @@ export function sokKandidater(kalla, omrade = null,
    * lägga till ankaret kostar alltså ingen ny genomgång av bilden, bara en
    * flödesfyllning över en mask som är tom i nästan hela bildrutan.
    */
-  for (const a of blaAnkare(s)) {
+  // Bandkvaliteten rangordnar bara när det finns flera ankare att rangordna
+  // — 3 av 22 provfoton (euKlockan är kvar ogated, uppmätt). Se `ankarfaktor`.
+  const ankarLista = blaAnkare(s);
+  const fleraAnkare = ankarLista.length > 1;
+  for (const a of ankarLista) {
     /*
      * PLATTGRINDEN, före allt annat. Ett uppmätt blått band bevisar att det
      * finns något blått och avlångt — det bevisar inte att kroppen till höger
@@ -2700,8 +3754,9 @@ export function sokKandidater(kalla, omrade = null,
       cx: a.cx / s.b, cy: a.cy / s.h,
       ytaB: s.b,
       vinkel: a.vinkel, forvantadVinkel,
-      ankare: ankarfaktor(a),
+      ankare: ankarfaktor(a, fleraAnkare),
       prior: g.faktor,
+      takt: a.takt,
     });
     ut.push({
       x: yta.x + a.minX * inv,
@@ -2789,7 +3844,8 @@ export function sokKandidater(kalla, omrade = null,
       { cx: bl.cx, cy: bl.cy, L: bl.L, W: bl.W, vinkel: bl.vinkel },
       { cyBild: (yta.y + bl.cy * inv) / m.h, lage: hLage });
     if (!g.ok) continue;
-    const teckenbyten = raknaTeckenbyten(s.gra, s.b, s.h, bl);
+    const flankar = [];
+    const teckenbyten = raknaTeckenbyten(s.gra, s.b, s.h, bl, flankar);
     const p = poangsattKandidat({
       forhallande: bl.forhallande,
       fyllnad: bl.fyllnad,
@@ -2803,6 +3859,9 @@ export function sokKandidater(kalla, omrade = null,
       ytaB: s.b,
       vinkel: bl.vinkel, forvantadVinkel,
       prior: g.faktor,
+      // Under 24 px är kolumnprofilen inte pålitlig nog att dela tecken på —
+      // samma golv som `tecken`-faktorn. Se `taktfaktor`.
+      takt: bl.L >= PLATTGRIND.minLangd ? taktfaktor(flankar) : 1,
     });
 
     // Samma marginal som `hittaPlat` ger, så att OCR-steget får en ruta med
@@ -3211,7 +4270,11 @@ export async function lasBild(canvas) {
   const w = await haMotor();
   const { data } = await w.recognize(canvas);
   const ratext = (data.text || '').trim();
-  return { plat: normaliseraPlat(ratext), ratext, sakerhet: Math.round(data.confidence || 0) };
+  const t = tolkaRatext(ratext);
+  // `exaktSex` följer med hela vägen till rösträkningen: en läsning som inte
+  // var sex tecken ur motorn får aldrig ensam bära ett svar. Se `tolkaRatext`.
+  return { plat: t.plat, exaktSex: !!(t.plat && t.exaktSex),
+           ratext, sakerhet: Math.round(data.confidence || 0) };
 }
 
 /**
@@ -3330,10 +4393,10 @@ export async function lasRuta(kalla, roi, { fardigMatt = null } = {}) {
   // Rakt på först. Går det bra behöver vi inte röra vinkeln alls.
   const rak = klocka('forbMs',
     () => forbehandla(kalla, snav, { kapaEuFalt, vridning, vridenRuta, euAndel }));
-  let bast = { plat: null, sakerhet: 0, bild: rak, tider };
+  let bast = { plat: null, exaktSex: false, sakerhet: 0, bild: rak, tider };
 
   const r0 = await klockaOcr(rak);
-  if (r0.plat) bast = { plat: r0.plat, sakerhet: r0.sakerhet, bild: rak, tider };
+  if (r0.plat) bast = { plat: r0.plat, exaktSex: r0.exaktSex, sakerhet: r0.sakerhet, bild: rak, tider };
   if (r0.plat && r0.sakerhet >= 80) return bast;
 
   /*
@@ -3349,7 +4412,7 @@ export async function lasRuta(kalla, roi, { fardigMatt = null } = {}) {
       () => forbehandla(kalla, snav, { kapaEuFalt, vridning: vridning + 180, vridenRuta, euAndel }));
     const rv = await klockaOcr(vand);
     if (rv.plat) {
-      bast = { plat: rv.plat, sakerhet: rv.sakerhet, bild: vand, tider };
+      bast = { plat: rv.plat, exaktSex: rv.exaktSex, sakerhet: rv.sakerhet, bild: vand, tider };
       vridning += 180;
       if (rv.sakerhet >= 80) return bast;
     }
@@ -3366,7 +4429,7 @@ export async function lasRuta(kalla, roi, { fardigMatt = null } = {}) {
     // vore fel: motorn rapporterar ibland 0 % även för en läsning som
     // stämmer, och då kastades det rätta svaret bort.
     if (r1.plat && (!bast.plat || r1.sakerhet > bast.sakerhet)) {
-      bast = { plat: r1.plat, sakerhet: r1.sakerhet, bild: rat, tider };
+      bast = { plat: r1.plat, exaktSex: r1.exaktSex, sakerhet: r1.sakerhet, bild: rat, tider };
     }
   }
   return bast;
@@ -3430,7 +4493,25 @@ export const MALSOK = {
   tappForLas: 3,        // en låst kandidat får försvinna 3 bildrutor
   tappForSpar: 2,       // en olåst släpps snabbare
   minPoang: 0.16,       // under det låser vi inte, hur ensam kandidaten än är
-  brandForsok: 3,       // så många läsningar utan giltig skylt bränner låset
+  /*
+   * Så många läsningar utan giltig skylt bränner låset.
+   *
+   * ETT DIFFERENTIERAT TAK PRÖVADES INTE, OCH SKÄLET SKA STÅ HÄR. Tanken var
+   * att låta en kandidat som SAKNAR skyltens egna bevis — inget uppmätt blått
+   * band och ingen skylttakt trots att den är bred nog att delningen ska vara
+   * pålitlig — brännas efter 2 läsningar i stället för 3, och en som bär alla
+   * bevisen få 4. Den skulle spara en tredjedel av de bortkastade läsningarna
+   * per felaktigt lås.
+   *
+   * Den är inte byggd, för den vilar på att taktsignalen beter sig i drift som
+   * den gör på bänken, och det vet ingen: `taktfaktor` mäts vid teckenhöjd
+   * 18–131 px och en dashcam på tio meter ger 6–10 px. Ett SÄNKT brandtak är
+   * dessutom det enda i hela den här omgången som skulle kunna ta bort en
+   * läsning i stället för att lägga till en, alltså det enda som kan bli en
+   * strykning i förklädnad. Bygg den när det finns dashcam-material som visar
+   * hur ofta takten alls går att mäta där.
+   */
+  brandForsok: 3,
   glidning: 0.4,        // hur mycket av den nya positionen som slår igenom
   maxSpar: 12,
   /*
@@ -4102,12 +5183,66 @@ export class Rostrakning {
   /**
    * Lägger en röst och svarar om urnan är avgjord.
    *
+   * `exakt` — DELSTRÄNGSGRINDEN, och den är det som gör att ett fel nummer
+   * aldrig kan bli stabilt. Bakgrund i `tolkaRatext`: en råtext på 7–8 tecken
+   * avkodas via sexteckenfönster, och en insättning MITT I en riktig skylt
+   * ger oftast precis ett giltigt men FEL nummer. Uppmätt mot den verkliga
+   * avkodningen (node, samma modul, 22 facitnummer ur matning.html × hela
+   * OCR-alfabetet 33 tecken, varje position; brus = likformigt slumpade
+   * strängar ur alfabetet, 200 000 per längd) — talen mäts om vid varje
+   * ändring i `tolkaRatext`/`rattaSex`:
+   *
+   *   insättning i ÄNDE (pos 0/6)    962 rätt ·     0 fel ·   490 tysta
+   *   insättning i MITTEN (pos 1–5)   34 rätt · 1 996 FEL · 1 600 tysta
+   *   slumpbrus, andel accepterad    längd 7: 24,3 %   längd 8: 30,9 %
+   *     (talen är protokollets egna utskrifter, mätta med dess mulberry32
+   *      med frö 424242 — protokollets FÖRSTA rng var en LCG vars produkt
+   *      sprängde 2^53 och gav skeva tal, så skriv aldrig in en siffra här
+   *      som inte kommer ur en körning av skriptet som det ser ut i repot)
+   *     (längd 6 accepterar 18,4 % — men en sexteckenläsning är transient
+   *      brus som byter nummer varje varv och faller på vinstmarginalen;
+   *      det farliga är 7–8, där SAMMA felnummer kan falla ut varje varv)
+   *
+   * En systematisk mitteninsättning — samma bandkant eller smutsfläck varje
+   * bildruta — ger samma felnummer varje varv. Vikterna stoppar den inte:
+   * `malGolv` kräver bara flera läsningar, inte flera SLAGS läsningar.
+   *
+   * Därför två saker för en röst med `exakt: false`:
+   *   1. LÅG VIKT, alltid `viktLag`, oavsett vad motorn påstår om sin
+   *      säkerhet — en läsning vars längd inte stämde är inte en läsning
+   *      motorn får vara kaxig om.
+   *   2. INGEN ANNONSERING UTAN SEXTECKENBEKRÄFTELSE: urnan blir aldrig
+   *      `klar` förrän minst en o-bleknad röst på det vinnande numret kom ur
+   *      en läsning med exakt sex tecken. En systematisk insättning får
+   *      aldrig den bekräftelsen — appen tiger i stället för att ljuga.
+   *
+   * Kostnaden, mätt i bänken och inte i teorin (matning.html 2026-08-23):
+   * av bänkens 11 rätta läsningar är EN delsträngsburen — Regplat-URK.jpg,
+   * råtext "JURK924" → URK924 — och den tiger på annonseringsnivån så länge
+   * ingen bildruta läses hel (bänken är stillbilder; i drift ändrar varje
+   * bildruta beskärningen och en hel läsning räcker). Grinden själv, mätt
+   * mot Rostrakning i node: 200 varv systematisk delsträng à 700 ms med
+   * säkerhet 95 → aldrig klar; delsträngar + EN sexteckenläsning på samma
+   * nummer i varv 4 → klar i varv 4; enbart exakta läsningar → oförändrat
+   * (klar efter 5 varv vid säkerhet 0, 2 varv vid 91 — matning.htmls
+   * protokoll). Läsningen finns kvar, rutan låser, bänkens "rätt text"
+   * räknas på läsningen — men appen säger inget nummer högt förrän en ruta
+   * någon gång läses hel. Det är samma löfte som gränssnittstexten ger:
+   * hellre inget svar än fel svar.
+   *
    * @param {string|number} urnaId  spårets id — en urna per fordon i bild
    * @param {string} hash           saltad hash av läsningen
    * @param {number} sakerhet       motorns säkerhet, 0–100
+   * @param {boolean} [opt.exakt=false]  true = läsningen var EXAKT sex tecken.
+   *   Förvalet är false med flit — åt det stränga hållet. En anropare som
+   *   glömmer flaggan får då röster som aldrig kan bekräfta ett nummer, och
+   *   det felet SYNS (appen tiger). Med förval true hade samma glömska i
+   *   stället räknat en delsträngsläsning som sexteckenbekräftelse — precis
+   *   den väg till ett stabilt fel nummer som hela flaggan finns för att
+   *   stänga, och den hade aldrig synts i en bänk som skickar flaggan rätt.
    * @returns {{klar:boolean, vikt:number, tvaa:number, roster:number, mal:number}}
    */
-  rosta(urnaId, hash, sakerhet, { krav = 2, nu = Date.now() } = {}) {
+  rosta(urnaId, hash, sakerhet, { krav = 2, nu = Date.now(), exakt = false } = {}) {
     // Urnor för spår som inte finns kvar ska inte ligga och minnas. Två
     // fönster utan en röst betyder att fordonet är ur bild.
     for (const [id, u] of this.urnor) {
@@ -4127,14 +5262,18 @@ export class Rostrakning {
     u.sist = nu;
     const F = this.fonster(krav);
     u.roster = u.roster.filter(r => nu - r.t < F);
-    u.roster.push({ h: hash, t: nu, v: rostvikt(sakerhet, this.k) });
+    // En delsträngsläsning röstar alltid med golvvikten — se rubriken.
+    u.roster.push({ h: hash, t: nu, e: !!exakt,
+                    v: exakt ? rostvikt(sakerhet, this.k) : this.k.viktLag });
 
     // Blekning: en röst tappar sin vikt linjärt över fönstret.
     const summa = new Map();
+    const exaktFor = new Set();     // hashar med minst en o-bleknad sextecken-röst
     for (const r of u.roster) {
       const bleknad = r.v * (1 - (nu - r.t) / F);
       if (bleknad <= 0) continue;
       summa.set(r.h, (summa.get(r.h) || 0) + bleknad);
+      if (r.e) exaktFor.add(r.h);
     }
 
     let vinnare = null, vikt = 0, tvaa = 0;
@@ -4146,7 +5285,11 @@ export class Rostrakning {
     const mal = this.mal(krav);
     // Vinnaren måste vara den vi just läste. Annars annonserar vi ett gammalt
     // svar i samma ögonblick som bilden säger något annat.
-    const klar = vinnare === hash && vikt >= mal && (vikt - tvaa) >= this.k.vinstMarginal;
+    // Och utan minst en sextecken-röst på vinnaren annonseras ingenting alls:
+    // ett nummer som bara delsträngar sett kan vara en stabil mitteninsättning
+    // — ett fel nummer får aldrig kunna bli stabilt. Se rubriken.
+    const klar = vinnare === hash && vikt >= mal &&
+                 (vikt - tvaa) >= this.k.vinstMarginal && exaktFor.has(vinnare);
     if (klar) u.roster = [];
     return { klar, vikt, tvaa, mal, roster: u.roster.length };
   }
@@ -5212,7 +6355,7 @@ export class PlateReader extends EventTarget {
       const svar = lasId
         ? await lasKandidat(this.video, roi)
         : await lasRuta(this.video, roi, { fardigMatt: matt });
-      const { plat, sakerhet, tider } = svar;
+      const { plat, sakerhet, tider, exaktSex } = svar;
 
       /*
        * Kameran kan ha släckts medan läsningen pågick. Utan den här kontrollen
@@ -5251,7 +6394,7 @@ export class PlateReader extends EventTarget {
       // Ett lås som aldrig ger en giltig skylt ska brinna upp, inte sitta
       // kvar. Rapporten är det som gör det.
       if (lasId) this.malsokare.rapporteraLasning(lasId, !!plat, h);
-      if (plat) await this.#rosta(plat, sakerhet, lasId ?? 'mitten', forstSedd, h);
+      if (plat) await this.#rosta(plat, sakerhet, lasId ?? 'mitten', forstSedd, h, exaktSex);
     } catch (e) {
       this.#fel(e);
     } finally {
@@ -5291,7 +6434,8 @@ export class PlateReader extends EventTarget {
    * eget fordon. Är det någon annans slutar det här, i samma bildrutecykel
    * som det lästes.
    */
-  async #rosta(plat, sakerhet, urnaId = 'mitten', forstSedd = 0, fardigHash = null) {
+  async #rosta(plat, sakerhet, urnaId = 'mitten', forstSedd = 0, fardigHash = null,
+               exaktSex = true) {
     const nu = Date.now();
 
     // Hashen kan redan vara framtagen av anroparen — brandmekanismen behöver
@@ -5347,7 +6491,7 @@ export class PlateReader extends EventTarget {
      * felläsning av den ena kan inte längre störa den andra.
      */
     const rost = this.rostning.rosta(urnaId, h, sakerhet,
-                                     { krav: this.settings.krav, nu });
+                                     { krav: this.settings.krav, nu, exakt: exaktSex });
     if (!rost.klar) {
       // Statusraden sa förut vilken skylt som höll på att bekräftas. Det var
       // en logg över främmande fordon, målad direkt i gränssnittet.

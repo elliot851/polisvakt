@@ -1,0 +1,1015 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Färgmätning — EU-bandets blå, plåtens vithet, teckensvärtan</title>
+<style>
+ body{background:#0b0f14;color:#eef4fa;font:12px/1.45 ui-monospace,monospace;padding:12px}
+ table{border-collapse:collapse;margin:8px 0 18px;font-size:11px}
+ th,td{border:1px solid #24303c;padding:2px 6px;text-align:right;white-space:nowrap}
+ th{background:#141d26;position:sticky;top:0}
+ td.t,th.t{text-align:left}
+ h2{font-size:13px;margin:18px 0 4px;color:#8fd0ff}
+ .liten{color:#7f8c99}.varn{color:#ffbe55}.fel{color:#ff7070}.ok{color:#2fd07a}
+ pre{white-space:pre-wrap;background:#0e141b;border:1px solid #1e2833;padding:8px}
+ p{max-width:110ch;color:#b9c6d3}
+</style>
+<h1 style="font-size:15px">Färgmätning av de 22 fotona</h1>
+<div id="status">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+/*
+ * VAD DEN HÄR SIDAN ÄR, OCH VAD DEN INTE ÄR
+ *
+ * Den mäter FÄRG i de 22 fotona i den här mappen: EU-bandets nyans, mättnad
+ * och ljushet, plåtens vithet, teckensvärtan, kontrasten mellan dem, bandets
+ * andel av skyltens längd och teckenhöjden. Den ändrar ingenting i
+ * js/plate.js — den läser bara därifrån för att kunna jämföra.
+ *
+ * SKYLTRUTORNA SÄTTS INTE PÅ NYTT. De läses ur samma FACIT som matning.html
+ * använder: 22 foton, 27 skyltrutor, varav fyra uttryckligen oläsbara.
+ * Kopian nedan är ordagrann. Ändras matning.html måste den bytas här också.
+ *
+ * FACITRUTAN ÄR HELA PLÅTEN, RAM OCH ALLT. matning.html kontrollräknar det
+ * själv: "YBK70UD ger 295,6 × 62,6 px = förhållande 4,72". Rutan används
+ * därför som skyltens yttermått, i stället för att plåtens kant letas upp en
+ * gång till med Otsu — den letningen läckte ut i stötfångaren i första
+ * versionen av den här sidan och gav plåtkvoter på 6,4 och 2,1.
+ *
+ * INGENTING HÄRIFRÅN FÅR BLI EN HÅRD STRYKNING.
+ * Talen nedan är en PRIOR: de säger var en svensk skylt brukar ligga, och de
+ * duger till att rangordna kandidater. De duger inte till att stryka en. Den
+ * läxan är betald en gång redan: en horisontregel som härleddes ur precis de
+ * här 22 bilderna vann på bänken (topp1 12 -> 15) och dog utanför den — i
+ * fallet där bara stötfångaren syns gick låsen från 15/20 till 1/20. Varje
+ * gräns som sätts efter den här sidan ska verka som vikt, aldrig som veto.
+ *
+ * UNDERLAGET ÄR TUNT, OCH DET SYNS I VARJE TAL HÄRIFRÅN.
+ * 22 foton, 27 skyltrutor, mest närbilder och pressbilder. Se kolumnen
+ * "värsta avvik": ett tal som hoppar när en bild plockas bort beskriver den
+ * bilden, inte svenska skyltar.
+ *
+ * VAD SOM SKULLE BEHÖVAS FÖR ATT LITA PÅ TALEN PÅ RIKTIGT
+ *
+ *   NATT. Noll av de 22 är tagna i mörker. En svensk skylt är
+ *     retroreflekterande: i strålkastarsken blir plåten bländande vit och det
+ *     blå bandet nästan svart, alltså tvärtom mot allt som mätts här.
+ *     BLA_V_MIN = 0,09 är helt oprövad mot den bilden. Behövs: ~50 bildrutor
+ *     tagna med halvljus mellan skymning och gryning.
+ *   AVSTÅND. Skyltarna här är 29–798 px breda, median ungefär 250. En dashcam
+ *     ser 10–25 px. Den enda rutan i det skiktet (29 × 9 px) är också den
+ *     enda där varenda mätning gick sönder. Behövs: bildrutor där skylten är
+ *     under 30 px bred, och de måste komma ur riktig video, inte ur en
+ *     nedskalad närbild — nedskalningen medelvärdesbildar bort just det brus
+ *     som är problemet.
+ *   FÄRGDELSAMPLING. JPEG och AVIF lagrar kulören i halv upplösning. På en
+ *     15 px bred skylt är bandet under två pixlar, alltså mindre än ett enda
+ *     kulörprov, och blått är det första som försvinner. Går inte att mäta
+ *     på det här materialet alls.
+ *   VÄDER OCH SMUTS. Inget foto i regn, snö, dis eller med saltdammig plåt.
+ *   BLÅTT ATT FÖRVÄXLA MED. Bara ett av de 22 fotona har en stor blå yta i
+ *     bakgrunden. Träffsäkerheten i blåcensusen längst ner är alltså mätt mot
+ *     ett stickprov som INTE är motvilligt. Behövs: bildrutor med blå
+ *     vägmärken, blå bilar och blå skyltfönster i samma ruta som en skylt.
+ *   MILLIMETER. Ingen bild har en känd längdskala, så bandets bredd i mm går
+ *     bara att räkna fram genom att ANTA att plåten är 520 mm.
+ */
+import { BLAGRIND, PLATTGRIND, BAND, SKYLT_KVOT, sokAnkare } from '../../js/plate.js';
+
+/* ---- FACIT — ordagrann kopia ur matning.html ---------------------------- */
+const FACIT = [
+ { fil:'YBK70UD.jpg', svarighet:'latt', vinkel:'rakt-bakifran',
+   skyltar:[{text:'YBK 70U',x:0.3831,y:0.5773,b:0.2887,h:0.0918,lasbar:true}] },
+ { fil:'polestar-4-madrid-gold.jpg', svarighet:'svar', vinkel:'snett-bak',
+   skyltar:[{text:'FAP 18M',x:0.1606,y:0.5908,b:0.1455,h:0.0947,lasbar:true}] },
+ { fil:'polestar-4-bak.webp', svarighet:'latt', vinkel:'rakt-bakifran',
+   skyltar:[{text:'FAP 18M',x:0.4408,y:0.7225,b:0.165,h:0.062,lasbar:true}] },
+ { fil:'enlarged.jpg', svarighet:'latt', vinkel:'rakt-bakifran',
+   skyltar:[{text:'UTX 153',x:0.3887,y:0.503,b:0.2206,h:0.0838,lasbar:true}] },
+ { fil:'2039174f.avif', svarighet:'medel', vinkel:'rakt-bakifran',
+   skyltar:[{text:'CHK 49S',x:0.4692,y:0.5171,b:0.1144,h:0.0357,lasbar:true}] },
+ { fil:'7751f94d.avif', svarighet:'medel', vinkel:'rakt-bakifran',
+   skyltar:[{text:'ZPD 710',x:0.4303,y:0.566,b:0.1442,h:0.0415,lasbar:true}] },
+ { fil:'721ab0d6.avif', svarighet:'latt', vinkel:'rakt-bakifran',
+   skyltar:[{text:'XTU 097',x:0.3851,y:0.5152,b:0.173,h:0.0274,lasbar:true}] },
+ { fil:'0c4d9b68.jpg', svarighet:'medel', vinkel:'snett-bak',
+   skyltar:[{text:'XWE 623',x:0.2451,y:0.4801,b:0.1729,h:0.0363,lasbar:true}] },
+ { fil:'9487480d.avif', svarighet:'latt', vinkel:'rakt-bakifran',
+   skyltar:[{text:'ABU 773',x:0.3595,y:0.5695,b:0.26,h:0.0425,lasbar:true}] },
+ { fil:'3b979c11.avif', svarighet:'svar', vinkel:'rakt-bakifran',
+   skyltar:[{text:'GRE 101',x:0.4065,y:0.56,b:0.1975,h:0.0558,lasbar:true},
+            {text:'EZN 242',x:0.0127,y:0.5745,b:0.0738,h:0.0535,lasbar:true},
+            {text:'PMD 578',x:0.1719,y:0.4819,b:0.044,h:0.0126,lasbar:false}] },
+ { fil:'images.jpg', svarighet:'medel', vinkel:'rakt-bakifran',
+   skyltar:[{text:'HNL 210',x:0.384,y:0.3355,b:0.294,h:0.1085,lasbar:true}] },
+ { fil:'1728543597268.jpg', svarighet:'medel', vinkel:'snett-fram',
+   skyltar:[{text:'EEL 62J',x:0.1707,y:0.6481,b:0.1155,h:0.0563,lasbar:true}] },
+ { fil:'521e24d0.avif', svarighet:'medel', vinkel:'snett-fram',
+   skyltar:[{text:'RUR 017',x:0.2906,y:0.6844,b:0.0969,h:0.0479,lasbar:true},
+            {text:'OOT 63Z',x:0.9039,y:0.4538,b:0.0469,h:0.0121,lasbar:false}] },
+ { fil:'Regpl-Heden.jpg', svarighet:'svar', vinkel:'rakt-framifran',
+   skyltar:[{text:'YDR 167',x:0.0624,y:0.5187,b:0.1035,h:0.0592,lasbar:true},
+            {text:'YDR 168',x:0.6247,y:0.5779,b:0.1482,h:0.0651,lasbar:true}] },
+ { fil:'Regplat-URK.jpg', svarighet:'latt', vinkel:'rakt-framifran',
+   skyltar:[{text:'URK 924',x:0.2265,y:0.4222,b:0.552,h:0.3245,lasbar:true}] },
+ { fil:'2560.webp', svarighet:'latt', vinkel:'rakt-bakifran',
+   skyltar:[{text:'NWA 780',x:0.1775,y:0.4595,b:0.6417,h:0.2342,lasbar:true}] },
+ { fil:'renummer-131122.jpg', svarighet:'medel', vinkel:'rakt-framifran',
+   skyltar:[{text:'NJK 447',x:0.098,y:0.254,b:0.722,h:0.515,lasbar:true}] },
+ { fil:'nya-regnummer-sverige.webp', svarighet:'medel', vinkel:'snett-fram',
+   skyltar:[{text:'HET 69A',x:0.1984,y:0.4291,b:0.5641,h:0.1712,lasbar:true}] },
+ { fil:'Reg-nr-fram-flaggor.jpg', svarighet:'latt', vinkel:'rakt-framifran',
+   skyltar:[{text:'ABC 123',x:0.2417,y:0.4217,b:0.5767,h:0.125,lasbar:true}] },
+ { fil:'nya-skyltar-transportstyrelsen.png', svarighet:'svar', vinkel:'rakt-bakifran',
+   skyltar:[{text:'MLB 84A',x:0.3658,y:0.117,b:0.6342,h:0.5244,lasbar:false},
+            {text:'',x:0.4192,y:0.7274,b:0.0242,h:0.0133,lasbar:false}] },
+ { fil:'d54eac78.png', svarighet:'latt', vinkel:'rakt-bakifran',
+   skyltar:[{text:'YAA 120',x:0.4115,y:0.5807,b:0.191,h:0.0507,lasbar:true}] },
+ { fil:'image.png', svarighet:'medel', vinkel:'snett-bak',
+   skyltar:[{text:'MLB 84A',x:0.2633,y:0.3342,b:0.159,h:0.1233,lasbar:true}] },
+];
+
+/* ---- Grundverktyg -------------------------------------------------------- */
+
+const ladda = f => new Promise((ok, nej) => {
+  const i = new Image();
+  i.onload = () => ok(i);
+  i.onerror = () => nej(new Error('kunde inte avkoda ' + f));
+  i.src = './' + encodeURIComponent(f);
+});
+const cv = (w, h) => { const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h)); return c; };
+const sort = a => [...a].sort((x, y) => x - y);
+function pct(s, p) { if (!s.length) return null;
+  const i = (s.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i);
+  return s[lo] + (s[hi] - s[lo]) * (i - lo); }
+const median = a => pct(sort(a), 0.5);
+const r3 = (x, d = 3) => (x == null || !isFinite(x)) ? null : +x.toFixed(d);
+
+/**
+ * HSV, räknad som js/plate.js räknar den.
+ * plate.js skriver mattnad = (b − min(r,g))/b och nyans = 240 + 60(r−g)/delta.
+ * Det ÄR standard-HSV, men bara i sektorn där blå är största kanalen — och det
+ * är den enda sektor plate.js någonsin tittar i.
+ */
+function hsv(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d > 0) {
+    if (mx === r) h = 60 * (((g - b) / d) % 6);
+    else if (mx === g) h = 60 * ((b - r) / d + 2);
+    else h = 60 * ((r - g) / d + 4);
+    if (h < 0) h += 360;
+  }
+  return { h, s: mx ? d / mx : 0, v: mx / 255, kroma: d };
+}
+
+function otsu(gra) {
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < gra.length; i++) hist[gra[i]]++;
+  const n = gra.length;
+  let summa = 0; for (let i = 0; i < 256; i++) summa += i * hist[i];
+  let sumB = 0, wB = 0, bast = -1, trosk = 127;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = n - wB; if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (summa - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > bast) { bast = v; trosk = t; }
+  }
+  return trosk;
+}
+
+/** Sammanhängande områden i en 0/1-mask över ett rutnät, åtta grannar. */
+function komponenter(mask, b, h, minArea = 4) {
+  const n = b * h, besokt = new Uint8Array(n), stack = new Int32Array(n), ut = [];
+  for (let start = 0; start < n; start++) {
+    if (besokt[start] || !mask[start]) continue;
+    let sp = 0; stack[sp++] = start; besokt[start] = 1;
+    let minX = b, maxX = -1, minY = h, maxY = -1, area = 0;
+    let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    const px = [];
+    while (sp) {
+      const i = stack[--sp], x = i % b, y = (i / b) | 0;
+      area++; px.push(i);
+      sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= b || ny >= h) continue;
+        const j = ny * b + nx;
+        if (besokt[j] || !mask[j]) continue;
+        besokt[j] = 1; stack[sp++] = j;
+      }
+    }
+    if (area < minArea) continue;
+    const cx = sx / area, cy = sy / area;
+    const cxx = sxx / area - cx * cx, cyy = syy / area - cy * cy, cxy = sxy / area - cx * cy;
+    const spar = cxx + cyy, det = cxx * cyy - cxy * cxy;
+    const rot = Math.sqrt(Math.max(0, spar * spar / 4 - det));
+    ut.push({ px, area, minX, maxX, minY, maxY, cx, cy,
+      vinkel: 0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180 / Math.PI,
+      L: Math.sqrt(Math.max(1, 12 * (spar / 2 + rot) + 1)),
+      W: Math.sqrt(Math.max(1, 12 * Math.max(0, spar / 2 - rot) + 1)) });
+  }
+  return ut.sort((a, c) => c.area - a.area);
+}
+
+/* ---- Blåtester ----------------------------------------------------------
+ *
+ * TVÅ OLIKA, OCH SKILLNADEN ÄR HELA POÄNGEN.
+ *
+ * `blaLos` letar UPP bandet. Den är avsiktligt mycket lösare än BLAGRIND: om
+ * bandet letades upp med dagens grind kunde mätningen bara bekräfta dagens
+ * grind, för allt utanför den hade aldrig kommit med i statistiken.
+ *
+ * `dagensGrind` är BLAGRIND ordagrant, och används bara för att RÄKNA hur
+ * stor del av det uppmätta bandet den fångar. Färgstatistiken räknas alltid
+ * på RÅA pixelvärden — det är dem js/plate.js ser.
+ *
+ * VITBALANSEN MÅSTE BORT FÖRE LETANDET, OCH DET VAR INTE UPPENBART.
+ * Första versionen använde "blå kanalen minst 5 % över röd". Sex av 27 rutor
+ * gav då blåandel 1,00: hela plåten såg blå ut. Skälet är att svensk
+ * skyltfolie är retroreflekterande och i dagsljus har en kall vit ton — på
+ * YBK70UD ligger den vita ytan på ungefär (190, 196, 205), alltså 15 nivåer
+ * mer blått än rött. Ett absolut blåtest kan inte skilja den plåten från ett
+ * blått band. Referensvitt mäts därför på plåtens egen ljusa yta och
+ * pixlarna normeras mot den innan bandet letas upp. Efter det betyder "blå"
+ * blåare än plåten själv, vilket är det enda som är entydigt.
+ */
+function blaLosMed(ref) {
+  // ref = {r,g,b} medianen av plåtens ljusa yta. Förstärkningen gör den grå.
+  const kr = ref && ref.r > 8 ? ref.g / ref.r : 1;
+  const kb = ref && ref.b > 8 ? ref.g / ref.b : 1;
+  return (r, g, b) => {
+    const rn = r * kr, bn = b * kb;
+    return (bn - rn) >= Math.max(6, bn * 0.12) && bn >= g - 6;
+  };
+}
+
+/** Absolut variant, för helbildscensus där det inte finns någon plåt att normera mot. */
+const blaLosAbs = (r, g, b) => (b - r) >= Math.max(8, b * 0.12) && b >= g - 6;
+
+function dagensGrind(r, g, bl) {
+  if (bl <= r || bl <= g) return false;
+  const d = bl - Math.min(r, g);
+  if (d <= 0) return false;
+  if (bl < BLAGRIND.vMin * 255 || bl > BLAGRIND.vMax * 255) return false;
+  const s = d / bl;
+  if (s < BLAGRIND.mattnadMin) return false;
+  if (s < BLAGRIND.mattnadRen && d < BLAGRIND.kromaMin) return false;
+  const nyans = 240 + 60 * (r - g) / d;
+  return !(nyans < BLAGRIND.nyansMin || nyans > BLAGRIND.nyansMax);
+}
+
+/*
+ * KANDIDATSPANN. Frågan "vilket blåspann fångar alla 22 band" är bara halva
+ * frågan — den andra halvan är vad samma spann drar in av allt annat blått i
+ * bildrutan. Därför räknas tre spann parallellt, både på bandens pixlar
+ * (täckning) och på hela bildrutan (kostnad).
+ *
+ *   A  dagens BLAGRIND, ordagrant.
+ *   B  ett spann satt efter var bandens MEDIANER ligger, inte efter deras
+ *      ytterligheter: nyans 190–250 rymmer alla 27 uppmätta bandmedianer med
+ *      marginal, och mättnads- och kromagolven är sänkta till ungefär hälften
+ *      av dagens.
+ *   C  ett spann som ska rymma 90 % av VARJE bands pixlar. Det blir med
+ *      nödvändighet vidöppet, och kostnadskolumnen visar vad det betyder.
+ *
+ * INGET AV DEM ÄR ETT FÖRSLAG PÅ EN NY GRIND. De är tre linjaler som gör det
+ * mätbart vad en ändring skulle kosta.
+ */
+const KANDIDATSPANN = {
+  A_dagens: { nyansMin: BLAGRIND.nyansMin, nyansMax: BLAGRIND.nyansMax,
+              mattnadMin: BLAGRIND.mattnadMin, mattnadRen: BLAGRIND.mattnadRen,
+              kromaMin: BLAGRIND.kromaMin, vMin: BLAGRIND.vMin, vMax: BLAGRIND.vMax },
+  B_medianstyrt: { nyansMin: 190, nyansMax: 250, mattnadMin: 0.20, mattnadRen: 0.55,
+                   kromaMin: 18, vMin: 0.06, vMax: 1.00 },
+  C_tackerallt: { nyansMin: 173, nyansMax: 240, mattnadMin: 0.04, mattnadRen: 0.04,
+                  kromaMin: 5, vMin: 0.07, vMax: 1.00 },
+};
+
+/** Samma logik som `dagensGrind`, men med spannet inskickat. */
+function spannGrind(sp) {
+  return (r, g, bl) => {
+    if (bl <= r || bl <= g) return false;
+    const d = bl - Math.min(r, g);
+    if (d <= 0) return false;
+    const v = bl / 255;
+    if (v < sp.vMin || v > sp.vMax) return false;
+    const s = d / bl;
+    if (s < sp.mattnadMin) return false;
+    if (s < sp.mattnadRen && d < sp.kromaMin) return false;
+    const ny = 240 + 60 * (r - g) / d;
+    return ny >= sp.nyansMin && ny <= sp.nyansMax;
+  };
+}
+const SPANNTEST = Object.fromEntries(
+  Object.entries(KANDIDATSPANN).map(([k, v]) => [k, spannGrind(v)]));
+
+/* ---- matPlatta, ordagrann kopia ur js/plate.js --------------------------
+ * Finns här för att morkandel och kontrast ska kunna jämföras med
+ * PLATTGRIND.morkandelMin/Max och kontrastMin PÅ SAMMA DEFINITION, mätt i
+ * samma arbetsupplösning (400 px bredd) som sökningen kör i. Räknades de om
+ * på något annat sätt vore jämförelsen med dagens tal meningslös.
+ */
+function matPlatta(gra, b, h, ruta, bandAndel = 0) {
+  const { cx, cy, L, W, vinkel } = ruta;
+  if (!(L > 0) || !(W > 0)) return null;
+  const rad = vinkel * Math.PI / 180, kos = Math.cos(rad), sin = Math.sin(rad);
+  const R = Math.max(10, Math.min(28, Math.round(W)));
+  const K = Math.max(16, Math.min(48, Math.round(L / 2)));
+  const u0 = (-0.5 + Math.min(0.25, bandAndel) + 0.02) * L, u1 = 0.48 * L;
+  if (u1 <= u0) return null;
+  const varden = new Int16Array(R * K), hist = new Uint16Array(64);
+  let n = 0;
+  for (let j = 0; j < R; j++) {
+    const v = (-0.58 + 1.16 * (j + 0.5) / R) * W;
+    const bx = cx - v * sin, by = cy + v * kos;
+    for (let i = 0; i < K; i++) {
+      const u = u0 + (u1 - u0) * (i + 0.5) / K;
+      const x = Math.round(bx + u * kos), y = Math.round(by + u * sin);
+      let g = -1;
+      if (x >= 0 && x < b && y >= 0 && y < h) { g = gra[y * b + x]; hist[g >> 2]++; n++; }
+      varden[j * K + i] = g;
+    }
+  }
+  if (n < R * K * 0.5) return null;
+  let ack = 0, lag = 0, hog = 255;
+  for (let k = 0; k < 64; k++) { ack += hist[k]; if (ack >= n * 0.05) { lag = k * 4 + 2; break; } }
+  ack = 0;
+  for (let k = 0; k < 64; k++) { ack += hist[k]; if (ack >= n * 0.95) { hog = k * 4 + 2; break; } }
+  const kontrast = hog - lag, trosk = lag + kontrast * 0.55;
+  let morka = 0;
+  for (let i = 0; i < R * K; i++) { const g = varden[i]; if (g >= 0 && g < trosk) morka++; }
+  return { morkandel: morka / n, kontrast, sampel: n };
+}
+
+/* ---- Mätningen av EN skyltruta ------------------------------------------ */
+
+/**
+ * Löser plåtens längd och höjd ur facitrutans mått och skyltens lutning.
+ *
+ *   rutbredd = P·|cos| + H·|sin|
+ *   ruthöjd  = P·|sin| + H·|cos|
+ *
+ * INVERSIONEN ÄR KÄNSLIG, OCH DET MÅSTE STÅ UT.
+ * En skylt är 4,7 gånger längre än hög. Termen P·|sin| är därför en STOR del
+ * av ruthöjden redan vid några graders lutning: vid 4° är den en tredjedel av
+ * höjden på Reg-nr-fram-flaggor. En grads fel i lutningen blir då åtta
+ * procents fel i höjden. Andra körningen av den här sidan gav plåtkvoter på
+ * 6,6 och 7,1 av exakt det skälet — inte för att skyltarna var avlånga, utan
+ * för att lutningen var skattad ur bandets huvudaxel och hade ett par graders
+ * fel. Lutningen mäts därför om på TECKENRADEN innan inversionen används, och
+ * inversionen körs bara när lutningen är minst 1,5° — under det är rättelsen
+ * mindre än bruset i den.
+ */
+function losPlat(w, h, grader) {
+  const t = grader * Math.PI / 180, c = Math.abs(Math.cos(t)), s = Math.abs(Math.sin(t));
+  /*
+   * INVERSIONEN KÖRS BARA NÄR RUTAN SJÄLV BEVISAR ATT DEN BEHÖVS.
+   *
+   * Tredje körningen visade problemet rent: på 2039174f är facitrutans kvot
+   * 4,77 — rutan ÄR plåten — men teckenraden mätte 3,5° lutning, och
+   * inversionen gjorde då plåtkvoten 6,65. Reg-nr-fram-flaggor gick från 4,61
+   * till 7,30 på samma sätt. Rättelsen var större än felet den skulle rätta.
+   *
+   * En verkligt vriden skylt syns direkt i rutan: rotationen kan bara SÄNKA
+   * rutans kvot, aldrig höja den. Ligger kvoten redan i det höga skiktet är
+   * plåten rättvänd och rutans mått ska användas rakt av. Gränsen 4,2 är satt
+   * under det klungan av rättvända rutor ligger i (4,59–5,17) och långt över
+   * de vridna (1,8–3,8).
+   *
+   * DET HÄR ÄR EN MÄTNINGSREGEL, INTE EN GRIND I LÄSAREN. Ingenting härifrån
+   * får bli ett villkor i js/plate.js.
+   */
+  if (Math.abs(grader) < 1.5 || w / h >= 4.2) return { P: w, H: h, kalla: 'rutan' };
+  const det = c * c - s * s;
+  if (Math.abs(det) < 0.30) return { P: w, H: h, kalla: 'rutan (nära 45°)' };
+  const P = (w * c - h * s) / det, H = (h * c - w * s) / det;
+  // Rättelsen får krympa höjden, aldrig växa den, och aldrig mer än till
+  // hälften. Den får inte heller ge en plåt längre än SKYLT_KVOT_MAX tillåter.
+  // Utanför det är det inversionen som spårat ur, inte skylten.
+  if (!(P > 0) || !(H > h * 0.5) || H > h * 1.02 || P / H > 7.0)
+    return { P: w, H: h, kalla: 'rutan (inversion förkastad)' };
+  return { P, H, kalla: 'inverterad' };
+}
+
+const BINS = 240;   // u-fack längs plåten
+
+/**
+ * Mäter EN skyltruta. Körs två gånger: först med lutningen skattad ur bandets
+ * huvudaxel, sedan om med lutningen mätt på teckenradens tyngdpunkter. Se
+ * `matSkylt` längst ner.
+ */
+function matEn(img, plat, filnamn, grader, forstaVarvet) {
+  const IW = img.naturalWidth, IH = img.naturalHeight;
+  const bx = plat.x * IW, by = plat.y * IH, bw = plat.b * IW, bh = plat.h * IH;
+  const rad = { fil: filnamn, text: plat.text || '(ingen)', lasbar: plat.lasbar,
+                rutaPx: Math.round(bw) + '×' + Math.round(bh),
+                rutkvot: r3(bw / bh, 2), bandFunnet: false, anm: [] };
+  if (bw < 12 || bh < 5) { rad.anm.push('rutan under 12×5 px'); return rad; }
+
+  const kx = Math.max(0, Math.floor(bx - bw * 0.06));
+  const ky = Math.max(0, Math.floor(by - bh * 0.10));
+  const kx2 = Math.min(IW, Math.ceil(bx + bw * 1.06));
+  const ky2 = Math.min(IH, Math.ceil(by + bh * 1.10));
+  const cw = kx2 - kx, chh = ky2 - ky;
+  const c = cv(cw, chh), g2 = c.getContext('2d', { willReadFrequently: true });
+  g2.drawImage(img, kx, ky, cw, chh, 0, 0, cw, chh);
+  const data = g2.getImageData(0, 0, cw, chh).data;
+  const gra = new Uint8ClampedArray(cw * chh);
+  for (let i = 0, p = 0; i < cw * chh; i++, p += 4)
+    gra[i] = (data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114) | 0;
+
+  const mcx = bx + bw / 2 - kx, mcy = by + bh / 2 - ky;   // plåtens mitt i kragen
+
+  /* --- Steg 0: referensvitt --------------------------------------------
+   * Medianfärgen på plåtens ljusa yta. Mäts inne i rutan, på pixlar över
+   * Otsu-tröskeln, och bara i rutans högra fyra femtedelar så att bandet inte
+   * drar referensen åt blått. Se resonemanget vid blaLosMed.
+   */
+  const inneMask = new Uint8Array(cw * chh);
+  const rutGra = [];
+  for (let y = 0; y < chh; y++) for (let x = 0; x < cw; x++) {
+    if (x < mcx - bw / 2 || x > mcx + bw / 2 || y < mcy - bh / 2 || y > mcy + bh / 2) continue;
+    inneMask[y * cw + x] = 1; rutGra.push(gra[y * cw + x]);
+  }
+  const rutTrosk = otsu(new Uint8ClampedArray(rutGra));
+  const refR = [], refG = [], refB = [];
+  for (let y = 0; y < chh; y++) for (let x = 0; x < cw; x++) {
+    const i = y * cw + x;
+    if (!inneMask[i] || gra[i] <= rutTrosk) continue;
+    if (x < mcx - bw / 2 + bw * 0.20) continue;
+    const p = i * 4; refR.push(data[p]); refG.push(data[p + 1]); refB.push(data[p + 2]);
+  }
+  const ref = refR.length > 8 ? { r: median(refR), g: median(refG), b: median(refB) } : null;
+  if (!ref) rad.anm.push('för få ljusa pixlar för referensvitt — inget normerat');
+  rad.refVit = ref ? [r3(ref.r, 0), r3(ref.g, 0), r3(ref.b, 0)] : null;
+  const blaLos = blaLosMed(ref);
+
+  /* --- Steg 1: lutningen ------------------------------------------------
+   * Första varvet skattas den ur den lösa blåmaskens huvudaxel: bandet är det
+   * enda i bilden som med säkerhet ligger LODRÄTT längs skylten, så dess
+   * långaxel minus 90° är skyltens riktning. Andra varvet kommer lutningen
+   * inskickad, mätt på teckenraden, och skattningen hoppas över.
+   */
+  if (grader == null) {
+    const losMask = new Uint8Array(cw * chh);
+    for (let i = 0, p = 0; i < cw * chh; i++, p += 4)
+      if (inneMask[i] && blaLos(data[p], data[p + 1], data[p + 2])) losMask[i] = 1;
+    const bitar = komponenter(losMask, cw, chh, Math.max(4, Math.round(bw * bh * 0.0008)));
+    const bandBit = bitar.find(k => (k.maxY - k.minY + 1) >= bh * 0.35 &&
+                                    (k.maxX - k.minX + 1) <= bw * 0.40);
+    grader = 0;
+    if (bandBit && bandBit.L / Math.max(1, bandBit.W) > 1.6) {
+      let v = bandBit.vinkel - 90; while (v < -90) v += 180; while (v > 90) v -= 180;
+      if (Math.abs(v) <= 30) grader = v;
+      else rad.anm.push('bandets lutning ' + v.toFixed(0) + '° förkastad');
+    } else rad.anm.push('lutningen kunde inte skattas ur bandet, 0° antaget');
+  }
+  rad.lutning = r3(grader, 2);
+
+  const { P, H, kalla } = losPlat(bw, bh, grader);
+  rad.hojdKalla = kalla;
+  rad.platLangdPx = r3(P, 1); rad.platHojdPx = r3(H, 1);
+  rad.platKvot = r3(P / H, 2);
+
+  const t = grader * Math.PI / 180, kos = Math.cos(t), sin = Math.sin(t);
+  const vid = (u, v) => {
+    const x = Math.round(mcx + u * kos - v * sin), y = Math.round(mcy + u * sin + v * kos);
+    if (x < 0 || y < 0 || x >= cw || y >= chh) return -1;
+    return y * cw + x;
+  };
+
+  /* --- Steg 2: blåprofilen längs plåten ---------------------------------
+   * Ett fack per 1/240 av plåtlängden, och i varje fack andelen pixlar i
+   * mittersta 84 % av höjden som är blå enligt det normerade lösa testet.
+   * EU-bandet syns som ett block med hög andel vid ena kortsidan. Profilen
+   * läser bandet även när stjärnorna och S:et skär sönder det i fragment,
+   * vilket en ren komponentanalys inte gör.
+   */
+  const RADER = Math.max(8, Math.min(80, Math.round(H)));
+  const prof = new Float64Array(BINS);
+  for (let i = 0; i < BINS; i++) {
+    const u = (-0.5 + (i + 0.5) / BINS) * P;
+    let bla = 0, n = 0;
+    for (let j = 0; j < RADER; j++) {
+      const v = (-0.42 + 0.84 * (j + 0.5) / RADER) * H;
+      const idx = vid(u, v); if (idx < 0) continue;
+      n++; const p = idx * 4;
+      if (blaLos(data[p], data[p + 1], data[p + 2])) bla++;
+    }
+    prof[i] = n ? bla / n : 0;
+  }
+  rad.blaProfilTopp = r3(Math.max(...prof), 3);
+
+  /*
+   * Bandet: den längsta obrutna raden av fack med minst 0,35 blåandel som
+   * BÖRJAR i plåtens yttersta sextondel. Kravet på att börja vid kanten
+   * skiljer bandet från en blå bilfärg som lyser igenom mitt på skylten. Ett
+   * ensamt fack får hoppa över — en stjärnrad kan tömma ett fack helt.
+   */
+  function letaBand(vand) {
+    const p = vand ? [...prof].reverse() : prof;
+    let bast = null, i = 0;
+    while (i < BINS * 0.35) {
+      if (p[i] < 0.35) { i++; continue; }
+      let j = i, glapp = 0;
+      while (j + 1 < BINS && (p[j + 1] >= 0.35 || (glapp === 0 && p[j + 2] >= 0.35))) {
+        glapp = p[j + 1] < 0.35 ? 1 : 0; j++;
+      }
+      if (i <= BINS * 0.06 && (!bast || j - i > bast.slut - bast.start)) bast = { start: i, slut: j };
+      i = j + 1;
+    }
+    return bast;
+  }
+  const vanster = letaBand(false), hoger = letaBand(true);
+  let band = null, vandBand = false;
+  if (vanster && hoger) {
+    if (hoger.slut - hoger.start > vanster.slut - vanster.start) { band = hoger; vandBand = true; }
+    else band = vanster;
+  } else if (vanster) band = vanster;
+  else if (hoger) { band = hoger; vandBand = true; }
+
+  /*
+   * RIMLIGHETSGRIND, OCH DEN STRYKER INGENTING — DEN MÄRKER.
+   * Ett EU-band som täcker mer än en tredjedel av plåten finns inte. Blir
+   * mätningen ändå så är det mätningen som gått fel, inte skylten som är
+   * ovanlig. Talet står kvar i raden men flaggas och räknas inte in i
+   * medianerna, för annars hade sammanställningen beskrivit mätfelet.
+   */
+  if (band && (band.slut + 1) / BINS > 0.33) {
+    rad.bandOrimligt = r3((band.slut + 1) / BINS, 4);
+    rad.anm.push('bandandel ' + rad.bandOrimligt + ' — orimligt, förkastad');
+    band = null;
+  }
+
+  let bandSlutU = null;
+  if (band) {
+    rad.bandFunnet = true;
+    rad.bandVand = vandBand;
+    // Andelen räknas FRÅN PLÅTKANTEN, inte från där blått först syns. Det är
+    // den definition js/plate.js behöver: euAndel bestämmer var teckenfältet
+    // börjar, och ramen framför bandet går inte att läsa tecken i heller. Den
+    // rena blåbredden rapporteras vid sidan om.
+    rad.bandAndel = r3((band.slut + 1) / BINS, 4);
+    rad.bandAndelRenBla = r3((band.slut - band.start + 1) / BINS, 4);
+    bandSlutU = (-0.5 + (band.slut + 1) / BINS) * P;
+
+    /* --- Steg 3: bandets färg OCH bandets höjd -------------------------- */
+    const hL = [], sL = [], vL = [], kL = [], vLage = [];
+    let dagens = 0, antal = 0;
+    const spannTraff = { A_dagens: 0, B_medianstyrt: 0, C_tackerallt: 0 };
+    const uFrom = (band.start + 0.5) / BINS, uTo = (band.slut + 0.5) / BINS;
+    // Höjden mäts på HELA rutans höjd, inte bara mittersta 84 % — annars kan
+    // bandet aldrig visa sig vara högre än fönstret det mäts i.
+    const HRAD = Math.max(12, Math.min(200, Math.round(H * 1.1)));
+    for (let i = 0; i < BINS; i++) {
+      const andel = (i + 0.5) / BINS;
+      if (andel < uFrom || andel > uTo) continue;
+      const u = (-0.5 + (vandBand ? 1 - andel : andel)) * P;
+      for (let j = 0; j < HRAD; j++) {
+        const v = (-0.55 + 1.10 * (j + 0.5) / HRAD) * H;
+        const idx = vid(u, v); if (idx < 0) continue;
+        const p = idx * 4, r = data[p], gg = data[p + 1], bl = data[p + 2];
+        if (!blaLos(r, gg, bl)) continue;   // stjärnorna och S:et hör inte till kulören
+        const q = hsv(r, gg, bl);
+        hL.push(q.h); sL.push(q.s); vL.push(q.v); kL.push(q.kroma); vLage.push(v);
+        antal++; if (dagensGrind(r, gg, bl)) dagens++;
+        for (const k in SPANNTEST) if (SPANNTEST[k](r, gg, bl)) spannTraff[k]++;
+      }
+    }
+    if (antal >= 12) {
+      const sh = sort(hL), ss = sort(sL), sv = sort(vL), sk = sort(kL), svl = sort(vLage);
+      rad.bandSampel = antal;
+      rad.nyansMed = r3(pct(sh, 0.5), 1);
+      rad.nyansP05 = r3(pct(sh, 0.05), 1);
+      rad.nyansP95 = r3(pct(sh, 0.95), 1);
+      rad.mattMed = r3(pct(ss, 0.5)); rad.mattP05 = r3(pct(ss, 0.05));
+      rad.mattP95 = r3(pct(ss, 0.95));
+      rad.ljusMed = r3(pct(sv, 0.5)); rad.ljusP05 = r3(pct(sv, 0.05));
+      rad.ljusP95 = r3(pct(sv, 0.95));
+      rad.kromaMed = r3(pct(sk, 0.5), 1); rad.kromaP05 = r3(pct(sk, 0.05), 1);
+      rad.dagensTackning = r3(dagens / antal);
+      rad.tackningA = r3(spannTraff.A_dagens / antal);
+      rad.tackningB = r3(spannTraff.B_medianstyrt / antal);
+      rad.tackningC = r3(spannTraff.C_tackerallt / antal);
+      /*
+       * BANDETS HÖJD ÄR EN MÄTNING SOM INTE BEHÖVER NÅGOT ANTAGANDE.
+       * Bandet går hela vägen upp och ner innanför ramen. Höjden på det,
+       * delad med plåtens höjd, är alltså den svarta ramens andel — det tal
+       * js/plate.js har som konstant 0,94 i `matSkyltFranBand`. Här mäts det.
+       */
+      rad.bandHojdPx = r3(pct(svl, 0.98) - pct(svl, 0.02), 1);
+      rad.bandHojdAndel = r3(rad.bandHojdPx / H);
+      /*
+       * KULÖREN ÄR BRUS NÄR DET INTE FINNS NÅGON FÄRG KVAR. Under kroma 15
+       * bestäms nyansen av två till tre nivåers skillnad mellan kanalerna,
+       * alltså av JPEG-brus. Talet står kvar i raden men hålls utanför
+       * nyansmedianerna.
+       */
+      rad.kulorPalitlig = rad.kromaMed >= 15;
+      if (!rad.kulorPalitlig) rad.anm.push('kroma ' + rad.kromaMed + ' — nyansen är brus');
+    } else rad.anm.push('bandet gav under 12 färgprov');
+  } else if (!rad.bandOrimligt) rad.anm.push('INGET blått band hittat');
+
+  /* --- Steg 4: teckenfältet — vithet, svärta, kontrast, teckenhöjd ------ */
+  const u0raw = (bandSlutU != null ? bandSlutU : -0.44 * P) + P * 0.02;
+  const u1raw = 0.47 * P;
+  if (u1raw <= u0raw) { rad.anm.push('teckenfältet blev tomt'); return rad; }
+  const KOL = Math.max(24, Math.min(600, Math.round(u1raw - u0raw)));
+  const RAD2 = Math.max(10, Math.min(300, Math.round(H * 0.9)));
+  const falt = new Uint8ClampedArray(KOL * RAD2);
+  const faltIdx = new Int32Array(KOL * RAD2);
+  const uAv = i => u0raw + (u1raw - u0raw) * (i + 0.5) / KOL;
+  const vAv = j => (-0.45 + 0.90 * (j + 0.5) / RAD2) * H;
+  for (let j = 0; j < RAD2; j++) for (let i = 0; i < KOL; i++) {
+    const u = uAv(i), v = vAv(j);
+    const idx = vid(rad.bandVand ? -u : u, v);
+    faltIdx[j * KOL + i] = idx;
+    falt[j * KOL + i] = idx < 0 ? 0 : gra[idx];
+  }
+  const tF = otsu(falt);
+  const ljus = [], mork = [], ljusS = [], ljusV = [];
+  for (let i = 0; i < falt.length; i++) {
+    if (faltIdx[i] < 0) continue;
+    const p = faltIdx[i] * 4, q = hsv(data[p], data[p + 1], data[p + 2]);
+    if (falt[i] > tF) { ljus.push(falt[i]); ljusS.push(q.s); ljusV.push(q.v); }
+    else mork.push(falt[i]);
+  }
+  rad.faltOtsu = tF;
+  rad.vitGra = ljus.length ? r3(median(ljus), 1) : null;
+  rad.svartGra = mork.length ? r3(median(mork), 1) : null;
+  rad.vitV = ljusV.length ? r3(median(ljusV)) : null;
+  rad.vitMattnad = ljusS.length ? r3(median(ljusS)) : null;
+  rad.kontrastMedian = (rad.vitGra != null && rad.svartGra != null)
+    ? r3(rad.vitGra - rad.svartGra, 1) : null;
+  const sf = sort([...falt].filter((_, i) => faltIdx[i] >= 0));
+  rad.kontrastP5P95 = r3(pct(sf, 0.95) - pct(sf, 0.05), 1);
+  rad.morkAndelFalt = r3(mork.length / Math.max(1, mork.length + ljus.length));
+
+  /*
+   * TECKENHÖJDEN MÄTS PÅ TECKNEN, INTE PÅ EN RADPROFIL.
+   * Första versionen tog spannet av rader där minst en fjärdedel av toppen var
+   * mörk. Det gav 0,75–0,80 för nästan varje bild, alltså exakt bredden på
+   * mätfönstret: brus och skuggning fyllde profilen och gränsen band aldrig.
+   * Här plockas de mörka SAMMANHÄNGANDE fläckarna ut, de som har en bokstavs
+   * proportioner behålls, och medianhöjden av dem är teckenhöjden. Antalet
+   * rapporteras — blir det inte ungefär sex är mätningen inte att lita på.
+   */
+  const morkMask = new Uint8Array(KOL * RAD2);
+  for (let i = 0; i < KOL * RAD2; i++) if (faltIdx[i] >= 0 && falt[i] <= tF) morkMask[i] = 1;
+  const flackar = komponenter(morkMask, KOL, RAD2, Math.max(6, Math.round(KOL * RAD2 * 0.002)))
+    .map(k => ({ hojd: (k.maxY - k.minY + 1) / RAD2 * 0.90 * H,
+                 bredd: (k.maxX - k.minX + 1) / KOL * (u1raw - u0raw),
+                 u: uAv(k.cx), v: vAv(k.cy), area: k.area }));
+  const tecken = flackar.filter(k => k.hojd > H * 0.25 && k.hojd < H * 0.95 &&
+                                     k.bredd > H * 0.10 && k.bredd < H * 0.95);
+  rad.teckenAntal = tecken.length;
+  rad.teckenLagen = tecken.map(k => [k.u, k.v]);
+  if (tecken.length >= 3) {
+    rad.teckenhojdPx = r3(median(tecken.map(k => k.hojd)), 1);
+    rad.teckenhojdAndel = r3(rad.teckenhojdPx / H);
+    rad.teckenbreddAndel = r3(median(tecken.map(k => k.bredd)) / H);
+    if (rad.bandHojdPx) rad.teckenAvBandhojd = r3(rad.teckenhojdPx / rad.bandHojdPx);
+  } else {
+    /*
+     * HOPKLISTRADE TECKEN ÄR INTE SAMMA SAK SOM INGA TECKEN.
+     * I motljus (images.jpg) flyter tecknen ihop till en enda fläck bredare än
+     * plåten är hög, och breddkravet ovan kastade då bort hela mätningen och
+     * rapporterade noll tecken. Höjden på en hopklistrad teckenrad är
+     * fortfarande teckenhöjden — den behålls, men märkt, för den kan inte
+     * skilja ett tecken från en skugga tvärs över raden.
+     */
+    const klump = flackar.find(k => k.hojd > H * 0.25 && k.hojd < H * 0.95 && k.bredd >= H * 0.95);
+    if (klump) {
+      rad.teckenhojdPx = r3(klump.hojd, 1);
+      rad.teckenhojdAndel = r3(klump.hojd / H);
+      if (rad.bandHojdPx) rad.teckenAvBandhojd = r3(klump.hojd / rad.bandHojdPx);
+      rad.teckenKlump = true;
+      rad.anm.push('tecknen flöt ihop till en fläck — höjden mätt på klumpen');
+    } else rad.anm.push('bara ' + tecken.length + ' teckenfläckar — teckenhöjd ej mätt');
+  }
+  return rad;
+}
+
+/**
+ * Två varv, och det andra är inte en finputsning utan själva mätningen.
+ *
+ * Varv 1 skattar lutningen ur bandets huvudaxel. Den skattningen har ett par
+ * graders fel — på renummer-131122 gav den 22° där teckenraden visar 11 — och
+ * eftersom höjdinversionen är känslig blir plåtkvoten då 2,6 i stället för
+ * 4,7. Varv 2 mäter lutningen på TECKENRADEN: sex tecken på en rad ger en
+ * linje att anpassa mot, och lutningen på den linjen är skyltens lutning.
+ * Går teckenraden inte att mäta står varv 1 kvar, och raden märks.
+ */
+function matSkylt(img, plat, filnamn) {
+  const forsta = matEn(img, plat, filnamn, null, true);
+  const lagen = forsta.teckenLagen || [];
+  if (lagen.length < 4) {
+    forsta.lutningKalla = 'bandets huvudaxel';
+    if (lagen.length) forsta.anm.push('för få tecken (' + lagen.length + ') för att mäta lutning på raden');
+    delete forsta.teckenLagen;
+    return forsta;
+  }
+  // Minsta kvadrat på v mot u. Ligger tecknen på en rad tvärs u-axeln är
+  // lutningen kvar noll; annars är resten av lutningen atan(k).
+  const n = lagen.length;
+  const su = lagen.reduce((a, p) => a + p[0], 0) / n;
+  const sv = lagen.reduce((a, p) => a + p[1], 0) / n;
+  let tal = 0, nam = 0;
+  for (const [u, v] of lagen) { tal += (u - su) * (v - sv); nam += (u - su) * (u - su); }
+  if (nam <= 0) { forsta.lutningKalla = 'bandets huvudaxel'; delete forsta.teckenLagen; return forsta; }
+  const rest = Math.atan(tal / nam) * 180 / Math.PI;
+  if (Math.abs(rest) < 0.4 || Math.abs(rest) > 25) {
+    forsta.lutningKalla = Math.abs(rest) > 25 ? 'bandet (teckenradens ' + rest.toFixed(1) + '° förkastad)' : 'bandet, teckenraden bekräftade';
+    forsta.teckenRest = r3(rest, 2);
+    delete forsta.teckenLagen;
+    return forsta;
+  }
+  const andra = matEn(img, plat, filnamn, (forsta.lutning || 0) + rest, false);
+  andra.lutningKalla = 'teckenraden';
+  andra.lutningForsta = forsta.lutning;
+  andra.teckenRest = r3(rest, 2);
+  delete andra.teckenLagen;
+  return andra;
+}
+
+
+/* ---- Kör allt ------------------------------------------------------------ */
+
+const status = document.getElementById('status');
+const ut = document.getElementById('ut');
+const rader = [], bilder = [];
+
+const swStyr = navigator.serviceWorker ? navigator.serviceWorker.controller : 'ingen sw-api';
+if (swStyr !== null && swStyr !== 'ingen sw-api')
+  status.innerHTML = '<span class="fel">VARNING: en service worker styr sidan.</span>';
+
+/* Spann som census-räkningen körs med, så att frågan "hur mycket annat blått
+ * fångar spannet" får ett tal i stället för ett resonemang. */
+const SPANN = {
+  dagens: { nyansMin: BLAGRIND.nyansMin, nyansMax: BLAGRIND.nyansMax,
+            mattnadMin: BLAGRIND.mattnadMin, kromaMin: 0, vMin: BLAGRIND.vMin, vMax: BLAGRIND.vMax },
+  // Sätts efter mätningen, se nedan; platshållare så census kan köras direkt.
+};
+
+for (const f of FACIT) {
+  status.textContent = `Läser ${f.fil}…`;
+  let img;
+  try { img = await ladda(f.fil); }
+  catch (e) { bilder.push({ fil: f.fil, fel: e.message }); continue; }
+  const IW = img.naturalWidth, IH = img.naturalHeight;
+
+  /* Helbildscensus på arbetsbredd 400 — exakt den upplösning sökningen ser. */
+  const sk = Math.min(1, 400 / IW);
+  const cb = Math.max(8, Math.round(IW * sk)), ch = Math.max(4, Math.round(IH * sk));
+  const cc = cv(cb, ch), gc = cc.getContext('2d', { willReadFrequently: true });
+  gc.drawImage(img, 0, 0, IW, IH, 0, 0, cb, ch);
+  const helData = gc.getImageData(0, 0, cb, ch).data;
+  const helGra = new Uint8ClampedArray(cb * ch);
+  let blaTot = 0, blaIRuta = 0, losTot = 0, losIRuta = 0;
+  const spannTot = { A_dagens: 0, B_medianstyrt: 0, C_tackerallt: 0 };
+  const spannUte = { A_dagens: 0, B_medianstyrt: 0, C_tackerallt: 0 };
+  const iRuta = (x, y) => f.skyltar.some(s =>
+    x >= s.x * cb && x <= (s.x + s.b) * cb && y >= s.y * ch && y <= (s.y + s.h) * ch);
+  for (let y = 0, i = 0; y < ch; y++) for (let x = 0; x < cb; x++, i++) {
+    const p = i * 4, r = helData[p], gg = helData[p + 1], bl = helData[p + 2];
+    helGra[i] = (r * 0.299 + gg * 0.587 + bl * 0.114) | 0;
+    const inne = (dagensGrind(r, gg, bl) || blaLosAbs(r, gg, bl)) ? iRuta(x, y) : false;
+    if (dagensGrind(r, gg, bl)) { blaTot++; if (inne) blaIRuta++; }
+    if (blaLosAbs(r, gg, bl)) { losTot++; if (inne) losIRuta++; }
+    for (const k in SPANNTEST) if (SPANNTEST[k](r, gg, bl)) {
+      spannTot[k]++; if (!iRuta(x, y)) spannUte[k]++;
+    }
+  }
+
+  let ankare = [];
+  try { ankare = sokAnkare(img); } catch (e) { /* mätningen ska inte falla på detta */ }
+  const traffar = ankare.filter(a => f.skyltar.some(s => {
+    const ax1 = Math.max(a.x, s.x * IW), ay1 = Math.max(a.y, s.y * IH);
+    const ax2 = Math.min(a.x + a.w, (s.x + s.b) * IW), ay2 = Math.min(a.y + a.h, (s.y + s.h) * IH);
+    if (ax2 <= ax1 || ay2 <= ay1) return false;
+    const sn = (ax2 - ax1) * (ay2 - ay1);
+    return sn / (a.w * a.h + s.b * IW * s.h * IH - sn) > 0.2;
+  }));
+
+  const bild = { fil: f.fil, bredd: IW, hojd: IH, vinkel: f.vinkel, svarighet: f.svarighet,
+    blaPxDagens: blaTot, blaPxDagensAndel: r3(blaTot / (cb * ch), 5), blaPxIRuta: blaIRuta,
+    blaUtanforAndel: blaTot ? r3(1 - blaIRuta / blaTot) : null,
+    losPx: losTot, losUtanforAndel: losTot ? r3(1 - losIRuta / losTot) : null,
+    ankare: ankare.length, ankareTraff: traffar.length,
+    ankareEuAndel: traffar.length ? r3(traffar[0].euAndel, 4) : null,
+    // Kostnaden för varje kandidatspann: hur många pixlar i HELA bildrutan det
+    // tänder, och hur många av dem som ligger utanför någon skyltruta.
+    spannPx: { ...spannTot },
+    spannUtePx: { ...spannUte },
+    spannKostnadB: spannTot.A_dagens ? r3(spannTot.B_medianstyrt / spannTot.A_dagens, 2) : null,
+    spannKostnadC: spannTot.A_dagens ? r3(spannTot.C_tackerallt / spannTot.A_dagens, 2) : null,
+    spannAndelRutanA: r3(spannTot.A_dagens / (cb * ch), 5),
+    spannAndelRutanB: r3(spannTot.B_medianstyrt / (cb * ch), 5),
+    spannAndelRutanC: r3(spannTot.C_tackerallt / (cb * ch), 5) };
+
+  for (const s of f.skyltar) {
+    const r = matSkylt(img, s, f.fil);
+    if (r.platLangdPx) {
+      const ruta = { cx: (s.x + s.b / 2) * IW * sk, cy: (s.y + s.h / 2) * IH * sk,
+        L: r.platLangdPx * sk, W: r.platHojdPx * sk, vinkel: r.lutning ?? 0 };
+      const m = matPlatta(helGra, cb, ch, ruta, r.bandAndel || 0);
+      if (m) { r.morkandel400 = r3(m.morkandel); r.kontrast400 = m.kontrast; }
+      else r.anm.push('matPlatta gav inget på arbetsbredd 400');
+    }
+    r.vinkelFacit = f.vinkel;
+    rader.push(r);
+  }
+  bilder.push(bild);
+}
+
+/* ---- Sammanställning med utelämna-ett ------------------------------------ */
+
+/**
+ * Median, spann och UTELÄMNA-ETT.
+ *
+ * Utelämningen görs per FOTO, inte per skyltruta: tre skyltar i samma bild är
+ * inte tre oberoende observationer — de delar kamera, ljus, brännvidd och
+ * komprimering. 22 omräkningar, en per foto.
+ */
+function sammanstall(namn, plocka, { filter = () => true, dec = 3, kalla = rader } = {}) {
+  const perFil = new Map();
+  for (const r of kalla) {
+    if (!filter(r)) continue;
+    const v = plocka(r);
+    if (v == null || !isFinite(v)) continue;
+    if (!perFil.has(r.fil)) perFil.set(r.fil, []);
+    perFil.get(r.fil).push(v);
+  }
+  const alla = [...perFil.values()].flat();
+  if (!alla.length) return { namn, n: 0, nFoton: 0 };
+  const s = sort(alla), med = pct(s, 0.5), ute = [];
+  for (const fil of perFil.keys()) {
+    const kvar = [...perFil.entries()].filter(([k]) => k !== fil).map(([, v]) => v).flat();
+    if (kvar.length) ute.push(pct(sort(kvar), 0.5));
+  }
+  const um = sort(ute), f = x => r3(x, dec);
+  return { namn, n: alla.length, nFoton: perFil.size, median: f(med),
+    min: f(s[0]), max: f(s[s.length - 1]), p10: f(pct(s, 0.10)), p90: f(pct(s, 0.90)),
+    uteMin: f(um[0]), uteMax: f(um[um.length - 1]), uteSpann: f(um[um.length - 1] - um[0]),
+    uteVarstAvvik: f(Math.max(Math.abs(um[0] - med), Math.abs(um[um.length - 1] - med))) };
+}
+
+const harBand = r => r.bandFunnet && r.nyansMed != null;
+/* Kulören räknas bara på band som HAR en kulör. Se kulorPalitlig i matEn. */
+const harKulor = r => harBand(r) && r.kulorPalitlig;
+const SAMMAN = [
+  sammanstall('EU-bandets nyans, median per band (°)', r => r.nyansMed, { filter: harKulor, dec: 1 }),
+  sammanstall('EU-bandets nyans, 5:e percentilen (°)', r => r.nyansP05, { filter: harKulor, dec: 1 }),
+  sammanstall('EU-bandets nyans, 95:e percentilen (°)', r => r.nyansP95, { filter: harKulor, dec: 1 }),
+  sammanstall('EU-bandets mättnad, median (HSV S)', r => r.mattMed, { filter: harBand }),
+  sammanstall('EU-bandets mättnad, 5:e percentilen', r => r.mattP05, { filter: harBand }),
+  sammanstall('EU-bandets ljushet, median (HSV V)', r => r.ljusMed, { filter: harBand }),
+  sammanstall('EU-bandets ljushet, 5:e percentilen', r => r.ljusP05, { filter: harBand }),
+  sammanstall('EU-bandets kroma, median (0–255)', r => r.kromaMed, { filter: harBand, dec: 1 }),
+  sammanstall('Andel av bandet som dagens BLAGRIND fångar', r => r.dagensTackning, { filter: harBand }),
+  sammanstall('Bandtäckning, spann B (nyans 190–250, S≥0,20)', r => r.tackningB, { filter: harBand }),
+  sammanstall('Bandtäckning, spann C (nyans 173–240, S≥0,04)', r => r.tackningC, { filter: harBand }),
+  sammanstall('EU-bandets andel av plåtlängden, från kanten', r => r.bandAndel, { filter: harBand, dec: 4 }),
+  sammanstall('EU-bandets rena blåbredd, andel av plåtlängden', r => r.bandAndelRenBla, { filter: harBand, dec: 4 }),
+  sammanstall('Bandets höjd genom plåtens höjd (plate.js antar 0,94)', r => r.bandHojdAndel, { filter: harBand }),
+  sammanstall('Uppmätt lutning (°)', r => r.lutning, { dec: 1 }),
+  sammanstall('Facitrutans kvot bredd/höjd, alla rutor', r => r.rutkvot, { dec: 2 }),
+  /*
+   * Kvoten mätt DÄR DEN GÅR ATT MÄTA. En vriden skylt gör facitrutan högre än
+   * plåten, aldrig lägre, så en vriden ruta ger alltid för LÅG kvot. Rutor med
+   * kvot under 4,2 är därför vridna, inte kortare skyltar, och de mäter inte
+   * skyltens form utan kamerans vinkel. Talet nedan är det som ska jämföras
+   * mot SKYLT_KVOT = 4,73.
+   */
+  sammanstall('Facitrutans kvot, bara rättvända rutor (kvot ≥ 4,2)',
+    r => r.rutkvot, { filter: r => r.rutkvot >= 4.2, dec: 2 }),
+  sammanstall('Plåtens kvot efter lutningskorrigering', r => r.platKvot, { dec: 2 }),
+  sammanstall('Plåtens vithet, gråvärde 0–255', r => r.vitGra, { dec: 1 }),
+  sammanstall('Plåtens vithet, HSV V', r => r.vitV),
+  sammanstall('Plåtens mättnad (hur ofärgad den vita ytan är)', r => r.vitMattnad),
+  sammanstall('Teckensvärta, gråvärde 0–255', r => r.svartGra, { dec: 1 }),
+  sammanstall('Kontrast vit − svart (medianer)', r => r.kontrastMedian, { dec: 1 }),
+  sammanstall('Kontrast p95 − p5 i teckenfältet', r => r.kontrastP5P95, { dec: 1 }),
+  sammanstall('Mörk andel i teckenfältet, full upplösning', r => r.morkAndelFalt),
+  sammanstall('morkandel enligt matPlatta, arbetsbredd 400', r => r.morkandel400),
+  sammanstall('kontrast enligt matPlatta, arbetsbredd 400', r => r.kontrast400, { dec: 1 }),
+  sammanstall('Teckenhöjd genom plåthöjd (plate.js antar 70/110 = 0,64)', r => r.teckenhojdAndel),
+  sammanstall('Teckenhöjd genom BANDETS höjd — inget antagande', r => r.teckenAvBandhojd),
+  sammanstall('Teckenbredd genom plåthöjd', r => r.teckenbreddAndel),
+  sammanstall('Antal teckenfläckar som mättes', r => r.teckenAntal, { dec: 1 }),
+];
+
+function sammanstallBild(namn, plocka, dec = 3) {
+  const kalla = bilder.filter(b => !b.fel).map(b => ({ fil: b.fil, v: plocka(b) }));
+  return sammanstall(namn, r => r.v, { dec, kalla });
+}
+SAMMAN.push(sammanstallBild('Blå pixlar utanför skyltrutorna, andel av allt blått (dagens grind)', b => b.blaUtanforAndel));
+SAMMAN.push(sammanstallBild('Blå pixlar utanför skyltrutorna, andel av allt blått (lösa testet)', b => b.losUtanforAndel));
+SAMMAN.push(sammanstallBild('Blå pixlar, andel av hela bildrutan (dagens grind)', b => b.blaPxDagensAndel, 5));
+SAMMAN.push(sammanstallBild('Blå ankare per bild efter formgrindarna', b => b.ankare, 1));
+SAMMAN.push(sammanstallBild('Ankare som träffar en facitskylt', b => b.ankareTraff, 1));
+SAMMAN.push(sammanstallBild('euAndel som modulen själv rapporterar', b => b.ankareEuAndel, 4));
+SAMMAN.push(sammanstallBild('Spann A (dagens): blå andel av bildrutan', b => b.spannAndelRutanA, 5));
+SAMMAN.push(sammanstallBild('Spann B: blå andel av bildrutan', b => b.spannAndelRutanB, 5));
+SAMMAN.push(sammanstallBild('Spann C: blå andel av bildrutan', b => b.spannAndelRutanC, 5));
+SAMMAN.push(sammanstallBild('Spann B kostar så många gånger A:s pixlar', b => b.spannKostnadB, 2));
+SAMMAN.push(sammanstallBild('Spann C kostar så många gånger A:s pixlar', b => b.spannKostnadC, 2));
+
+/* ---- Vilket spann fångar ALLA band? -------------------------------------- */
+const medBand = rader.filter(harBand);
+const medKulor = rader.filter(harKulor);
+const TACK = {
+  nBand: medBand.length, nBandMedKulor: medKulor.length, avNRutor: rader.length,
+  // Spann som rymmer 90 % av varje bands pixlar i VARJE foto.
+  nyansMin: r3(Math.min(...medKulor.map(r => r.nyansP05)), 1),
+  nyansMax: r3(Math.max(...medKulor.map(r => r.nyansP95)), 1),
+  mattnadMin: r3(Math.min(...medBand.map(r => r.mattP05))),
+  vMin: r3(Math.min(...medBand.map(r => r.ljusP05))),
+  vMax: r3(Math.max(...medBand.map(r => r.ljusP95))),
+  kromaMin: r3(Math.min(...medBand.map(r => r.kromaP05)), 1),
+  // Samma spann men baserat på MEDIANEN per band, alltså "spannet mellan foton"
+  // snarare än "spannet inuti ett band".
+  medianNyansMin: r3(Math.min(...medKulor.map(r => r.nyansMed)), 1),
+  medianNyansMax: r3(Math.max(...medKulor.map(r => r.nyansMed)), 1),
+  medianMattnadMin: r3(Math.min(...medBand.map(r => r.mattMed))),
+  medianLjusMin: r3(Math.min(...medBand.map(r => r.ljusMed))),
+  medianLjusMax: r3(Math.max(...medBand.map(r => r.ljusMed))),
+  varstTackning: r3(Math.min(...medBand.map(r => r.dagensTackning))),
+  medianTackning: r3(median(medBand.map(r => r.dagensTackning))),
+};
+
+window.RESULTAT = { SAMMAN, rader, bilder, TACK,
+  dagens: { BLAGRIND: { ...BLAGRIND }, PLATTGRIND: { ...PLATTGRIND }, SKYLT_KVOT, BAND: { ...BAND } },
+  swKontroll: swStyr === null };
+
+/* ---- Utskrift ------------------------------------------------------------ */
+function tabell(rubriker, rader2) {
+  const t = document.createElement('table');
+  const tr = document.createElement('tr');
+  for (const r of rubriker) { const th = document.createElement('th'); th.textContent = r;
+    th.className = 't'; tr.appendChild(th); }
+  t.appendChild(tr);
+  for (const rad2 of rader2) {
+    const x = document.createElement('tr');
+    for (const cc2 of rad2) { const td = document.createElement('td');
+      td.textContent = cc2 == null ? '–' : String(cc2).replace(/\./g, ',');
+      if (typeof cc2 !== 'number') td.className = 't'; x.appendChild(td); }
+    t.appendChild(x);
+  }
+  return t;
+}
+const rubrik = s => { const h = document.createElement('h2'); h.textContent = s; ut.appendChild(h); };
+
+rubrik('Sammanställning — median, spann och utelämna-ett (22 utelämningar)');
+ut.appendChild(tabell(['storhet', 'n rutor', 'n foton', 'median', 'min', 'max', 'p10', 'p90',
+  'ute-min', 'ute-max', 'ute-spann', 'värsta avvik'],
+  SAMMAN.map(s => [s.namn, s.n, s.nFoton ?? '–', s.median, s.min, s.max, s.p10, s.p90,
+    s.uteMin, s.uteMax, s.uteSpann, s.uteVarstAvvik])));
+
+rubrik('Per skyltruta');
+ut.appendChild(tabell(['fil', 'text', 'läsbar', 'ruta px', 'rutkvot', 'lutning', 'lutn. källa',
+  'plåtkvot', 'höjd från', 'band', 'blåtopp', 'referensvitt', 'nyans', 'ny p05', 'ny p95',
+  'S', 'S p05', 'V', 'V p05', 'kroma', 'kulör ok', 'täckn', 'bandandel', 'ren blå',
+  'bandhöjd/H', 'vit', 'svart', 'kontr', 'mörk fält', 'mörk400', 'K400',
+  'teckenh/H', 'teckenh/band', 'tecken n', 'anm'],
+  rader.map(r => [r.fil, r.text, r.lasbar ? 'ja' : 'nej', r.rutaPx, r.rutkvot ?? null,
+    r.lutning ?? null, r.lutningKalla ?? '', r.platKvot ?? null, r.hojdKalla ?? '',
+    r.bandFunnet ? 'ja' : 'NEJ', r.blaProfilTopp ?? null,
+    r.refVit ? r.refVit.join('/') : '', r.nyansMed ?? null, r.nyansP05 ?? null,
+    r.nyansP95 ?? null, r.mattMed ?? null, r.mattP05 ?? null, r.ljusMed ?? null,
+    r.ljusP05 ?? null, r.kromaMed ?? null, r.kulorPalitlig === false ? 'NEJ' : 'ja',
+    r.dagensTackning ?? null, r.bandAndel ?? null, r.bandAndelRenBla ?? null,
+    r.bandHojdAndel ?? null, r.vitGra ?? null, r.svartGra ?? null, r.kontrastMedian ?? null,
+    r.morkAndelFalt ?? null, r.morkandel400 ?? null, r.kontrast400 ?? null,
+    r.teckenhojdAndel ?? null, r.teckenAvBandhojd ?? null, r.teckenAntal ?? null,
+    r.anm.join('; ')])));
+
+rubrik('Per foto — hur mycket annat blått finns det?');
+ut.appendChild(tabell(['fil', 'bredd', 'höjd', 'vinkel', 'blå px', 'andel av rutan', 'i skylten',
+  'utanför (grind)', 'utanför (löst)', 'ankare', 'träffar', 'modulens euAndel'],
+  bilder.map(b => [b.fil, b.bredd, b.hojd, b.vinkel, b.blaPxDagens, b.blaPxDagensAndel,
+    b.blaPxIRuta, b.blaUtanforAndel, b.losUtanforAndel, b.ankare, b.ankareTraff, b.ankareEuAndel])));
+
+rubrik('Spannet som täcker banden, mot dagens BLAGRIND');
+const p = document.createElement('pre');
+p.textContent = JSON.stringify(TACK, null, 1) + '\n\nDagens BLAGRIND:\n' + JSON.stringify(BLAGRIND, null, 1);
+ut.appendChild(p);
+
+status.innerHTML = `Klart. ${rader.length} skyltrutor i ${bilder.length} foton. ` +
+  `service worker styr sidan: <b>${swStyr}</b>`;
+
+// Talen skickas till mätservern så att de går att läsa utan att klippa i en
+// webbläsarkonsol. /spara finns bara under mätningen och servern stoppas efteråt.
+try {
+  const svar = await fetch('/spara', { method: 'POST',
+    body: JSON.stringify({ SAMMAN, rader, bilder, TACK, dagens: window.RESULTAT.dagens,
+                           swKontroll: window.RESULTAT.swKontroll }) });
+  status.innerHTML += ` — sparat: ${await svar.text()}`;
+} catch (e) { status.innerHTML += ` — kunde inte spara: ${e.message}`; }
+</script>
