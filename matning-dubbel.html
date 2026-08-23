@@ -1,0 +1,155 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mätning: dubbeltal och tystnad med GPS</title>
+<style>body{background:#0b0f14;color:#eef4fa;font:14px/1.5 system-ui;padding:16px}
+pre{background:#101822;padding:10px;border:1px solid #1f2b38;white-space:pre-wrap}
+.pv-ps-remsa{display:none!important}</style>
+<h1>Mätning</h1>
+<pre id="ut">kör…</pre>
+<script>window.PV_INGEN_BOOT = true;</script>
+<script type="module">
+const ut = document.getElementById('ut');
+const rader = [];
+const P_LOG = (...a) => { rader.push(a.join(' ')); ut.textContent = rader.join('\n'); };
+
+const LANADE = ['pv.mine.v1', 'pv.inkommande.spar.v1', 'pv.reports.v1'];
+const original = Object.fromEntries(LANADE.map(k => [k, localStorage.getItem(k)]));
+function lamnaTillbaka() {
+  for (const k of LANADE) {
+    if (original[k] == null) localStorage.removeItem(k);
+    else localStorage.setItem(k, original[k]);
+  }
+}
+addEventListener('beforeunload', lamnaTillbaka);
+
+await import('./js/app.js');
+const P = window.polisvakt;
+const IN = P.inkommande;
+const Notiser = await import('./js/notiser.js');
+const Kvalitet = await import('./js/kvalitet.js');
+
+const sagt = [];
+const plingat = [];
+P.speaker.say = (t, o) => sagt.push({ t, o });
+P.speaker.chime = l => plingat.push(l);
+P.speaker.enabled = true;
+P.speaker.unmute?.();
+
+const vanta = ms => new Promise(r => setTimeout(r, ms));
+
+// Punkt A = föraren. Punkt B = rapporten, ca 900 m NNO.
+const MIG = { lat: 59.6099, lon: 16.5448 };
+const RAP = { lat: 59.6180, lon: 16.5448 };   // ~900 m norrut
+
+function fix(speedKmh) {
+  return {
+    lat: MIG.lat, lon: MIG.lon, accuracy: 8,
+    speedKmh, moving: speedKmh > 3, headingSmoothed: 0,
+    ts: Date.now(),
+  };
+}
+function rapport(extra = {}) {
+  const nu = Date.now();
+  return {
+    id: 'm-' + Math.random().toString(36).slice(2, 8),
+    type: 'police', lat: RAP.lat, lon: RAP.lon,
+    label: 'Skultuna', source: 'facebook',
+    note: 'Polisbil står vid infarten till Skultuna och kontrollerar farten',
+    createdAt: nu - 60_000, expiresAt: nu + 40 * 60_000,
+    ...extra,
+  };
+}
+
+function nollstall(speedKmh) {
+  IN.nollstall();
+  P.store.reports.clear();
+  P.engine.reset();
+  sagt.length = 0; plingat.length = 0;
+  P.settings.notiser = null;
+  P.geo.last = speedKmh == null ? null : fix(speedKmh);
+  IN.omgangar = 2;
+}
+
+/** Samma lista som app.js rad 466 ger motorn: forRost, ruttfiltrerad. */
+function motorlistan() {
+  const { lista, lyfta } = IN.flode();
+  const forRost = lista.filter(h => !lyfta.has(h.id));
+  return P.routeGuide.filterHazards(forRost);
+}
+
+/* ============ MÄTNING 1: lyft rapport + körande bil ============ */
+{
+  nollstall(50);
+  const r = rapport();
+  P.store.reports.set(r.id, r);
+
+  const { lista, lyfta, tystade } = IN.flode();
+  const h = lista.find(x => x.id === r.id);
+  P_LOG('--- MÄTNING 1: kvalitets-lyft rapport, bil i 50 km/h, 900 m bort ---');
+  P_LOG('i lista:', !!h, '| lyft:', lyfta.has(r.id),
+        '| behandling:', h?.bedomning?.behandling, '| poäng:', h?.bedomning?.poang);
+  P_LOG('agerFaran svarar:', P.engine.agerFaran(h, P.geo.position, h?.klusterIds));
+  P_LOG('rapporten finns i motorns lista:', motorlistan().some(x => x.id === r.id));
+
+  IN.sok();
+  IN.sag();
+  await vanta(450);
+  P_LOG('inkommande sade:', JSON.stringify(sagt.map(s => s.t)));
+  P_LOG('spår:', IN.spar().map(p => p.orsak + (p.talat ? ' "' + p.talat + '"' : '')).join(' | '));
+
+  // Kör motorn precis som app.js gör på nästa GPS-fix.
+  const fired = P.engine.evaluate(P.geo.position, motorlistan());
+  await vanta(450);
+  P_LOG('motorn triggade:', fired.length, '| totalt sagt efter motorn:',
+        JSON.stringify(sagt.map(s => s.t)));
+  P_LOG('');
+}
+
+/* ============ MÄTNING 2: rapport i röstflödet, bil står still ============ */
+{
+  nollstall(0);
+  // geokod gps + två rapportörer -> hamnar i forRost utan lyft
+  const a = rapport({ geokod: 'gps', geokodTyp: 'punkt' });
+  P.store.reports.set(a.id, a);
+
+  const { lista, lyfta } = IN.flode();
+  const h = lista.find(x => x.id === a.id);
+  P_LOG('--- MÄTNING 2: röstflödes-rapport, bil STÅR STILL, 900 m bort ---');
+  P_LOG('i lista:', !!h, '| lyft:', lyfta.has(a.id),
+        '| behandling:', h?.bedomning?.behandling, '| poäng:', h?.bedomning?.poang);
+  P_LOG('i motorns lista:', motorlistan().some(x => x.id === a.id));
+  P_LOG('agerFaran (stillastående):', P.engine.agerFaran(h, P.geo.position, h?.klusterIds));
+
+  IN.sok();
+  IN.sag();
+  await vanta(450);
+  const efterInkommande = sagt.map(s => s.t);
+  P_LOG('inkommande sade:', JSON.stringify(efterInkommande));
+
+  // Grönt ljus: nästa fix säger 20 km/h. app.js kör evaluate.
+  P.geo.last = fix(20);
+  const fired = P.engine.evaluate(P.geo.position, motorlistan());
+  await vanta(450);
+  P_LOG('motorn triggade:', fired.length);
+  P_LOG('allt som sagts:', JSON.stringify(sagt.map(s => s.t)));
+  P_LOG('');
+}
+
+/* ============ MÄTNING 3: routeGuide läser rått ur store ============ */
+{
+  nollstall(50);
+  const u = rapport({ label: 'Nykterhetskontroll Skultuna',
+                      note: 'Nykterhetskontroll vid Skultuna' });
+  P.store.reports.set(u.id, u);
+  const { lista, tystade, undanhallna } = IN.flode();
+  P_LOG('--- MÄTNING 3: nykterhetsflaggad rapport i store ---');
+  P_LOG('i inkommande-lista:', lista.some(x => x.id === u.id),
+        '| undanhållen av kvalitet:', undanhallna.some(x => x.id === u.id));
+  P_LOG('finns i store.active() som routeGuide.matches() läser:',
+        P.store.active().some(x => x.id === u.id));
+  P_LOG('');
+}
+
+P_LOG('KLART');
+lamnaTillbaka();
+</script>

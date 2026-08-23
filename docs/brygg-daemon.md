@@ -26,44 +26,114 @@ var ett sätt att få in den i sidan. Den här filen är det sättet.
 dygnet runt. Ett inlägg upptäcks då inom ett svep — **uppmätt 19,7 sekunder**.
 Startas de klockan nio hittar de ingenting som skrevs klockan åtta.
 
-**Vad krävs för att en varning ska nå appen?** `-Skarpt`. Utan den flaggan
-loggar daemonen vad den *hade* skickat och skriver ingenting. Läs loggen
-först, sätt flaggan sedan.
+**Vad krävs för att en varning ska nå appen?** Ingenting extra längre. Skarpt
+läge är **förval** sedan 2026-08-22, och daemonen vägrar starta om kedjan inte
+är hel. Vill du titta utan att skriva: `-Torr`.
 
 ---
 
 ## Kör
 
-```powershell
-# 1. Fönstret: eget Chrome, egen profil, gruppen öppen, felsökningsporten på.
-powershell -ExecutionPolicy Bypass -File tools\starta-bryggan.ps1
-
-# 2. Läsningen. Torrkörning — skriver ingenting någonstans.
-powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1
-```
-
-Eller båda på en gång:
+**Ett kommando, en gång i livet:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\starta-bryggan.ps1 -Daemon
+.\tools\polisvakt-brygga.ps1 -Installera
 ```
 
-Skarpt läge, alltså skriv till databasen, kräver ett uttryckligt argument:
+Den registrerar uppgiften `Polisvakt-brygga` i Schemaläggaren — vid
+inloggning, som dig, ingen administratör behövs — öppnar bryggfönstret och kör
+daemonen skarpt. Efter det startar allt av sig självt vid varje inloggning,
+och Schemaläggaren startar om den var annan minut om den dör.
+
+Vill du bara köra nu, utan autostart:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -Skarpt
+.\tools\polisvakt-brygga.ps1
 ```
 
-Nyttiga varianter:
+Bryggfönstret startar daemonen **själv** när felsökningsporten är död — du
+behöver inte längre öppna Chrome för hand. `tools\starta-bryggan.ps1` finns
+kvar men gör numera bara ett vidarepekande.
+
+Nyttiga varianter av `brygg-daemon.ps1`:
 
 | Argument | Betyder |
 |---|---|
+| `-Torr` | **skriv ingenting någonstans.** Motsatsen till förvalet. Skriker om vad den är, med jämna mellanrum. |
+| `-Skarpt` | tas emot men styr ingenting längre. Skarpt är förval. Kvar så att gamla genvägar inte kraschar. |
+| `-BaraProb` | kör bara startproben och avslutar. **Kör den här när telefonen är tyst.** Rör inte Chrome. |
 | `-Sjalvtest` | kör provet på produktregeln och avslutar. Rör inte Chrome. |
+| `-ProvaVakthund` | kör provet på vakthundens tillståndsmaskin (19 fall) och avslutar. Rör inte Chrome, skickar ingenting. |
+| `-ProvaGrupper` | kör provet på grupplistan och geografin (39 fall) och avslutar. Rör inte Chrome, skickar ingenting. |
+| `-ProvaAlias` | slår upp **varje** söksträng i `data/aliases.vasteras.json` mot uppslagstjänsten och rapporterar de som ger noll rader eller svarar med en stad. Tar en dryg minut (ett anrop i sekunden). Rör inte Chrome, skickar ingenting. |
+| `-TvingaLivstecken` | skickar veckans riktiga push nu. Det ENDA som bevisar VAPID-signeringen. |
 | `-Svep 1` | gör exakt ett svep och avslutar. Bra för att titta. |
 | `-MinuterAttKora 55` | kör i 55 minuter och avslutar. |
 | `-SvepIntervallMs 20000` | takten. Förval 20 s. |
-| `-GruppId <id>` | annan grupp. Måste finnas i bryggkodens grupptabell. |
+| `-GruppId <id>` | **filter, inte inställning.** Kör bara den gruppen av dem som står i bryggfilen. Tomt (förval) = alla. Ett id som inte finns i bryggfilen stoppar starten. |
 | `-Loggfil <sökväg>` | annan logg än förvalet. |
+
+### Flera grupper
+
+Grupplistan har **ett** hem: `CONFIG.groupIds` i `tools/fb-bridge.user.js`.
+Både användarskriptet och daemonen läser den raden, och appens
+inställningssida (Inställningar → Facebook-grupper) är en redigerare vars enda
+utgång är knappen som lägger exakt den texten i urklipp.
+
+Så här ansluts en till:
+
+1. **Gå med i gruppen.** En privat grupp lämnar inte ut ett enda inlägg till
+   en icke-medlem — sidan renderar, sessionen är inloggad, flödet är tomt.
+   Bryggan säger numera ifrån en gång när det händer, men den kan inte gå med
+   åt dig.
+2. Lägg till en rad i `groupIds` med `id`, `namn`, `ort`, `omrade` och `ruta`.
+   Stockholmsgrupperna ligger färdigskrivna men utkommenterade i filen; ta
+   bort kommentarstecknen på det block du vill ha.
+3. Starta om bryggan: `.\tools\polisvakt-brygga.ps1`.
+
+Daemonen öppnar då **en flik per grupp** i samma bryggfönster, samma profil och
+samma inloggade session, och sveper alla i samma tick. Saknas en flik öppnas
+den via `/json/new` utan att de andra rörs.
+
+`notis: false` på en rad betyder **karta ja, push nej**. Sätt den på varje
+grupp utanför din egen stad: notisvägen på servern
+(`fbmejl_push_mottagare` i `supabase/fbmejl.sql`) har ingen geografi och
+skickar varje ny rapport till varenda prenumerant. Utan flaggan lägger en
+Stockholmsgrupp Sergels torg på låsskärmen hos folk i Västerås.
+
+**Mätt takt**, samma maskin, samma dag: en grupp 21 ms per tick, två grupper
+72–94 ms (första ticket 452 ms, då injiceras läsaren). Intervallet är 20 000 ms
+och räknas från ticket**s början**, så takten glider inte när grupperna blir
+fler. Raden `TAKT` i loggen skriver siffran.
+
+### Nyckeln
+
+```powershell
+.\tools\satt-nyckel.ps1
+```
+
+Frågar efter service_role-nyckeln, provar den mot **båda** dörrarna — PostgREST
+(`fbmejl_ta_emot`) och edge-funktionen (`fbmejl-push` med `{"dry":true}`) — och
+sparar den i `%LOCALAPPDATA%\Polisvakt\nycklar.xml`, DPAPI-krypterad och låst
+till ditt konto på den här maskinen. Utanför repot och utanför OneDrive.
+
+Skriptet skriver **aldrig ut** en nyckel, bara dess form (tre första tecken)
+och längd. Tre tecken skiljer `eyJ` från `sb_` — alltså den enda förväxling
+som faktiskt inträffar — och räcker inte till någonting annat.
+
+Samma sträng ska sedan klistras in en gång i Supabase Vault under namnet
+`service_role_key`. Se `docs/notiskedjan.md` steg 4.
+
+### Bara en daemon åt gången
+
+En namngiven mutex (`Global\Polisvakt-Brygga`) tas allra först. Startar du en
+andra säger den ifrån och lägger sig. `-Sjalvtest` och `-BaraProb` tar den
+inte — de ska gå att köra mitt under en skarp körning, för det är då man
+behöver dem.
+
+Två daemoner mot samma grupp är inte harmlöst: de skickar var sin **omgång**
+till `fbmejl_ta_emot`, och buntningen räknar omgångar. Avdubblingen tar
+rapporten, men notisen blir dubbel.
 
 Loggen ligger som förval i
 `%LOCALAPPDATA%\Polisvakt\brygg-daemon-<datum>.log`, utanför repot med flit:
@@ -238,22 +308,45 @@ drogkontroll).
 
 ### 2. Gruppfiltret
 
-Kontrolleras tre gånger: bryggkodens grupptabell byggs av `CONFIG.groupId` som
-daemonen sätter, sidan svarar med vilken grupp fliken faktiskt står i, och
-daemonen jämför med `-GruppId` innan något behandlas. Står fliken i fel grupp
-loggas en rad och inget läses.
+Kontrolleras tre gånger: bryggkodens grupptabell byggs av den `groupIds`-rad
+daemonen injicerar — en riktig grupplista med ruta och ort, hämtad ur
+`CONFIG.groupIds` i bryggfilen — sidan svarar med vilken grupp fliken faktiskt
+står i, och daemonen jämför med den grupp fliken är låst vid innan något
+behandlas. Står fliken i fel grupp loggas en rad och inget läses.
 
 ### 3. Området
 
-Varje geokodningsträff kontrolleras mot gruppens ruta, både färska svar och
+Varje geokodningsträff kontrolleras mot **gruppens** ruta, både färska svar och
 det som ligger i cachen. Nominatim får `viewbox` och `bounded=1`, men det är en
 spärr som ligger hos någon annan — svarar servern ändå med en träff utanför
 området kastas den här. En varning på fel plats är värre än ingen varning: den
 lär föraren att appen ljuger.
 
-Rutan hämtas från **sidans egen grupptabell**, inte från en kopia i daemonen.
-Daemonens förval (Västmanland, `15.10,59.30,17.30,60.30`) är bara ett golv
-tills första svepet svarat.
+Rutan, ortsuffixet och **geo-cachens nyckel** är per grupp. Cachenyckeln är
+`<gruppid>|<plats>`: utan gruppen i nyckeln hade Stockholms Vasagatan fått den
+Västeråskoordinat som redan låg i cachefilen.
+
+**Aliaslistan slås upp före Nominatim**, precis som `js/geocode.js` gör i
+appen. Daemonen läser `data/aliases.vasteras.json` vid start; bryggkoden bär
+en kopia av samma tabell (`ALIAS_VASTERAS`, innanför läsdelen, så att
+jämförelsen mot Chrome-tilläggets kopia fångar en rad som glidit isär).
+Tabellen gäller Västerås och används bara för grupper med den orten.
+
+Mätt 2026-08-22, innan uppslaget fanns: parsern lägger medvetet ut exakta
+aliasnycklar, och flera av dem känner OSM inte igen i rå form.
+`irstamacken, Västerås` gav noll träffar — inlägget "Irstamacken"
+publicerades aldrig, och nollsvaret cachades utan TTL, så platsen var död för
+gott. `apalby ip, Västerås` gav Apalbyvägen i Norrmalm, 1,7 km från Apalby IP,
+med tilliten 0,95. Appen klarade båda. Vid start rensas därför också
+**nollrader för platser som numera har ett alias** ur `brygg-daemon-geo.json`;
+riktiga träffar rörs inte.
+
+Fram till 2.4 fanns geografin i daemonen på ett eget ställe, och den
+injicerade CONFIG:en bar ett naket `groupId`. Bryggkoden tog då sin
+bakåtkompatibilitetsgren och gav **varje** grupp Västmanlands ruta. En
+Stockholmsgrupp slog upp "Sveavägen, Västerås", fick tomt svar, och loggade
+`HOPPAS-ÖVER orsak=okänd-plats` — ingenting såg trasigt ut. Provet
+`-ProvaGrupper` mäter att det inte kan hända igen.
 
 ### 4. Åldern
 
@@ -270,14 +363,173 @@ lämnas. Efter tre försök ges det upp.
 Ett inlägg som är äldre än varningen skulle leva (45–60 min) hoppas också
 över: `orsak=för-gammalt`. Gammal varning är sämre än ingen.
 
-### 5. Torrkörning som förval
+### 5. Torrkörning — numera ett val, inte förvalet
 
-Utan `-Skarpt` skrivs ingenting till databasen. Torrkörningen loggar hela raden
+Med `-Torr` skrivs ingenting till databasen. Torrkörningen loggar hela raden
 den *hade* skickat, med text, typ, koordinat, tilltro, ålder och livslängd.
 
 Hanteringslistan hålls dessutom bara i minnet under torrkörning. Annars hade en
 torrkörning "bränt" varje inlägg den tittat på, och skarpt läge efteråt hade
 varit tyst.
+
+**Varför förvalet vändes.** Torrkörning var rätt förval så länge kedjan var
+obevisad: en daemon som skriver fel är värre än en som inte skriver. Nu är
+kedjan mätt, och det dyra felet har bytt håll — man startar bryggan, glömmer
+flaggan, och får en logg full av gröna `SKULLE-SKICKA`-rader som ser ut som
+framgång medan telefonen är tyst. Det är precis "går sönder utan att säga
+till".
+
+Därför skriker torrkörningen numera om vad den är, vid start och sedan var
+tionde minut:
+
+```
+13:29:37  TORRKÖRNING    ================================================
+13:29:37  TORRKÖRNING      TORRKÖRNING — INGENTING SKICKAS
+13:29:37  TORRKÖRNING      Inga rapporter, inga notiser, ingen puls.
+13:29:37  TORRKÖRNING      Gröna SKULLE-SKICKA-rader betyder INTE att något gick fram.
+13:29:37  TORRKÖRNING      Ta bort -Torr för skarpt läge.
+13:29:37  TORRKÖRNING    ================================================
+```
+
+`-Torr` vinner alltid över `-Skarpt`. En flagga som betyder "skriv ingenting"
+får aldrig kunna överröstas av en flagga som betyder "skriv".
+
+---
+
+## Fyra sätt att inte gå sönder tyst
+
+Bryggan kan sluta fungera på fyra olika sätt, och tre av dem såg tills nyligen
+ut som en lugn dag i gruppen. Ett skydd per sätt.
+
+### 1. Startproben — den vägrar tiga
+
+Två anrop innan huvudloopen, i **båda** lägena:
+
+```
+PROB  nyckel: källa=nycklar.xml form=sb_... längd=46
+PROB  GRÖN databasen: klar=True nyckel_kalla=service_role_key/valv form=sb_ längd=46 mottagare=1 pg_net=True valv_läsbart=True
+PROB  GRÖN fbmejl-push: torrprob godkänd, mottagare=1
+```
+
+`fbmejl_notis_konfig()` svarar på om **databasen** har allt den behöver;
+`fbmejl-push` med `{"dry":true}` svarar på om **edge-funktionen** godtar samma
+nyckel. Varje röd rad bär den exakta åtgärden.
+
+I skarpt läge är domen bindande: `klar=false` eller `mottagare=0` och daemonen
+**läser ingenting**. Den faller med flit inte tillbaka till torrkörning — en
+brygga som ser igång ut men inte kan skicka är felet hela bygget ska
+omöjliggöra.
+
+Hur den vägrar beror på hur den startades:
+
+| Start | Vid röd prob |
+|---|---|
+| **Batch** — `-Svep` eller `-MinuterAttKora` satt | faller direkt med felkod 1 |
+| **Tjänst** — ingen gräns satt (det normala) | väntar, provar om var femte minut |
+
+Tjänstevägen väntar av två skäl. Schemaläggaren startar om en uppgift som
+faller, så en daemon som föll på en saknad nyckel hade blivit en fönsterstorm
+i stället för ett besked. Och den minut nyckeln hamnar i valvet går bryggan
+igång av sig själv, utan att någon behöver köra något.
+
+Ser du `nyckel_kalla=fbmejl_anropsnyckel/valv` säger proben ifrån i rött: en
+gammal hemlighet med det namnet ligger kvar i valvet och **vinner** över
+`service_role_key`. Se `docs/notiskedjan.md` steg 4.
+
+> **Vad torrproben INTE bevisar.** `{"dry":true}` returnerar i
+> `fbmejl-push/index.ts` **före** `importVapidKeys`. En felformaterad
+> `VAPID_KEYS` ger alltså grön prob och fullständig tystnad i fickan. Det enda
+> som bevisar sista milen är veckolivstecknet nedan.
+
+### 2. Vakthunden — utloggad Facebook-session
+
+`Anslut()` matchar bara flikens **adress**. En utloggad session står kvar på
+samma adress, svarar med en inloggningsvägg, och `collectPosts()` hittar noll
+inlägg. Varenda led rapporterar framgång: porten svarar, fliken finns, världen
+injiceras, svepet returnerar. Loggen skriver `SVEP inlägg=0` var tjugonde
+sekund tills någon råkar titta.
+
+Läsaren rapporterar därför `sidlage` för varje svep. Två utlösare:
+
+| Utlösare | Hur snabbt |
+|---|---|
+| Sidan visar inloggningsvägg (`sidlage: 'utloggad'`) | direkt |
+| Inte ett enda inlägg på sex sammanhängande **dagtimmar** | långsamt |
+
+Nattimmarna 22–07 räknas inte — klockan tre finns det inga inlägg och det är
+inget fel.
+
+**En** push per tillståndsövergång (`Bryggan ser inte gruppen`), aldrig i
+repris, och en `Bryggan läser igen` när det löser sig. En varning utan avslut
+lär man sig att ignorera.
+
+`sidlage` säger `'utloggad'` bara när det finns ett positivt tecken på
+inloggningsvägg **och** inget spår av den inloggade navigeringen. Facebook
+byter markup ofta; osäkert läge heter `'okand'` och tiger. En vakthund som
+skriker i onödan blir avstängd, och då är den värre än ingen alls.
+
+### 3. Pulsen och dödmansgreppet — daemonen är död
+
+`fbmejl_brygga.senast_kord` duger **inte** som livstecken. Den skrivs inne i
+`fbmejl_ta_emot`, alltså när en rapport faktiskt skapats. En daemon som kör
+felfritt i tre dygn utan att någon postar en polis rör den aldrig, och en död
+daemon ser exakt likadan ut.
+
+Därför en egen puls var sjätte svep (~2 min) till
+`public.fbmejl_brygga_puls(jsonb)`, och ett cron-jobb
+`polisvakt-brygga-dodman` var femte minut. Se
+`supabase/migrationer/2026-08-22-brygga-puls.sql`.
+
+Larmet går på **två** villkor:
+
+1. ingen puls på 15 minuter → `Polisvakt: bryggan svarar inte`
+2. puls finns men `brygga_lage = 'torr'` → `Polisvakt: bryggan står i torrkörning`
+
+En notis per tillståndsövergång, tidigast 30 minuter efter föregående, och
+nattetid **uppskjutet till 06:00 — aldrig struket.**
+
+> **Pulsen bär aldrig texter och aldrig typer.** Bara läge, antal svep, hur
+> många inlägg totalt den senaste timmen, och när det senaste sågs. En puls
+> som kunde avslöja *vad* som postats vore samma varning bakvägen och bryter
+> mot produktregeln.
+>
+> **Ett misslyckat pulsanrop sväljs.** Det räknas aldrig som `SKICK-FEL` och
+> aldrig mot `Markera-Forsok`. En tvåminuters nätstörning skulle annars bränna
+> tre försök på oskyldiga inlägg och ge tyst dataförlust. Efter tio
+> misslyckanden i rad loggas det en gång — sedan tyst igen.
+
+### 4. Veckolivstecknet — sista milen
+
+Söndag 18:00 skickar daemonen en **riktig** push: `Polisvakt: kedjan lever`.
+
+Det här är det enda i hela kedjan som går genom VAPID-signeringen och ut till
+en verklig prenumeration. En grön torrprob bevisar det inte, eftersom
+dry-svaret returneras före `importVapidKeys`. Datumet skrivs till
+`%LOCALAPPDATA%\Polisvakt\brygg-livstecken.txt` så att en omstart inte skickar
+en till.
+
+Tvinga fram det när som helst:
+
+```powershell
+.\tools\brygg-daemon.ps1 -TvingaLivstecken
+```
+
+Kommer ingen notis är `VAPID_KEYS` felformaterad. Leta i funktionsloggen för
+`fbmejl-push` efter raden *"Kunde inte läsa VAPID-nycklarna"*.
+
+### Driftnotiser är inte polisvarningar
+
+Alla fyra ovan använder taggen `polisvakt-brygga`, inte `polisvakt-grupp`. Ett
+driftlarm får aldrig kunna **ersätta** en färsk polisvarning i luren — vilket
+samma tagg hade gjort.
+
+Och: **varningen om en polis skickas av DATABASEN, inte av daemonen.** Kedjan
+är `Skicka-Omgang` → `fbmejl_ta_emot` → `fbmejl_notis_ut` → pg_net →
+`fbmejl-push`. Bygg aldrig kurirkod i PowerShell som postar varningen själv —
+buntningen, spärrarna och bokföringen sitter i **en** transaktion i databasen,
+och notistexten byggs där av fyra validerade fält. Det skyddet är
+strukturellt: det finns ingen kodväg i daemonen som kan bära en främlings ord
+till en låsskärm, för texten lämnar aldrig PowerShell.
 
 ---
 
@@ -375,9 +627,19 @@ omstart gett en skur färska varningar ur ett veckogammalt flöde.
 | Hämta koden in i sidan | Facebooks CSP blockerar `fetch` mot både GitHub och localhost, och `window.name` rensas numera vid navigering mellan domäner. |
 | OneDrive-platshållare | uteslutet. Filerna är fullt lokala, kontrollerat. |
 
-`tools/brygg-tillagg/` ligger kvar orört. `starta-bryggan.ps1` skickar
-fortfarande med `--load-extension` när mappen finns — det skadar inget och
-börjar fungera igen om Google ändrar sig — men ingenting hänger på det längre.
+`tools/brygg-tillagg/` ligger kvar orört, men ingenting använder det längre.
+Sedan daemonen startar bryggfönstret själv skickas `--load-extension` inte
+med — flaggan är ändå borttagen ur Chrome 151, och en flagga som inte gör
+något är en flagga nästa läsare felsöker i onödan.
+
+Kopian jämförs ändå vid varje start, och **sedan 2026-08-23 på hela filen**
+och inte bara på läsdelen. Läsdelen var mätt 107 351 av 155 476 tecken, alltså
+69 procent — och utanför den låg hela geokodningen: aliasuppslaget, ADRESS_RE,
+`typFranSvar`, `radieFranSvar`, stadsspärren och `geocode` självt. Motiveringen
+till att bara jämföra läsdelen ("det är den delen som avgör vad som blir en
+rapport") stämde när den skrevs; koden som avgör VAR nålen hamnar flyttade
+sedan in i den halva som inte jämfördes. Läsdelen fälls fortfarande först och
+med sitt eget felmeddelande, så det går att se vilket av de två felen det är.
 
 ---
 
@@ -441,6 +703,21 @@ börjar fungera igen om Google ändrar sig — men ingenting hänger på det lä
 
 Allt nedan är avläst 2026-08-21 mot **Här Står Polisen - Västerås**
 (`317968668373072`), i torrkörning. Ingenting skrevs till databasen.
+
+### Autostart, session och vakthund — mätt 2026-08-21 eftermiddag
+
+| Sak | Mätning |
+|---|---|
+| Daemonen öppnar bryggfönstret själv | port död 13:35:40 → `FÖNSTER startar` 13:35:44 → porten svarar 13:35:46 (Chrome/151.0.7922.170). Ingen människa rörde Chrome. |
+| Ansluter och läser efter egen start | `ANSLUTEN` 13:35:51, `INJEKTION` samma sekund, `SVEP inlägg=1` samma sekund |
+| Sessionsdetektorn, **inloggad** | `SESSION sidan rapporterar: inloggad` mot den riktiga gruppsidan |
+| Sessionsdetektorn, **utloggad** | `utloggad` mot Facebooks riktiga inloggningsvägg. Mätt i ett eget `browserContext` (egna kakor) i samma Chrome, så ägarens session rördes aldrig. Markörer: `nav:false, login_form:true, pass:true` |
+| Vakthundens tillståndsmaskin | `-ProvaVakthund` → **10/10**. Larmar en gång per övergång, tiger vid `okand`, säger till när det löser sig |
+| Dubbelstartsspärren | andra daemonen mot en riktig körande första: `STOPP En brygg-daemon kör redan`, exit 0 |
+| Vägran vid röd prob | ingen nyckel + skarpt läge → `Daemonen läser INGENTING`, exit 1 i batch / väntar i tjänst. Faller aldrig till torrkörning |
+| Startprobens felskillnad | fel nyckel → `RÖD databasen ... 401` **och** `RÖD fbmejl-push HTTP 401: FEL UTGÅVA`. Nyckelvärdet skrivs aldrig, bara `form=sb_... längd=56` |
+| Uppgiften i Schemaläggaren | registrerad och avläst: `AtLogOn`, `delay=PT1M`, `Interactive/Limited` (ingen admin), `timelimit=PT0S`, `MultipleInstances=IgnoreNew`, sökvägen med två mellanslag korrekt citerad. Provuppgiften togs bort igen |
+| Produktregeln efter alla ändringar | `-Sjalvtest` → **26/26 i PowerShell och 26/26 i sidans egen spärr** |
 
 ### Vad bryggan ser i flödet
 
@@ -613,13 +890,31 @@ ett tappat svep utöver det ena där sidan ännu inte hade navigerat.
 # Produktregeln, båda spärrarna. Kräver inte ens att Chrome kör.
 powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -Sjalvtest
 
-# Ett svep: vad ser bryggan i flödet just nu, och vad hade den gjort?
-powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -Svep 1
+# Vakthundens tillståndsmaskin, per grupp. Rör ingenting, skickar ingenting.
+powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -ProvaVakthund
 
-# En halvtimme i normal takt, egen loggfil.
-powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 `
+# Grupplistan och geografin: läser daemonen samma lista som bryggkoden, får
+# varje grupp SIN ruta, och kan en Stockholmsvarning hamna på Västeråskartan?
+powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -ProvaGrupper
+
+# Aliasfilen: ger varje söksträng fortfarande en träff, och pekar den på något
+# annat än en kommun? Tar en dryg minut och rör bara uppslagstjänsten.
+powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -ProvaAlias
+
+# Är kedjan hel? Två anrop, inga sidoeffekter.
+powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -BaraProb
+
+# Ett svep: vad ser bryggan i flödet just nu, och vad hade den gjort?
+powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -Torr -Svep 1
+
+# En halvtimme i normal takt, egen loggfil, utan att skriva till databasen.
+powershell -ExecutionPolicy Bypass -File tools\brygg-daemon.ps1 -Torr `
   -MinuterAttKora 30 -Loggfil "$env:LOCALAPPDATA\Polisvakt\matning.log"
 ```
+
+> `-Svep` och `-MinuterAttKora` gör körningen till en **batchkörning**: en röd
+> startprob ger då felkod 1 direkt i stället för att vänta. Det är avsiktligt —
+> ett mätskript ska få ett snabbt nej.
 
 Vill du se detaljerna per inlägg — vilken tidstext ankaret bär, varifrån
 åldern kom — finns `window.__pvLas.tider()` i den isolerade världen, samma vy

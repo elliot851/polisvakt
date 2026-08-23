@@ -1,0 +1,970 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — uppläsning vid inkommande rapport</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; z-index: 2; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+  pre { background: #101822; border: 1px solid #1f2b38; padding: 10px 12px;
+        overflow-x: auto; font-size: 12px; color: #9fb3c6; border-radius: 8px; }
+  /* js/platsstart.js ritar sin röda platsremsa redan vid import, alltså också
+     här. Den hör hemma i appen, inte i ett provdokument. */
+  .pv-ps-remsa { display: none !important; }
+</style>
+
+<h1>Polisvakt — uppläsning vid inkommande rapport</h1>
+<p class="sub">
+  Kör <b>den riktiga kedjan</b> i <code>js/app.js</code>, inte en kopia av den.
+  Provdokumentet sätter <code>window.PV_INGEN_BOOT</code> innan importen, så
+  <code>boot()</code> hoppas över: ingen GPS, ingen pollning mot Supabase,
+  inget gränssnitt. Rapporterna läggs rakt i <code>store.reports</code> och
+  <code>speaker.say</code>/<code>chime</code> byts mot räknare.<br><br>
+  Felet som lagades den 23 augusti 2026: tre Facebook-rapporter nådde appen,
+  hamnade på kartan och sades aldrig, därför att kvalitetsgraderingen satte
+  dem på kartnivå och uppläsningen bara läste röstlistan. Ett prov som testar
+  en <i>kopia</i> av kedjan hade inte fångat det — det var precis den sortens
+  blindhet som lät felet ligga kvar. Därför körs originalet.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script>
+  // Måste stå i ett eget, icke-modult skript: importer hissas, så en flagga
+  // som sätts inuti modulen nedan hade satts efter att app.js redan kört.
+  window.PV_INGEN_BOOT = true;
+</script>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn"></span><span class="info"></span>`;
+  d.children[1].textContent = namn;
+  d.children[2].textContent = info ?? '';
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.stack || e.message); }
+}
+const vanta = ms => new Promise(r => setTimeout(r, ms));
+
+/* ===================================================================
+ * Lagringen lånas, den tas inte över.
+ *
+ * Provdokumentet ligger på samma origin som appen. Skriver det över
+ * pv.mine.v1 eller spåret utan att lämna tillbaka dem har provet förstört
+ * riktiga data för att kunna påstå att koden fungerar.
+ * =================================================================== */
+const LANADE = ['pv.mine.v1', 'pv.inkommande.spar.v1', 'pv.reports.v1'];
+const original = Object.fromEntries(LANADE.map(k => [k, localStorage.getItem(k)]));
+function lamnaTillbaka() {
+  for (const k of LANADE) {
+    if (original[k] == null) localStorage.removeItem(k);
+    else localStorage.setItem(k, original[k]);
+  }
+}
+addEventListener('beforeunload', lamnaTillbaka);
+
+await import('./js/app.js');
+const P = window.polisvakt;
+const IN = P.inkommande;
+const Kvalitet = await import('./js/kvalitet.js');
+const Notiser = await import('./js/notiser.js');
+
+/* ---- Rösten byts mot räknare ---------------------------------------- */
+const sagt = [];
+const plingat = [];
+P.speaker.say = (text, opts) => { sagt.push({ text, opts }); };
+P.speaker.chime = ljud => { plingat.push(ljud); };
+P.speaker.enabled = true;
+P.speaker.unmute?.();
+
+/* ---- Utgångsläget för varje prov ------------------------------------ */
+const NOLL_NOTISER = null;                   // förvalen i notiser.js
+let raknare = 0;
+
+function rapport(extra = {}) {
+  const nu = Date.now();
+  return {
+    id: `prov-${++raknare}`,
+    type: 'police',
+    lat: 59.6099, lon: 16.5448,
+    label: 'Skultuna',
+    source: 'facebook',
+    note: 'Polisbil står vid infarten till Skultuna och kontrollerar farten',
+    createdAt: nu - 60_000,
+    expiresAt: nu + 40 * 60_000,
+    ...extra,
+  };
+}
+
+/**
+ * Kör en omgång genom den riktiga kedjan.
+ *
+ * omgangar = 2 betyder "appen har varit igång ett tag". 0 provar
+ * uppvärmningen.
+ */
+async function kor(rapporter, { omgangar = 2, forbered, sagDirekt = true } = {}) {
+  IN.nollstall();
+  P.store.reports.clear();
+  sagt.length = 0; plingat.length = 0;
+  P.settings.notiser = NOLL_NOTISER;
+  for (const r of rapporter) P.store.reports.set(r.id, r);
+  IN.omgangar = omgangar;
+  forbered?.();
+  IN.sok();
+  if (sagDirekt) IN.sag();
+  await vanta(420);
+  return {
+    sagt: [...sagt],
+    plingat: [...plingat],
+    spar: IN.spar(),
+    orsaker: IN.spar().map(p => p.orsak),
+  };
+}
+
+const talat = r => r.sagt.map(s => s.text).join(' | ');
+
+/* =================================================================== */
+G('Felet som lagades: Facebook-rapporten som aldrig hördes');
+
+await T('en ensam Facebook-rapport utan geokod läses upp', async () => {
+  const r = await kor([rapport()]);
+  if (!r.sagt.length) return `inget sades. Spår: ${r.orsaker.join(', ')}`;
+  if (!/Skultuna/.test(talat(r))) return `sade fel sak: ${talat(r)}`;
+  return true;
+});
+
+await T('...och plinget kommer före rösten', async () => {
+  const r = await kor([rapport()]);
+  if (r.plingat.length !== 1) return `${r.plingat.length} pling`;
+  if (r.plingat[0] !== 'alert') return `fel ljud: ${r.plingat[0]}`;
+  // say ligger bakom 380 ms; chime är synkron i sag(). Att say hann fram
+  // efter 420 ms bevisar ordningen.
+  if (!r.sagt.length) return 'rösten kom aldrig';
+  return true;
+});
+
+await T('kvaliteten graderade den fortfarande till tyst — lyftet är det som bär', async () => {
+  IN.nollstall();
+  P.store.reports.clear();
+  P.settings.notiser = NOLL_NOTISER;
+  const r = rapport();
+  P.store.reports.set(r.id, r);
+  const { lista, lyfta } = IN.flode();
+  const h = lista.find(x => x.id === r.id);
+  if (!h) return 'rapporten kom inte med i listan alls';
+  if (h.bedomning?.behandling !== Kvalitet.BEHANDLING.TYST) {
+    return `graderingen har ändrats: behandling ${h.bedomning?.behandling}. ` +
+           'Provet vill se att TYST står kvar och att lyftet gör jobbet.';
+  }
+  if (!lyfta.has(r.id)) return 'rapporten kom med utan att räknas som lyft';
+  return true;
+});
+
+await T('spåret säger uttryckligen att den lästes upp trots kartnivån', async () => {
+  const r = await kor([rapport()]);
+  if (!r.orsaker.includes('uppläst-efter-lyft')) {
+    return `orsakerna var: ${r.orsaker.join(', ')}`;
+  }
+  return true;
+});
+
+await T('en rapport med gps-geokod läses upp precis som förut', async () => {
+  const r = await kor([rapport({ geokod: 'gps', geokodTyp: 'punkt' })]);
+  if (!r.sagt.length) return `inget sades. Spår: ${r.orsaker.join(', ')}`;
+  if (!r.orsaker.includes('uppläst')) return `märktes som ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+await T('utan GPS-fix och utan rutt hörs den ändå', async () => {
+  if (P.geo.position) return 'hopp';        // provet gäller just fallet utan fix
+  if (P.routeGuide.isClaimed('vad-som-helst')) return 'hopp';
+  const r = await kor([rapport()]);
+  return r.sagt.length ? true : `tyst utan fix: ${r.orsaker.join(', ')}`;
+});
+
+/* =================================================================== */
+G('Nykterhetsregeln — den enda som aldrig får brytas');
+
+await T('nykterhetskontroll sägs inte', async () => {
+  const r = await kor([rapport({
+    label: 'Nykterhetskontroll Skultuna',
+    note: 'Nykterhetskontroll vid Skultuna, blås i röret',
+  })]);
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  return true;
+});
+
+await T('nykterhetskontroll når inte ens listan uppläsningen arbetar på', async () => {
+  IN.nollstall();
+  P.store.reports.clear();
+  P.settings.notiser = NOLL_NOTISER;
+  const r = rapport({ label: 'Nykterhetskontroll Skultuna', note: 'Nykterhetskontroll, blås i röret' });
+  P.store.reports.set(r.id, r);
+  const { lista } = IN.flode();
+  return lista.some(h => h.id === r.id) ? 'den fanns i listan' : true;
+});
+
+await T('spåret skriver aldrig ut vad en nykterhetskontroll är eller var', async () => {
+  const r = await kor([rapport({
+    label: 'Nykterhetskontroll Skultuna',
+    note: 'Nykterhetskontroll vid Skultuna',
+  })]);
+  const text = JSON.stringify(r.spar).toLowerCase();
+  if (/nykter/.test(text)) return 'ordet står i spåret';
+  return true;
+});
+
+await T('lyftet gäller aldrig en rapport med flaggan platskonvention', () => {
+  const falsk = {
+    id: 'x', type: 'police', label: 'Bäckby', source: 'facebook',
+    bedomning: {
+      behandling: Kvalitet.BEHANDLING.TYST, niva: Kvalitet.NIVA.LAG,
+      poang: 0.4, flaggor: ['platskonvention'],
+    },
+  };
+  return IN.lyft(falsk) ? 'lyftet släppte igenom den' : true;
+});
+
+await T('lyftet gäller aldrig en rapport flaggad som nykterhetskontroll', () => {
+  const falsk = {
+    id: 'x', type: 'police', label: 'Nånstans', source: 'facebook',
+    bedomning: {
+      behandling: Kvalitet.BEHANDLING.TYST, niva: Kvalitet.NIVA.LAG,
+      poang: 0.4, flaggor: ['nykterhetskontroll'],
+    },
+  };
+  return IN.lyft(falsk) ? 'lyftet släppte igenom den' : true;
+});
+
+/*
+ * DET FARLIGASTE FALLET, HELA VÄGEN GENOM KEDJAN.
+ *
+ * Ett gruppinlägg som bara är ett platsnamn ("Bäckby") tolkas som polis genom
+ * gruppens konvention. Står ordet nykterhetskontroll i bilden eller i
+ * kommentarerna finns det ingen text för isSobrietyCheck att gå på, och en
+ * uppläsning hade brutit den enda regel som aldrig får brytas. kvalitet.js
+ * sänker därför sådana till kartnivå — och lyftet i app.js får inte ta
+ * tillbaka det.
+ *
+ * geokod gps + punkt är med för att poängen ska hamna på MEDEL. Taket för
+ * platskonvention slår bara mot MEDEL och HÖG; utan det hade rapporten varit
+ * LÅG av andra skäl och provet hade mätt fel sak.
+ */
+await T('ett bart platsnamn från gruppen lyfts inte', () => {
+  const rap = { id: 'k1', type: 'police', lat: 59.5980, lon: 16.4790,
+                label: 'Bäckby', source: 'facebook', note: 'Bäckby',
+                geokod: 'gps', geokodTyp: 'punkt', createdAt: Date.now() - 60_000 };
+  const bedomning = Kvalitet.bedomRapport(rap, { nu: Date.now() });
+  if (!bedomning?.flaggor?.includes('platskonvention')) {
+    return `graderingen flaggade inte platskonvention (niva ${bedomning?.niva}, ` +
+           `poang ${bedomning?.poang}) — provet mäter då inte det det ska`;
+  }
+  return IN.lyft({ ...rap, bedomning })
+    ? 'lyftet släppte igenom ett bart platsnamn' : true;
+});
+
+await T('...och det bara platsnamnet hörs inte heller hela vägen genom kedjan', async () => {
+  const r = await kor([rapport({
+    label: 'Bäckby', note: 'Bäckby', lat: 59.5980, lon: 16.4790,
+    geokod: 'gps', geokodTyp: 'punkt',
+  })]);
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (!r.orsaker.includes('kvaliteten-holl-emot')) {
+    return `spåret säger: ${r.orsaker.join(', ')}`;
+  }
+  return true;
+});
+
+/*
+ * SAMMA INLÄGG UTAN GEOKOD-FÄLT — DET MÄTTA HÅLET.
+ *
+ * Utan geokod landar posten på 0,32 och är alltså NIVA.LAG av andra skäl
+ * innan platskonventionstaket ens prövas. Flaggpushen i kvalitet.js låg förr
+ * inne i taket, så flaggan sattes aldrig, och lyftet i app.js — som bara läste
+ * flaggan — släppte inlägget rakt till högtalaren. Mätt: poäng 0,32, nivå lag,
+ * flaggor ['osaker-plats'], lyft=true, 1 yttring, 16 oscillatorer.
+ *
+ * Ingen har skrivit VAD som står vid Bäckby. Står ordet nykterhetskontroll i
+ * bilden eller i kommentarerna har appen då varnat för en nykterhetskontroll.
+ * Provet kräver NOLL yttringar.
+ */
+await T('ett bart platsnamn UTAN geokod-fält är också tyst', async () => {
+  const rap = rapport({
+    label: 'Bäckby', note: 'Bäckby', lat: 59.5980, lon: 16.4790,
+  });
+  if (IN.lyft({ ...rap, bedomning: Kvalitet.bedomRapport(rap, { nu: Date.now() }) })) {
+    return 'lyftet släppte igenom ett bart platsnamn utan geokod';
+  }
+  const r = await kor([rap]);
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (r.plingat.length) return `plingade ${r.plingat.length} gånger`;
+  return true;
+});
+
+/* =================================================================== */
+G('Lyftet är inte en bakdörr');
+
+await T('undanhållet lyfts aldrig', () => {
+  const falsk = {
+    id: 'x', type: 'police', label: 'Nånstans', source: 'facebook',
+    bedomning: { behandling: Kvalitet.BEHANDLING.UNDANHALL, niva: Kvalitet.NIVA.SVAG,
+                 poang: 0.1, flaggor: [] },
+  };
+  return IN.lyft(falsk) ? 'lyftet släppte igenom undanhållet' : true;
+});
+
+await T('det föraren ställt på "bara kartan" stannar på kartan', async () => {
+  const r = await kor([rapport()], {
+    forbered: () => { P.settings.notiser = { police: 'karta' }; },
+  });
+  P.settings.notiser = NOLL_NOTISER;
+  if (r.sagt.length) return `sade ändå: ${talat(r)}`;
+  return true;
+});
+
+await T('det föraren stängt av syns inte ens i spåret som lyftbart', async () => {
+  const r = await kor([rapport()], {
+    forbered: () => { P.settings.notiser = { police: 'av' }; },
+  });
+  P.settings.notiser = NOLL_NOTISER;
+  if (r.sagt.length) return `sade ändå: ${talat(r)}`;
+  return true;
+});
+
+await T('en handmarkerad fartkamera lyfts inte', async () => {
+  const r = await kor([rapport({ type: 'camera', label: 'E18', note: 'Fartkamera vid E18' })]);
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  return true;
+});
+
+/* =================================================================== */
+G('Ingen skur vid start — men inget färskt sväljs heller');
+
+/*
+ * Utgångsläget är hela trakten som redan ligger i flödet när appen vaknar.
+ * Den är per definition gammal, och faller på åldersgrinden precis som allt
+ * annat gammalt. Skillnaden mot ett vanligt varv är att spåret dämpas till en
+ * rad i stället för hundrafyrtio.
+ */
+const gammal = (extra = {}) => rapport({
+  geokod: 'gps', geokodTyp: 'punkt',
+  createdAt: Date.now() - 25 * 60_000,
+  ...extra,
+});
+
+await T('utgångsläget säger ingenting om det som redan låg där', async () => {
+  const r = await kor([gammal(), gammal(), gammal()], { omgangar: 0 });
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (!r.orsaker.includes('uppvarmning')) return `spåret nämner inte utgångsläget: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+await T('utgångsläget skriver EN spårrad, inte en per rapport', async () => {
+  const r = await kor([gammal(), gammal(), gammal(), gammal()], { omgangar: 0 });
+  const n = r.orsaker.filter(o => o === 'uppvarmning').length;
+  if (n !== 1) return `${n} rader`;
+  if (r.orsaker.includes('for-gammal')) return 'skrev ändå en rad per rapport';
+  return true;
+});
+
+/*
+ * FYNDET DEN 23 AUGUSTI, ANDRA HALVAN.
+ *
+ * Uppvärmningen bokförde förut id:t som sett FÖRE grindarna och hoppade sedan
+ * över hela raden. En rapport som skrevs för en minut sedan och råkade komma
+ * med i den första hämtningen var därmed permanent tystad — ingen grind hade
+ * ställt en fråga om den, och ingen spårrad bar dess id. Föraren som startar
+ * appen inomhus, utan GPS-fix, medan det står polis där hen ska köra fick
+ * varken ljud, röst eller något att felsöka på.
+ */
+await T('en FÄRSK rapport i utgångsläget hörs ändå', async () => {
+  const r = await kor([gammal(), gammal(), rapport()], { omgangar: 0 });
+  if (!r.sagt.length) return `svaldes av utgångsläget: ${r.orsaker.join(', ')}`;
+  if (!/Skultuna/.test(talat(r))) return `sade fel sak: ${talat(r)}`;
+  return true;
+});
+
+await T('...och den svalda tystnaden finns inte kvar som permanent minne', async () => {
+  // Samma sak en omgång senare: rapporten får inte ha bokförts som avgjord
+  // utan att någon grind sagt varför.
+  const r = await kor([rapport()], { omgangar: 0 });
+  const rader = r.spar.filter(p => p.beslut !== 'tyst' || p.id);
+  if (!r.sagt.length && !rader.length) return 'försvann utan ett ord';
+  return true;
+});
+
+/*
+ * Utgångsläget avgörs av DATAN, inte av vilket varv vi råkar vara på.
+ *
+ * Förr löd regeln "de två första omgångarna är tysta", och vilken genomgång
+ * som blev nummer två avgjordes av en kapplöpning i boot(). Vann
+ * serverhämtningen loppet blev omgång 2 en levande pollning trettio sekunder
+ * senare — och tjugo genuint nya rapporter tystades permanent.
+ */
+await T('när servern svarat är nästa omgång levande, inte uppvärmning', async () => {
+  IN.nollstall();
+  P.store.reports.clear();
+  P.settings.notiser = NOLL_NOTISER;
+  sagt.length = 0;
+
+  const lastSyncFore = P.store.lastSync;
+  P.store.lastSync = Date.now();          // servern har svarat en gång
+  P.store.reports.set('u1', gammal({ id: 'u1' }));
+  IN.sok();                               // omgång 1 = utgångsläget
+  if (!IN.utgangslagetBokfort) {
+    P.store.lastSync = lastSyncFore;
+    return 'utgångsläget bokfördes inte trots att servern svarat';
+  }
+
+  // Tjugo genuint nya rapporter i NÄSTA omgång. De ska höras.
+  for (let i = 0; i < 20; i++) {
+    const r = rapport({ id: `ny-${i}`, lat: 59.60 + i / 200, lon: 16.54 + i / 200 });
+    P.store.reports.set(r.id, r);
+  }
+  IN.sok(); IN.sag();
+  await vanta(420);
+  P.store.lastSync = lastSyncFore;
+
+  // Antalet i "Ytterligare N" är inte 19: kvaliteten slår ihop rapporter som
+  // står nära varandra till samma patrull, och det är avsikten. Det provet
+  // mäter är att omgången är LEVANDE — att den hörs alls.
+  if (!sagt.length) return `tystades som uppvärmning: ${IN.spar().map(p => p.orsak).join(', ')}`;
+  if (!/Ytterligare \d+ rapporter/.test(sagt[1]?.text || '')) {
+    return `räknade inte resten: ${sagt.map(s => s.text).join(' | ')}`;
+  }
+  return true;
+});
+
+await T('samma rapport sägs bara en gång', async () => {
+  const rap = rapport();
+  await kor([rap]);
+  const forsta = sagt.length;
+  sagt.length = 0;
+  IN.sok(); IN.sag();
+  await vanta(420);
+  if (forsta !== 1) return `första omgången sade ${forsta} gånger`;
+  return sagt.length === 0 ? true : `sade igen: ${sagt.map(s => s.text).join(' | ')}`;
+});
+
+await T('en ny rapport som klustras med en redan sedd sägs inte om', async () => {
+  const forsta = rapport({ createdAt: Date.now() - 3 * 60_000 });
+  IN.nollstall();
+  P.store.reports.clear();
+  P.settings.notiser = NOLL_NOTISER;
+  sagt.length = 0;
+  P.store.reports.set(forsta.id, forsta);
+  IN.omgangar = 2;
+  IN.sok(); IN.sag();                        // första rapporten sägs, som den ska
+  await vanta(420);
+  if (!sagt.length) return 'första rapporten sades aldrig — provet mäter fel sak';
+  sagt.length = 0;
+
+  const ny = rapport({ createdAt: Date.now() - 30_000 });   // samma koordinat
+  P.store.reports.set(ny.id, ny);
+  IN.sok(); IN.sag();
+  await vanta(420);
+
+  const { lista } = IN.flode();
+  const klustrat = lista.some(h => (h.klusterIds || []).length > 1);
+  if (!klustrat) return 'hopp';              // slogs inte ihop: annat prov behövs
+  if (sagt.length) return `sade om samma polis: ${sagt.map(s => s.text).join(' | ')}`;
+  if (!IN.spar().some(p => p.orsak === 'samma-som-redan-sedd')) {
+    return 'tystnaden syns inte i spåret';
+  }
+  return true;
+});
+
+/* =================================================================== */
+G('Aldrig dubbelt med varningsmotorn');
+
+/*
+ * En rapport som ligger i RÖSTFLÖDET. geokod gps + punkt håller uppe poängen
+ * så att kvaliteten släpper fram den utan lyft — då är den med i den lista
+ * motorn matas med, och då är motorns förutsägelse ett löfte den kan hålla.
+ */
+const iRostflodet = (extra = {}) => rapport({ geokod: 'gps', geokodTyp: 'punkt', ...extra });
+
+await T('motorn tar den — då är den här vägen tyst', async () => {
+  const original = P.engine.agerFaran;
+  P.engine.agerFaran = () => true;
+  const r = await kor([iRostflodet()]);
+  P.engine.agerFaran = original;
+  if (r.sagt.length) return `sade ändå: ${talat(r)}`;
+  if (!r.orsaker.includes('motorn-tar-den')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+/*
+ * FYNDET: motorn får inte lova något om en fara den aldrig ser.
+ *
+ * En kvalitetslyft rapport är TYST och ligger därför INTE i forRost, alltså
+ * inte i den lista app.js matar engine.evaluate med. Men agerFaran svarar på
+ * ren geometri och känner inte till vilken lista den fått — den sa alltså "jag
+ * tar den" om precis den rapport motorn aldrig kommer att uttala. Mätt: 900 m
+ * bort, 50 km/h, färsk fix, lyft=true, poäng 0,32 → total tystnad och en
+ * spårrad som påstod att motorn redan varnat. Osant.
+ */
+await T('en lyft rapport tystas inte av motorns FÖRUTSÄGELSE', async () => {
+  const oAger = P.engine.agerFaran;
+  const oHar = P.engine.harVarnat;
+  P.engine.agerFaran = () => true;           // "jag tar den vid nästa fix"
+  P.engine.harVarnat = () => false;          // men den har inte sagt något
+  const r = await kor([rapport()]);          // ensam facebook utan geokod = lyft
+  P.engine.agerFaran = oAger;
+  P.engine.harVarnat = oHar;
+  if (!r.sagt.length) return `tystades av ett löfte ingen kan hålla: ${r.orsaker.join(', ')}`;
+  if (!r.orsaker.includes('uppläst-efter-lyft')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+await T('...men om motorn FAKTISKT har varnat är den här vägen tyst', async () => {
+  const oAger = P.engine.agerFaran;
+  const oHar = P.engine.harVarnat;
+  P.engine.agerFaran = () => false;
+  P.engine.harVarnat = () => true;           // regel 1: warnedAt inom spärren
+  const r = await kor([rapport()]);
+  P.engine.agerFaran = oAger;
+  P.engine.harVarnat = oHar;
+  if (r.sagt.length) return `sade ändå: ${talat(r)}`;
+  if (!r.orsaker.includes('motorn-tar-den')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+/*
+ * SAMMA SAK MED RIKTIG GEOMETRI, INGA STUBBAR.
+ *
+ * Hela sviten körde länge utan position, och det var den blindheten som lät
+ * fyndet ovan passera: raden "utan GPS-fix och utan rutt hörs den ändå"
+ * hoppar över sig själv så fort en fix finns. Här sätts en färsk fix i
+ * 50 km/h, 900 meter från rapporten — alltså väl inom hazardRadiusM 1500 m,
+ * där agerFaran svarar ja på ren geometri.
+ */
+await T('lyft rapport, bil i 50 km/h, 900 m bort — hörs ändå', async () => {
+  const foreFix = P.geo.last;
+  P.geo.last = {
+    lat: 59.6099, lon: 16.5448, accuracy: 8,
+    speedKmh: 50, moving: true, headingSmoothed: 0, ts: Date.now(),
+  };
+  P.engine.reset();
+  // 900 m rakt norrut.
+  const rap = rapport({ lat: 59.6180, lon: 16.5448 });
+  const r = await kor([rap]);
+  const agerFaranSvarade = P.engine.agerFaran(
+    { ...rap, klusterIds: [] }, P.geo.position, []);
+  P.geo.last = foreFix;
+  if (!agerFaranSvarade) return 'hopp';      // geometrin gav inte det läge provet vill mäta
+  if (!r.sagt.length) return `tyst med fix i 50 km/h: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+await T('motorn hinner ta den medan bursten samlas — grinden körs om', async () => {
+  const oAger = P.engine.agerFaran;
+  const oHar = P.engine.harVarnat;
+  P.engine.agerFaran = () => false;
+  P.engine.harVarnat = () => false;
+  IN.nollstall();
+  P.store.reports.clear();
+  P.settings.notiser = NOLL_NOTISER;
+  sagt.length = 0;
+  const rap = rapport();
+  P.store.reports.set(rap.id, rap);
+  IN.omgangar = 2;
+  IN.sok();                                  // hamnar i kön: motorn sa nej
+  if (!IN.ko.size) {
+    P.engine.agerFaran = oAger; P.engine.harVarnat = oHar;
+    return 'hamnade aldrig i kön';
+  }
+  P.engine.harVarnat = () => true;           // världen ändrar sig under 1,5 s
+  IN.sag();
+  await vanta(420);
+  P.engine.agerFaran = oAger; P.engine.harVarnat = oHar;
+  if (sagt.length) return `sade ändå: ${sagt.map(s => s.text).join(' | ')}`;
+  return IN.spar().some(p => p.orsak === 'motorn-tar-den') ? true : 'inget spår';
+});
+
+/*
+ * DUBBELTALET ÅT ANDRA HÅLLET.
+ *
+ * Rödljuskön: rapporten ligger i röstflödet, bilen står still, motorn är tyst
+ * med flit och den här vägen läser upp. Tio sekunder senare blir det grönt,
+ * motorn triggar och säger samma patrull en gång till — två röster och två
+ * pling. Uppläsningen bockar därför av faran hos motorn i nittio sekunder.
+ */
+await T('motorn upprepar inte det inkommande nyss läste upp', async () => {
+  const foreFix = P.geo.last;
+  P.engine.reset();
+  P.geo.last = {
+    lat: 59.6099, lon: 16.5448, accuracy: 8,
+    speedKmh: 0, moving: false, headingSmoothed: 0, ts: Date.now(),
+  };
+  const rap = iRostflodet({ lat: 59.6180, lon: 16.5448 });   // 900 m norrut
+  const r = await kor([rap]);
+  if (!r.sagt.length) {
+    P.geo.last = foreFix;
+    return `inkommande sade ingenting: ${r.orsaker.join(', ')}`;
+  }
+  // Grönt ljus: nästa fix säger 20 km/h. Samma anrop som app.js gör.
+  P.geo.last = { ...P.geo.last, speedKmh: 20, moving: true, ts: Date.now() };
+  const { lista, lyfta } = IN.flode();
+  const motornsLista = P.routeGuide.filterHazards(lista.filter(h => !lyfta.has(h.id)));
+  const fired = P.engine.evaluate(P.geo.position, motornsLista);
+  await vanta(420);
+  P.geo.last = foreFix;
+  if (!motornsLista.some(h => h.id === rap.id)) return 'hopp';  // låg inte i motorns lista
+  if (fired.length) return `motorn sade samma polis igen: ${fired[0].spoken}`;
+  return true;
+});
+
+await T('ruttvakten har claimat den — då är den här vägen tyst', async () => {
+  const original = P.routeGuide.filterHazards;
+  P.routeGuide.filterHazards = () => [];
+  const r = await kor([iRostflodet()]);
+  P.routeGuide.filterHazards = original;
+  if (r.sagt.length) return `sade ändå: ${talat(r)}`;
+  if (!r.orsaker.includes('ruttvakten')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+/*
+ * Ruttvakten läser numera samma flöde som motorn (forRost), alltså aldrig en
+ * lyft rapport. Då får den heller inte tysta en — annars försvinner rapporten
+ * i glappet mellan två kanaler som båda tror att den andra tar den.
+ */
+await T('en lyft rapport lämnas aldrig åt ruttvakten', async () => {
+  const original = P.routeGuide.filterHazards;
+  P.routeGuide.filterHazards = () => [];     // "ruttvakten äger allt"
+  const r = await kor([rapport()]);
+  P.routeGuide.filterHazards = original;
+  if (!r.sagt.length) return `försvann mellan kanalerna: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+/* =================================================================== */
+G('Aldrig egen, aldrig gammal, aldrig tio på en gång');
+
+await T('din egen rapport sägs aldrig', async () => {
+  const rap = rapport();
+  localStorage.setItem('pv.mine.v1', JSON.stringify([rap.id]));
+  const r = await kor([rap]);
+  localStorage.setItem('pv.mine.v1', original['pv.mine.v1'] ?? '[]');
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (!r.orsaker.includes('egen-rapport')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+// 25 minuter: över notisgränsen (halva livslängden, alltså 22,5 min för
+// polis) men inte så gammal att kvaliteten undanhåller den. geokod gps håller
+// uppe poängen, så det verkligen är åldersgrinden provet mäter.
+await T('en rapport äldre än halva livslängden sägs inte', async () => {
+  const r = await kor([rapport({
+    geokod: 'gps', geokodTyp: 'punkt', createdAt: Date.now() - 25 * 60_000,
+  })]);
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (!r.orsaker.includes('for-gammal')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+await T('en rapport kvaliteten kastar ut helt lämnar också ett spår', async () => {
+  const r = await kor([rapport({ createdAt: Date.now() - 44 * 60_000 })]);
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (!/undanhallen|for-gammal|kvaliteten-holl-emot/.test(r.orsaker.join(','))) {
+    return `försvann utan ett ord: ${r.orsaker.join(', ') || '(tomt)'}`;
+  }
+  return true;
+});
+
+await T('en rapport med okänd tidsstämpel sägs inte', async () => {
+  const r = await kor([rapport({ createdAt: null })]);
+  return r.sagt.length ? `sade: ${talat(r)}` : true;
+});
+
+await T('en tidsstämpel långt in i framtiden sägs inte', async () => {
+  const r = await kor([rapport({ createdAt: Date.now() + 60 * 60_000 })]);
+  return r.sagt.length ? `sade: ${talat(r)}` : true;
+});
+
+await T('en fast punkt är ingen nyhet', async () => {
+  const r = await kor([rapport({ fixed: true })]);
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (!r.orsaker.includes('fast-punkt')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+await T('fem rapporter blir en mening plus en siffra', async () => {
+  const platser = ['Skultuna', 'Hallstahammar', 'Dingtuna', 'Tillberga', 'Irsta'];
+  const lat = [59.72, 59.61, 59.58, 59.68, 59.62];
+  const lon = [16.41, 16.22, 16.38, 16.60, 16.68];
+  const r = await kor(platser.map((p, i) => rapport({
+    label: p, lat: lat[i], lon: lon[i],
+    note: `Polisbil står vid ${p} och kontrollerar farten`,
+  })));
+  if (r.plingat.length !== 1) return `${r.plingat.length} pling`;
+  if (r.sagt.length !== 2) return `${r.sagt.length} yttringar: ${talat(r)}`;
+  if (!/Ytterligare 4 rapporter/.test(r.sagt[1].text)) return `räknade fel: ${r.sagt[1].text}`;
+  const raknade = r.spar.filter(p => p.beslut === 'raknad').length;
+  if (raknade !== 4) return `spåret redovisar ${raknade} räknade`;
+  return true;
+});
+
+await T('uppläsningen upprepas inte — priority 1, en gång', async () => {
+  const r = await kor([rapport()]);
+  const o = r.sagt[0]?.opts || {};
+  if (o.priority !== 1) return `priority ${o.priority}`;
+  if (o.ganger !== 1) return `ganger ${o.ganger}`;
+  return true;
+});
+
+/* =================================================================== */
+G('Föraren och abonnemanget');
+
+await T('"Tyst i 15 minuter" tystar också plinget', async () => {
+  P.speaker.mute?.(15);
+  const r = await kor([rapport()]);
+  P.speaker.unmute?.();
+  if (r.plingat.length) return `plingade ${r.plingat.length} gånger`;
+  if (r.sagt.length) return `sade: ${talat(r)}`;
+  if (!r.orsaker.includes('foraren-tystade')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+await T('avslagen uppläsning tystar den', async () => {
+  P.speaker.enabled = false;
+  const r = await kor([rapport()]);
+  P.speaker.enabled = true;
+  if (r.sagt.length || r.plingat.length) return `sade/plingade ändå: ${talat(r)}`;
+  return true;
+});
+
+await T('utan giltigt abonnemang sägs ingenting', async () => {
+  Object.defineProperty(P.billing, 'allowed', { get: () => false, configurable: true });
+  const r = await kor([rapport()]);
+  delete P.billing.allowed;
+  if (r.sagt.length || r.plingat.length) return `sade/plingade ändå: ${talat(r)}`;
+  if (!r.orsaker.includes('abonnemang')) return `spåret säger: ${r.orsaker.join(', ')}`;
+  return true;
+});
+
+/* =================================================================== */
+G('Ruttvakten — den fjärde skruven');
+
+/*
+ * Ruttvakten var länge den enda talande kanalen som läste store.active()
+ * rått. Motorn får forRost, inkommande-uppläsningen får inkommandeFlode(),
+ * och båda har passerat produktreglerna, kvaliteten, täckningen och förarens
+ * notisval. Ruttvakten hade inte passerat någonting, och skickade rapportens
+ * råa label rakt till speaker.say.
+ *
+ * MÄTT: en rapport med label "Nykterhetskontroll Skultuna" undanhålls av
+ * kvalitet.js och saknas i både forRost och inkommande-listan — men låg kvar
+ * i store.active(), alltså i det ruttvakten läste.
+ */
+await T('en nykterhetsflaggad rapport finns inte i det ruttvakten läser', async () => {
+  IN.nollstall();
+  P.store.reports.clear();
+  P.settings.notiser = NOLL_NOTISER;
+  const u = rapport({ label: 'Nykterhetskontroll Skultuna',
+                      note: 'Nykterhetskontroll vid Skultuna, blås i röret' });
+  P.store.reports.set(u.id, u);
+
+  const iStore = P.store.active().some(x => x.id === u.id);
+  const iRuttvakten = (P.routeGuide.haemtaFaror(Date.now()) || []).some(x => x.id === u.id);
+  P.store.reports.clear();
+  if (!iStore) return 'hopp';                // låg inte ens i store: provet mäter fel sak
+  return iRuttvakten ? 'ruttvakten ser den fortfarande' : true;
+});
+
+await T('det föraren stängt av finns inte heller i det ruttvakten läser', async () => {
+  IN.nollstall();
+  P.store.reports.clear();
+  const rap = rapport({ geokod: 'gps', geokodTyp: 'punkt' });
+  P.store.reports.set(rap.id, rap);
+
+  P.settings.notiser = { police: 'av' };
+  const av = (P.routeGuide.haemtaFaror(Date.now()) || []).some(x => x.id === rap.id);
+  P.settings.notiser = NOLL_NOTISER;
+  const pa = (P.routeGuide.haemtaFaror(Date.now()) || []).some(x => x.id === rap.id);
+  P.store.reports.clear();
+
+  if (!pa) return 'hopp';                    // syns inte ens med förvalen
+  return av ? 'police=av gav ändå en ruttvarning' : true;
+});
+
+await T('en kvalitetslyft rapport ligger inte i ruttvaktens flöde', async () => {
+  IN.nollstall();
+  P.store.reports.clear();
+  P.settings.notiser = NOLL_NOTISER;
+  const rap = rapport();                     // ensam facebook utan geokod = lyft
+  P.store.reports.set(rap.id, rap);
+  const { lyfta } = IN.flode();
+  const iRuttvakten = (P.routeGuide.haemtaFaror(Date.now()) || []).some(x => x.id === rap.id);
+  P.store.reports.clear();
+  if (!lyfta.has(rap.id)) return 'hopp';     // graderingen ändrad: annat prov behövs
+  return iRuttvakten
+    ? 'ruttvakten skulle säga avstånd om en punkt kvaliteten inte litar på'
+    : true;
+});
+
+/* =================================================================== */
+G('Spåret orkar med en burst');
+
+/*
+ * Ringbufferten är 60 rader. Taket per omgång tillämpades förr bara på två av
+ * sex orsakskoder, så en enda burst med tjugo rapporter — eller tjugo rader
+ * "foraren-tystade" — räckte för att trycka ut allt någon letade efter.
+ */
+const tjugo = () => Array.from({ length: 20 }, (_, i) => rapport({
+  id: `burst-${i}-${Math.random().toString(36).slice(2, 6)}`,
+  lat: 59.60 + i / 200, lon: 16.54 + i / 200,
+}));
+
+await T('en burst med tjugo skriver högst sex rader "raknad-i-bursten"', async () => {
+  const r = await kor(tjugo());
+  const n = r.orsaker.filter(o => o === 'raknad-i-bursten').length;
+  if (!r.sagt.length) return `sade ingenting alls: ${r.orsaker.join(', ')}`;
+  // Fem enskilda plus sammanfattningsraden.
+  return n <= 6 ? true : `${n} rader`;
+});
+
+await T('"Tyst i 15 minuter" med tjugo rapporter fyller inte spåret', async () => {
+  P.speaker.mute?.(15);
+  const r = await kor(tjugo());
+  P.speaker.unmute?.();
+  const n = r.orsaker.filter(o => o === 'foraren-tystade').length;
+  if (!n) return `grinden syns inte alls: ${r.orsaker.join(', ')}`;
+  return n <= 6 ? true : `${n} rader`;
+});
+
+await T('utan abonnemang blir tjugo rapporter inte tjugo rader', async () => {
+  Object.defineProperty(P.billing, 'allowed', { get: () => false, configurable: true });
+  const r = await kor(tjugo());
+  delete P.billing.allowed;
+  const n = r.orsaker.filter(o => o === 'abonnemang').length;
+  if (!n) return `grinden syns inte alls: ${r.orsaker.join(', ')}`;
+  return n <= 6 ? true : `${n} rader`;
+});
+
+await T('den upplästa raden överlever en burst i ringbufferten', async () => {
+  const r = await kor(tjugo());
+  const kvar = r.spar.some(p => p.beslut === 'sagd');
+  return kvar ? true : 'uppläsningsraden trycktes ut av utfyllnad';
+});
+
+/* =================================================================== */
+G('Spåret — tystnaden ska gå att läsa i efterhand');
+
+await T('varje tyst rapport lämnar ett skäl', async () => {
+  const fall = [
+    ['egen-rapport', () => { const r = rapport(); localStorage.setItem('pv.mine.v1', JSON.stringify([r.id])); return r; }],
+    ['for-gammal',   () => rapport({ geokod: 'gps', geokodTyp: 'punkt',
+                                     createdAt: Date.now() - 25 * 60_000 })],
+    ['fast-punkt',   () => rapport({ fixed: true })],
+  ];
+  for (const [orsak, bygg] of fall) {
+    const r = await kor([bygg()]);
+    localStorage.setItem('pv.mine.v1', original['pv.mine.v1'] ?? '[]');
+    if (!r.orsaker.includes(orsak)) return `${orsak} saknas: ${r.orsaker.join(', ')}`;
+  }
+  return true;
+});
+
+await T('kartflödet som kvaliteten höll tillbaka syns också', async () => {
+  const r = await kor([rapport({
+    label: 'Bäckby', lat: 59.60, lon: 16.48,
+    note: 'Bäckby',
+  })], { forbered: () => {} });
+  // Antingen lyftes den (då finns uppläst-efter-lyft) eller så hölls den
+  // tillbaka (då finns kvaliteten-holl-emot). Det som INTE får hända är att
+  // den försvinner utan ett ord.
+  const spar = r.orsaker.join(', ');
+  if (/uppläst|kvaliteten-holl-emot|far-inte-beskrivas/.test(spar)) return true;
+  return `inget beslut bokfördes: ${spar}`;
+});
+
+await T('spåret överlever en omladdning', async () => {
+  await kor([rapport()]);
+  const rader = JSON.parse(localStorage.getItem('pv.inkommande.spar.v1') || '[]');
+  if (!Array.isArray(rader) || !rader.length) return 'ingenting sparat';
+  if (!rader.at(-1).varfor) return 'raden saknar skäl';
+  return true;
+});
+
+await T('spåret växer inte i all oändlighet', async () => {
+  IN.nollstall();
+  for (let i = 0; i < 12; i++) {
+    await kor([1, 2, 3, 4, 5].map(n => rapport({
+      geokod: 'gps', geokodTyp: 'punkt',
+      lat: 59.6 + n / 100, lon: 16.5 + n / 100,
+      createdAt: Date.now() - (24 + n) * 60_000,
+    })), { sagDirekt: false });
+  }
+  const n = IN.spar().length;
+  return n <= 60 ? true : `${n} rader`;
+});
+
+await T('sparText svarar på frågan utan brytpunkt', async () => {
+  await kor([rapport({ geokod: 'gps', geokodTyp: 'punkt',
+                       createdAt: Date.now() - 25 * 60_000 })]);
+  const text = IN.sparText();
+  if (!/for-gammal/.test(text)) return 'orsaken står inte i texten';
+  if (!/minuter/.test(text)) return 'skälet står inte i texten';
+  return true;
+});
+
+/* =================================================================== */
+lamnaTillbaka();
+IN.nollstall();
+P.store.reports.clear();
+
+const summa = document.getElementById('summa');
+summa.textContent = `${ok} godkända · ${fel} fel · ${hopp} hoppade`;
+summa.className = fel ? 'fel' : 'ok';
+
+const exempel = document.createElement('pre');
+exempel.textContent = 'Exempel på spåret, för den som vill se formen:\n\n' +
+  (await (async () => {
+    IN.nollstall();
+    await kor([rapport(), rapport({ geokod: 'gps', geokodTyp: 'punkt',
+                                    createdAt: Date.now() - 25 * 60_000 })]);
+    const t = IN.sparText();
+    lamnaTillbaka();
+    IN.nollstall();
+    P.store.reports.clear();
+    return t;
+  })());
+ut.appendChild(exempel);
+</script>

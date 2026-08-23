@@ -134,8 +134,15 @@ set search_path = pg_catalog, pg_temp as $$
   --
   -- Bara "drog" utan efterled saknas med flit: det är också imperfekt av
   -- "dra", och "polisen drog vidare" är en avblåsning, inte en kontroll.
+  --
+  -- drog+razzia/polis/piket/hund/sök kom till när typorden i js/parser.js
+  -- breddades: de fyra sista leden är TYPORD där, så "Drograzzia vid
+  -- Erikslund" och "Drogpolisen står vid Erikslund" blev publicerade
+  -- varningar med notis i stället för ingenting alls. De står bara som PAR
+  -- med "drog" — en polisrazzia utan droger är en riktig rapport som ska
+  -- fram. 'nyckter' är felstavningen av 'nykter' och är inget svenskt ord.
   select lower(coalesce(p_text, '')) ~
-    '(nykter|alkohol|alkotest|promille|rattfyll|utandnings|sållnings|sallnings|narkotika|narko|droger|drogsök|drogsok|drogkontroll|drogtest|drog[ -]?kontroll|drog[ -]?test|drog[ -]?koll|blåser|blåsa|blåste|blaser|blåsning)';
+    '(nykter|nyckter|alkohol|alkotest|promille|rattfyll|utandnings|sållnings|sallnings|narkotika|narko|droger|drogsök|drogsok|drogkontroll|drogtest|drog[ -]?kontroll|drog[ -]?test|drog[ -]?koll|drog[ -]?razzia|drog[ -]?polis|drog[ -]?piket|drog[ -]?hund|drog[ -]?sök|drog[ -]?sok|blåser|blåsa|blåste|blaser|blåsning)';
 $$;
 
 -- ============================ INTEGRITET =============================
@@ -1177,6 +1184,15 @@ begin
   end if;
 
   if not v_okand then
+    -- TROVÄRDIGHETSTIDEN, samma tal som js/store.js TTL_MINUTES. HÖJ INTE
+    -- DEM TILL 240 för att matcha den tid rapporten syns. Sedan
+    -- 2026-08-23 är de två olika saker: rapporten ligger kvar fyra timmar
+    -- (store.js VISNING_MINUTER), men tron på den tar slut här. Skrevs 240
+    -- in nedan skulle en två timmar gammal rapport sluta säga "Kan ha
+    -- flyttat på sig" — alltså skulle den längre livslängden göra texten
+    -- MER tvärsäker ju äldre uppgiften blev. Åldersgrinden för notiser
+    -- (fbmejl_ttl_minuter i migrationen 2026-08-22) räknar på samma tal och
+    -- provas mot den här funktionen av PROV 2.
     v_ttl := case p_typ
                when 'police'   then 45
                when 'control'  then 60

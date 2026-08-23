@@ -263,20 +263,67 @@ inte ett enda `alter database` i den.
 den. Det enda som återstår efter migrationen är nyckeln, och den ska ingen
 annan än du se.
 
-### Nyckeln — två fält, samma sträng
+### Huvudspåret — en klistring, en enda gång
 
-Databasen måste legitimera sig mot `fbmejl-push`. Den behöver **inte** bära
-projektets service role-nyckel för det. Använd en egen slumpad sträng som bara
-används till just det här anropet:
+> **Det här är hela steg 4.** Det tar en minut, det kräver ingen migration,
+> ingen omutrullning och inte en rad ny kod. Läs inte vidare i plan B om det
+> här fungerar — det gör det nästan alltid.
 
-* den kan roteras utan att något annat i projektet rörs
-* läcker den kan den skicka en gruppnotis, inte läsa hela databasen
-* den har ingen andra utgåva att förväxlas med — och just den förväxlingen är
-  kedjans mest tidsödande fel, se felsökningen längst ner
+Databasen måste legitimera sig mot `fbmejl-push`. Den vägen är **redan byggd
+och redan utrullad**, och den saknar ett värde, inte kod:
 
-Samma sträng ska stå på **två** ställen. Glider de isär blir det `HTTP 401`.
+* `public.fbmejl_anropsnyckel()` i `supabase/fbmejl.sql` faller redan tillbaka
+  på valvhemligheten `service_role_key`
+* `TILLATNA_ANROPSNYCKLAR` i `supabase/functions/fbmejl-push/index.ts`
+  innehåller redan `SUPABASE_SERVICE_ROLE_KEY`, som plattformen själv injicerar
 
-#### Först: hitta på strängen
+Lägg alltså projektets service role-nyckel i valvet under namnet
+`service_role_key`, så går kedjan igång som den är konstruerad — med pg_net,
+buntningen, tiominutersspärren, nattystnaden, dygnstaket och avstämningen
+orörda.
+
+**Gör så här:**
+
+1. Kör `powershell -ExecutionPolicy Bypass -File tools\satt-nyckel.ps1`
+   Skriptet ber om nyckeln, **provar** den mot båda dörrarna — PostgREST och
+   edge-funktionen — och sparar den DPAPI-krypterad åt daemonen. Det skriver
+   aldrig ut nyckeln, bara dess form och längd.
+   Visar dashboarden två service role-nycklar (en `sb_secret_…` och en
+   `eyJ…`) klistrar du in **båda**; skriptet säger vilken som duger var.
+2. Öppna **Dashboard → Project Settings → Vault → Add new secret**
+   **Name:** `service_role_key` — exakt så, små bokstäver, understreck
+   **Secret:** den sträng skriptet pekade ut för dörr B
+3. Kör `select public.fbmejl_notis_konfig();` i SQL Editor och läs kvittot
+   nedan.
+
+> ### ⚠️ FÄLLAN SOM MÅSTE VARA STÄNGD
+>
+> **`public.fbmejl_anropsnyckel()` väljer hemligheten `fbmejl_anropsnyckel`
+> FÖRE `service_role_key`.**
+>
+> Ligger det kvar en hemlighet med namnet **`fbmejl_anropsnyckel`** i valvet
+> vinner den — och saknar edge-funktionen då miljövariabeln
+> `FBMEJL_ANROPSNYCKEL` svarar den **401 på en nyckel som ser fullständigt
+> rätt ut i båda ändarna**.
+>
+> Så här ser du det: `nyckel_kalla` i `fbmejl_notis_konfig()` säger
+> `fbmejl_anropsnyckel/valv` i stället för `service_role_key/valv`.
+> Gör den det: **ta bort den hemligheten ur valvet.** Daemonens startprob
+> säger också ifrån om det, i rött.
+
+---
+
+### Plan B — en egen sträng på två ställen
+
+Bara om utgåvorna i dashboarden skiljer sig så att **ingen** av dem klarar
+dörr B ovan. Då sätter du i stället en helt egen slumpad sträng på **två**
+ställen: som hemlighet `FBMEJL_ANROPSNYCKEL` på edge-funktionen, och i valvet
+under namnet `fbmejl_anropsnyckel`. Glider de isär blir det `HTTP 401`.
+
+Fördelen är att en egen sträng inte har någon andra utgåva att förväxlas med.
+Priset är två fält i stället för ett, och att fällan ovan blir aktiv med flit.
+
+#### Plan B, först: hitta på strängen
 
 Vilken lång slumpad sträng som helst duger. Minst **20 tecken**, gärna 40.
 Kortare än 20 räknas inte av edge-funktionen och ger 401.
@@ -287,7 +334,7 @@ Kortare än 20 räknas inte av edge-funktionen och ger 401.
 
 Kopiera resultatet. Det är den enda gången du behöver se det.
 
-#### Fält 1 — hemligheten på edge-funktionen
+#### Plan B, fält 1 — hemligheten på edge-funktionen
 
 1. Öppna **Supabase Dashboard**
 2. Klicka **Edge Functions** i vänstermenyn
@@ -314,7 +361,7 @@ supabase secrets set FBMEJL_ANROPSNYCKEL="samma-strang-som-i-valvet"
 > rulla ut den på nytt enligt steg 2. Får du 401 direkt efter att ha satt
 > hemligheten är det nästan alltid det som saknas.
 
-#### Fält 2 — hemligheten i valvet
+#### Plan B, fält 2 — hemligheten i valvet
 
 1. Öppna **Supabase Dashboard**
 2. Klicka **Project Settings** (kugghjulet längst ner i vänstermenyn)
@@ -337,12 +384,14 @@ och kedjan säger `anropsnyckel saknas` utan att någonting annat är fel.
 Klistrar dashboarden in en radbrytning på slutet gör det ingenting: `btrim()`
 i `fbmejl_valv_las()` tar bort den, av precis det skälet.
 
-> **Vill du hellre använda projektets service role-nyckel?** Det går. Lägg den i
-> valvet under namnet `service_role_key` i stället, och hoppa över fält 1.
-> Funktionen godtar den, men då gäller varningen om de två utgåvorna längst ner
-> — och nyckeln du lägger i valvet måste vara samma utgåva som plattformen
-> injicerar i funktionen. Det är just den osäkerheten den egna strängen är till
-> för att slippa.
+> **Är du här av misstag?** Huvudspåret är `service_role_key` i valvet och
+> ingenting mer — se början av steg 4. Plan B behövs bara när ingen utgåva av
+> service role-nyckeln klarar dörr B i `tools\satt-nyckel.ps1`.
+>
+> Och kom ihåg: sätter du hemligheten `fbmejl_anropsnyckel` i valvet **vinner
+> den över `service_role_key` för alltid**. Byter du senare tillbaka till
+> huvudspåret måste du ta bort den, annars får du 401 på en nyckel som ser
+> rätt ut.
 
 ### Så vet du att det blev rätt
 
@@ -360,9 +409,9 @@ Ska ge, i huvudsak:
   "push_url": "https://livvehyqowmcafnisxho.supabase.co/functions/v1/fbmejl-push",
   "push_url_kalla": "tabell",
   "nyckel_finns": true,
-  "nyckel_kalla": "fbmejl_anropsnyckel/valv",
-  "nyckel_langd": 44,
-  "nyckel_form": "aB3",
+  "nyckel_kalla": "service_role_key/valv",
+  "nyckel_langd": 46,
+  "nyckel_form": "sb_",
   "valv_installerat": true,
   "valv_lasbart": true,
   "pg_net": true,
@@ -377,7 +426,8 @@ nyckeln lämnar aldrig valvet, varken hit eller till en logg.
 
 | Symptom | Betyder |
 |---|---|
-| `"klar": false`, `nyckel_finns: false` | hemligheten saknas eller heter fel i valvet — kolla stavningen `fbmejl_anropsnyckel` |
+| `nyckel_kalla` säger `fbmejl_anropsnyckel/valv` | **FÄLLAN.** En gammal hemlighet med det namnet ligger kvar i valvet och vinner över `service_role_key`. Ta bort den ur valvet, annars 401 på en nyckel som ser rätt ut |
+| `"klar": false`, `nyckel_finns: false` | hemligheten saknas eller heter fel i valvet — kolla stavningen `service_role_key` |
 | `"valv_installerat": false` | tillägget `supabase_vault` är inte påslaget. **Database → Extensions → `supabase_vault` → Enable** |
 | `"valv_lasbart": false` med `valv_fel` satt | valvet finns men går inte att läsa för den roll som äger funktionerna. Kör migrationen igen i SQL-editorn, som `postgres` |
 | `"push_url": null` | migrationen är inte körd, eller så kördes den på ett annat projekt |
@@ -565,17 +615,35 @@ update public.fbmejl_notis_lage
 
 ---
 
-## Steg 6 — ställ om bryggan
+## Steg 6 — starta bryggan
 
-Nu fungerar servern. Kvar är att bryggan slutar skriva rått och börjar anropa
-`fbmejl_ta_emot()` i stället.
+> **KLART SEDAN 2026-08-22.** Daemonen anropar redan `fbmejl_ta_emot` med
+> service_role-nyckeln, ett anrop per svep. Avsnittet nedan står kvar som
+> beskrivning av HUR den gör det, inte som en uppgift.
 
-### Vad som måste ändras
+Ett kommando, en gång i livet:
 
-`tools/brygg-daemon.ps1`, funktionen `Skicka-Rad` (runt rad 1131), skriver i
-dag till `/rest/v1/reports?on_conflict=external_id` med **anon**-nyckeln. Den
-ska i stället samla svepets rader och göra **ett** anrop till
-`/rest/v1/rpc/fbmejl_ta_emot` med **service_role**-nyckeln:
+```powershell
+.\tools\polisvakt-brygga.ps1 -Installera
+```
+
+Den registrerar uppgiften `Polisvakt-brygga` i Schemaläggaren (vid inloggning,
+som dig, ingen admin behövs), startar bryggfönstret och kör daemonen **skarpt**.
+Efter det startar allt av sig självt vid varje inloggning.
+
+Vill du bara köra en gång, utan autostart: `.\tools\polisvakt-brygga.ps1`
+Vill du titta utan att skriva någonstans: lägg till `-Torr`.
+Vill du bara veta om kedjan är hel: `.\tools\brygg-daemon.ps1 -BaraProb`
+
+Daemonen **vägrar starta skarpt** om startproben är röd — ingen nyckel, inga
+mottagare, eller en databas som inte svarar. Den faller med flit inte tillbaka
+till torrkörning: en brygga som tyst slutar skicka är precis det felet hela
+kedjan är byggd för att omöjliggöra.
+
+### Hur skrivningen går till
+
+`Skicka-Omgang` i `tools/brygg-daemon.ps1` samlar svepets rader och gör **ett**
+anrop till `/rest/v1/rpc/fbmejl_ta_emot` med **service_role**-nyckeln:
 
 ```powershell
 $url = $script:SupabaseUrl + '/rest/v1/rpc/fbmejl_ta_emot'
@@ -591,10 +659,11 @@ Tre krav som inte får glida:
 1. **Ett anrop per svep, inte ett per rad.** Buntspärren ger EN notis per
    anrop. Fyra separata anrop ger en notis plus tre varningar som inte hörs
    förrän tio minuter senare, och det syns ingenstans.
-2. **Nyckeln får inte in i repot.** `tools/fbmejl.hemligheter.json` är redan
-   gitignorerad och används redan för IMAP-lösenordet — lägg nyckeln där, i
-   ett eget fält. Lägger du en ny fil måste den läggas till i `.gitignore`
-   **först**. Repot är publikt.
+2. **Nyckeln får inte in i repot.** Den ligger numera i
+   `%LOCALAPPDATA%\Polisvakt\nycklar.xml`, DPAPI-krypterad och låst till ditt
+   konto på den här maskinen — utanför repot och utanför OneDrive. Skrivs dit
+   av `tools\satt-nyckel.ps1`. `tools/fbmejl.hemligheter.json` läses
+   fortfarande som andrahandskälla för bakåtkompatibilitet.
 3. **Logga svaret.** `skapade` och `notis` finns i svaret. En brygga som
    loggar de två talen märker samma dag om notiskedjan slutar fungera. Det
    gjorde ingen förut, och det är hela anledningen till att det här felet fick
@@ -763,10 +832,14 @@ anrop. Ingenting säger att de bara är olika utgåvor av samma behörighet.
 | `supabase/fbmejl.sql` | hela serversidan, idempotent, kör om när som helst |
 | `supabase/migrationer/2026-08-21-brygga-notiskedja.sql` | notiskedjan som delta |
 | `supabase/migrationer/2026-08-21-konfiguration-i-valvet.sql` | konfigurationen ur Vault, utan `alter database` |
+| `supabase/migrationer/2026-08-22-brygga-puls.sql` | bryggans puls + dödmansgreppet (cron var 5:e min) |
 | `supabase/functions/fbmejl-push/index.ts` | edge-funktionen som skickar pushen |
 | `js/sammanfattning.js` | samma mening, byggd på klienten |
 | `js/parser.js` | `SOBRIETY_WORDS` / `SOBRIETY_STAMMAR` — produktregeln |
 | `sw.js` | push-lyssnaren som ritar notisen |
-| `tools/brygg-daemon.ps1` | bryggan som läser gruppen |
+| `tools/brygg-daemon.ps1` | bryggan som läser gruppen, startproben, vakthunden, pulsen |
+| `tools/polisvakt-brygga.ps1` | ETT kommando: fönster + läsning + autostart |
+| `tools/satt-nyckel.ps1` | provar nyckeln mot båda dörrarna och sparar den krypterad |
+| `tools/starta-bryggan.ps1` | ersatt, pekar bara vidare |
 | `docs/NOTISER.md` | pushkedjan i allmänhet, VAPID, körpåminnelsen |
 | `docs/fbmejl.md` | mejlvägen in, kön, tolkaren |

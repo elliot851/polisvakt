@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Provbänk — första starten</title>
+<link rel="stylesheet" href="css/app.css">
+<style>
+  body { overflow: auto; padding: 18px 16px 60px; }
+  h1 { font-size: 20px; }
+  /* Bara bänkens egna rubriker. Utan > skulle stilen läcka in i kortet som
+     platsstart.js ritar, och då provar man bänkens utseende, inte appens. */
+  body > h2 { font-size: 15px; margin-top: 22px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .1em; }
+  .rad { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+  button.p { background: var(--bg-3); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 14px; }
+  pre { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 12.5px; overflow-x: auto; white-space: pre-wrap; }
+  .lampa { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: var(--danger); }
+  .lampa.pa { background: var(--ok); }
+  p.led { color: var(--fg-dim); font-size: 13.5px; }
+</style>
+</head>
+<body>
+
+<h1>Provbänk — första starten</h1>
+<p class="led">
+  Två saker provas här, och båda är osynliga i den vanliga appen: att ljudet
+  faktiskt låses upp av första trycket, och att platsfrågan ställs med en
+  förklaring i stället för av watchPosition vid sidladdning.
+</p>
+
+<h2>Ljudlåset</h2>
+<p class="led">
+  Ladda om sidan och läs raden nedan INNAN du rör skärmen. Den ska säga att
+  ljudet väntar. Efter första trycket, var som helst, ska den slå om till
+  upplåst — utan att du tryckt på någon ljudknapp.
+</p>
+<pre id="las">…</pre>
+<div class="rad">
+  <button class="p" id="bPling">Spela pling</button>
+  <button class="p" id="bTal">Läs upp en varning</button>
+  <button class="p" id="bDemo">Provknappen (demo)</button>
+  <button class="p" id="bAv">Slå av uppläsning och prova igen</button>
+</div>
+<pre id="ljudlogg">—</pre>
+
+<h2>Platsgrinden</h2>
+<p class="led">
+  Grinden ska stå på "vantar" vid en ren första start, och watchPosition ska
+  inte ha körts. Frågan kommer som ett kort längst ner. Knappen nedan glömmer
+  allt appen minns, så du kan spela upp första starten igen.
+</p>
+<pre id="grind">…</pre>
+<div class="rad">
+  <button class="p" id="bGlom">Glöm allt och ladda om</button>
+  <button class="p" id="bNeka">Låtsas att plats nekades</button>
+  <button class="p" id="bSpara">Starta GPS ändå (släpp grinden)</button>
+</div>
+<p class="led">
+  Har du redan svarat på platsfrågan för den här adressen kommer kortet inte
+  igen — webbläsaren frågar bara en gång. Lägg då till <code>?latsas=fraga</code>
+  i adressen: då spelas första starten upp med en påhittad webbläsare som
+  aldrig fått frågan. <code>?latsas=nekad</code> spelar upp nekandet.
+</p>
+
+<!-- Vanligt skript, inte modul: det här måste hinna före importerna nedan. -->
+<script>
+(function () {
+  const latsas = new URLSearchParams(location.search).get('latsas');
+  if (!latsas) return;
+  // Provbänken byter ut webbläsarens svar, inte appens kod. Så går första
+  // starten att spela upp om och om igen på en dator där man redan svarat.
+  Object.defineProperty(navigator, 'permissions', { configurable: true, value: undefined });
+  const nekad = latsas === 'nekad';
+  Object.defineProperty(navigator, 'geolocation', {
+    configurable: true,
+    value: {
+      getCurrentPosition(ok, fel) {
+        setTimeout(() => nekad ? fel({ code: 1 })
+          : ok({ coords: { latitude: 59.61, longitude: 16.55, accuracy: 12 } }), 400);
+      },
+      watchPosition(ok, fel) {
+        setTimeout(() => nekad ? fel({ code: 1 })
+          : ok({ coords: { latitude: 59.61, longitude: 16.55, accuracy: 12, speed: 12, heading: 90 }, timestamp: Date.now() }), 400);
+        return 1;
+      },
+      clearWatch() {},
+    },
+  });
+  try { localStorage.removeItem('pv.behorigheter.v1'); } catch {}
+})();
+</script>
+
+<script type="module">
+import { Speaker, ljudlasStatus, haLjudkontext } from './js/voice.js';
+import { anvandarenHarInteragerat } from './js/ljud.js';
+import { GeoTracker, grindLage, slappFramPlats } from './js/geo.js';
+import * as beh from './js/behorigheter.js';
+// Sist: den startar sig själv och ska få ett färdigt fönster att titta på.
+import './js/platsstart.js';
+
+const talare = new Speaker();
+const spar = new GeoTracker();
+spar.start();               // ska fastna bakom grinden vid en ren första start
+
+const $ = id => document.getElementById(id);
+
+function rita() {
+  const l = ljudlasStatus();
+  $('las').textContent =
+    (l.klart ? '● UPPLÅST' : '○ LÅST') + '  ' + l.text + '\n' +
+    'ljudmotor: ' + (l.ctx ? 'igång' : 'inte igång') +
+    '   röst: ' + (l.rost ? 'upplåst' : 'inte upplåst') +
+    '   tryck: ' + (anvandarenHarInteragerat() ? 'ja' : 'nej') +
+    '   försök: ' + l.forsokt + '   orsak: ' + l.orsak;
+
+  const g = grindLage();
+  $('grind').textContent =
+    'grind: ' + g.lage + '  (' + g.orsak + ')\n' +
+    'väntande spårare: ' + g.vantande + '\n' +
+    'GPS igång: ' + (spar.isTracking ? 'ja' : 'nej') +
+    '   minne: ' + (beh.platsMinne() || '—') +
+    '   frågad förr: ' + (beh.platsFragad() ? 'ja' : 'nej');
+
+  const s = talare.senasteLjud;
+  $('ljudlogg').textContent = s
+    ? 'senaste ljud: ' + s.vad + ' — ' + (s.hordes ? 'HÖRDES' : 'TYST') + ' (' + s.orsak + ')\n' +
+      'tystnader totalt: ' + talare.tystnader
+    : '—';
+}
+setInterval(rita, 300);
+rita();
+
+$('bPling').onclick = () => talare.chime('alert');
+$('bTal').onclick = () => talare.say('Varning. Polis vid Dillos, om 1,2 kilometer klockan 12.', { priority: 2 });
+$('bDemo').onclick = () => { $('ljudlogg').textContent = talare.demo('police'); };
+$('bAv').onclick = () => {
+  talare.enabled = !talare.enabled;
+  $('ljudlogg').textContent = 'uppläsning: ' + (talare.enabled ? 'på' : 'av') + '\n' + talare.demo('police');
+};
+
+$('bGlom').onclick = () => {
+  localStorage.removeItem('pv.behorigheter.v1');
+  location.reload();
+};
+$('bNeka').onclick = () => {
+  // Samma väg som geo.js går när watchPosition svarar med felkod 1.
+  beh.koppla(spar);
+  spar.dispatchEvent(new CustomEvent('error', { detail: { code: 1, message: 'nekad' } }));
+};
+$('bSpara').onclick = () => { slappFramPlats('provbank'); spar.start(); };
+
+// Bekvämlighet i bänken: visa vad som händer i konsolen också.
+window.pv = { talare, spar, beh, ljudlasStatus, haLjudkontext, grindLage };
+</script>
+</body>
+</html>

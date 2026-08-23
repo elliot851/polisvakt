@@ -1,0 +1,417 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mätning: varningen överallt, ljudet, rösten och notisen</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html, body { margin:0; }
+  #matlogg {
+    position:fixed; inset:auto 0 0 0; z-index:2147483000; max-height:46vh; overflow:auto;
+    background:#05080c; color:#cfe0f0; font:12px/1.5 ui-monospace, Menlo, monospace;
+    padding:10px 12px; white-space:pre-wrap; border-top:2px solid #3d9dff;
+  }
+  /* Loggen får aldrig fånga ett tryck: elementFromPoint ska nå appens egna
+     knappar, inte mätbänkens utskrift. */
+  #matlogg { pointer-events:none; }
+  b.ja { color:#2fd07a; } b.nej { color:#ff4d4f; }
+</style>
+
+<!--
+  MÄTBÄNK FÖR "VARNINGEN SKA SYNAS I HELA APPEN".
+
+  Sidan bygger upp appens RIKTIGA dom och stilmall ur index.html och kör
+  sedan appens riktiga moduler. Ingen kopia av någon kodväg finns här — en
+  kopia hade bara bevisat att kopian fungerar.
+
+  PV_INGEN_BOOT hindrar boot(), så inloggning och nätanrop uteblir men allt
+  som ritar och låter finns kvar.
+-->
+
+<div id="matlogg">bygger upp appens dom…</div>
+
+<script>window.PV_INGEN_BOOT = true;</script>
+<script type="module">
+const ut = document.getElementById('matlogg');
+const rader = [];
+const L = (...a) => { rader.push(a.join(' ')); ut.textContent = rader.join('\n'); ut.scrollTop = 1e9; };
+const svar = (t, ok) => `${ok ? 'JA ' : 'NEJ'}  ${t}`;
+
+/* ---- 1. Appens dom och stilmall, ur index.html ---------------------- */
+const html = await (await fetch('./index.html', { cache: 'no-store' })).text();
+const doc = new DOMParser().parseFromString(html, 'text/html');
+for (const n of doc.querySelectorAll('head link[rel="stylesheet"], head style')) {
+  document.head.appendChild(document.importNode(n, true));
+}
+/* Inträdesanimationerna stängs av under mätningen.
+   Ligger fliken i bakgrunden fryser webbläsaren CSS-animationer på sin
+   första bildruta, och .pv-varningsyta hade då mätts på translateY(-100%),
+   alltså 95 px ovanför skärmen. Mätningen ska gälla ytans PLATS, inte hur
+   den flög in. */
+const utanAnimation = document.createElement('style');
+utanAnimation.textContent = '*, *::before, *::after { animation: none !important; transition: none !important; }';
+document.head.appendChild(utanAnimation);
+
+const logg = ut;
+document.body.innerHTML = '';
+document.body.dataset.view = 'map';
+for (const n of [...doc.body.childNodes]) {
+  if (n.nodeName === 'SCRIPT') continue;               // appen startas nedan i stället
+  document.body.appendChild(document.importNode(n, true));
+}
+document.body.appendChild(logg);
+
+/* ---- 2. Krokar, före importen av app.js ----------------------------- */
+const yttringar = [];
+let oscillatorer = 0;
+const notiser = [];
+
+const origSpeak = speechSynthesis.speak.bind(speechSynthesis);
+speechSynthesis.speak = u => { yttringar.push(u?.text ?? ''); return origSpeak(u); };
+
+const AC = window.AudioContext || window.webkitAudioContext;
+const origOsc = AC.prototype.createOscillator;
+AC.prototype.createOscillator = function (...a) { oscillatorer++; return origOsc.apply(this, a); };
+
+/* Notisvägen. Sidan har ingen service worker och kan inte be om tillstånd,
+   så båda ersätts med räknare — det som mäts är att appen FÖRSÖKER, med
+   vilken titel och vilken text. */
+window.Notification = function (titel, val) { notiser.push({ via: 'direkt', titel, ...val }); };
+window.Notification.permission = 'granted';
+const falskReg = { showNotification: (titel, val) => { notiser.push({ via: 'sw', titel, ...val }); } };
+navigator.serviceWorker.getRegistration = () => Promise.resolve(falskReg);
+
+await import('./js/app.js');
+const P = window.polisvakt;
+const IN = P.inkommande;
+
+/* ---- 3. Hjälpare ---------------------------------------------------- */
+const vanta = ms => new Promise(r => setTimeout(r, ms));
+const BURST_MS = 3600;
+const $ = s => document.querySelector(s);
+const rutan = s => { const e = $(s); const r = e && e.getClientRects()[0]; return r ? r : null; };
+const kort = r => r ? `x${Math.round(r.left)},y${Math.round(r.top)} → x${Math.round(r.right)},y${Math.round(r.bottom)}` : 'finns inte';
+const traff = (x, y) => {
+  let e = document.elementFromPoint(x, y);
+  if (!e) return 'ingenting';
+  // Träffar man en svg-ikon är det knappen runt den föraren siktade på.
+  const knapp = e.closest?.('button, a, [role="button"]');
+  if (knapp) e = knapp;
+  const namn = e.id ? '#' + e.id : (typeof e.className === 'string' && e.className) || e.tagName;
+  const txt = (e.getAttribute?.('aria-label') || e.textContent || '').trim();
+  return `${namn}${txt && txt.length < 30 ? ' | ' + txt : ''}`;
+};
+const mitten = r => [Math.round((r.left + r.right) / 2), Math.round((r.top + r.bottom) / 2)];
+
+function vy(namn) {
+  document.body.dataset.view = namn;
+  for (const v of ['map', 'dashcam', 'chatt', 'settings']) {
+    document.getElementById('view-' + v).hidden = v !== namn;
+  }
+}
+
+function tystaRosten() {
+  try { speechSynthesis.cancel(); } catch {}
+  P.speaker.queue.length = 0;
+  P.speaker.speaking = false;
+  P.speaker.current = null;
+}
+const nollstall = () => { yttringar.length = 0; oscillatorer = 0; notiser.length = 0; };
+
+let n = 0;
+const rapport = (extra = {}) => ({
+  id: `mat-${++n}`, type: 'police', source: 'facebook',
+  // Koordinater finns, men GPS-fixen saknas — det är DEN kombinationen som
+  // ger en varning utan avståndssiffra, alltså ägarens uppmätta läge.
+  lat: 59.7150, lon: 16.4090,
+  label: 'Skultuna',
+  note: 'Polisbil står vid Skultuna och kontrollerar farten',
+  createdAt: Date.now() - 60_000, expiresAt: Date.now() + 40 * 60_000,
+  ...extra,
+});
+
+function utgangslage() {
+  tystaRosten();
+  IN.nollstall();
+  P.store.reports.clear();
+  P.engine.reset();
+  P.settings.notiser = null;
+  P.geo.last = null;             // ingen GPS = ingen geokod, ägarens fall
+  IN.omgangar = 2;
+  P.speaker.enabled = true;
+  P.speaker.muteUntil = 0;
+  nollstall();
+}
+
+/* ==================================================================== */
+/* 1. ÄGARENS FALL: geokodlös rapport, ingen GPS                         */
+/* ==================================================================== */
+L('======== 1. Geokodlös rapport utan GPS — pling, röst, yta, notis ========');
+utgangslage();
+vy('map');
+{
+  const r = rapport({ id: 'agaren-1', label: 'Skultuna' });
+  P.store.reports.set(r.id, r);
+  IN.sok();
+  await vanta(BURST_MS);
+
+  const yta = $('#pv-varningsyta');
+  L(svar(`oscillatorer (plinget): ${oscillatorer}`, oscillatorer > 0));
+  L(svar(`yttringar (rösten): ${yttringar.length}`, yttringar.length > 0));
+  L('    sagt: ' + JSON.stringify(yttringar));
+  L(svar(`varningsytan syns: ${yta && !yta.hidden}`, !!yta && !yta.hidden));
+  L('    rubrik: ' + JSON.stringify($('.pv-vy-rubrik')?.textContent));
+  L('    under:  ' + JSON.stringify($('.pv-vy-undertext')?.textContent));
+  L(svar(`notiser: ${notiser.length}`, notiser.length > 0));
+  L('    notis:  ' + JSON.stringify(notiser[0] && { via: notiser[0].via, titel: notiser[0].titel, body: notiser[0].body, silent: notiser[0].silent }));
+  L('');
+}
+
+/* ==================================================================== */
+/* 2. SAMMA VARNING I FYRA VYER                                          */
+/* ==================================================================== */
+L('======== 2. Syns ytan i alla fyra vyer? ========');
+for (const namn of ['map', 'dashcam', 'chatt', 'settings']) {
+  vy(namn);
+  await vanta(30);
+  const yta = $('#pv-varningsyta');
+  const r = yta && yta.getClientRects()[0];
+  const synlig = !!r && r.height > 0 && getComputedStyle(yta).visibility !== 'hidden';
+  L(svar(`vy "${namn}": ytan ${kort(r)} · rubrik ${JSON.stringify($('.pv-vy-rubrik')?.textContent)}`, synlig));
+}
+L('');
+
+/* ==================================================================== */
+/* 3. ÖVERLAPPEN — tar ytan tryck som var på väg någon annanstans?       */
+/* ==================================================================== */
+L('======== 3. Överlapp och träffytor, kartvyn ========');
+vy('map');
+await vanta(60);
+{
+  const yta = rutan('#pv-varningsyta');
+  L('    varningsytan     ' + kort(yta));
+
+  const mute = rutan('#btnMute');
+  L('    #btnMute         ' + kort(mute));
+  if (mute) {
+    const [x, y] = mitten(mute);
+    const t = traff(x, y);
+    L(svar(`elementFromPoint(${x},${y}) = ${t}`, /btnMute|icon-btn/.test(t)));
+  }
+  const topp = rutan('.topp');
+  L('    .topp            ' + kort(topp) + '   (ska ligga under ytan, inte bakom den)');
+  L('    --pv-vy-hojd     ' + getComputedStyle(document.documentElement).getPropertyValue('--pv-vy-hojd'));
+  L(svar(`.topp börjar under ytans underkant`, !!topp && !!yta && topp.top >= yta.bottom - 1));
+
+  /* Bannern sätts upp för hand. Det är inte en kopia av någon kodväg:
+     showAlertBanner() ritar exakt de här två fälten och tar bort hidden, och
+     det som mäts här är vad föraren SER och kan träffa när båda ligger uppe. */
+  const banner = $('#alertBanner');
+  banner.hidden = false;
+  $('#alertTitle').textContent = 'Polis · Erikslund';
+  $('#alertSub').textContent = '1,2 km bort. Polis vid Erikslund.';
+  await vanta(40);
+  L(`    #alertBanner     hidden=${banner.hidden} · ritas=${!!banner.getClientRects().length}`);
+  L(svar('bannern ritas INTE medan ytan lyser, men banner.hidden är kvar false åt renderMorkt()',
+         !banner.getClientRects().length && banner.hidden === false));
+  const kryss = rutan('#alertClose');
+  L('    #alertClose      ' + kort(kryss) + (kryss ? '' : '  (ritas inte alls — kan inte vara en död knapp)'));
+
+  const stang = rutan('.pv-vy-stang');
+  L('    ytans kryss      ' + kort(stang));
+}
+L('');
+
+/* ==================================================================== */
+/* 4. RAPPORTKNAPPARNA OCH RÖSTFEL-STRIMMAN                              */
+/* ==================================================================== */
+L('======== 4. Röst-felstrimman mot kartans fyra rapportknappar ========');
+{
+  // Framkalla strimman skarpt: samma väg som appen, plingvakthunden.
+  P.speaker.chime('alert', { tvinga: true, utanRost: false });
+  await vanta(3600);
+  const strimma = rutan('.pv-rost-fel');
+  L('    strimman         ' + kort(strimma) + (strimma ? '' : '  (kom inte upp)'));
+  const namn = ['Polis', 'Kontroll', 'Civil', 'Tala'];
+  const knappar = [...document.querySelectorAll('#view-map .actions > *')];
+  L('    .actions         ' + knappar.map((k, i) => {
+    const r = k.getClientRects()[0];
+    return `${namn[i] || i}: ${r ? Math.round(r.left) + '–' + Math.round(r.right) : '?'}`;
+  }).join(' · '));
+  const forsta = knappar[0]?.getClientRects()[0];
+  if (forsta) L(`    knapparnas y     ${Math.round(forsta.top)}–${Math.round(forsta.bottom)}`);
+  let allaFria = true;
+  knappar.forEach((k, i) => {
+    const r = k.getClientRects()[0];
+    if (!r) return;
+    const [x, y] = mitten(r);
+    const t = traff(x, y);
+    const fri = !/pv-rost-fel/.test(t);
+    if (!fri) allaFria = false;
+    L(`      ${(namn[i] || i).padEnd(9)} elementFromPoint(${x},${y}) = ${t}`);
+  });
+  L(svar('ingen rapportknapp äts av strimman', allaFria));
+  if (strimma && forsta) {
+    L(svar(`strimman slutar ovanför knapparna (${Math.round(strimma.bottom)} <= ${Math.round(forsta.top)})`,
+           strimma.bottom <= forsta.top + 1));
+  }
+  L('    pointer-events   ' + getComputedStyle($('.pv-rost-fel') || document.body).pointerEvents);
+}
+L('');
+
+/* ==================================================================== */
+/* 5. PLATSREMSAN UNDER YTAN                                             */
+/* ==================================================================== */
+L('======== 5. platsstart.js remsa medan ytan lyser ========');
+{
+  // Remsan ritas av platsstart.js först när tillståndet är känt. Vi bygger en
+  // nod med samma klass för att mäta CSS-regeln, inte modulens beslut.
+  let remsa = $('.pv-ps-remsa');
+  if (!remsa) {
+    remsa = document.createElement('div');
+    remsa.className = 'pv-ps-remsa';
+    remsa.innerHTML = '<div class="pv-ps-text"><b>Plats är avstängd</b><span>Polisvakt kan inte varna för något framför dig.</span></div><button type="button" class="pv-ps-knapp">Slå på</button>';
+    document.body.appendChild(remsa);
+    await import('./js/platsstart.js');       // drar in stilmallen
+    await vanta(60);
+  }
+  L('    ytan uppe:       ' + (!$('#pv-varningsyta')?.hidden));
+  L('    .pv-ps-remsa     ' + kort(rutan('.pv-ps-remsa')));
+  L(svar('remsan viker undan medan ytan lyser', !$('.pv-ps-remsa')?.getClientRects().length));
+}
+L('');
+
+/* ==================================================================== */
+/* 6. YTAN SLÄCKS — ALLT KOMMER TILLBAKA                                 */
+/* ==================================================================== */
+L('======== 6. Efter tryck på ytans kryss ========');
+{
+  L('    före trycket:    banner.hidden=' + $('#alertBanner').hidden);
+  $('.pv-vy-stang')?.click();
+  await vanta(80);
+  L(svar('ytan är borta', !!$('#pv-varningsyta')?.hidden));
+  L(svar('body.pv-vy-uppe är borttagen', !document.body.classList.contains('pv-vy-uppe')));
+  L('    efter trycket:   banner.hidden=' + $('#alertBanner').hidden);
+  L(svar('krysset stängde BANNERN också — den poppar inte fram i stället',
+         $('#alertBanner').hidden === true && !$('#alertBanner').getClientRects().length));
+  L('    .topp            ' + kort(rutan('.topp')) + '   (tillbaka i sitt vanliga läge)');
+  L('    platsremsan      ' + kort(rutan('.pv-ps-remsa')) + '   (tillbaka)');
+  const mute = rutan('#btnMute');
+  const t = mute ? traff(...mitten(mute)) : 'ingen knapp';
+  L(`    #btnMute-träff   ${t}`);
+  L('    OBS: platsremsan (z890) täcker #btnMute när plats är avstängd. Det är');
+  L('         ett äldre överlapp i platsstart.js, inte något ytan orsakar — se');
+  L('         mätning 3 där ytan lyser och knappen ÄR träffbar.');
+}
+L('');
+
+/* ==================================================================== */
+/* 7. KÖORDNINGEN: rösten och rubriken ska säga SAMMA rapport            */
+/* ==================================================================== */
+L('======== 7. Tre geokodlösa rapporter i en burst ========');
+{
+  utgangslage();
+  vy('map');
+  const namn = ['Alfa', 'Beta', 'Gamma'];
+  // Alfa äldst (5 min), Gamma nyast (1 min) — samma uppställning som fyndet.
+  namn.forEach((namnet, i) => {
+    const r = rapport({
+      id: 'burst-' + namnet, label: namnet,
+      lat: 59.60 + i / 20, lon: 16.40 + i / 20,
+      note: `Polisbil står vid ${namnet} och kontrollerar farten`,
+      createdAt: Date.now() - (5 - i * 2) * 60_000,
+    });
+    P.store.reports.set(r.id, r);
+  });
+  IN.sok();
+  await vanta(BURST_MS);
+  const sagt = yttringar[0] || '';
+  const rubrik = $('.pv-vy-rubrik')?.textContent || '';
+  L('    rösten sa:       ' + JSON.stringify(sagt));
+  L('    rubriken visar:  ' + JSON.stringify(rubrik));
+  L('    "Även:"-raden:   ' + JSON.stringify($('.pv-vy-fler')?.textContent));
+  L('    notisens titel:  ' + JSON.stringify(notiser[0]?.titel));
+  const nyaste = 'Gamma';
+  L(svar(`rösten tog nyaste (${nyaste})`, sagt.includes(nyaste)));
+  L(svar(`rubriken visar SAMMA rapport som rösten`, rubrik.includes(nyaste)));
+  L(svar(`notisen visar SAMMA rapport`, String(notiser[0]?.titel || '').includes(nyaste)));
+}
+L('');
+
+/* ==================================================================== */
+/* 8. NYKTERHETSREGELN — spärren gäller på alla fyra kanaler             */
+/* ==================================================================== */
+L('======== 8. Nykterhetskontroll: får aldrig synas, höras eller notifieras ========');
+{
+  utgangslage();
+  $('.pv-vy-stang')?.click();       // släck ytan från förra mätningen
+  await vanta(60);
+  L('    utgångsläge:     ytan hidden=' + $('#pv-varningsyta')?.hidden);
+  vy('map');
+  const r = rapport({
+    id: 'nykter-1', label: 'Nykterhetskontroll Hälla',
+    note: 'Nykterhetskontroll vid Hälla, blås i röret',
+  });
+  P.store.reports.set(r.id, r);
+  IN.sok();
+  await vanta(BURST_MS);
+  L(svar(`inga yttringar: ${yttringar.length}`, yttringar.length === 0));
+  L(svar(`inga notiser: ${notiser.length}`, notiser.length === 0));
+  L(svar(`ytan tänds inte: hidden=${$('#pv-varningsyta')?.hidden}`, $('#pv-varningsyta')?.hidden !== false));
+}
+L('');
+
+/* ==================================================================== */
+/* 9. RÖSTENS BOKFÖRING — läckan, plingvakten och det tysta yttrandet    */
+/* ==================================================================== */
+L('======== 9. voice.js: räknaren, plingvakten och onend-utan-onstart ========');
+{
+  const V = await import('./js/voice.js');
+
+  /* 9a. Läckan: stop() mitt i ett yttrande som aldrig svarar. */
+  tystaRosten();
+  const talare = new V.Speaker();
+  speechSynthesis.speak = () => {};                     // motorn svarar tyst
+  talare.say('Polis vid Skultuna.', { priority: 1, ganger: 1 });
+  await vanta(60);
+  L('    före stop():     iLuften=' + V.ljudlasStatus().iLuften + ' speaking=' + talare.speaking);
+  talare.stop();
+  await vanta(60);
+  const st = V.ljudlasStatus();
+  L('    efter stop():    iLuften=' + st.iLuften + ' speaking=' + talare.speaking);
+  L(svar('räknaren balanserad (läckte förut: 1)', st.iLuften === 0));
+  L(svar('appen påstår inte att den talar', !talare.speaking && talare.queue.length === 0));
+
+  /* 9b. onend utan onstart får inte bokföras som 'ok'. */
+  speechSynthesis.speak = u => { setTimeout(() => u.onend?.(), 5); };   // slutar utan att börja
+  const talare2 = new V.Speaker();
+  talare2.say('Polis vid Skultuna, om niohundra meter.', { priority: 1, ganger: 1 });
+  await vanta(200);
+  const d = talare2.ljudDiagnos();
+  L('    senaste ljud:    ' + JSON.stringify(d.senaste));
+  L(svar("orsak är inte 'ok'", d.senaste?.orsak === 'slutade-utan-att-borja'));
+  L(svar('hordes=false', d.senaste?.hordes === false));
+  L(svar('tystnaden räknas: ' + d.tystnader, d.tystnader > 0));
+  L(svar("röstläget är 'nekad', inte 'klar': " + d.rost.lage, d.rost.lage === 'nekad'));
+
+  /* 9c. Plingvakten måste kunna larma även efter att rösten fungerat. */
+  speechSynthesis.speak = u => { setTimeout(() => u.onstart?.(), 5); setTimeout(() => u.onend?.(), 900); };
+  const talare3 = new V.Speaker();
+  talare3.say('Polis vid Hälla, om sexhundra meter.', { priority: 1, ganger: 1 });
+  await vanta(1100);
+  L('    efter riktigt yttrande: rostLage=' + V.rostHalsa().lage);
+  // Göm en gammal strimma i stället för att ta bort noden: voice.js håller en
+  // referens till den, och en borttagen nod hade gjort mätningen blind.
+  const gammal = document.querySelector('.pv-rost-fel');
+  if (gammal) gammal.hidden = true;
+  speechSynthesis.speak = () => {};                     // nu tystnar motorn
+  talare3.chime('alert', { tvinga: true });
+  await vanta(3600);
+  const strimma = document.querySelector('.pv-rost-fel');
+  L('    strimman:        ' + (strimma ? JSON.stringify(strimma.querySelector('.pv-rost-fel-text').textContent) + ' hidden=' + strimma.hidden : 'byggdes aldrig'));
+  L(svar('föraren FÅR se att plinget stod ensamt', !!strimma && strimma.hidden === false));
+  L('    historik:        ' + JSON.stringify(talare3.ljudDiagnos().historik.map(h => h.vad + ':' + h.orsak)));
+
+  speechSynthesis.speak = origSpeak;
+}
+L('');
+L('======== klart ========');
+</script>

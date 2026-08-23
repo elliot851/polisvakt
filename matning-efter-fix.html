@@ -1,0 +1,218 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mätning: hörs den inkommande rapporten?</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { background:#0b0f14; color:#eef4fa; font:14px/1.55 system-ui, sans-serif; padding:16px 18px 60px; }
+  h1 { font-size:19px; margin:0 0 6px; }
+  p.sub { color:#93a4b6; font-size:13px; max-width:70ch; }
+  pre { background:#101822; padding:12px; border:1px solid #1f2b38; white-space:pre-wrap;
+        border-radius:8px; font-size:12.5px; color:#cfe0f0; }
+  .pv-ps-remsa { display:none !important; }
+  b.ja { color:#2fd07a; } b.nej { color:#ff4d4f; }
+</style>
+
+<h1>Mätning: hörs den inkommande rapporten?</h1>
+<p class="sub">
+  Samma mätmetod som felrapporten den 23 augusti 2026 använde: krokar på
+  <code>window.speechSynthesis.speak</code> och
+  <code>AudioContext.prototype.createOscillator</code>. Rösten stubbas alltså
+  <b>inte</b> — det är de riktiga anropen som räknas, hela vägen genom
+  <code>js/app.js</code>. Felrapporten mätte noll yttringar och noll
+  oscillatorer för tre rapporter som nådde appen.
+</p>
+<pre id="ut">kör…</pre>
+
+<script>window.PV_INGEN_BOOT = true;</script>
+<script type="module">
+const ut = document.getElementById('ut');
+const rader = [];
+const L = (...a) => { rader.push(a.join(' ')); ut.textContent = rader.join('\n'); };
+
+/* Lagringen lånas, den tas inte över. Se inkommande-test.html. */
+const LANADE = ['pv.mine.v1', 'pv.inkommande.spar.v1', 'pv.reports.v1'];
+const original = Object.fromEntries(LANADE.map(k => [k, localStorage.getItem(k)]));
+const lamnaTillbaka = () => {
+  for (const k of LANADE) {
+    if (original[k] == null) localStorage.removeItem(k);
+    else localStorage.setItem(k, original[k]);
+  }
+};
+addEventListener('beforeunload', lamnaTillbaka);
+
+/* ---- KROKARNA, före importen av app.js ------------------------------ */
+const yttringar = [];
+let oscillatorer = 0;
+
+const origSpeak = speechSynthesis.speak.bind(speechSynthesis);
+speechSynthesis.speak = u => { yttringar.push(u?.text ?? ''); return origSpeak(u); };
+
+const AC = window.AudioContext || window.webkitAudioContext;
+const origOsc = AC.prototype.createOscillator;
+AC.prototype.createOscillator = function (...a) { oscillatorer++; return origOsc.apply(this, a); };
+
+await import('./js/app.js');
+const P = window.polisvakt;
+const IN = P.inkommande;
+
+P.speaker.enabled = true;
+P.speaker.unmute?.();
+
+/*
+ * Väntetiden är tilltagen med flit.
+ *
+ * Kedjan lägger 1500 ms på att samla bursten och 380 ms mellan pling och
+ * röst. Ligger fliken i bakgrunden klämmer webbläsaren dessutom ihop timers
+ * till som minst en sekund, och då hinner en mätning som väntar 2,2 sekunder
+ * läsa av innan rösten ens startat — det ser ut som tystnad och är det inte.
+ */
+const BURST_MS = 3600;
+const vanta = ms => new Promise(r => setTimeout(r, ms));
+const nollstall = () => { yttringar.length = 0; oscillatorer = 0; };
+
+/*
+ * Rösten städas mellan mätningarna.
+ *
+ * En riktig mening tar tio sekunder att säga, och kön i voice.js släpper inte
+ * fram nästa förrän den är klar. Utan städning mäter mätning 3 att mätning 2
+ * fortfarande pratar.
+ */
+function tystaRosten() {
+  try { speechSynthesis.cancel(); } catch {}
+  P.speaker.queue.length = 0;
+  P.speaker.speaking = false;
+  P.speaker.current = null;
+}
+
+const MIG = { lat: 59.6099, lon: 16.5448 };
+const RAP = { lat: 59.6180, lon: 16.5448 };          // ~900 m norrut
+const fix = speedKmh => ({
+  lat: MIG.lat, lon: MIG.lon, accuracy: 8,
+  speedKmh, moving: speedKmh > 3, headingSmoothed: 0, ts: Date.now(),
+});
+let n = 0;
+const rapport = (extra = {}) => ({
+  id: `mat-${++n}`, type: 'police', lat: RAP.lat, lon: RAP.lon,
+  label: 'Halla', source: 'facebook',
+  note: 'Polisbil står vid infarten till Halla och kontrollerar farten',
+  createdAt: Date.now() - 60_000, expiresAt: Date.now() + 40 * 60_000,
+  ...extra,
+});
+
+function utgangslage(speedKmh = null) {
+  tystaRosten();
+  IN.nollstall();
+  P.store.reports.clear();
+  P.engine.reset();
+  P.settings.notiser = null;
+  P.geo.last = speedKmh == null ? null : fix(speedKmh);
+  IN.omgangar = 2;
+  nollstall();
+}
+
+const dom = v => v ? '<b class="ja">' : '<b class="nej">';
+const svar = (t, ok) => `${ok ? '✔' : '✘'} ${t}`;
+
+/* ===== 1. FELRAPPORTENS EGET FALL: tre rapporter, ingen GPS, ingen rutt ===== */
+{
+  utgangslage(null);
+  for (let i = 0; i < 3; i++) P.store.reports.set(`f${i}`, rapport({
+    id: `f${i}`, lat: 59.60 + i / 20, lon: 16.40 + i / 20,
+    label: ['Halla', 'Dingtuna', 'Tillberga'][i],
+    note: `Polisbil står vid ${['Halla', 'Dingtuna', 'Tillberga'][i]} och kontrollerar farten`,
+  }));
+  IN.sok();
+  await vanta(BURST_MS);                                  // 1500 ms burst + 380 ms röst
+  L('--- 1. Felrapportens fall: tre Facebook-rapporter, ingen GPS, ingen rutt ---');
+  L(svar(`yttringar: ${yttringar.length} (felrapporten mätte 0)`, yttringar.length > 0));
+  L(svar(`oscillatorer: ${oscillatorer} (felrapporten mätte 0)`, oscillatorer > 0));
+  L('sagt:', JSON.stringify(yttringar));
+  L('spår:', IN.spar().map(p => p.orsak).join(' | '));
+  L('');
+}
+
+/* ===== 2. FYNDET: lyft rapport, bilen KÖR, 900 m bort ===== */
+{
+  utgangslage(50);
+  const r = rapport();
+  P.store.reports.set(r.id, r);
+  const { lista, lyfta } = IN.flode();
+  const h = lista.find(x => x.id === r.id);
+  const forutsager = P.engine.agerFaran(h, P.geo.position, h?.klusterIds);
+  IN.sok();
+  await vanta(BURST_MS);
+  L('--- 2. Kvalitetslyft rapport, bil i 50 km/h, 900 m bort ---');
+  L(`lyft: ${lyfta.has(r.id)} · poäng: ${h?.bedomning?.poang} · behandling: ${h?.bedomning?.behandling}`);
+  L(`agerFaran (motorns förutsägelse om en fara den aldrig ser): ${forutsager}`);
+  L(`engine.harVarnat (frågan som faktiskt ställs): ${P.engine.harVarnat(h, h?.klusterIds)}`);
+  L(svar(`yttringar: ${yttringar.length} (före fixen: 0)`, yttringar.length > 0));
+  L(svar(`oscillatorer: ${oscillatorer}`, oscillatorer > 0));
+  L('sagt:', JSON.stringify(yttringar));
+  L('');
+}
+
+/* ===== 3. DUBBELTALET: rödljuskön ===== */
+{
+  utgangslage(0);
+  const r = rapport({ geokod: 'gps', geokodTyp: 'punkt' });   // hamnar i forRost
+  P.store.reports.set(r.id, r);
+  IN.sok();
+  await vanta(BURST_MS);
+  const efterInkommande = yttringar.length;
+
+  P.geo.last = fix(20);                                       // grönt ljus
+  const { lista, lyfta } = IN.flode();
+  const motornsLista = P.routeGuide.filterHazards(lista.filter(x => !lyfta.has(x.id)));
+  const fired = P.engine.evaluate(P.geo.position, motornsLista);
+  await vanta(600);
+
+  L('--- 3. Rödljuskön: inkommande säger, sedan börjar bilen rulla ---');
+  L(`rapporten ligger i motorns lista: ${motornsLista.some(x => x.id === r.id)}`);
+  L(`inkommande sade: ${efterInkommande}`);
+  L(svar(`motorn triggade efteråt: ${fired.length} (före fixen: 1 = dubbeltal)`, fired.length === 0));
+  L(svar(`totalt antal yttringar om samma patrull: ${yttringar.length}`, yttringar.length === 1));
+  L('sagt:', JSON.stringify(yttringar));
+  L('');
+}
+
+/* ===== 4. RUTTVAKTENS KÄLLA ===== */
+{
+  utgangslage(50);
+  const u = rapport({ label: 'Nykterhetskontroll Halla',
+                      note: 'Nykterhetskontroll vid Halla, blås i röret' });
+  P.store.reports.set(u.id, u);
+  const iStore = P.store.active().some(x => x.id === u.id);
+  const iRuttvakten = (P.routeGuide.haemtaFaror(Date.now()) || []).some(x => x.id === u.id);
+  L('--- 4. Nykterhetsflaggad rapport: vad ser ruttvakten? ---');
+  L(`ligger i store.active(): ${iStore}`);
+  L(svar(`ligger i ruttvaktens flöde: ${iRuttvakten} (före fixen: true)`, iRuttvakten === false));
+  L('');
+}
+
+/* ===== 5. UTGÅNGSLÄGET SVÄLJER INTE DET FÄRSKA ===== */
+{
+  tystaRosten();
+  IN.nollstall();
+  P.store.reports.clear();
+  P.engine.reset();
+  P.settings.notiser = null;
+  P.geo.last = null;
+  nollstall();
+  // Omgång 1 = tom lagring. Sedan anländer en rapport som är en minut gammal.
+  IN.sok();
+  P.store.reports.set('sen', rapport({ id: 'sen', label: 'Skultuna',
+    note: 'Polisbil står vid infarten till Skultuna och kontrollerar farten' }));
+  IN.sok();
+  await vanta(BURST_MS);
+  L('--- 5. En minut gammal rapport som kommer med i första hämtningen ---');
+  L(`omgångar: ${IN.omgangar} · utgångsläget bokfört: ${IN.utgangslagetBokfort}`);
+  L(svar(`yttringar: ${yttringar.length} (före fixen: 0, permanent svald)`, yttringar.length > 0));
+  L('spår:', IN.spar().map(p => p.orsak).join(' | '));
+  L('');
+}
+
+L('KLART');
+IN.nollstall();
+P.store.reports.clear();
+lamnaTillbaka();
+</script>

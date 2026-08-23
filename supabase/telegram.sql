@@ -138,8 +138,15 @@ set search_path = pg_catalog, pg_temp as $$
   -- Håll synkad med fbmejl_ar_nykterhetskontroll och js/parser.js. Se den
   -- längre motiveringen i supabase/fbmejl.sql — kort: narkotikaorden
   -- saknades helt och bindestreck bröt de delade formerna.
+  --
+  -- drog+razzia/polis/piket/hund/sök är med av samma skäl som i
+  -- SOBRIETY_HEAD: de fyra sista leden är TYPORD i js/parser.js, så
+  -- "drograzzia" och "drogpolisen" blev annars publicerade varningar med
+  -- notis. Bara som PAR med "drog", aldrig ensamma — en polisrazzia utan
+  -- droger är en riktig rapport som ska fram. 'nyckter' är felstavningen av
+  -- 'nykter' och är inget svenskt ord.
   select lower(coalesce(p_text, '')) ~
-    '(nykter|alkohol|alkotest|promille|rattfyll|utandnings|sållnings|sallnings|narkotika|narko|droger|drogsök|drogsok|drogkontroll|drogtest|drog[ -]?kontroll|drog[ -]?test|drog[ -]?koll|blåser|blåsa|blåste|blaser|blåsning)';
+    '(nykter|nyckter|alkohol|alkotest|promille|rattfyll|utandnings|sållnings|sallnings|narkotika|narko|droger|drogsök|drogsok|drogkontroll|drogtest|drog[ -]?kontroll|drog[ -]?test|drog[ -]?koll|drog[ -]?razzia|drog[ -]?polis|drog[ -]?piket|drog[ -]?hund|drog[ -]?sök|drog[ -]?sok|blåser|blåsa|blåste|blaser|blåsning)';
 $$;
 
 -- ============================ TA EMOT ================================

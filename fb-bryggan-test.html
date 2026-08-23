@@ -121,18 +121,32 @@ const NYK = (id, grupp = GRUPP) => `g:${grupp}|id:${id}`;
  * bounded=1 respekteras — utom när ett testfall uttryckligen vill se vad som
  * händer när servern struntar i det.
  */
+/*
+ * SVARSFORMEN ÄR DEN RIKTIGA, och det är inte pynt.
+ *
+ * Raden bar tidigare bara lat/lon/name. Sedan 2026-08-23 läser bryggan
+ * category, type, addresstype, osm_type och boundingbox ur svaret för att
+ * sätta geokod_typ och geokod_radius_m (se typFranSvar och radieFranSvar).
+ * En stubbe utan de fälten hade gett 'okand' på varenda plats och gjort varje
+ * grönt test grönt av fel skäl — precis det den här filen varnar för längre
+ * upp. Formerna nedan är de MÄTTA svaren från 2026-08-23.
+ */
+const VAG = { category: 'highway', type: 'residential', addresstype: 'road', osm_type: 'way' };
+const STADSDEL = { category: 'place', type: 'suburb', addresstype: 'suburb', osm_type: 'node' };
+const KOPCENTRUM = { category: 'shop', type: 'mall', addresstype: 'shop', osm_type: 'way' };
+
 const PLATSER = [
-  ['sergels torg', { lat: 59.3326, lon: 18.0649, namn: 'Sergels torg' }],   // Stockholm, utanför
-  ['stora gatan',  { lat: 59.6099, lon: 16.5427, namn: 'Stora gatan' }],
-  ['erikslund',    { lat: 59.6094, lon: 16.4879, namn: 'Erikslund' }],
-  ['vasagatan',    { lat: 59.6103, lon: 16.5448, namn: 'Vasagatan' }],
-  ['bäckby',       { lat: 59.6039, lon: 16.4838, namn: 'Bäckby' }],
-  ['avenyn',       { lat: 57.7011, lon: 11.9746, namn: 'Avenyn' }],         // Göteborg, utanför
-  ['hälla',        { lat: 59.6238, lon: 16.6113, namn: 'Hälla' }],
+  ['sergels torg', { lat: 59.3326, lon: 18.0649, namn: 'Sergels torg', ...VAG }],   // Stockholm, utanför
+  ['stora gatan',  { lat: 59.6099, lon: 16.5427, namn: 'Stora gatan', ...VAG }],
+  ['erikslund',    { lat: 59.6094, lon: 16.4879, namn: 'Erikslund', ...KOPCENTRUM }],
+  ['vasagatan',    { lat: 59.6103, lon: 16.5448, namn: 'Vasagatan', ...VAG }],
+  ['bäckby',       { lat: 59.6039, lon: 16.4838, namn: 'Bäckby', ...STADSDEL }],
+  ['avenyn',       { lat: 57.7011, lon: 11.9746, namn: 'Avenyn', ...VAG }],         // Göteborg, utanför
+  ['hälla',        { lat: 59.6238, lon: 16.6113, namn: 'Hälla', ...STADSDEL }],
   // Samma gatunamn i två städer — det vanligaste sättet en flergruppsbrygga
   // kan hamna fel. Frågan bär ortsnamnet, så den längre raden matchar först.
-  ['storgatan, stockholm', { lat: 59.3350, lon: 18.0600, namn: 'Storgatan' }],
-  ['storgatan',            { lat: 59.6100, lon: 16.5400, namn: 'Storgatan' }],
+  ['storgatan, stockholm', { lat: 59.3350, lon: 18.0600, namn: 'Storgatan', ...VAG }],
+  ['storgatan',            { lat: 59.6100, lon: 16.5400, namn: 'Storgatan', ...VAG }],
 ].sort((a, b) => b[0].length - a[0].length);
 
 /*
@@ -391,7 +405,17 @@ function bygg({
       if (!traff) return svar([]);
       const t = traff[1];
       if (bounded && !INOM(t.lat, t.lon, ruta) && !struntaIBounded) return svar([]);
-      return svar([{ lat: String(t.lat), lon: String(t.lon), name: t.namn }]);
+      // Boundingboxen speglar osm_type: en NOD får uppslagstjänstens påhittade
+      // ruta (±0,02°), en WAY sitt eget avsnitt. radieFranSvar ska kunna skilja
+      // dem åt — det är hela poängen med att rutan bara får BREDDA.
+      const d = t.osm_type === 'node' ? 0.02 : 0.0008;
+      return svar([{
+        lat: String(t.lat), lon: String(t.lon), name: t.namn,
+        category: t.category, type: t.type, addresstype: t.addresstype,
+        osm_type: t.osm_type,
+        boundingbox: [String(t.lat - d), String(t.lat + d),
+                      String(t.lon - d), String(t.lon + d)],
+      }]);
     }
     if (url.includes('supabase')) {
       supabase.push(anrop);
@@ -1194,12 +1218,23 @@ await T('parsern i bryggan svarar likadant som js/parser.js', () => {
     'Någon som vet om polisen står kvar vid Erikslund?',
     'Sållnings prov och poliskontroll vid Bäckby',
     'Snuten står vid rondellen norrut',
+    // Platsregeln. Den läser gruppens konvention bara när flaggan är på, och
+    // texterna finns här för att pröva att kopian svarar likadant i BÅDA
+    // lägena — det är i det avslagna läget rösten och appens knappar står.
+    'Irstamacken',
+    'Dillos norrgående 11.15',
+    'Vallby vid entrén till Golfklubb.',
+    'Jag åker till Erikslund nu',
+    'Är någon vid Vallby nu',
   ];
   const platt = r => r ? [r.intent, r.reason || '', r.type || '', r.place || '',
                           Math.round((r.confidence || 0) * 100)].join('|') : 'null';
   for (const t of prov) {
-    const a = platt(p(t)), b = platt(parser.parseReportText(t));
-    if (a !== b) return `"${t}" — brygga ${a} men parser.js ${b}`;
+    for (const val of [undefined, { platsKonvention: true }]) {
+      const a = platt(p(t, val)), b = platt(parser.parseReportText(t, val));
+      const lage = val ? 'gruppläge' : 'utan platskonvention';
+      if (a !== b) return `"${t}" (${lage}) — brygga ${a} men parser.js ${b}`;
+    }
   }
   return true;
 });
@@ -1381,6 +1416,46 @@ await T('plats i Västmanland hamnar på kartan med rätt koordinat', async () =
     || `${r.lat},${r.lon}`;
 });
 
+/*
+ * KRAV 1, SISTA LEDET: koordinaten ska inte bara vara rätt, den ska VETA hur
+ * rätt den är.
+ *
+ * Fram till 2026-08-23 skrev bryggan geokod_typ='vag' för varje aliasträff
+ * och ingen radie alls. 250 m gällde alltså lika mycket för en pizzeria som
+ * för en stadsdel, och js/kvalitet.js räknade positionsosäkerheten på en
+ * konstant — vilket betyder att platsHopplosOverM (3 000 m) aldrig kunde
+ * utlösa hur fel nålen än stod.
+ */
+await T('geokod_typ och geokod_radius_m kommer ur svaret, inte ur frågan', async () => {
+  // 'erikslund' är en aliasnyckel vars söksträng svarar med ett köpcentrum
+  // (way/shop/mall). Frågan säger ingenting om det; svaret gör det.
+  const m = await skanna({ groupId: GRUPP, poster: [POLIS] });
+  const r = m.supabase[0] && m.supabase[0].kropp; m.stang();
+  if (!r) return 'ingen rapport';
+  if (r.geokod !== 'alias') return `geokod blev ${r.geokod}`;
+  if (r.geokod_typ !== 'punkt') return `geokod_typ blev ${r.geokod_typ}, inte svarets`;
+  // Way med ±0,0008° ruta ≈ 100 m diagonal/2, alltså under punktgolvet 15 m?
+  // Nej — den är större, och radien ska då komma från rutan och inte från
+  // tabellen. Det är hela poängen med att rutan får BREDDA.
+  if (!Number.isFinite(r.geokod_radius_m)) return 'ingen radie skickades';
+  if (r.geokod_radius_m <= 15) return `radien blev ${r.geokod_radius_m} m, alltså tabellens golv`;
+  return true;
+});
+
+await T('en stadsdelsnod ger stadsdel och nodens påhittade ruta breddar inte', async () => {
+  const m = await skanna({
+    groupId: GRUPP, poster: [{ text: 'Poliskontroll vid Bäckby', id: '970101' }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp; m.stang();
+  if (!r) return 'ingen rapport';
+  if (r.geokod_typ !== 'stadsdel') return `geokod_typ blev ${r.geokod_typ}`;
+  // ±0,02° är uppslagstjänstens påhittade nodruta, alltså cirka 2 500 m halv
+  // diagonal. Den får INTE bli radien — då hade en stadsdel sett bredare ut
+  // än en kommun, och skillnaden hade berott på hur OSM modellerar noden.
+  if (r.geokod_radius_m !== 900) return `radien blev ${r.geokod_radius_m} m, väntade tabellens 900`;
+  return true;
+});
+
 await T('Stockholm: Nominatim svarar tomt (bounded) och inget skickas', async () => {
   const m = await skanna({
     groupId: GRUPP,
@@ -1530,9 +1605,13 @@ anm('"Facebook" på egen rad är inte påhittat: behållarens innerText på den 
     'spann. En reservläsning som inte kastar dem matar parsern med Metas skräp.');
 
 await T('gammalt inlägg blir ingen varning', async () => {
+  // Sex timmar, inte tre. Gränsen är visningstiden (VISNING_MINUTER i
+  // js/store.js och i bryggan), och den är fyra timmar sedan ägaren ville se
+  // dagens varningar ligga kvar. Ett tre timmar gammalt inlägg läggs numera
+  // ut — som en blek nål som varken läses upp eller notifieras.
   const m = await skanna({
     groupId: GRUPP,
-    poster: [{ text: 'Polis står vid Erikslund', id: '960003', alder: '3 tim' }],
+    poster: [{ text: 'Polis står vid Erikslund', id: '960003', alder: '6 tim' }],
   });
   const n = m.supabase.length; m.stang();
   return n === 0 || 'skickade en varning som redan gått ut';
@@ -1545,8 +1624,11 @@ await T('färskt inlägg får rätt livslängd', async () => {
   });
   const r = m.supabase[0] && m.supabase[0].kropp; m.stang();
   if (!r) return 'ingen rapport';
+  // expires_at bär VISNINGSTIDEN. Att en trafikkontroll "gäller i 60 minuter"
+  // är numera graderingens sak (TTL_MINUTES), inte radens: efter en timme
+  // slutar appen tro på den, men nålen ligger kvar till fyra.
   const minuter = Math.round((r.expires_at - r.created_at) / 60000);
-  return minuter === 60 || `livslängd ${minuter} min, väntade 60 för kontroll`;
+  return minuter === 240 || `livslängd ${minuter} min, väntade 240 (visningstiden)`;
 });
 
 await T('"borta"-inlägg skapar ingen ny varning', async () => {
@@ -1925,16 +2007,18 @@ await T('ett inlägg sett för 40 minuter sedan behåller sin ålder över omlad
 });
 
 await T('en observation äldre än varningens livslängd ger ingen varning', async () => {
-  // Polisvarningar lever 45 minuter. Ett inlägg bryggan först såg för två
-  // timmar sedan är förbrukat, oavsett att åldern är känd.
-  const sett = Date.now() - 120 * 60000;
+  // Polisvarningar SYNS i fyra timmar (VISNING_MINUTER). Ett inlägg bryggan
+  // först såg för fem timmar sedan är förbrukat även som kartnål, oavsett
+  // att åldern är känd. Att appen slutar TRO på det långt tidigare — efter
+  // 45 minuter, TTL_MINUTES — sköts av graderingen, inte av bryggan.
+  const sett = Date.now() - 300 * 60000;
   const m = await skanna({
     groupId: GRUPP, hoverForTime: false,
     cache: fsCache({ [NYK('980008')]: { f: sett, s: sett, k: 0 } }),
     poster: [{ text: 'Polis står vid Erikslund', id: '980008', tid: 'sprite' }],
   });
   const n = m.supabase.length; m.stang();
-  return n === 0 || `${n} varningar från en två timmar gammal observation`;
+  return n === 0 || `${n} varningar från en fem timmar gammal observation`;
 });
 
 await T('Facebooks egen tid vinner över observationen', async () => {
@@ -2078,6 +2162,381 @@ await T('trasig minneslista kraschar inte bryggan', async () => {
   m.stang();
   if (!s) return 'bryggan startade inte';
   return !!lista[NYK('980016')] || 'listan byggdes inte om efter skräpet';
+});
+
+/* =================================================================== */
+G('Två flikar delar localStorage');
+
+anm('Sedan brygg-daemonen läser flera grupper står två flikar på facebook.com ' +
+    'samtidigt, en per grupp, med var sin injicerad kopia av bryggkoden. De delar ' +
+    'localStorage. Skrev de hela objektet rakt av vann sista skrivningen och raderade ' +
+    'den andra flikens rader — och en tappad rad registreras om, vilket kan ge ett ' +
+    'gammalt inlägg en färsk observerad ålder. Nycklarna bär gruppen sedan 2.3, så en ' +
+    'hopslagning är entydig.');
+
+/*
+ * HUR KAPPLÖPNINGEN MODELLERAS.
+ *
+ * Det räcker inte att låta två miljöer skriva efter varandra: den andra
+ * skulle då läsa den förstas rader vid uppstart och skriva tillbaka dem, och
+ * testet vore grönt även med den gamla, förlustbringande skrivningen.
+ *
+ * Den riktiga kapplöpningen är att den ANDRA fliken skriver EFTER att den
+ * första laddat sin lista. Den förstas minne vet då ingenting om den nya
+ * raden, och en skrivning som inte slår ihop raderar den. Här görs det genom
+ * att lägga in den andra flikens rad i lagringen efter bygg(), men före
+ * svepet som utlöser skrivningen.
+ */
+const annanFlikSkriver = (m, rader) => m.lagring.set(FS_KEY, JSON.stringify(rader));
+
+await T('flik B raderar inte flik A:s rader ur först-sedd', async () => {
+  const nu = Date.now();
+  const aNyckel = NYK('990101', GRUPP);       // den andra flikens rad
+  const bNyckel = NYK('990102', STHLM);       // den här flikens egen
+
+  const m = bygg({
+    groupIds: TVA, hoverForTime: false, sokvag: `/groups/${STHLM}/`, domGrupp: STHLM,
+    poster: [{ text: 'Polis vid Sergels torg', id: '990102', tid: 'sprite' }],
+  });
+  annanFlikSkriver(m, { [aNyckel]: { f: nu - 60000, s: nu - 60000, k: 0 } });
+  await m.handtag.scanNow();
+  const nycklar = Object.keys(fsLast(m));
+  m.stang();
+
+  if (!nycklar.includes(aNyckel)) {
+    return 'flik B raderade flik A:s rad. Kvar: ' + JSON.stringify(nycklar);
+  }
+  if (!nycklar.includes(bNyckel)) return 'flik B:s egen rad saknas: ' + JSON.stringify(nycklar);
+  return true;
+});
+
+await T('en hopslagning tar den TIDIGASTE observationen, aldrig den senaste', async () => {
+  /*
+   * Om två flikar sett samma inlägg är den tidigaste observationen den sanna.
+   * Att ta den senaste hade gjort ett gammalt inlägg yngre än det är, alltså
+   * exakt det fel först-sedd-mekaniken finns för.
+   */
+  const gammalt = Date.now() - 3 * 3600 * 1000;
+  const nyckel = NYK('990103', GRUPP);
+  const m = bygg({
+    groupIds: TVA, hoverForTime: false, sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP,
+    poster: [{ text: 'Polis står vid Erikslund', id: '990103', tid: 'sprite' }],
+  });
+  annanFlikSkriver(m, { [nyckel]: { f: gammalt, s: gammalt, k: 0 } });
+  await m.handtag.scanNow();
+  const rad = fsLast(m)[nyckel];
+  m.stang();
+  if (!rad) return 'raden försvann';
+  if (rad.f !== gammalt) return `f flyttades från ${gammalt} till ${rad.f} — inlägget blev yngre`;
+  return true;
+});
+
+await T('säger EN flik att åldern är okänd gäller det, även om den andra tror annat', async () => {
+  /*
+   * k = 1 betyder "sedd under ett kalibreringssvep, åldern är okänd". Den
+   * uppgiften får aldrig kunna raderas av den andra flikens rad, för då kan
+   * ett gammalt inlägg få en färsk ålder och skickas som en ny varning.
+   *
+   * Här tror DEN HÄR fliken att åldern är känd (k = 0 i dess egen lista) och
+   * den andra fliken säger k = 1. Det försiktiga svaret vinner.
+   */
+  const nu = Date.now();
+  const nyckel = NYK('990104', GRUPP);
+  const m = bygg({
+    groupIds: TVA, hoverForTime: false, sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP,
+    cache: { [FS_KEY]: JSON.stringify({ [nyckel]: { f: nu - 5000, s: nu - 5000, k: 0 } }) },
+    poster: [{ text: 'Polis står vid Erikslund', id: '990104', tid: 'sprite' }],
+  });
+  annanFlikSkriver(m, { [nyckel]: { f: nu - 5000, s: nu - 4000, k: 1 } });
+  await m.handtag.scanNow();
+  const rad = fsLast(m)[nyckel];
+  m.stang();
+  if (!rad) return 'raden försvann';
+  if (rad.k !== 1) return 'kalibreringsmärket försvann: ' + JSON.stringify(rad);
+  return true;
+});
+
+/* =================================================================== */
+G('Produktregeln gäller varje grupp lika');
+
+anm('Regeln har läckt en gång live: fem av nio drogkontroller blev polisrapporter på ' +
+    'kartan. En andra grupp är en andra väg in, och ordlistan sitter i sex kopior som ' +
+    'driver isär. Varje fall nedan körs i BÅDA grupperna — en spärr som råkar hålla i ' +
+    'den ena bevisar ingenting om den andra.');
+
+const NYKTRA = [
+  'Nykterhetskontroll vid Sergels torg',
+  'Polisen har narkotikakontroll på Stora gatan',
+  'De blåser alla vid Erikslund',
+  'drog-kontroll vid Slussen',
+  'alkoholtest vid rondellen',
+  'blaser i vasteras',
+];
+
+for (const grupp of [{ id: GRUPP, namn: 'Västerås' }, { id: STHLM, namn: 'Stockholm' }]) {
+  await T(`nykterhets- och drogkontroller skickas aldrig ur ${grupp.namn}`, async () => {
+    let nr = 970000;
+    for (const text of NYKTRA) {
+      const m = await skanna({
+        groupIds: TVA, sokvag: `/groups/${grupp.id}/`, domGrupp: grupp.id,
+        poster: [{ text, id: String(++nr) }],
+      });
+      const n = m.natverk.length; m.stang();
+      // Inte ens ett UPPSLAG får göras: parsern vägrar före geokodningen,
+      // så en vägrad text lämnar aldrig sidan i någon form.
+      if (n !== 0) return `"${text}" gav ${n} nätanrop i ${grupp.namn}`;
+    }
+    return true;
+  });
+
+  await T(`en vanlig poliskontroll går fortfarande fram ur ${grupp.namn}`, async () => {
+    // Motprovet. En spärr som sväljer allt är också en trasig spärr.
+    const plats = grupp.id === GRUPP ? 'Erikslund' : 'Sergels torg';
+    const m = await skanna({
+      groupIds: TVA, sokvag: `/groups/${grupp.id}/`, domGrupp: grupp.id,
+      poster: [{ text: 'Polis står vid ' + plats, id: '971000' }],
+    });
+    const n = m.supabase.length; m.stang();
+    return n === 1 || `skickade ${n} ur ${grupp.namn}`;
+  });
+}
+
+await T('samma nykterhetskontroll i båda grupperna ger noll rapporter totalt', async () => {
+  // Det farliga fallet i en flergruppsbrygga: dedupnyckeln bär gruppen, så
+  // samma text i två grupper är TVÅ händelser. Är de två händelserna två
+  // chanser att läcka måste båda stoppas var för sig.
+  const text = 'Nykterhetskontroll vid Storgatan';
+  const m = bygg({ groupIds: TVA, sokvag: `/groups/${GRUPP}/`, domGrupp: GRUPP,
+                   poster: [{ text }] });
+  await m.handtag.scanNow();
+  m.rensaFlodet();
+  m.navigera(`/groups/${STHLM}/`);
+  m.laggTill({ text, grupp: STHLM });
+  await m.handtag.scanNow();
+  const n = m.natverk.length; m.stang();
+  return n === 0 || `${n} nätanrop`;
+});
+
+/* =================================================================== */
+G('En grupplista, två läsare');
+
+anm('CONFIG.groupIds i tools/fb-bridge.user.js är sanningen om vilka grupper som ' +
+    'läses. TVÅ program tolkar den raden: användarskriptet självt, i JavaScript, och ' +
+    'tools/brygg-daemon.ps1, i PowerShell. Går tolkningarna isär läser de olika listor ' +
+    'och ingen av dem säger till. Fallen nedan kör daemonens regler i JavaScript mot ' +
+    'samma text och kräver samma svar. Motsvarande prov på PowerShell-sidan: ' +
+    'brygg-daemon.ps1 -ProvaGrupper.');
+
+/*
+ * Daemonens tolkare, återskapad i JavaScript.
+ *
+ * Den gör exakt det Rensa-JsKommentarer + Plocka-Grupplista + Plocka-Grupper
+ * gör i brygg-daemon.ps1: stryker kommentarer utan att röra strängar, klipper
+ * ut arrayen genom att räkna klamrar, och plockar fälten ur varje objekt med
+ * regex. Skiljer den sig från JS egen tolkning av samma text är det ett fel i
+ * daemonen — eller i filens form.
+ */
+function daemonensTolkning(kalla) {
+  let ut = '', i = 0, strang = '';
+  while (i < kalla.length) {
+    const c = kalla[i];
+    if (strang) {
+      ut += c;
+      if (c === '\\' && i + 1 < kalla.length) { ut += kalla[i + 1]; i += 2; continue; }
+      if (c === strang) strang = '';
+      i++; continue;
+    }
+    if (c === "'" || c === '"') { strang = c; ut += c; i++; continue; }
+    if (c === '/' && kalla[i + 1] === '/') { while (i < kalla.length && kalla[i] !== '\n') i++; continue; }
+    if (c === '/' && kalla[i + 1] === '*') {
+      i += 2;
+      while (i + 1 < kalla.length && !(kalla[i] === '*' && kalla[i + 1] === '/')) i++;
+      i += 2; continue;
+    }
+    ut += c; i++;
+  }
+
+  const m = /groupIds\s*:\s*\[/.exec(ut);
+  if (!m) return null;
+  let djup = 1, j = m.index + m[0].length;
+  strang = '';
+  const start = j;
+  while (j < ut.length) {
+    const c = ut[j];
+    if (strang) {
+      if (c === '\\') { j += 2; continue; }
+      if (c === strang) strang = '';
+      j++; continue;
+    }
+    if (c === "'" || c === '"') { strang = c; j++; continue; }
+    if (c === '[' || c === '{') djup++;
+    else if (c === ']' || c === '}') { djup--; if (!djup) break; }
+    j++;
+  }
+  const inre = ut.slice(start, j);
+
+  const falt = (rad, namn) => {
+    const r = new RegExp(namn + '\\s*:\\s*(?:\'((?:[^\'\\\\]|\\\\.)*)\'|"((?:[^"\\\\]|\\\\.)*)")');
+    const t = r.exec(rad);
+    if (!t) return '';
+    return (t[1] !== undefined ? t[1] : t[2]).replace(/\\(["'\\/])/g, '$1');
+  };
+
+  return [...inre.matchAll(/\{[^{}]*\}/g)].map(o => {
+    const rad = o[0];
+    const ruta = /ruta\s*:\s*\[([^\]]*)\]/.exec(rad);
+    return {
+      id: falt(rad, 'id'),
+      namn: falt(rad, 'namn'),
+      ort: falt(rad, 'ort'),
+      omrade: falt(rad, 'omrade'),
+      ruta: ruta ? ruta[1].split(',').map(s => Number(s.trim())).filter(Number.isFinite) : null,
+      notis: !/notis\s*:\s*false/.test(rad),
+    };
+  });
+}
+
+/**
+ * Var i källkoden groupIds-arrayen börjar och slutar.
+ *
+ * Klamrarna räknas, strängar och kommentarer hoppas över. En sökning efter
+ * första "]," hade slutat mitt i den första gruppens ruta — den fällan
+ * kostade en röd rad här innan den här funktionen fanns.
+ */
+function grupplistaGranser(kalla) {
+  const m = /groupIds\s*:\s*\[/.exec(kalla);
+  if (!m) return null;
+  let djup = 1, j = m.index + m[0].length, strang = '';
+  const start = j;
+  while (j < kalla.length) {
+    const c = kalla[j];
+    if (strang) {
+      if (c === '\\') { j += 2; continue; }
+      if (c === strang) strang = '';
+      j++; continue;
+    }
+    if (c === "'" || c === '"') { strang = c; j++; continue; }
+    // Kommentarer hoppas över så att en klammer inuti dem inte räknas.
+    if (c === '/' && kalla[j + 1] === '/') { while (j < kalla.length && kalla[j] !== '\n') j++; continue; }
+    if (c === '/' && kalla[j + 1] === '*') {
+      j += 2;
+      while (j + 1 < kalla.length && !(kalla[j] === '*' && kalla[j + 1] === '/')) j++;
+      j += 2; continue;
+    }
+    if (c === '[' || c === '{') djup++;
+    else if (c === ']' || c === '}') { djup--; if (!djup) break; }
+    j++;
+  }
+  return djup === 0 ? { start, slut: j } : null;
+}
+
+/** JS egen tolkning av samma array — facit. */
+function jsTolkning(kalla) {
+  const g = grupplistaGranser(kalla);
+  if (!g) return null;
+  return new Function('return [' + kalla.slice(g.start, g.slut) + ']')();
+}
+
+await T('de två tolkarna läser samma grupper ur den riktiga filen', () => {
+  const ps = daemonensTolkning(KALLA);
+  const js = jsTolkning(KALLA);
+  if (!ps || !js) return 'hittade ingen groupIds-lista i filen';
+  if (ps.length !== js.length) {
+    return `daemonen läser ${ps.length} grupper, JS läser ${js.length}`;
+  }
+  for (let i = 0; i < js.length; i++) {
+    if (ps[i].id !== js[i].id) return `rad ${i}: ${ps[i].id} mot ${js[i].id}`;
+    if (ps[i].namn !== (js[i].namn || '')) return `rad ${i}: namnet blev "${ps[i].namn}"`;
+    if (ps[i].ort !== (js[i].ort || '')) return `rad ${i}: orten blev "${ps[i].ort}"`;
+    if ((ps[i].ruta || []).join() !== (js[i].ruta || []).join()) {
+      return `rad ${i}: rutan blev ${JSON.stringify(ps[i].ruta)} mot ${JSON.stringify(js[i].ruta)}`;
+    }
+    const jsNotis = (js[i].notis === undefined || js[i].notis === null) ? true : !!js[i].notis;
+    if (ps[i].notis !== jsNotis) return `rad ${i}: notis blev ${ps[i].notis} mot ${jsNotis}`;
+  }
+  return true;
+});
+
+await T('utkommenterade grupper räknas inte som anslutna av någon av dem', () => {
+  // Stockholmsraderna ligger färdigskrivna men bortkommenterade i filen.
+  // Läses de som anslutna öppnar daemonen flikar mot grupper ägaren inte gått
+  // med i, och vakthunden larmar om något som aldrig var påslaget.
+  for (const [namn, lista] of [['daemonen', daemonensTolkning(KALLA)], ['JS', jsTolkning(KALLA)]]) {
+    for (const g of lista) {
+      if (g.id === '563061233834062' || g.id === '280649102036931') {
+        return `${namn} läste den utkommenterade gruppen ${g.id} som ansluten`;
+      }
+    }
+  }
+  return true;
+});
+
+await T('Stockholmsraderna ligger färdiga i filen och går att slå på', () => {
+  /*
+   * Ägaren ska koppla in Stockholm genom att ta bort kommentarstecknen på ETT
+   * block. Då måste blocket vara komplett och rätt redan nu. Testet slår på
+   * dem i en KOPIA av källkoden — filen rörs inte — och kontrollerar att det
+   * som kommer ut är två giltiga grupper med Stockholms ruta och notis av.
+   */
+  const g = grupplistaGranser(KALLA);
+  if (!g) return 'ingen groupIds-lista';
+  // Avkommentera raderna inuti listan, precis som ägaren skulle göra.
+  const fore = KALLA.slice(0, g.start);
+  const block = KALLA.slice(g.start, g.slut);
+  const efter = KALLA.slice(g.slut);
+  const pa = block.replace(/^(\s*)\/\/ (\{|\s*[a-zA-Z]+:|\},)/gm, '$1$2');
+  if (pa === block) return 'hittade inga utkommenterade rader att slå på';
+
+  const lista = jsTolkning(fore + pa + efter);
+  const sthlm = lista.filter(g => g.id === '563061233834062' || g.id === '280649102036931');
+  if (sthlm.length !== 2) {
+    return 'fick ' + sthlm.length + ' Stockholmsgrupper: ' + JSON.stringify(lista.map(g => g.id));
+  }
+  for (const g of sthlm) {
+    if (!Array.isArray(g.ruta) || g.ruta.length !== 4) return g.id + ': ingen ruta';
+    if (!(g.ruta[0] < g.ruta[2] && g.ruta[1] < g.ruta[3])) return g.id + ': vänd ruta';
+    if (!g.ort || !g.namn) return g.id + ': saknar ort eller namn';
+    // En Stockholmsruta ska innehålla Sergels torg och INTE Erikslund.
+    if (!INOM(59.3326, 18.0649, g.ruta)) return g.id + ': Sergels torg ligger utanför rutan';
+    if (INOM(59.6094, 16.4879, g.ruta)) return g.id + ': Erikslund ligger INNE i rutan';
+    if (g.notis !== false) return g.id + ': saknar notis: false';
+  }
+  return true;
+});
+
+await T('en påslagen Stockholmsgrupp startar bryggan och läser Stockholm', async () => {
+  // Samma två grupper som skulle bli följden av att avkommentera, men körda
+  // genom bryggans egen normaliseraGrupper i stället för mot filen.
+  const sthlmSkarp = {
+    id: '563061233834062', namn: 'Poliskontroller Stockholm',
+    ort: 'Stockholm', omrade: 'Stockholms län',
+    ruta: [17.20, 58.80, 19.30, 60.20], notis: false,
+  };
+  const m = await skanna({
+    groupIds: [VASTERAS_GRUPP, sthlmSkarp],
+    sokvag: '/groups/563061233834062/', domGrupp: '563061233834062',
+    poster: [{ text: 'Poliskontroll vid Sergels torg', id: '972001' }],
+  });
+  const r = m.supabase[0] && m.supabase[0].kropp;
+  const grupper = m.handtag.grupper();
+  m.stang();
+  if (grupper.length !== 2) return 'fick ' + grupper.length + ' grupper';
+  if (!r) return 'ingen rapport ur Stockholmsgruppen';
+  return (Math.abs(r.lat - 59.3326) < 0.001 && Math.abs(r.lon - 18.0649) < 0.001)
+    || `hamnade på ${r.lat},${r.lon}`;
+});
+
+await T('notis: false bärs med genom normaliseringen, och saknad notis är true', async () => {
+  const m = bygg({
+    groupIds: [VASTERAS_GRUPP, { ...STHLM_GRUPP, notis: false }],
+    poster: [],
+  });
+  const g = m.handtag.grupper(); m.stang();
+  const vast = g.find(x => x.id === GRUPP);
+  const sthlm = g.find(x => x.id === STHLM);
+  if (!vast || !sthlm) return 'grupperna kom inte fram';
+  if (vast.notis !== true) return 'en saknad notis tystade Västerås: ' + vast.notis;
+  return sthlm.notis === false || 'notis: false gick förlorad: ' + sthlm.notis;
 });
 
 /* =================================================================== */

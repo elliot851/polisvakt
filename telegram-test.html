@@ -68,6 +68,11 @@ async function T(namn, fn) {
 /* =================================================================== */
 const tg = await import('./js/telegram.js');
 const kvalitet = await import('./js/kvalitet.js');
+// Visningstiden hämtas i stället för att skrivas av. Testerna nedan mätte
+// förut mot 45 och 60 hårdkodade minuter, alltså mot en kopia av ett tal —
+// och en kopia i ett test är värst av alla: den går sönder när talet ändras
+// och ser då ut som en regression i koden i stället för i testet.
+const { visningMinuter } = await import('./js/store.js');
 
 const NU = Date.UTC(2026, 7, 20, 12, 0, 0);      // fast klocka i alla tester
 const CHAT = -1001234567890;
@@ -166,12 +171,14 @@ await T('"Polis står vid Erikslund" blir en polisrapport på rätt plats', asyn
     || `fick ${JSON.stringify(r)}`;
 });
 
-await T('trafikkontroll blir typ control och lever 60 minuter', async () => {
+await T('trafikkontroll blir typ control och syns hela visningstiden', async () => {
   const geo = geoStub();
   const s = await tg.bearbeta([inlagg('Trafikkontroll på Björnövägen', { at: NU })],
                               { geokoda: geo, nu: NU });
   const r = s.rapporter[0];
-  return (r?.type === 'control' && r.expires_at - r.created_at === 60 * 60000)
+  // expires_at är visningstiden, inte trovärdighetstiden. Att kontrollen
+  // "lever 60 minuter" är numera en fråga för graderingen, inte för raden.
+  return (r?.type === 'control' && r.expires_at - r.created_at === visningMinuter('control') * 60000)
     || `fick ${r?.type}, ${((r?.expires_at - r?.created_at) / 60000)} min`;
 });
 
@@ -180,13 +187,16 @@ await T('rapporten gäller från när inlägget skrevs, inte från när vi läst
   const geo = geoStub();
   const s = await tg.bearbeta([inlagg('Polis vid Hälla', { at: skrivet })], { geokoda: geo, nu: NU });
   const r = s.rapporter[0];
-  return (r.created_at === skrivet && r.expires_at === skrivet + 45 * 60000)
+  return (r.created_at === skrivet && r.expires_at === skrivet + visningMinuter('police') * 60000)
     || `created_at ${new Date(r.created_at).toISOString()}`;
 });
 
 await T('ett för gammalt inlägg läggs aldrig ut', async () => {
   const geo = geoStub();
-  const s = await tg.bearbeta([inlagg('Polis vid Hälla', { at: NU - 3 * 3600 * 1000 })],
+  // Fem timmar. Gränsen följer visningstiden, som är fyra — ett tre timmar
+  // gammalt inlägg är numera för gammalt för att SÄGAS men inte för att SES,
+  // och det testas på annat håll. Här prövas bara att det finns en gräns.
+  const s = await tg.bearbeta([inlagg('Polis vid Hälla', { at: NU - 5 * 3600 * 1000 })],
                               { geokoda: geo, nu: NU });
   return (s.skapade === 0 && s.bortsorterade[tg.SKAL.FOR_GAMMALT] === 1)
     || `skapade ${s.skapade}, ${JSON.stringify(s.bortsorterade)}`;

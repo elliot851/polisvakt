@@ -79,7 +79,7 @@ function Kor-Cdp {
 $flik = Hamta-Flik -Port $Port
 if (-not $flik) {
   Write-Host 'Hittar ingen gruppflik pa felsokningsporten.' -ForegroundColor Red
-  Write-Host 'Starta bryggfonstret forst:  .\tools\starta-bryggan.ps1'
+  Write-Host 'Starta bryggan forst:  .\tools\polisvakt-brygga.ps1'
   exit 1
 }
 Write-Host "Flik: $($flik.url)"

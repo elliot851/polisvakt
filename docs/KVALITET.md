@@ -59,9 +59,25 @@ mer statistisk ut utan att bli mer sann — se avsnitt 7.
 |---|---|---|
 | `app` | **0,62** | Ett knapptryck i appen bär ett underförstått "jag är här och ser det nu". Positionen är telefonens egen. |
 | `voice` | **0,56** | Samma sak plus ett taltolkningssteg som kan höra fel, och ofta en geokodning. |
-| `facebook` | **0,42** | Okänd författare, okänd tidpunkt, geokodad plats. Tre osäkerheter på en gång. |
-| `import` | **0,42** | Som ovan. |
+| `facebook` | **0,46** | Okänd författare. Se nedan. |
+| `import` | **0,42** | Okänd författare, okänd tidpunkt, ogranskad geokodning. Tre osäkerheter på en gång. |
 | okänd | **0,45** | Vet vi inte vägen in vet vi inget alls. |
+
+**Varför `facebook` flyttades från 0,42 till 0,46 (2026-08-23).** Talet 0,42
+motiverades med tre okända: författare, tidpunkt och geokodning. Två av dem är
+inte längre okända. Tidpunkten mäts — `createdAt` är inläggets egen
+tidsstämpel, inte sveptidpunkten (`observeradTid` i `tools/fb-bridge.user.js`).
+Geokodningen granskas — stadsspärren kastar en stad som svar på ett vägnamn,
+och `geokod_typ` och `geokod_radius_m` läses ur svaret i stället för att gissas
+ur frågan (avsnitt 2.5 och 3). Kvar av motiveringen är den okända författaren,
+och det är skälet till att talet fortfarande ligger klart under `app` och
+`voice`.
+
+Det MÄTTA skälet: med 0,42 landade en aliasgeokodad grupprapport på 0,44 mot
+hedgningsgränsen 0,48 och var alltså tyst utom under sina första minuter. Hela
+tjänsten bygger på just de rapporterna. `import` rördes inte — den vägen är en
+bulkinläsning utan tidsstämpel och utan granskat svar, alltså precis det 0,42
+en gång beskrev.
 
 ### 2.2 Rapportörens historia
 
@@ -120,20 +136,97 @@ Två separata bidrag: hur positionen togs fram, och hur precist svaret blev.
 |---|---|---|---|---|
 | `gps` egen position | **+0,10** | | `punkt` | +0,04 |
 | `karta` utpekad | **+0,08** | | `adress` | +0,02 |
-| `learned` inlärd plats | **+0,05** | | `vag` | 0 |
-| `alias` / `cache` | +0,02 | | `stadsdel` | **−0,10** |
-| `nominatim` | 0 | | `ort` | **−0,22** |
-| okänd | −0,15 | | okänd | −0,06 |
+| `alias` handprovad söksträng | **+0,06** | | `vag` | 0 |
+| `learned` inlärd plats | +0,05 | | `stadsdel` | 0 |
+| `nominatim` / `cache` | +0,04 | | `ort` | **−0,22** |
+| okänd | −0,15 | | `led` genomfartsväg | **−0,22** |
+| | | | okänd | −0,10 |
+
+**Stegen är ordnade efter hur mycket mänsklig kontroll som ligger bakom
+koordinaten.** `gps` och `karta`: föraren var där eller pekade själv. `alias`:
+en människa har skrivit söksträngen, ställt den till OSM och LÄST svaret innan
+raden lades in i `data/aliases.vasteras.json`. `learned`: föraren pekade ut
+platsen en gång. `nominatim`: ingen människa har sett svaret, men koden
+granskar det.
+
+**`alias` lyftes från 0,02 (2026-08-23).** Med 0,02 blev en aliasrad
+0,42 + 0,02 + 0 = 0,44 och tystnade, medan samma rad utan alias fick 0,42.
+Skillnaden mellan att höras och att tiga låg alltså på två hundradelar och
+avgjordes av om någon råkat skriva in namnet i en lista. Se mätningen i
+avsnitt 2.5.1: efter ändringen hamnar aliasraden och nominatimraden på SAMMA
+sida om hedgningsgränsen för varje geokodtyp. Listan avgör inte längre om
+föraren får höra något — den avgör bara hur säkert det sägs.
+
+**`nominatim` lyftes från 0 till 0,04** därför att ordet betyder något annat
+nu. Det var ett ogranskat genomsläpp av rad ett i svaret. Numera fälls svaret
+av stadsspärren om det är en stad eller en kommun när frågan inte var ett
+ortnamn, av områdeskontrollen om koordinaten ligger utanför gruppens ruta, och
+typen och radien läses ur svaret i stället för ur frågan. `cache` är samma sak
+en gång till och har samma tal.
 
 **−0,22 för ortsnivå** är modellens hårdaste enskilda avdrag och finns för ett
 enda fall: "polis vid Drottninggatan" som geokodas till kommunens mittpunkt.
 Ett ortsnamn pekar på en kommun, inte på en väg, och en varning för en kommun
 är ingen varning. Tillsammans med den grova standardradien (2 500 m, avsnitt
-3) faller sådana rapporter genom hela skalan och hamnar på `undanhåll`.
+3) faller sådana rapporter genom hela skalan och hamnar på tyst kartnål.
 
-`nominatim` står på noll och inte på minus: tjänsten är utmärkt på adresser
-och sämre på "rondellen vid ICA". Det är upplösningen som avgör, inte
-leverantören.
+**`led` är ny och gäller genomfartsvägarna** — E18, riksväg 66, riksväg 56.
+Radien 8 000 m gör jobbet: rapporten passerar 3 000-metersgränsen och
+undanhålls. Avdraget finns för att en rapport som bara säger "E18" inte ska
+kunna klättra tillbaka på bekräftelser.
+
+**`stadsdel` gick från −0,10 till 0, och det är inte en uppmjukning.**
+Tabellen hade två jobb och gjorde dem otydligt: den sa både *hur brett* svaret
+pekar och *hur troligt* det är att det pekar på rätt sak. Bredden mäts numera
+ur svaret (avsnitt 3) och verkar genom positionsosäkerheten — den hedgar
+platsen till "i området kring Bäckby", den tystar över 1 200 m och den slänger
+nålen över 3 000 m. Att också dra av på poängen för samma sak var att räkna
+bredden två gånger, och det var det som tystade varenda stadsdelsrapport i
+gruppen. Kvar här är bara frågan om rätt objekt, och "Bäckby" är nästan alltid
+rätt stadsdel. `ort` behåller sitt avdrag därför att det handlar om något
+annat: ett kommunnamn i ett länsflöde är lika ofta ett samtalsämne som en
+observation.
+
+**`okand` sänktes från −0,06 till −0,10.** Med det höjda geokoddeltat hamnade
+en färsk okänd träff på 0,49 och blev hörbar under sina första minuter. En
+rapport där vi inte vet vad svaret pekar på ska inte sägas högt i någon ålder.
+
+### 2.5.1 Mätt poängfördelning för verkliga gruppinlägg
+
+Mätt 2026-08-23 med `bedomRapport()` på en ensam `facebook`-rad från bryggan
+(`confirms: 1`, ingen `parser_confidence`, ingen `fordrojning_s` — se
+`tools/fb-bridge.user.js`). Typ och radie är de värden OSM faktiskt svarade
+med samma dag, för de platser gruppen skriver om.
+
+| Inlägg | geokod | typ | radie | 0 min | 20 min | 60 min |
+|---|---|---|---|---|---|---|
+| Polis vid Dillos | alias | punkt | 15 m | 0,61 hedga | 0,56 hedga | 0,38 tyst |
+| Polis vid Erikslund | alias | punkt | 301 m | 0,61 hedga | 0,56 hedga | 0,38 tyst |
+| Polis vid Vallby golfklubb | alias | punkt | 990 m | 0,61 hedga | 0,56 hedga | 0,38 tyst |
+| Polis vid Hälla | alias | stadsdel | 900 m | 0,57 hedga | 0,52 hedga | 0,34 tyst |
+| Polis vid Norrleden | alias | vag | 250 m | 0,57 hedga | 0,52 hedga | 0,34 tyst |
+| Polis vid Hantverkargatan | nominatim | vag | 250 m | 0,55 hedga | 0,50 hedga | 0,32 tyst |
+| okänd plats | nominatim | okand | 1 200 m | 0,45 tyst | 0,40 tyst | 0,22 tyst |
+| Polis i Sala | alias | ort | 2 500 m | 0,35 tyst | 0,30 tyst | 0,12 tyst |
+| Polis på E18 österut | alias | led | 8 000 m | 0,35 undanhåll | 0,30 undanhåll | 0,12 undanhåll |
+
+Och steget `alias` → `nominatim` vid samma geokodtyp och noll ålder, alltså
+frågan "avgör listan om föraren hör något?":
+
+| Typ | alias | nominatim | Samma behandling? |
+|---|---|---|---|
+| punkt | 0,61 hedga | 0,59 hedga | ja |
+| adress | 0,59 hedga | 0,57 hedga | ja |
+| vag | 0,57 hedga | 0,55 hedga | ja |
+| stadsdel | 0,57 hedga | 0,55 hedga | ja |
+| ort | 0,35 tyst | 0,33 tyst | ja |
+| led | 0,35 undanhåll | 0,33 undanhåll | ja |
+| okänd | 0,47 tyst | 0,45 tyst | ja |
+
+Det är kravet på talen, och det är därför de ser ut som de gör: steget mellan
+en handprovad och en ogranskad söksträng får synas i poängen, men det får inte
+ensamt vända behandlingen. Ändras något av talen i 2.1 eller 2.5 ska den här
+tabellen mätas om.
 
 ### 2.6 Texttolkningens egen bedömning
 
@@ -213,6 +306,33 @@ det inte, och vissa saker ska inte gå att kompensera bort.
 | Ensam rapport | **0,88** | En persons ord är en persons ord. Skalan ska inte kunna påstå något annat, hur bra allt annat än ser ut. Taket ligger med flit **över** annonseringsgränsen — ensamma rapporter ska fortfarande läsas upp, bara inte räknas som bevisade. |
 | Dålig historik | 0,65 | Aldrig konstaterande formulering från någon som regelbundet har fel. |
 | Två eller fler nedröstningar | **0,45** | Två personer som säger "det står ingen där" väger tyngre än en som säger att det gör det — de har sett samma plats senare i tiden. Taket ligger under hedgningsgränsen, så rapporten sägs inte högt alls. |
+| Inlägget var bara ett platsnamn | **nivå LÅG → tyst** | Se nedan. Ett tak på NIVÅN, inte på poängen: rapporten får synas på kartan men aldrig läsas upp. |
+
+#### Platsen ensam: syns, hörs inte
+
+`parser.js` läser ett kort gruppinlägg som bara pekar ut ett känt platsnamn
+("Bäckby", "Dillos norrgående 11.15") som en polisobservation. Det är
+gruppens egen konvention — man skriver enbart när man ser en poliskontroll —
+och den är oftast rätt. Men **ingen har skrivit vad som står där**, vi läser
+in det, och två saker följer:
+
+1. Står ordet "nykterhetskontroll" i BILDEN eller i kommentarerna innehåller
+   texten ingenting för nykterhetsspärren att gå på. Läser appen då upp
+   "Polis vid Bäckby" har den varnat för en nykterhetskontroll — den enda
+   regel i projektet som aldrig får brytas.
+2. Även utan nykterhet är tolkningen svagare än allt annat: den bygger på en
+   konvention, inte på ett påstående.
+
+Det avdrag parsern redan gör (0,20 på tilliten, alltså 0,70 i stället för
+0,90) räckte inte: formeln i 2.6 ger `(0,70 − 0,70) · 0,25 = 0` — exakt noll
+just vid den punkt där avdraget behövdes. Därför ett tak.
+
+Villkoret prövas genom att läsa OM inläggets text (`note`) med parsern i
+gruppläge. Rapporten har ingen kolumn för hur den tolkades, men `note` bär
+texten hela vägen genom databasen, så taket gäller också en rapport som kom
+från bryggan till någon annans telefon. Bara källorna `facebook` och `import`
+prövas: en knapptryckning i bilen har ofta ett platsnamn som etikett, och den
+ska inte tystas för det.
 
 ---
 
@@ -240,6 +360,11 @@ flyttar inte den gata som geokodningen pekade ut.
 
 ### Standardradier
 
+Sedan 2026-08-23 är tabellen ett **golv**, inte hela sanningen: bryggan,
+daemonen och appens egen geokodare skriver ett mätt `geokod_radius_m` ur
+OSM-svaret, och `positionsOsakerhet()` föredrar det framför tabellen. Tabellen
+svarar när ingen mätning finns.
+
 | Geokodnivå | Radie | Varför |
 |---|---|---|
 | `punkt` | 15 m | Golvet. Se nedan. |
@@ -247,7 +372,43 @@ flyttar inte den gata som geokodningen pekade ut.
 | `vag` | 250 m | En namngiven gata i Västerås är i den storleksordningen. |
 | `stadsdel` | 900 m | Ungefär en kilometer tvärs över. |
 | `ort` | 2 500 m | En kommunmittpunkt. |
+| `led` | 8 000 m | Genomfartsväg. Se nedan. |
 | okänd | 1 200 m | Antas dålig när vi inte vet. |
+
+**`led` — E18, riksväg 66, riksväg 56.** De är inte platser. E18 går tre mil
+genom länet, och OSM svarar med ETT vägavsnitt på hundra meter — vilket avsnitt
+beror på dagsformen i rankningen. 8 000 m är valt så att osäkerheten passerar
+3 000-metersgränsen och rapporten faller bort i stället för att bli en
+självsäker nål någonstans längs vägen. Vill man ha tillbaka E18-rapporterna
+måste inlägget säga VAR på E18; "E18 vid Hälla" löses av aliasuppslaget till
+Hälla, se `slaUppAlias`.
+
+### Radien ur svaret
+
+`typFranSvar()` och `radieFranSvar()` i `js/geocode.js` (med ordagranna kopior
+i `tools/fb-bridge.user.js` och `tools/brygg-daemon.ps1`) läser vad OSM
+faktiskt svarade i stället för att gissa ur frågan.
+
+**Varför svaret och inte frågan.** Mätt 2026-08-23: "Erikslunds köpcentrum,
+Västerås" gissas till `okand` (1 200 m) men svaret är en köpcentrumpolygon på
+301 m. Åt andra hållet, som är den farliga: "Kristinagatan 8, Västerås" gissas
+till `adress` (40 m) men svaret är HELA Kristinagatan, och "Björnövägen 12,
+Västerås" svarar med ett avsnitt 4,4 km från det avsnitt gatunamnet utan
+husnummer landar på. Båda fick 40 m, alltså nästan full poäng, uppläsning och
+notis — med en nål som kunde stå fyra kilometer fel. Regeln är därför: ett HUS
+är en adress, ingenting annat.
+
+**Boundingboxen får bara BREDDA, aldrig smalna av.** Det låter bakvänt och är
+mätt. En NOD får en påhittad ruta av Nominatim, skalad efter platsens rang —
+'Vallby, Västerås' och 'Hälla, Västerås' fick exakt samma 2 254 x 4 453 m. En
+VÄG:s ruta täcker bara det ena vägavsnitt som råkade svara — 'Björnövägen,
+Västerås' gav 30 x 72 m på en gata som i tätorten sträcker sig 8,5 km. Att ta
+rutan rakt av hade alltså gjort båda nålarna SÄKRARE än de är. Bara `way` och
+`relation` har riktig geometri, och bara när den är större än tabellen säger
+den något nytt. `ort` och `led` breddas inte alls: annars hade "Sala" (en nod,
+2 500 m ur tabellen) och "Hallstahammar" (en kommunrelation, 14 616 m ur
+polygonen) fått olika svar på samma sorts fråga, och den skillnaden finns inte
+i verkligheten.
 
 Antagen GPS-osäkerhet när telefonen inte rapporterar någon: **25 m**.
 
@@ -399,8 +560,26 @@ likhetsjämförelse:
 
 Gränsen går vid 0,5.
 
-**Tiden.** Högst **12 minuter** isär. Längre än så är det rimligen två
-tillfällen, även på samma plats — patruller kommer och går.
+**Tiden.** Högst **typens trovärdighetstid** isär — polis 45 min,
+trafikkontroll 60, civil 30 — med 12 minuter som golv för typer utan känd
+livslängd. Den kortaste av de två typernas tid vinner: en civil bil är otrolig
+redan efter 30 minuter, och att para ihop den med en polisrapport en timme
+senare vore att låta den längre livslängden smitta den kortare.
+
+Talet var ett fast 12-minutersfönster fram till 2026-08-23. Det var ofarligt så
+länge en rapport bara levde 45-60 minuter — det fanns sällan mer än två
+samtidiga rapporter om samma patrull att slå ihop. Med fyra timmars visningstid
+(`VISNING_MINUTER` i `js/store.js`) ligger fyra Facebook-inlägg om samma polis
+kvar samtidigt, och eftersom aliasuppslaget ger EXAKT samma koordinat för samma
+platsnamn staplas nålarna ovanpå varandra så att bara den översta går att
+trycka på. **Mätt** med `bedomFlodet()`: fyra inlägg om polis vid Hälla,
+identisk koordinat, 0/20/45/80 minuter gamla, gav fyra kluster med en medlem
+vardera. Med typens livslängd blir det två — {0, 20, 45} och {80} — vilket är
+rätt svar: efter 45 minuter är det ett nytt tillfälle.
+
+`store.add()` slog redan ihop på samma tal (`js/store.js`), men den spärren
+gäller bara det som skrivs på den egna telefonen; bryggans rader kommer in via
+`refresh()` och passerar den aldrig. Nu räknar båda likadant.
 
 **Absolut avstånd.** Högst **700 meter**, oavsett vad osäkerhetsmatematiken
 säger. Ett tak som inte går att argumentera bort.

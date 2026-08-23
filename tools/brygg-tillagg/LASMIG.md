@@ -58,6 +58,14 @@ och symlänkar beter sig olika på Windows beroende på rättigheter. Testerna
 i `fb-bryggan-test.html` körs mot originalet — kör dem efter varje kopiering
 så att de två inte glider isär.
 
+**Glidningen kan inte längre bli tyst.** `tools\brygg-daemon.ps1` jämför vid
+start läsdelen i de två filerna och VÄGRAR STARTA om de skiljer sig, med
+kommandot ovan i felmeddelandet. Det står här för att det hände: när
+ordmatchningen breddades 2026-08-22 uppdaterades originalet men inte kopian,
+och eftersom det är kopian Chrome kör försvann inläggen precis som förut i den
+fil som står närmast flödet. "Samma kod som originalet" i en text är inte
+samma sak som samma kod på disk.
+
 ## Torrkörning
 
 `dryRun: true` står i koden. Bryggan läser och loggar men skriver ingenting

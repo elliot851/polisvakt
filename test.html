@@ -1540,6 +1540,41 @@ await T('konfigurationen är giltig JS i den form bryggan läser', () => {
   return g[0].ruta.join() !== g[1].ruta.join() || 'båda grupperna fick samma ruta';
 });
 
+await T('en grupp utan notis-fält får notis på — en uppgradering tystar ingen', () => {
+  /*
+   * Fältet är nytt. Varje rad som redan ligger i ägarens localStorage saknar
+   * det, och de raderna ska bete sig exakt som förut. Låta en saknad nyckel
+   * betyda "skicka ingen notis" hade tystat den grupp som redan fungerar —
+   * det värsta tänkbara sättet att införa en ny inställning.
+   */
+  const [g] = fbg.normaliseraFbGrupper([{ id: '317968668373072', region: 'vastmanland' }]);
+  return (g && g.notis === true) || 'notis blev ' + JSON.stringify(g && g.notis);
+});
+
+await T('notis: false överlever normaliseringen och skrivs ut till bryggan', () => {
+  /*
+   * En grupp i en annan stad ska ligga på kartan men inte i låsskärmen.
+   * Notisvägen på servern (fbmejl_push_mottagare) har ingen geografi: den
+   * skickar varje ny rapport till varenda prenumerant. Utan det här fältet
+   * betyder "koppla Stockholmsgruppen" att folk i Västerås får Sergels torg
+   * på låsskärmen.
+   */
+  const rader = fbg.normaliseraFbGrupper([
+    { id: '317968668373072', namn: 'Västerås', region: 'vastmanland' },
+    { id: '7770001', namn: 'Stockholm', region: 'stockholm', notis: false },
+  ]);
+  if (rader.length !== 2) return 'fick ' + rader.length + ' rader';
+  if (rader[0].notis !== true) return 'Västerås tystades';
+  if (rader[1].notis !== false) return 'Stockholm fick notis ändå';
+
+  const txt = fbg.fbBryggKonfig(rader);
+  const obj = new Function('return {' + txt + '}')();
+  if (obj.groupIds[0].notis !== undefined) {
+    return 'förvalet skrevs ut i onödan: ' + txt;
+  }
+  return obj.groupIds[1].notis === false || 'notis: false kom inte med:\n' + txt;
+});
+
 await T('citattecken i ett gruppnamn spränger inte konfigurationen', () => {
   // Namnet skrivs av användaren. En apostrof eller ett citattecken där ska
   // inte göra användarskriptet osyntaktiskt.

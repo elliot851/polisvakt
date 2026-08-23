@@ -174,7 +174,14 @@ declare
     -- kedjan och fem av nio drogkontroller blev polisrapporter. Håll synkad
     -- med SOBRIETY_WORDS i js/parser.js.
     'narkotikakontroll', 'narkotika', 'narko', 'droger', 'drogsök', 'drogsok',
-    'drogsökhund', 'drogsokhund', 'blåsning'
+    'drogsökhund', 'drogsokhund', 'blåsning',
+    -- Hopskrivet förled + huvudord. De behövs eftersom särskrivningsregeln
+    -- längst ner bara ser två ord bredvid varandra, och de här skrivsätten
+    -- blev annars rapporter på kartan: 'razzia', 'polis' och 'piket' är
+    -- TYPORD i js/parser.js, så "Drograzzia vid Erikslund" tolkades som en
+    -- trafikkontroll med notis. 'nyckter' är den vanliga felstavningen av
+    -- 'nykter' och är inget svenskt ord — den kostar ingenting.
+    'drograzzia', 'drogpolis', 'drogpiket', 'droghund', 'nyckter'
   ];
   /*
    * Svenskan skrivs ihop, men folk särskriver ständigt. "Alkohol kontroll
@@ -187,8 +194,14 @@ declare
     'rattfylla', 'drog', 'droger', 'utandnings', 'sållnings', 'sallnings',
     'narkotika', 'narko'
   ];
+  -- Samma huvudord som SOBRIETY_HEAD i js/parser.js. Reglerna finns i
+  -- praktiken bara för förledet "drog" (alla andra förled är också stammar),
+  -- och frågan är alltså vilket ord efter "drog" som gör det till en
+  -- drogkontroll. razzia, polis och piket står dessutom som TYPORD i parsern:
+  -- utan dem här blir "drog razzia" en publicerad trafikkontroll.
   v_huvud text[] := array[
-    'kontroll', 'kontroller', 'test', 'prov', 'kollar', 'koll'
+    'kontroll', 'kontroller', 'test', 'prov', 'kollar', 'koll',
+    'razzia', 'sök', 'sok', 'hund', 'polis', 'poliser', 'piket'
   ];
 begin
   if v_text = '' then
