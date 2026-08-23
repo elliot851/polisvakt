@@ -3187,6 +3187,58 @@ function Kolla-Session {
   översta inläggets id mot en oberoende hämtning — det är inte gratis, och
   det är därför det inte görs var trettionde sekund.
 #>
+<#
+  Bryggan vaktar vakten, precis som vakten vaktar bryggan.
+
+  VARFÖR: kedjan hade en enkelriktad bevakning. brygg-vakt.ps1 startar om
+  bryggan när den dör — det är bevisat i drift och har räddat morgonen två
+  gånger. Men INGENTING startade om VAKTEN. Autostart-mappen kör igång båda
+  som syskon vid inloggning, och dör vakten mitt i en session är bryggan
+  obevakad ända till nästa omstart av datorn. Den enda som märker det är den
+  som INTE får sin varning.
+
+  Med den här funktionen håller de två varandra uppe: dör endera startar den
+  andra om den. Det som återstår är att båda dör i samma ögonblick, och den
+  luckan täcks av Autostart-mappen vid nästa inloggning.
+
+  KOLLEN ÄR BILLIG MEN INTE GRATIS — en CIM-fråga tar tiotals millisekunder,
+  och huvudloopen tickar var tjugonde sekund. Därför var femte minut, samma
+  takt som omladdningen.
+
+  FILTRET MÅSTE UTESLUTA VÅR EGEN FRÅGA. Kommandoraden i en CIM-träff
+  innehåller söksträngen, så en naiv matchning räknar frågan som ett svar.
+  Det felet har redan gjorts en gång i det här projektet: bryggan
+  rapporterades levande två gånger medan den låg död, eftersom räkningen
+  räknade sina egna kontroller. Därför -notlike '*CimInstance*'.
+#>
+function Kolla-Vaktens-Puls {
+  if (((Get-Date) - $script:VaktKollad).TotalSeconds -lt 300) { return }
+  $script:VaktKollad = Get-Date
+
+  try {
+    $vakter = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+      Where-Object {
+        $_.CommandLine -like '*brygg-vakt*' -and
+        $_.CommandLine -notlike '*CimInstance*'
+      })
+    if ($vakter.Count -gt 0) { return }
+
+    $fil = Join-Path $PSScriptRoot 'brygg-vakt.ps1'
+    if (-not (Test-Path $fil)) {
+      Logga 'VAKTEN' ('vakten är borta och kan inte startas — hittar inte ' + $fil) Red
+      return
+    }
+
+    Logga 'VAKTEN' 'vakten var dod. Startar om den.' Yellow
+    # Sökvägen citeras. Projektet ligger under "Claude code 2GNDTN", och ett
+    # ociterat mellanslag har redan brutit en start i den här mappen en gång.
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $fil + '"'), '-Loop')
+  } catch {
+    Logga 'VAKTEN' ('kunde inte kolla vaktens puls: ' + $_.Exception.Message) DarkYellow
+  }
+}
+
 function Tystnadsgrans {
   param([string]$Gid)
 
@@ -5201,6 +5253,10 @@ $script:SenastOmladdad = @{}     # gruppid -> när fliken senast laddades om
 $script:SenastNyttInlagg = @{}   # gruppid -> när gruppen senast gav ett NYTT inlägg
 $script:FrusenSagd = @{}         # gruppid -> när vi senast sa ifrån om frysning
 $script:InlaggsTider = @{}       # gruppid -> klockslag för de 40 senaste sedda inläggen
+# MinValue och inte Get-Date: vaktens puls ska kollas vid FÖRSTA ticken, inte
+# fem minuter in. Startar bryggan medan vakten ligger nere är det just då
+# kedjan är som mest oskyddad.
+$script:VaktKollad = [DateTime]::MinValue
 $slutTid = $null
 if ($MinuterAttKora -gt 0) { $slutTid = (Get-Date).AddMinutes($MinuterAttKora) }
 
@@ -5259,6 +5315,7 @@ try {
 
     $tickStart = Get-Date
     $script:Forsok++
+    Kolla-Vaktens-Puls
     $sidfel = $false
     $nagotSvep = $false
     $utkorgNotis = @();   $nycklarNotis = @();   $grupperNotis = @()
