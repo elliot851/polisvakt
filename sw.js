@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-08-23-95';
+const VERSION = '2026-08-23-96';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -115,6 +115,12 @@ const SHELL = [
   // här för att den vyn ska fungera lika bra i ett källargarage som på
   // fyra streck.
   './js/inst.js',
+  // Butikshyllan. Importeras DYNAMISKT — saknas filen visar vyn en reservtext
+  // och appen lever vidare. Hyllans innehall bor i data/butik.json: en ny
+  // produkt ar en ny post dar PLUS en versionsbump har, eftersom cachade
+  // klienter laser sin kopia tills en ny version pekar om dem.
+  './js/butik.js',
+  './data/butik.json',
   './js/platsstart.js',
   './js/push.js',
   './js/groups.js',

@@ -290,7 +290,7 @@ function spelaFlera(lista, klass, ms) {
 // Reserv om tabbaren inte gick att läsa. Ordningen står i index.html och
 // läses därifrån vid varje byte — en handskriven kopia hade tyst börjat
 // peka åt fel håll den dagen någon flyttar en flik.
-const VY_RESERV = ['map', 'dashcam', 'chatt', 'settings'];
+const VY_RESERV = ['map', 'dashcam', 'chatt', 'butik', 'settings'];
 
 function vyOrdning() {
   try {

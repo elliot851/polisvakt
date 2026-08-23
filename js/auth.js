@@ -125,6 +125,34 @@ export class Auth extends EventTarget {
     this.user = this.session?.user || null;
     this.refreshTimer = null;
     if (this.session) this.#scheduleRefresh();
+    // Sidladdning med sparad session: ingen inloggning sker, så inget
+    // 'change' skickas — men billing behöver ändå få veta kontot. Mikrotask,
+    // inte direkt: Auth konstrueras före Billing i app.js, och en händelse
+    // som skickas innan lyssnaren finns försvinner spårlöst. Efter att
+    // modulen evaluerats klart står lyssnaren där.
+    if (this.session) queueMicrotask(() => this.#meddelaKonto());
+  }
+
+  /**
+   * Berätta för resten av appen vem som är inloggad — främst för Billing,
+   * vars provperiod och betalning följer kontot (js/billing.js setKonto).
+   *
+   * En händelse på window i stället för ett direkt anrop, med flit: app.js
+   * äger båda instanserna men får inte röras av den här omgången, och den
+   * här modulen ska inte importera billing (auth är ett lager under). Vem
+   * som helst som behöver kontot kan lyssna på 'pv:konto' utan att auth
+   * behöver känna till den. Token följer med så att kontovägen fungerar
+   * även innan app.js hunnit sätta den delade accessToken i config.js.
+   */
+  #meddelaKonto() {
+    try {
+      window.dispatchEvent(new CustomEvent('pv:konto', {
+        detail: {
+          id: this.user?.id || null,
+          token: this.session?.access_token || null,
+        },
+      }));
+    } catch { /* utan window (prov i Node utan shim) finns ingen att meddela */ }
   }
 
   get available() { return hasBackend(); }
@@ -187,6 +215,7 @@ export class Auth extends EventTarget {
     this.clearGuestSilent();
     this.#scheduleRefresh();
     this.#emit('change');
+    this.#meddelaKonto();
   }
 
   clearGuestSilent() { localStorage.removeItem(GUEST_KEY); }
@@ -455,6 +484,7 @@ export class Auth extends EventTarget {
     saveSession(this.session);
     throttle.clear(res.data?.email || '');
     this.#emit('change');
+    this.#meddelaKonto();   // sessionen blev fullvärdig — nu finns ett konto-id
     return { ok: true, email: res.data?.email };
   }
 
@@ -465,6 +495,7 @@ export class Auth extends EventTarget {
     saveSession(null);
     clearTimeout(this.refreshTimer);
     this.#emit('change');
+    this.#meddelaKonto();   // id: null — billing släpper kontonyckeln
   }
 
   /* ---- Sessionshantering ---- */
@@ -486,6 +517,7 @@ export class Auth extends EventTarget {
       // Förnyelsen kan misslyckas för att nätet är nere — logga inte ut då
       if (res.status === 400 || res.status === 401) {
         this.session = null; this.user = null; saveSession(null); this.#emit('change');
+        this.#meddelaKonto();   // utloggad på riktigt — billing ska veta det
       } else {
         this.refreshTimer = setTimeout(() => this.refresh(), 60000);
       }

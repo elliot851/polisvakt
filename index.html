@@ -75,6 +75,10 @@
       <circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7"/>
       <path d="M12 2.6l1.5 2.6 3-.5.4 3 2.7 1.4-1.3 2.7 1.3 2.7-2.7 1.4-.4 3-3-.5L12 21.4l-1.5-2.6-3 .5-.4-3-2.7-1.4 1.3-2.7-1.3-2.7 2.7-1.4.4-3 3 .5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
     </symbol>
+    <symbol id="i-butik" viewBox="0 0 24 24">
+      <path d="M5.2 8.5h13.6l-1.1 11a1.7 1.7 0 01-1.7 1.5H8a1.7 1.7 0 01-1.7-1.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M8.7 11.2V6.9a3.3 3.3 0 016.6 0v4.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
     <symbol id="i-mute-on" viewBox="0 0 24 24">
       <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/>
       <path d="M15.5 9a4.2 4.2 0 010 6M18 6.5a7.7 7.7 0 010 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -356,9 +360,15 @@
 <div id="view-dashcam" class="view" hidden>
   <div class="dc-stage" id="dcStage">
     <canvas id="dcCanvas"></canvas>
+    <!-- VILOLÄGET, byggt om efter ägarens ord: "kameraläge i mitten av
+         skärmen, svart ovanför — man vet inte ens att man ska scrolla ner
+         för att starta". Därför är ordningen låst: rubrik, valet, START-
+         knappen — allt synligt utan rullning på 375×667. Förklaringarna
+         är kvar (integritetstexten är viktig) men de ligger EFTER knappen,
+         inte före. Den som vill läsa rullar; den som vill starta trycker. -->
     <div class="dc-idle" id="dcIdle">
-      <div class="dc-idle-icon">🎥</div>
       <h2>Kameraläge</h2>
+      <p class="dc-steg">1. Välj vad kameran ska göra:</p>
 
       <!-- Två lägen, ett i taget.
            Inte ett designval utan en fysisk begränsning: bara en app åt gången
@@ -376,58 +386,67 @@
           <small>Läser registreringsskyltar direkt i appen. Ingen bild lämnar telefonen.</small>
         </button>
       </div>
-      <p class="hint" id="modeNote">Ett läge i taget — kameran kan bara användas av en sak åt gången.</p>
 
       <!-- Skyltläsarens egen panel. Ligger i samma scen som dashcamen
-           eftersom de delar kamera och bara ett av dem kan vara igång. -->
+           eftersom de delar kamera och bara ett av dem kan vara igång.
+           Knappen först — allt förklarande under, i .dc-mer. -->
       <div id="plPanel" hidden>
-        <p><b>Rikta den blå rutan mot skylten.</b> Läsaren tittar bara i rutan —
-          gå närmare eller zooma tills skylten fyller den. Håll still en sekund.</p>
-
-        <div class="dc-why">
-          <h3>Så fungerar den</h3>
-          <div class="why-item"><span>📵</span><div><b>Allt sker i telefonen.</b>
-            Bilden skickas ingenstans och sparas inte. Skyltarna du läst ligger i
-            minnet och försvinner när du lämnar läget.</div></div>
-          <div class="why-item"><span>✌️</span><div><b>Den gissar inte.</b>
-            En skylt visas först när två bildrutor läst samma sak, och bara om den
-            följer svenskt format. Hellre inget svar än fel svar.</div></div>
-          <div class="why-item"><span>🚗</span><div><b>Egna fordon.</b>
-            Lägg in dina egna registreringsnummer under Inställningar, så markeras
-            de med grönt och en ljusare ton när de dyker upp.</div></div>
-        </div>
-
-        <p class="dc-warn" id="plSupport" hidden></p>
+        <p class="dc-steg">2. Tryck här, så startar kameran:</p>
         <button class="btn-primary big" id="plStart" type="button">Starta skyltläsning</button>
+        <p class="dc-warn" id="plSupport" hidden></p>
+
+        <div class="dc-mer">
+          <p><b>Rikta den blå rutan mot skylten.</b> Läsaren tittar bara i rutan —
+            gå närmare eller zooma tills skylten fyller den. Håll still en sekund.</p>
+
+          <div class="dc-why">
+            <h3>Så fungerar den</h3>
+            <div class="why-item"><span>📵</span><div><b>Allt sker i telefonen.</b>
+              Bilden skickas ingenstans och sparas inte. Skyltarna du läst ligger i
+              minnet och försvinner när du lämnar läget.</div></div>
+            <div class="why-item"><span>✌️</span><div><b>Den gissar inte.</b>
+              En skylt visas först när två bildrutor läst samma sak, och bara om den
+              följer svenskt format. Hellre inget svar än fel svar.</div></div>
+            <div class="why-item"><span>🚗</span><div><b>Egna fordon.</b>
+              Lägg in dina egna registreringsnummer under Inställningar, så markeras
+              de med grönt och en ljusare ton när de dyker upp.</div></div>
+          </div>
+        </div>
       </div>
 
       <div id="recPanel">
-      <p><b>Bakkameran filmar framåt</b> genom vindrutan, med ljud. Lägg telefonen i hållaren med baksidan mot vägen.</p>
+        <p class="dc-steg">2. Tryck här, så startar kameran:</p>
+        <button class="btn-primary big" id="dcStart" type="button">Starta inspelning</button>
+        <p class="dc-warn" id="dcSupport" hidden></p>
 
-      <div class="dc-why">
-        <h3>Vad du har den till</h3>
-        <div class="why-item"><span>🤝</span><div><b>Vem körde in i vem.</b>
-          Vid en krock står ord mot ord, och den som saknar bevis förlorar oftast.
-          Filmen visar förloppet, och i bilden bränns <b>tid, datum och din
-          GPS-hastighet</b> in — så det går att styrka både när det hände och hur
-          fort du faktiskt körde.</div></div>
-        <div class="why-item"><span>📄</span><div><b>Försäkringsärenden.</b>
-          Bolagen accepterar dashcam-film som bevis. Det kan vara skillnaden mellan
-          full ersättning och delad skuld.</div></div>
-        <div class="why-item"><span>👮</span><div><b>Din egen dokumentation vid en kontroll.</b>
-          Blir du stoppad spelas hela samtalet in, med ljud. Det är fullt lagligt i
-          Sverige och skyddar båda parter. Blir du anklagad för något du inte gjort
-          har du din version inspelad.</div></div>
-        <div class="why-item"><span>🚗</span><div><b>Smitningar och parkeringsskador.</b>
-          Kör någon in i dig och försvinner finns bilen på film.</div></div>
+        <div class="dc-mer">
+          <p><b>Bakkameran filmar framåt</b> genom vindrutan, med ljud. Lägg telefonen i hållaren med baksidan mot vägen.</p>
+
+          <div class="dc-why">
+            <h3>Vad du har den till</h3>
+            <div class="why-item"><span>🤝</span><div><b>Vem körde in i vem.</b>
+              Vid en krock står ord mot ord, och den som saknar bevis förlorar oftast.
+              Filmen visar förloppet, och i bilden bränns <b>tid, datum och din
+              GPS-hastighet</b> in — så det går att styrka både när det hände och hur
+              fort du faktiskt körde.</div></div>
+            <div class="why-item"><span>📄</span><div><b>Försäkringsärenden.</b>
+              Bolagen accepterar dashcam-film som bevis. Det kan vara skillnaden mellan
+              full ersättning och delad skuld.</div></div>
+            <div class="why-item"><span>👮</span><div><b>Din egen dokumentation vid en kontroll.</b>
+              Blir du stoppad spelas hela samtalet in, med ljud. Det är fullt lagligt i
+              Sverige och skyddar båda parter. Blir du anklagad för något du inte gjort
+              har du din version inspelad.</div></div>
+            <div class="why-item"><span>🚗</span><div><b>Smitningar och parkeringsskador.</b>
+              Kör någon in i dig och försvinner finns bilen på film.</div></div>
+          </div>
+
+          <p class="dc-idle-note">Spelar in i loop och raderar det äldsta automatiskt, som en riktig dashcam.
+            Vid en smäll låses filmen av sig själv — du behöver inte trycka på något mitt i en krock.
+            <b>Allt stannar i din telefon.</b> Ingenting laddas upp någonstans, och du raderar själv när du vill.</p>
+        </div>
       </div>
 
-      <p class="dc-idle-note">Spelar in i loop och raderar det äldsta automatiskt, som en riktig dashcam.
-        Vid en smäll låses filmen av sig själv — du behöver inte trycka på något mitt i en krock.
-        <b>Allt stannar i din telefon.</b> Ingenting laddas upp någonstans, och du raderar själv när du vill.</p>
-      <button class="btn-primary big" id="dcStart" type="button">Starta inspelning</button>
-      <p class="dc-warn" id="dcSupport" hidden></p>
-      </div>
+      <p class="hint" id="modeNote">Ett läge i taget — kameran kan bara användas av en sak åt gången.</p>
     </div>
     <div class="dc-rec" id="dcRec" hidden><span class="rec-dot"></span><span id="dcTime">0:00</span></div>
 
@@ -578,6 +597,25 @@
     </div>
     <p class="hint" id="chattStatus"></p>
   </div>
+</div>
+
+<!-- ============ BUTIK ============
+
+     Hela hyllan bor i data/butik.json och ritas av js/butik.js — en ny
+     produkt är en ny post i json-filen, ingen ändring här. Appen tar
+     aldrig betalt för fysiska varor själv: köpknappen är en länk som
+     öppnar kassan i en egen flik. Utan länk visar kortet "Snart i lager"
+     och en intresseanmälan.
+
+     Varningsytan ligger som eget syskon direkt på body, ovanför alla
+     vyer (z 905) — den täcker butiken precis som den täcker kartan. -->
+<div id="view-butik" class="view scroll" hidden>
+  <h1 class="page-title">Butik</h1>
+  <p class="hint">Saker som gör appen bättre i bilen. Köpet öppnas i en egen
+    flik hos kassan — appen tar aldrig dina kortuppgifter.</p>
+  <div class="shop" id="butikLista"></div>
+  <p class="hint" id="butikTomt" hidden>Hyllan kunde inte läsas in.
+    Kontrollera uppkopplingen och öppna fliken igen.</p>
 </div>
 
 <div id="view-settings" class="view scroll" hidden>
@@ -1107,7 +1145,7 @@
   </section>
 
   <section class="card" data-grupp="bilen"
-           data-sok="bilingenkännare regnr registreringsnummer skylt nummerplåt plåt ocr skyltläsare mina fordon volvo pip">
+           data-sok="bilingenkännare regnr registreringsnummer skylt nummerplåt plåt ocr skyltläsare mina fordon volvo pip smeknamn lista klistra in flera">
     <h3>Bilingenkännare</h3>
     <p class="hint">Läser registreringsskyltar genom kameran. Väljs under
       <b>Dashcam</b> — kameran kan bara användas av en sak i taget, så inspelning
@@ -1120,22 +1158,28 @@
     <!-- id:t minaFordonRubrik är rullmålet för knappen btnPlMinaFordon i
          dashcam-vyn. Ändras det slutar hoppet mellan vyerna fungera. -->
     <h4 class="sub-head" id="minaFordonRubrik">Mina fordon</h4>
-    <p class="hint">Egna registreringsnummer. Känner läsaren igen ett pipar appen.
-      <b>Numren sparas aldrig som text.</b> De lagras som saltade hashar, bara i
-      den här telefonen — därför visar listan namnet du gett fordonet, inte
-      numret. Appen kan inte visa ett nummer den inte har.</p>
+    <p class="hint">Skriv dina registreringsnummer, ett nummer per rad — du kan
+      klistra in en hel lista. Vill du kan du skriva ett namn efter numret,
+      till exempel <i>ABC 123 Volvon</i>. Känner läsaren igen ett av dina
+      fordon varnar appen.</p>
 
-    <label class="row"><span>Registreringsnummer</span>
-      <input type="text" id="plNytt" placeholder="ABC 123" autocomplete="off"></label>
-    <label class="row"><span>Namn (valfritt)</span>
-      <input type="text" id="plNyttNamn" placeholder="Volvon" autocomplete="off"></label>
-    <button class="btn-ghost small" id="btnPlLagg" type="button">Lägg till fordon</button>
+    <!-- Ett fält, inte två. Den gamla varianten hade separata fält för nummer
+         och namn, och man kunde bara lägga in ett fordon i taget. -->
+    <textarea id="plNyaFordon" rows="3" autocomplete="off" autocapitalize="characters"
+              spellcheck="false" placeholder="ABC 123 Volvon&#10;DEF 456"></textarea>
+    <button class="btn-primary" id="btnPlLagg" type="button">Lägg till</button>
+    <p class="hint" id="plLaggKvitto" role="status"></p>
 
     <ul class="pl-list" id="plFordonLista"></ul>
     <p class="sheet-empty" id="plFordonTom">Inga fordon tillagda.</p>
 
-    <!-- Enda sättet att kontrollera att rätt fordon ligger inne, när numret
-         inte går att visa. -->
+    <p class="hint"><b>Allt stannar i den här telefonen.</b> Det läsaren matchar
+      skyltar mot är saltade hashar som inte går att räkna tillbaka till ett
+      nummer. Numret du själv skrivit in sparas bara lokalt, så att listan kan
+      visa vilken bil som är vilken.</p>
+
+    <!-- Kvar för att kunna kontrollera igenkänningen — och för gamla poster
+         från tiden då numret aldrig sparades för visning. -->
     <label class="row"><span>Prova ett nummer</span>
       <input type="text" id="plProva" placeholder="ABC 123" autocomplete="off"></label>
     <button class="btn-ghost small" id="btnPlProva" type="button">Prova</button>
@@ -1323,11 +1367,17 @@
          destruktiva knapparna får samma behandling och samma granne. -->
   </section>
 
+  <!-- Hyllan låg här förut (#shopList). Den bor nu i Butik-fliken —
+       EN källa till sanning, inte två hyllor att glömma uppdatera.
+       Kortet står kvar av två skäl: den som letar tillbehör i
+       inställningarna ska hitta vägen, och sökfältet (js/inst.js läser
+       data-sok) ska ge träff på "butik", "mobilhållare", "tillbehör"
+       och peka rätt. -->
   <section class="card" data-grupp="konto"
-           data-sok="tillbehör butik hållare rattdosa produkter beställa intresseanmälan">
+           data-sok="tillbehör butik shop hållare mobilhållare rattdosa produkter köpa beställa intresseanmälan">
     <h3>Tillbehör</h3>
-    <p class="hint">Sakerna som gör appen bättre i bilen. Inget går att beställa än — anmäl intresse så hör vi av oss när lagret är på plats.</p>
-    <div class="shop" id="shopList"></div>
+    <p class="hint">Mobilhållaren och de andra sakerna till bilen bor i en egen flik längst ner.</p>
+    <button class="btn-ghost small" id="btnOppnaButik" type="button">Öppna butiken</button>
   </section>
 
   <!-- ---------- G7 · APPEN OCH FELSÖKNING ---------- -->
@@ -1475,6 +1525,9 @@
   <button data-view="chatt" class="tab" type="button">
     <svg viewBox="0 0 24 24"><use href="#i-chatt"/></svg><span>Chatt</span>
     <span class="tab-antal" id="chattAntal" hidden>0</span>
+  </button>
+  <button data-view="butik" class="tab" type="button">
+    <svg viewBox="0 0 24 24"><use href="#i-butik"/></svg><span>Butik</span>
   </button>
   <button data-view="settings" class="tab" type="button">
     <svg viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Inställningar</span>

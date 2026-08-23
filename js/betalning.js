@@ -16,16 +16,19 @@
 // URL-parameter som är lätt att tappa. Därför ligger den i en funktion här
 // istället för att skrivas ihop på anropsstället.
 //
-// INTE INKOPPLAD ÄN
+// INKOPPLAD, MEN LÄNKARNA ÄR TOMMA
 //
-// Modulen importeras inte av något. Att koppla in den kräver två rader i
-// js/app.js, som ägs av någon annan — exakt vilka rader står i
-// docs/BETALNING.md, avsnittet "Koppla in de sex länkarna". Tills dess
-// fungerar appen på den gamla vägen med en enda länk i CONFIG.stripePaymentLink,
-// och den vägen fortsätter fungera även efteråt.
+// js/app.js importerar modulen (subscribe-knappen provar checkoutUrl() här
+// först och faller tillbaka på billing.checkoutUrl()). Så länge PAYMENT_LINKS
+// nedan är tomma returnerar den null och den gamla vägen med en enda länk i
+// CONFIG.stripePaymentLink gäller. Fyll i länkarna enligt docs/BETALNING.md
+// avsnitt 3 så tar de sex över, utan kodändring någon annanstans.
 
 import { PLANS, PREPAY, priceFor } from './plans.js';
-import { deviceId } from './store.js';
+// kassareferens ersätter deviceId här: den ger 'konto-<uuid>' för inloggade
+// när kontokravet är aktivt (js/billing.js, KONTOKRAV_AKTIVT) och enhetens
+// id i alla andra fall — alltså exakt dagens beteende tills flaggan flippas.
+import { kassareferens } from './billing.js';
 
 /**
  * De sex länkarna. Klistras in av ägaren efter att betallänkarna skapats i
@@ -78,8 +81,9 @@ export function paymentLink(planId, prepay = false) {
 /**
  * Färdig kassaadress att öppna.
  *
- * client_reference_id är enhetens id — samma sträng som skickas till
- * get_subscription, och samma som auth.uid() för inloggade. Den följer med
+ * client_reference_id är kassareferensen: enhetens id för utloggade (samma
+ * sträng som skickas till get_subscription), 'konto-<uuid>' för inloggade
+ * när kontokravet är aktivt. Den följer med
  * betalningen hela vägen till webhooken, som använder den för att hitta rätt
  * rad i subscribers och sedan sparar Stripes kund-id där. Efter den första
  * betalningen finns parametern inte med i något Stripe skickar; kopplingen
@@ -94,11 +98,17 @@ export function checkoutUrl(planId, val = {}) {
   const bas = paymentLink(planId, !!val.prepay);
   if (!bas) return null;
 
-  const enhet = deviceId();
-  if (!enhet) return null;   // utan id blir betalningen föräldralös — öppna inte
+  // 'konto-<uuid>' för inloggade med aktivt kontokrav — då gäller köpet på
+  // alla kontots enheter. Annars enhetens id, precis som i dag. Webhooken
+  // skickar strängen orörd till databasfunktionerna, som skalar prefixet
+  // (se supabase/migrationer/2026-08-23-provperiod-pa-kontot.sql).
+  // Bindestreck i prefixet, aldrig kolon: Stripe släpper tyst varje
+  // client_reference_id med otillåtna tecken — se kassareferens i billing.js.
+  const referens = kassareferens();
+  if (!referens) return null;   // utan referens blir betalningen föräldralös — öppna inte
 
   const u = new URL(bas);
-  u.searchParams.set('client_reference_id', enhet);
+  u.searchParams.set('client_reference_id', referens);
 
   // Förifylld e-post sparar kunden ett fält och ger oss en adress att söka på
   // när något ska lagas för hand. Stripe ignorerar parametern om betallänken

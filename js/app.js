@@ -22,7 +22,7 @@ import { Auth, validateUsername } from './auth.js';
 import { Tour, seen as tourSeen, reset as resetTour } from './tour.js';
 import { DrivingDetector, notificationsSupported } from './driving.js';
 import { Coverage, MODES as COVERAGE_MODES } from './coverage.js';
-import { PLANS, PRODUCTS, PREPAY, STATUS_LABEL, yearlyComparison } from './plans.js';
+import { PLANS, PREPAY, yearlyComparison } from './plans.js';
 import { renderChain } from './roadmap.js';
 import { RouteGuide } from './rutt.js';
 import { WinterService } from './vinter.js';
@@ -35,7 +35,7 @@ import { Vakthund } from './vakthund.js';
 import { Varmevakt } from './varme.js';
 import * as Kvalitet from './kvalitet.js';
 import * as Betalning from './betalning.js';
-import { PlateReader, plateSupported, visaPlat, haFordonsregister, migreraKlartext } from './plate.js';
+import { PlateReader, plateSupported, visaPlat, normaliseraPlat, haFordonsregister, migreraKlartext } from './plate.js';
 import { Chatt, UTAN_OMRADE_TEXT } from './chatt.js';
 import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
@@ -247,12 +247,56 @@ if (hasBackend() && settings.mode === 'local' && !settings.modeChosen) {
   }
   const r = await migreraKlartext(settings.plEgna);
   if (!r.ok) return;
+  /*
+   * Klartextnumren fanns ändå i den här listan — passa på att lägga dem i
+   * visningslagret innan de raderas, så att fordonslistan kan visa dem.
+   * Se kommentaren vid FORDON_VISNING_NYCKEL för varför lagret finns.
+   */
+  const reg = haFordonsregister();
+  const visn = lasFordonVisning();
+  let visnAndrad = false;
+  for (const rad of settings.plEgna) {
+    const t = await reg.slaUpp(rad);
+    if (t && !visn[t.id]?.regnr) {
+      visn[t.id] = { regnr: normaliseraPlat(rad), smeknamn: visn[t.id]?.smeknamn || '' };
+      visnAndrad = true;
+    }
+  }
+  if (visnAndrad) sparaFordonVisning(visn);
   delete settings.plEgna;
   saveSettings();
   if (r.ogiltiga?.length) {
     toast(`Kunde inte tolka som registreringsnummer: ${r.ogiltiga.join(', ')}`, 6000);
   }
 })();
+
+/* ---------- Visningslagret för egna fordon ----------
+ *
+ * Fordonsregistret i plate.js lagrar bara saltade hashar, och det ändras
+ * inte: hasharna är det läsaren matchar varje skylt mot, och de designades
+ * med flit för att inte gå att räkna baklänges. Men numret användaren själv
+ * skrev in, om sina egna bilar, på sin egen telefon, är hans att se — en
+ * lista som bara kan säga "Fordon 3" skyddar ingen och går inte att använda.
+ *
+ * Därför ligger visningen i gränssnittets eget lager: en egen nyckel som
+ * mappar registrets id till det inskrivna numret och ett valfritt smeknamn.
+ * Raderas fordonet ur registret städas visningsposten bort (se renderFordon).
+ * Saknas visningsposten — poster från tiden före lagret — fungerar
+ * igenkänningen ändå, listan kan bara inte visa numret.
+ */
+const FORDON_VISNING_NYCKEL = 'pv.fordon.visning.v1';
+
+function lasFordonVisning() {
+  try { return JSON.parse(localStorage.getItem(FORDON_VISNING_NYCKEL)) || {}; }
+  catch { return {}; }
+}
+
+function sparaFordonVisning(m) {
+  try { localStorage.setItem(FORDON_VISNING_NYCKEL, JSON.stringify(m)); } catch {}
+}
+
+/* "Fordon 3" är registrets automatiska etikett, inte något användaren valt. */
+function arAutoEtikett(e) { return /^Fordon \d+$/.test(String(e || '').trim()); }
 function readJSON(k, f) { try { return JSON.parse(localStorage.getItem(k)) || f; } catch { return f; } }
 function writeJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {} }
@@ -369,6 +413,10 @@ let currentAlert = null;
  */
 let instModul = null;
 
+/* js/butik.js, av exakt samma skäl och med exakt samma dödszon-varning som
+   instModul ovanför. Se laddaButik() bredvid laddaInst(). */
+let butikModul = null;
+
 if (!globalThis.PV_INGEN_BOOT) boot();
 
 async function boot() {
@@ -381,6 +429,9 @@ async function boot() {
   /* Inställningsmodulen hämtas i bakgrunden och väntas aldrig in. Se
      laddaInst(): saknas filen tar reserven i oppnaInstallning() över. */
   laddaInst();
+  /* Butiken likadant: hämtas i bakgrunden, väntas aldrig in. Saknas filen
+     visar butiksvyn sin reservtext och resten av appen märker ingenting. */
+  laddaButik();
 
   speaker.enabled = settings.tts;
   speaker.volume = settings.volume;
@@ -4164,6 +4215,12 @@ function wireUI() {
     btn.onclick = () => showView(btn.dataset.view);
   });
 
+  /* Tillbehörskortet i Inställningar är numera en skylt som pekar mot
+     Butik-fliken. Kopplas här och inte i butik.js: knappen ska fungera
+     även om butiksmodulen inte gick att hämta — vyn med sin reservtext
+     finns alltid. */
+  $('btnOppnaButik')?.addEventListener('click', () => showView('butik'));
+
   // Rapportknappar: tryck och håll, inte ett vanligt tryck.
   //
   // Knapparna sitter längst ner där tummen vilar. Ett vanligt tryck betyder
@@ -4361,7 +4418,7 @@ function showView(name) {
   const forraVyn = document.body.dataset.view;
 
   document.body.dataset.view = name;
-  for (const v of ['map', 'dashcam', 'chatt', 'settings']) {
+  for (const v of ['map', 'dashcam', 'chatt', 'butik', 'settings']) {
     $('view-' + v).hidden = v !== name;
   }
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
@@ -4389,7 +4446,8 @@ function showView(name) {
 
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
-  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); ritaBehKort(); }
+  if (name === 'butik') butikModul?.rita();
+  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); ritaBehKort(); }
 }
 
 /* ================= Genvägar in i inställningarna ================= */
@@ -4426,6 +4484,25 @@ async function laddaInst() {
   try { instModul = await import('./inst.js'); }
   catch { instModul = null; }                 // filen finns inte — reserven tar över
   return instModul;
+}
+
+/**
+ * Butiken, samma mönster som laddaInst() och av samma skäl: en hylla med
+ * tillbehör är inte i klassen "hellre vit skärm än utan". Saknas filen i en
+ * utrullning står reservtexten i #view-butik kvar och pekar mot uppkopplingen
+ * — fel budskap i just det fallet, men ett läge föraren tar sig ur genom att
+ * uppdatera, inte en app som dött.
+ */
+async function laddaButik() {
+  if (butikModul) return butikModul;
+  try {
+    butikModul = await import('./butik.js');
+    /* toast och e-post räcks in i stället för att butik.js importerar
+       app.js — cirkeln app→butik→app är exakt den sortens knut som ger
+       "fungerar ibland" vid uppstart. */
+    butikModul.start({ toast, epost: () => auth.email || null });
+  } catch { butikModul = null; }
+  return butikModul;
 }
 
 /**
@@ -4533,70 +4610,11 @@ function renderPlans() {
   wrap.appendChild(prepay);
 }
 
-function renderShop() {
-  const wrap = $('shopList');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-  const wanted = readJSON('pv.wishlist.v1', []);
-
-  for (const p of PRODUCTS) {
-    const el = document.createElement('div');
-    el.className = 'product';
-    const on = wanted.includes(p.id);
-    el.innerHTML =
-      `<div class="prod-ico">${p.icon}</div>` +
-      `<div class="prod-body">` +
-        `<div class="prod-head"><b>${escapeHtml(p.name)}</b>` +
-        `<span class="prod-price">${p.price} kr</span></div>` +
-        `<div class="prod-tag">${escapeHtml(p.tagline)}</div>` +
-        `<div class="prod-text">${escapeHtml(p.body)}</div>` +
-        `<span class="prod-status">${STATUS_LABEL[p.status]}</span>` +
-      `</div>`;
-    const btn = document.createElement('button');
-    btn.className = 'btn-ghost small' + (on ? ' chosen' : '');
-    btn.type = 'button';
-    btn.textContent = on ? '✓ Du står på listan' : 'Meddela mig';
-    btn.onclick = () => toggleInterest(p, btn);
-    el.querySelector('.prod-body').appendChild(btn);
-    wrap.appendChild(el);
-  }
-}
-
-/**
- * Intresseanmälan istället för köpknapp.
- *
- * Lagret finns inte än. Att låta folk trycka "köp" på något som inte kan
- * skickas är ett säkert sätt att bränna förtroendet direkt. Intresset säger
- * dessutom hur många hållare som faktiskt ska beställas från Kina — det är
- * värt mer än en tidig krona.
- */
-async function toggleInterest(product, btn) {
-  const list = readJSON('pv.wishlist.v1', []);
-  const i = list.indexOf(product.id);
-  const adding = i === -1;
-  if (adding) list.push(product.id); else list.splice(i, 1);
-  try { localStorage.setItem('pv.wishlist.v1', JSON.stringify(list)); } catch {}
-
-  btn.className = 'btn-ghost small' + (adding ? ' chosen' : '');
-  btn.textContent = adding ? '✓ Du står på listan' : 'Meddela mig';
-
-  if (adding) {
-    toast(`Vi hör av oss när ${product.name} finns i lager.`, 4000);
-    if (store.isRemote) {
-      try {
-        await fetch(`${CONFIG.supabaseUrl}/rest/v1/product_interest`, {
-          method: 'POST',
-          headers: { apikey: CONFIG.supabaseAnonKey, Authorization: `Bearer ${CONFIG.supabaseAnonKey}`,
-                     'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' },
-          body: JSON.stringify({
-            device_id: deviceId(), product: product.id,
-            email: auth.email || null, created_at: Date.now(),
-          }),
-        });
-      } catch { /* intresset finns kvar lokalt */ }
-    }
-  }
-}
+/* Hyllan (renderShop) och intresseanmälan (toggleInterest) låg här fram
+   till att butiken fick sin egen flik. Båda bor nu i js/butik.js, och
+   produkterna i data/butik.json — en ny produkt är en post i json-filen,
+   ingen kodändring. Samma pv.wishlist.v1-lista och samma
+   product_interest-tabell som förut, så inga anmälningar gick förlorade. */
 
 /* ================= Betalning ================= */
 
@@ -4815,11 +4833,19 @@ function larmaFordon(d) {
   const rutan = $('fordonslarm');
   if (!rutan) return;
   avbrytLarm?.();
-  avbrytLarm = larma(d, {
+  /*
+   * Rutan ska säga smeknamnet eller numret, inte "Fordon 3". Visningslagret
+   * slås upp via fordonets id — en läsning av gränssnittets egen nyckel,
+   * registret rörs inte. Rösten säger fortfarande aldrig ett nummer högt
+   * (se larm.js); den får bara namn användaren själv valt.
+   */
+  const v = d.fordonId ? lasFordonVisning()[d.fordonId] : null;
+  const smek = (v?.smeknamn || '').trim() || (!arAutoEtikett(d.etikett) ? d.etikett : '');
+  const visatNamn = smek || (v?.regnr ? visaPlat(v.regnr) : d.etikett);
+  avbrytLarm = larma({ ...d, etikett: smek }, {
     visa: t => {
-      $('larmNamn').textContent = t.etikett || 'Ditt fordon';
-      // Numret visas bara i larmögonblicket och lagras aldrig — se
-      // Fordonsregister. Rösten säger det aldrig högt.
+      $('larmNamn').textContent = visatNamn || 'Ditt fordon';
+      // Numret som lästes visas bara i larmögonblicket — se Fordonsregister.
       $('larmNr').textContent = visaPlat(t.plat);
       rutan.hidden = false;
     },
@@ -5051,7 +5077,7 @@ function wireModePicker() {
      * komma på plats så att föraren ser VILKET kort han hamnade i — annars
      * står han med ett textfält utan sammanhang.
      */
-    $('plNytt')?.focus({ preventScroll: true });
+    $('plNyaFordon')?.focus({ preventScroll: true });
   };
 
   $('btnPlLutning').onclick = async () => {
@@ -5396,80 +5422,240 @@ function wireSettingsUI() {
   bind('setPlPip', 'plPip', v => !!v, platePaVerkan);
 
   /*
-   * Egna fordon — som saltade hashar, aldrig som nummer.
+   * Egna fordon.
    *
-   * Textrutan som låg här sparade registreringsnummer i klartext i telefonens
-   * lagring. Nu lagras bara saltade hashar plus de troliga felläsningarna av
-   * varje nummer, så att en felläst femma ändå matchar. Inget läsbart nummer
-   * finns kvar — varken i lagringen, i en enhetsbackup eller i en felrapport.
+   * Det appen MATCHAR mot är saltade hashar i fordonsregistret (plate.js),
+   * plus de troliga felläsningarna av varje nummer — så att en felläst femma
+   * ändå träffar. Hasharna går inte att räkna baklänges, och det ändras inte.
    *
-   * Listan visar därför namnet du gett fordonet, inte numret. Det är inte en
-   * begränsning som gömts undan, det är hela poängen: appen kan inte visa ett
-   * nummer den inte har.
+   * Det listan VISAR kommer från visningslagret (se FORDON_VISNING_NYCKEL
+   * högre upp): numret användaren själv skrev in om sina egna bilar, sparat
+   * bara i den här telefonen. Tidigare visade listan bara "Fordon 3", och
+   * ägaren kunde inte se vilket fordon som var vilket.
    */
   const fordon = haFordonsregister();
+
+  let fordonNamnRedigeras = null;   // id för raden vars smeknamn redigeras
+  /*
+   * Ta bort sker direkt, med Ångra efteråt — samma mönster som rapporternas
+   * ångra-knapp (se undoBar). Ångra kan bara återskapa fordon vars nummer
+   * finns i visningslagret; gamla poster utan nummer får en fråga i förväg
+   * i stället, för dem finns det ingen väg tillbaka.
+   */
+  let fordonBorttaget = null;
+  let fordonAngraTimer = null;
+
+  function fordonKnapp(text, klass, fn) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = klass; b.textContent = text; b.onclick = fn;
+    return b;
+  }
 
   function renderFordon() {
     const ul = $('plFordonLista');
     if (!ul) return;
+
+    const visning = lasFordonVisning();
+    // Städa bort visningsposter vars fordon inte längre finns i registret.
+    const ids = new Set(fordon.lista().map(f => f.id));
+    let stadat = false;
+    for (const id of Object.keys(visning)) {
+      if (!ids.has(id)) { delete visning[id]; stadat = true; }
+    }
+    if (stadat) sparaFordonVisning(visning);
+
     ul.innerHTML = '';
     for (const f of fordon.lista()) {
+      const v = visning[f.id] || null;
+      const smek = (v?.smeknamn || '').trim() || (!arAutoEtikett(f.etikett) ? f.etikett : '');
       const li = document.createElement('li');
-      li.className = 'pl-item';
-      li.innerHTML = '<b class="pl-nr"></b><span class="pl-meta"></span>';
-      li.querySelector('.pl-nr').textContent = f.etikett;
-      li.querySelector('.pl-meta').textContent =
-        `${f.varianter} hash${f.varianter === 1 ? '' : 'ar'} · inget nummer lagrat`;
-      const bort = document.createElement('button');
-      bort.type = 'button';
-      bort.className = 'btn-ghost small';
-      bort.textContent = 'Ta bort';
-      bort.onclick = () => { fordon.taBort(f.id); renderFordon(); };
-      li.appendChild(bort);
+      li.className = 'pl-rad';
+
+      if (fordonNamnRedigeras === f.id) {
+        // Smeknamnet ändras på plats — numret ska aldrig behöva skrivas om.
+        const falt = document.createElement('input');
+        falt.type = 'text';
+        falt.className = 'pl-namn-falt';
+        falt.value = smek;
+        falt.placeholder = 'Smeknamn, t.ex. Volvon';
+        const spara = () => {
+          const namn = falt.value.trim();
+          const visn = lasFordonVisning();
+          if (visn[f.id]) visn[f.id].smeknamn = namn;
+          else if (namn) visn[f.id] = { regnr: '', smeknamn: namn };
+          sparaFordonVisning(visn);
+          // Registrets etikett följer med: det är den varningen och
+          // provknappen faller tillbaka på. Tom sträng lämnar den orörd.
+          if (namn) fordon.dopOm(f.id, namn);
+          fordonNamnRedigeras = null;
+          renderFordon();
+        };
+        falt.onkeydown = e => { if (e.key === 'Enter') spara(); };
+        const knappar = document.createElement('div');
+        knappar.className = 'pl-rad-knappar';
+        knappar.append(
+          fordonKnapp('Spara', 'btn-ghost small', spara),
+          fordonKnapp('Avbryt', 'btn-ghost small', () => { fordonNamnRedigeras = null; renderFordon(); }),
+        );
+        li.append(falt, knappar);
+        ul.appendChild(li);
+        queueMicrotask(() => falt.focus({ preventScroll: true }));
+        continue;
+      }
+
+      const info = document.createElement('div');
+      info.className = 'pl-rad-info';
+      const nr = document.createElement('b');
+      nr.className = 'pl-rad-nr';
+      const under = document.createElement('span');
+      under.className = 'pl-rad-namn';
+      if (v?.regnr) {
+        nr.textContent = visaPlat(v.regnr);
+        under.textContent = smek;
+      } else {
+        // Gammal post från tiden före visningslagret: numret hashades och
+        // slängdes, så det finns inget nummer att visa. Igenkänningen
+        // fungerar ändå — hasharna finns kvar.
+        nr.textContent = smek || f.etikett;
+        under.textContent = 'Numret sparades inte för visning när fordonet lades till. Varningen fungerar ändå.';
+      }
+      info.appendChild(nr);
+      if (under.textContent) info.appendChild(under);
+
+      const knappar = document.createElement('div');
+      knappar.className = 'pl-rad-knappar';
+      knappar.append(
+        fordonKnapp(smek ? 'Byt namn' : 'Ge namn', 'btn-ghost small',
+          () => { fordonNamnRedigeras = f.id; renderFordon(); }),
+        fordonKnapp('Ta bort', 'btn-ghost small danger', () => {
+          const kanAngras = !!v?.regnr;
+          if (!kanAngras) {
+            const vad = smek || f.etikett;
+            if (!confirm(`Ta bort ${vad}? Numret finns inte sparat, så det går inte att ångra — du får skriva in det igen om du ändrar dig.`)) return;
+          }
+          fordon.taBort(f.id);
+          const visn = lasFordonVisning();
+          delete visn[f.id];
+          sparaFordonVisning(visn);
+          clearTimeout(fordonAngraTimer);
+          fordonBorttaget = kanAngras ? { regnr: v.regnr, smeknamn: smek } : null;
+          if (fordonBorttaget) {
+            fordonAngraTimer = setTimeout(() => { fordonBorttaget = null; renderFordon(); }, 6000);
+          }
+          renderFordon();
+        }),
+      );
+
+      li.append(info, knappar);
       ul.appendChild(li);
     }
-    $('plFordonTom').hidden = fordon.antal > 0;
+
+    if (fordonBorttaget) {
+      const li = document.createElement('li');
+      li.className = 'pl-rad pl-rad-angra';
+      const text = document.createElement('span');
+      text.textContent = `${visaPlat(fordonBorttaget.regnr)} borttagen.`;
+      li.append(text, fordonKnapp('Ångra', 'btn-ghost small', async () => {
+        clearTimeout(fordonAngraTimer);
+        const b = fordonBorttaget;
+        fordonBorttaget = null;
+        if (!b) return;
+        const r = await fordon.laggTill(b.regnr, b.smeknamn || null);
+        if (r.id) {
+          const visn = lasFordonVisning();
+          visn[r.id] = { regnr: b.regnr, smeknamn: b.smeknamn || visn[r.id]?.smeknamn || '' };
+          sparaFordonVisning(visn);
+        }
+        renderFordon();
+      }));
+      ul.appendChild(li);
+    }
+
+    $('plFordonTom').hidden = fordon.antal > 0 || !!fordonBorttaget;
+  }
+
+  /*
+   * En rad ur fältet: ett regnummer, valfritt följt av ett smeknamn.
+   * "ABC123 Volvon", "ABC 123, Volvon" och "ABC123" ska alla fungera.
+   * Numret valideras med samma normalisering som läsaren använder, så det
+   * som sparas för visning är exakt det som hashas.
+   */
+  function tolkaFordonsrad(rad) {
+    const t = rad.trim();
+    if (!t) return null;
+    let nrDel, namnDel;
+    const skilj = t.search(/[,;]/);
+    if (skilj >= 0) {
+      nrDel = t.slice(0, skilj);
+      namnDel = t.slice(skilj + 1);
+    } else {
+      // Numret kan vara skrivet som ett ord ("ABC123") eller två ("ABC 123").
+      const ord = t.split(/\s+/);
+      if (ord.length >= 2 && normaliseraPlat(ord[0] + ord[1])) {
+        nrDel = ord[0] + ord[1];
+        namnDel = ord.slice(2).join(' ');
+      } else {
+        nrDel = ord[0];
+        namnDel = ord.slice(1).join(' ');
+      }
+    }
+    return { regnr: normaliseraPlat(nrDel), smeknamn: (namnDel || '').trim(), rad: t };
   }
 
   $('btnPlLagg').onclick = async () => {
-    const r = await fordon.laggTill($('plNytt').value, $('plNyttNamn').value);
-    // Numret ska inte ligga kvar i fältet efteråt.
-    $('plNytt').value = '';
-    if (r.status === 'ogiltig') {
-      $('plEgnaStatus').textContent = 'Känns inte igen som ett svenskt registreringsnummer.';
-      return;
+    const falt = $('plNyaFordon');
+    const rader = String(falt.value || '').split('\n');
+    let nya = 0, fanns = 0, lagringFull = false;
+    const ejLasta = [];   // rader som inte gick att tolka — de får ligga kvar
+    const kvar = [];      // allt som ska stå kvar i fältet efteråt
+    const visn = lasFordonVisning();
+
+    for (const rad of rader) {
+      const p = tolkaFordonsrad(rad);
+      if (!p) continue;
+      if (!p.regnr) { ejLasta.push(p.rad); kvar.push(p.rad); continue; }
+      const r = await fordon.laggTill(p.regnr, p.smeknamn || null);
+      if (r.status === 'ogiltig') { ejLasta.push(p.rad); kvar.push(p.rad); continue; }
+      if (r.status === 'fanns') {
+        fanns++;
+        // Passa på att fylla i visningsdata som saknas för en gammal post.
+        if (!visn[r.id]?.regnr) {
+          visn[r.id] = { regnr: p.regnr, smeknamn: visn[r.id]?.smeknamn || p.smeknamn };
+        }
+        continue;
+      }
+      if (r.sparad === false) { lagringFull = true; kvar.push(p.rad); continue; }
+      visn[r.id] = { regnr: p.regnr, smeknamn: p.smeknamn };
+      nya++;
     }
-    if (r.status === 'fanns') {
-      $('plEgnaStatus').textContent = `Fordonet finns redan (${r.etikett}).`;
-      return;
-    }
-    if (r.sparad === false) {
-      $('plEgnaStatus').textContent = 'Kunde inte spara — telefonens lagring är full eller avstängd.';
-      return;
-    }
-    $('plNyttNamn').value = '';
-    /*
-     * Antalet hashar stod förut i klartext här, och det var missvisande.
-     * "1 hash" läses som "ingen feltolerans", vilket är fel: de flesta
-     * felläsningar rättas redan av normaliseringen innan uppslaget sker —
-     * ett A på en sifferposition blir en fyra. Varianterna behövs bara för
-     * de förväxlingar formatet inte kan avgöra, som O mot D. Ett nummer
-     * utan sådana tecken får därför en enda hash och är ändå fullt skyddat.
-     * Siffran svarade alltså på en fråga ingen ställt, och gav fel svar på
-     * den man faktiskt hade.
-     */
-    $('plEgnaStatus').textContent =
-      `Sparade ${r.etikett}. Numret lagras inte — bara en hash som appen kan känna igen det på.`;
+    sparaFordonVisning(visn);
+
+    // Ogiltiga rader försvinner inte — de står kvar i fältet så de går att rätta.
+    falt.value = kvar.join('\n');
+
+    const kvitto = [];
+    if (nya) kvitto.push(nya === 1 ? '1 tillagd' : `${nya} tillagda`);
+    if (fanns) kvitto.push(fanns === 1 ? '1 fanns redan' : `${fanns} fanns redan`);
+    if (ejLasta.length === 1) kvitto.push(`1 gick inte att läsa: "${ejLasta[0]}"`);
+    else if (ejLasta.length > 1) kvitto.push(`${ejLasta.length} gick inte att läsa — de står kvar i fältet`);
+    if (lagringFull) kvitto.push('kunde inte spara allt — telefonens lagring är full eller avstängd');
+    $('plLaggKvitto').textContent = kvitto.length
+      ? kvitto.join(' · ')
+      : 'Skriv ett registreringsnummer först, till exempel ABC 123.';
+
     renderFordon();
   };
 
-  // Att kunna prova ett nummer är enda sättet att kontrollera att rätt fordon
-  // ligger inne, när numret inte går att visa.
+  // Prova-knappen är kvar för att kunna kontrollera igenkänningen — och för
+  // gamla poster där numret aldrig sparades för visning.
   $('btnPlProva').onclick = async () => {
     const t = await fordon.slaUpp($('plProva').value);
     $('plProva').value = '';
+    const namn = t
+      ? (lasFordonVisning()[t.id]?.smeknamn || '').trim() || t.etikett
+      : '';
     $('plEgnaStatus').textContent = t
-      ? `Ja — det numret hör till ${t.etikett}${t.exakt ? '' : ' (som en trolig felläsning)'}.`
+      ? `Ja — det numret hör till ${namn}${t.exakt ? '' : ' (som en trolig felläsning)'}.`
       : 'Nej, det numret ligger inte i registret.';
   };
 

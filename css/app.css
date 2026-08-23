@@ -490,7 +490,13 @@ input[type=range] { accent-color: var(--accent); height: 44px; }
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 2px; font-size: 12px; color: var(--fg-2); font-weight: 600;
 }
-.tab span { font-size: 20px; }
+/* 15 px och inte 20 som förut. Uppmätt när Butik blev femte fliken:
+   vid 20 px summerar de fem flikarna till 395 px på en 375-skärm —
+   "Inställningar" (111 px text) trycker ut baren och klipps mot högerkanten.
+   Vid 15 px är summan 312 px och även en 320-skärm rymmer alla fem utan
+   kapning. 15 px är samtidigt golvet för läsbar text i appen, så mindre än
+   så här får etiketten aldrig bli. */
+.tab span { font-size: 15px; }
 .tab.active { color: var(--accent); }
 
 /* ---------- Dashcam ---------- */
@@ -608,9 +614,9 @@ input[type=range] { accent-color: var(--accent); height: 44px; }
    Utan regel ärvde de `color: inherit` från button/input/select-raden längst
    upp — alltså --fg, nästan vitt — ovanpå webbläsarens vita standardbotten.
    Uppmätt kontrast 1,11:1 mot kravet 4,5. Fältet ser användbart ut ända tills
-   man skriver i det, eftersom platshållaren ritas grå. Mätt på #plNytt,
-   #plNyttNamn och #plProva, alltså Bilingenkännarens tre fält — de enda
-   ställen i appen där man skriver in ett registreringsnummer.
+   man skriver i det, eftersom platshållaren ritas grå. Mätt på #plProva,
+   Bilingenkännarens prova-fält. (Inmatningen av nya fordon sker i textytan
+   #plNyaFordon, som har egna regler under "Mina fordon" längre ner.)
 
    :not på kryssruta och reglage: båda har egna, helt andra regler nedanför
    respektive ovanför, och en bakgrund här hade ätit upp vippan.
@@ -655,7 +661,7 @@ input[type=range] { accent-color: var(--accent); height: 44px; }
 #roadmapChain  { min-height: 260px; }
 #planList      { min-height: 210px; }
 #leaderboard   { min-height: 176px; }
-#shopList      { min-height: 132px; }
+#butikLista    { min-height: 132px; } /* hette #shopList när hyllan bodde i Inställningar */
 #inkommandeSpar{ min-height: 120px; }
 #repBreakdown  { min-height: 88px; }
 #hotspotList   { min-height: 88px; }
@@ -1156,8 +1162,34 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   color: var(--warn); background: rgba(255,176,32,.14); border-radius: 6px;
   padding: 3px 8px; margin: var(--sp-2) 0;
 }
-.product .btn-ghost { display: block; margin-top: 4px; }
+/* min-height 48 och inte .small-klassens 44: knapparna bor numera i en
+   egen flik man använder i bilen, och 48 px är appens golv för träffytor.
+   Uppmätt 44 px innan raden lades till. */
+.product .btn-ghost { display: block; margin-top: 4px; min-height: 48px; }
 .product .btn-ghost.chosen { border-color: var(--ok); color: var(--ok-2); }
+
+/* ---------- Butik (fliken) ----------
+   Korten återanvänder .shop/.product ovanför — hyllan flyttade från
+   Inställningar till en egen vy, inte till en egen stil. Det enda nya är
+   köpknappen: en LÄNK som ser ut som .btn-primary. Länk och inte knapp,
+   för att kassan öppnas i en egen flik och popup-blockerare litar på en
+   riktig <a href>. Måtten är .btn-primarys — 48 px är golvet för allt
+   som ska träffas i en bil. */
+a.btn-kop {
+  display: flex; align-items: center; justify-content: center;
+  box-sizing: border-box; width: 100%; min-height: 48px;
+  margin-top: var(--sp-2); padding: 13px 18px;
+  background: var(--accent); color: var(--pa-farg);
+  border-radius: var(--radius-2);
+  font-weight: 700; font-size: var(--t-base);
+  text-decoration: none; text-align: center;
+}
+/* Produktbild i stället för emoji när posten i data/butik.json har en.
+   Fast bredd så prod-body får samma vänsterkant som med emojin. */
+.prod-bild {
+  flex: none; width: 64px; height: 64px; object-fit: cover;
+  border-radius: var(--radius-2); background: var(--bg-2);
+}
 
 /* Statusrad under användarnamnsfältet */
 /* min-height i em och inte 0: statusraden fylls i efter att fältet lämnats,
@@ -1479,6 +1511,58 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 
 .pl-item.egen .pl-nr { color: #2fd07a; }
 .pl-item.egen { background: rgba(47, 208, 122, .07); }
+
+/* ---- Mina fordon: ett fält, stora rader ----
+   Ett textfält för en eller flera rader — man ska kunna klistra in en hel
+   lista. Monospace och versaler: fältet ska se ut som det man skriver i det,
+   registreringsnummer. */
+#plNyaFordon {
+  width: 100%; box-sizing: border-box;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line); border-radius: var(--radius-3);
+  background: var(--bg-3); color: var(--fg);
+  font: 600 17px/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .05em;
+  resize: vertical;
+  min-height: 96px;
+}
+#plNyaFordon::placeholder { color: var(--fg-dim); font-weight: 400; }
+
+/* Raderna i fordonslistan: regnumret är det man letar efter, så det står
+   först och störst, i skyltformat. Smeknamnet under i mindre stil. Knapparna
+   ligger till höger och är minst 44px höga (btn-ghost.small). */
+.pl-rad {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-1);
+  border-bottom: 1px solid var(--line);
+  min-height: 64px;
+}
+.pl-rad-info { min-width: 0; }
+.pl-rad-nr {
+  display: block;
+  font: 700 20px/1.2 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .08em; font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.pl-rad-namn {
+  display: block; margin-top: 2px;
+  /* --t-md och inte --t-sm: 15px är appens golv, även för underrader. */
+  font-size: var(--t-md); color: var(--fg-2);
+}
+.pl-rad-knappar { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+/* Smeknamnsfältet vid redigering på plats — samma mått som appens övriga
+   textfält, 48px högt. */
+.pl-namn-falt {
+  flex: 1; min-width: 0; min-height: 48px;
+  background: var(--bg-3); border: 1px solid var(--line);
+  border-radius: var(--radius-3); padding: 10px var(--sp-3);
+  color: var(--fg); font-size: var(--t-base);
+}
+/* Ångra-raden efter en borttagning — samma sex sekunder som rapporternas
+   ångra-knapp. */
+.pl-rad-angra { color: var(--fg-2); font-size: var(--t-md); }
 
 #setPlEgna {
   width: 100%;
@@ -2179,3 +2263,47 @@ h2.grupp[role="button"][aria-expanded="true"]::after {
   .tour-ring::after { opacity: .75; }
   .rm-node.now .rm-dot::after { opacity: .9; }
 }
+
+/* ================================================================
+   DASHCAM: VILOLÄGET — kameramenyn INNAN kameran är igång.
+
+   Ägarens ord: "då står ju kameraläge i mitten av skärmen, sen är
+   det svart ovanför. Man vet typ inte ens att man ska scrolla ner
+   för att starta inspelning."
+
+   Det svarta var canvasen. Den ligger alltid först i .dc-stage och
+   är 300×150 pixlar tills kameran startats — utan bild blir den,
+   skalad till full bredd, ett halvskärmshögt svart fält som ser ut
+   som en trasig kamera och trycker ner allt val under vecket.
+   Innan kameran är igång FINNS ingen bild, alltså visas ingen
+   bildyta: så länge vilolaget (#dcIdle) syns göms canvasen och
+   scenens svarta bakgrund släpps. När kameran startar gömmer JS
+   #dcIdle och båda reglerna slutar gälla av sig själva — körläget
+   är helt orört, ingen JS-ändring behövdes.
+   (#dcCanvas i selektorn för att vinna över `#dcCanvas{display:block}`
+   ovan; canvas-regeln tar skyltläsarens id-lösa canvas.)
+   ================================================================ */
+.dc-stage:has(> .dc-idle:not([hidden])) { background: var(--bg); }
+.dc-stage:has(> .dc-idle:not([hidden])) > #dcCanvas,
+.dc-stage:has(> .dc-idle:not([hidden])) > canvas { display: none; }
+
+/* Valet ska rymmas utan rullning på en liten telefon (375×667):
+   rubrik + två lägeskort + startknapp. Jätteikonen är borta och
+   luften stramare upptill — varje sparad rad är en rad närmare
+   startknappen. */
+.dc-idle { padding: 14px 16px 28px; }
+.dc-idle h2 { margin: 0; font-size: var(--t-xl); }
+
+/* Stegtexterna: "vad gör jag NU", ett steg i taget. Full textfärg
+   (.dc-idle p sätter --fg-2, därför två klasser i selektorn) och
+   stram marginal så knappen hålls högt på skärmen. */
+.dc-idle .dc-steg {
+  color: var(--fg); font-weight: 600;
+  margin: var(--sp-3) auto var(--sp-2);
+}
+
+/* Förklaringarna EFTER knappen. Ingen ram och ingen hård kant i
+   botten — texten ska själv sticka upp under knappen och visa att
+   sidan fortsätter, i stället för att en kantlinje ser ut som ett
+   slut. */
+.dc-mer { margin-top: var(--sp-5); }
