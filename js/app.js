@@ -56,6 +56,16 @@ import { beskrivning, sammanfattaKort, sammanfattaTal, farBeskrivas } from './sa
  * inte mindre trasig än en app som inte startar.
  */
 import { visa as visaYtan, stang as stangYtan } from './varningsyta.js';
+/*
+ * Rörelsen i navigationen — vybyten, landningsringen, tryckkvittensen.
+ *
+ * Statisk import, till skillnad från inställningsmodulen längre ner. Skälet
+ * är motsatsen till varningsytans: den här filen får inte laddas MITT I ett
+ * vybyte. En dynamisk import hade betytt att de första trycken efter start
+ * sker utan riktning, alltså precis de tryck där föraren fortfarande lär sig
+ * var sakerna ligger. Filen är dessutom liten och har noll beroenden.
+ */
+import { Rorelse } from './rorelse.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -345,9 +355,33 @@ let currentAlert = null;
  * över konstruktionen — det är därför provet kan tala med samma store,
  * samma speaker och samma engine som appen kör med.
  */
+/*
+ * js/inst.js när den finns. Se laddaInst() längre ner, där hela resonemanget
+ * om den dynamiska importen står.
+ *
+ * Deklarationen står HÄR, ovanför boot(), och inte bredvid sina funktioner.
+ * boot() körs på raden nedanför medan filen fortfarande evalueras, och en let
+ * som deklareras längre ner är då i sin döda zon: laddaInst() kastar
+ * ReferenceError innan appen ens ritat en karta. Funktionsdeklarationer
+ * hissas, variabler gör det inte — och felet syns bara som en tyst avvisad
+ * promise, alltså en app där genvägarna slutat fungera utan att någon vet om
+ * det.
+ */
+let instModul = null;
+
 if (!globalThis.PV_INGEN_BOOT) boot();
 
 async function boot() {
+  /* Först av allt: rörelsens stilmall och tryckkvittensen.
+     Före kartan och före wireUI(), för att inget vybyte ska hinna ske innan
+     stilen finns. Ett vybyte utan stilmall är inte trasigt — det blir bara
+     ett hopp — men det första trycket i appen är det som lär föraren om
+     gränssnittet svarar eller inte. */
+  Rorelse.start();
+  /* Inställningsmodulen hämtas i bakgrunden och väntas aldrig in. Se
+     laddaInst(): saknas filen tar reserven i oppnaInstallning() över. */
+  laddaInst();
+
   speaker.enabled = settings.tts;
   speaker.volume = settings.volume;
   speaker.rate = settings.rate;
@@ -1598,13 +1632,12 @@ const BEH_CSS = `
   padding: 9px 13px; font-size: 13.5px; font-weight: 650; font-family: inherit;
   background: var(--warn, #ffb020); color: #2a1a02; cursor: pointer;
 }
-/* Reservmarkering när js/peka.js inte finns. Ingen pil, men elementet ska
-   ändå gå att hitta med blicken efter en rullning. */
-.pv-beh-blink { animation: pvBehBlink 1.15s ease-out 3; border-radius: 12px; }
-@keyframes pvBehBlink {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(61,157,255,0); }
-  35%      { box-shadow: 0 0 0 4px rgba(61,157,255,.55), 0 0 22px rgba(61,157,255,.5); }
-}
+/* Reservmarkeringen bor inte längre här.
+   Den var en box-shadow som pulsade i 3,45 sekunder: en målad egenskap som
+   ritas om varje bildruta, på en telefon som samtidigt ritar en karta och
+   läser en videoström. Landningsringen i js/rorelse.js gör samma jobb med
+   transform och opacity, och står still när telefonen bett om mindre
+   rörelse. Se pekaPaBehorighet(). */
 `;
 
 function behCss() {
@@ -1741,8 +1774,12 @@ function stallInBehRadTopp() {
 async function fixaBehorighet(nyckel = 'plats') {
   await pekaPaBehorighet(nyckel, {
     forbered: async () => {
-      showView('settings');
-      $(BEH_AVSNITT)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      /* oppnaInstallning() och inte showView + scrollIntoView: kortet kan
+         ligga i en hopfälld grupp, och då rullar scrollIntoView ingenstans
+         utan att säga till. Anropet är synkront hela vägen — pekaren väntar
+         in elementet själv, men den här funktionen får inte lämna ifrån sig
+         kontrollen mitt i en gest. */
+      oppnaInstallning(BEH_AVSNITT);
 
       // Snabb ritning här, med flit. Den fulla frågar service workern om
       // prenumerationen och den kollen får ta upp till tio sekunder — knappen
@@ -1791,14 +1828,19 @@ async function pekaPaBehorighet(nyckel, { forbered = null } = {}) {
     return;
   }
 
-  // Reserv utan pil: rulla fram knappen och blinka till om den. Sämre, men
-  // föraren står inte utan väg.
-  behCss();
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  el.classList.remove('pv-beh-blink');
-  void el.offsetWidth;                       // tvinga om animationen
-  el.classList.add('pv-beh-blink');
-  setTimeout(() => el.classList.remove('pv-beh-blink'), 4200);
+  /*
+   * Reserv utan pil: ta fram knappen och ringa in den. Sämre, men föraren
+   * står inte utan väg.
+   *
+   * Gick tidigare via scrollIntoView + en blinkande box-shadow i 3,45
+   * sekunder. Två fel i ett: box-shadow ritas om varje bildruta medan kartan
+   * och dashcamen redan tävlar om samma bildrutor, och en markering som
+   * pulsar i över tre sekunder blir en sak man lär sig titta förbi.
+   * Rorelse.landa() gör samma jobb med transform och opacity på en halv
+   * sekund — och står still i stället för att pulsa när telefonen bett om
+   * mindre rörelse.
+   */
+  oppnaInstallning(el);
 }
 
 /* ---- Kortet i inställningarna ---- */
@@ -4102,6 +4144,16 @@ window.polisvakt = {
   get nav() { return nav; },
   // Gruppnotisreglagets fem lägen, för mätning. Se ritaGruppnotis.
   ritaGruppnotis: s => ritaGruppnotis(s),
+  /*
+   * Genvägarna och rörelsen, för mätning i en riktig telefon.
+   *
+   * Animationer går inte att bedöma i en skrivbordsflik: de tappar bildrutor
+   * först när kartan ritas och dashcamen läser en videoström samtidigt. Med
+   *   polisvakt.oppnaInstallning('setPlPip')
+   * går varje genväg att provköra utan att först försätta telefonen i det
+   * läge som normalt utlöser den — nekade notiser, till exempel.
+   */
+  oppnaInstallning, rorelse: Rorelse,
 };
 
 /* ================= Gränssnitt ================= */
@@ -4122,6 +4174,25 @@ function wireUI() {
   document.querySelectorAll('[data-report]').forEach(btn => setupHoldToReport(btn));
 
   $('btnFollow').onclick = () => map.setFollow(true);
+
+  /*
+   * GPS-chippet får ett riktigt jobb.
+   *
+   * De fyra chippen i HUD:en är <button> men hade ingen enda klickhanterare —
+   * fyra träffytor som ser tryckbara ut och inte gör något. Det är den sortens
+   * detalj som lär föraren att appen inte svarar, och den lärdomen tar han
+   * sedan med sig till knappar som FAKTISKT gör något.
+   *
+   * Chippet visar täckningen, alltså svarar det på frågan "var får jag
+   * varningar?". Ett tryck går därför dit den frågan ställs. Finns inte
+   * rubriken i den här versionen av index.html öppnas ändå inställningarna —
+   * en genväg som landar en skärm fel är oändligt mycket bättre än en knapp
+   * som inte gör något.
+   *
+   * Rundturens steg mot #chips (js/tour.js rad 63) pekar fortfarande på samma
+   * element, så guiden är orörd.
+   */
+  $('chipGps').onclick = () => oppnaInstallning('covRubrik');
   // Pilen och inte funktionsreferensen: onclick skickar med händelseobjektet
   // som första argument, och då hade { avForaren } lästs ur en MouseEvent och
   // alltid blivit false. Ett tryck på krysset ska stänga varningen överallt,
@@ -4283,11 +4354,25 @@ let ritaGruppnotis = () => {};
 let synkaNotisOmfang = () => {};
 
 function showView(name) {
+  /* Vilken vy vi kom ifrån, läst INNAN något ändras. Riktningen är hela
+     poängen med rörelsen: en vy som bara tonar in säger att något bytte, en
+     vy som kommer in från höger säger VARIFRÅN den kom. Utan den här raden
+     hade rorelse.js fått gissa, och en gissad riktning är värre än ingen. */
+  const forraVyn = document.body.dataset.view;
+
   document.body.dataset.view = name;
   for (const v of ['map', 'dashcam', 'chatt', 'settings']) {
     $('view-' + v).hidden = v !== name;
   }
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+
+  /* Efter hidden-bytet och före allt tungt nedanför.
+     Efter, för att animationen ska ligga på en vy som redan står framme —
+     ett element med display: none animeras inte. Före renderingarna, för att
+     den första bildrutan ska hinna ritas medan listorna fortfarande räknas.
+     Rorelse.bytVy() gör själv ingenting när rundturen, mörkt körläge eller en
+     varning är uppe; se farRoraVyn() i js/rorelse.js. */
+  Rorelse.bytVy(forraVyn, name);
 
   // Skyltläsaren stoppas när man lämnar vyn. Till skillnad från dashcamen,
   // som ska fortsätta filma medan man tittar på kartan, gör läsaren ingen
@@ -4305,6 +4390,85 @@ function showView(name) {
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
   if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderShop(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); ritaBehKort(); }
+}
+
+/* ================= Genvägar in i inställningarna ================= */
+//
+// Appen har tre knappar som inte gör något själva, utan skickar föraren till
+// ett reglage längre in: "Fixa det" i påminnelseraden, "Mina fordon" i
+// dashcamvyn och GPS-chippet på kartan. Alla tre gick tidigare samma väg:
+// showView('settings') och sedan scrollIntoView på ett id.
+//
+// Den vägen har ett tyst fel. scrollIntoView mot ett element som ligger i en
+// hopfälld grupp gör INGENTING och säger ingenting — inget kastat fel, ingen
+// konsolrad, bara en vy som står kvar högst upp. Det yttrar sig som "knappen
+// gör inget ibland", och det är exakt den knapp som trycks av någon vars
+// notiser redan inte fungerar.
+//
+// Därför går alla tre numera genom oppnaInstallning(). Den öppnar gruppen
+// först, rullar sedan, och ringar in det man landade på.
+
+/**
+ * Hämta inställningsmodulen.
+ *
+ * DYNAMISK import, till skillnad från allt annat i huvudet på filen, och det
+ * är ett medvetet undantag. Varningsytan importeras statiskt just för att ett
+ * fel där ska ta hela appen med sig — en app som varnar utan att synas är
+ * inte mindre trasig än en app som inte startar. En genväg till ett reglage
+ * är inte i den klassen. Saknas js/inst.js i en utrullning ska föraren få
+ * dagens beteende, inte en vit skärm.
+ *
+ * Laddas i boot() och inte vid första trycket: hämtningen tar ett par
+ * hundradelar på fyra streck, och den ska vara avklarad innan någon trycker.
+ */
+async function laddaInst() {
+  if (instModul) return instModul;
+  try { instModul = await import('./inst.js'); }
+  catch { instModul = null; }                 // filen finns inte — reserven tar över
+  return instModul;
+}
+
+/**
+ * Öppna inställningarna och lyft fram ett reglage.
+ *
+ * Enda tillåtna vägen till ett id inuti inställningsvyn. Rulla aldrig direkt
+ * till ett id härifrån — gruppen kan vara stängd, och då är rullningen tyst.
+ *
+ * @param {string|Element} mal  id eller elementet självt
+ */
+function oppnaInstallning(mal) {
+  /* Bara när vi inte redan står i vyn. showView('settings') ritar om tio
+     listor i ett svep, och två genvägar efter varandra — pekaren som
+     misslyckas och faller ner i sin reserv, till exempel — hade då kostat
+     två fulla ritningar mitt i en gest. */
+  if (document.body.dataset.view !== 'settings') showView('settings');
+
+  /* Finns inställningsmodulen äger den vägen — den vet vilken grupp reglaget
+     bor i. Svarar den med ingenting tar reserven nedanför över ändå. Priset
+     är i värsta fall en ring för mycket på samma element; vinsten är att en
+     halvfärdig modul aldrig kan återinföra just den tysta no-op som hela det
+     här stycket finns för att ta bort. */
+  const via = instModul?.oppnaInstallning;
+  if (typeof via === 'function') {
+    try { const svar = via(mal); if (svar) return svar; }
+    catch { /* faller ner i reserven nedan */ }
+  }
+
+  const el = typeof mal === 'string' ? $(mal) : mal;
+  if (!el) return null;
+
+  /* Reserv utan js/inst.js: ta fram elementet själva.
+     Bara element som bär data-grupp rörs — det är hopfällningens egen
+     markering. Att blint ta bort hidden uppåt i trädet hade väckt kort som
+     är dolda av helt andra skäl, till exempel för att telefonen saknar
+     funktionen de beskriver. */
+  for (let n = el; n && n !== document.body; n = n.parentElement) {
+    if (n.hidden && n.dataset && 'grupp' in n.dataset) n.hidden = false;
+  }
+
+  Rorelse.rullaTill(el, { block: 'start' });
+  Rorelse.landa(el);
+  return el;
 }
 
 function renderStatus() {
@@ -4869,12 +5033,25 @@ function wireModePicker() {
    */
   $('btnPlMinaFordon').onclick = () => {
     stoppaPlate();
-    showView('settings');
-    const rubrik = $('minaFordonRubrik');
-    rubrik?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    // Fokus på fältet, inte bara rullning: den som tryckt på knappen vill
-    // skriva ett nummer, och tangentbordet ska upp utan ett extra tryck.
-    setTimeout(() => $('plNytt')?.focus(), 420);
+    oppnaInstallning('minaFordonRubrik');
+    /*
+     * Fokus på fältet, inte bara rullning: den som tryckt på knappen vill
+     * skriva ett nummer, och tangentbordet ska upp utan ett extra tryck.
+     *
+     * Direkt, utan de 420 ms som stod här förut. Fördröjningen var en
+     * gissning på hur lång tid vyn och rullningen skulle ta, och en gissning
+     * som blir för kort ger fokus åt ett fält som fortfarande är dolt —
+     * alltså inget tangentbord alls. oppnaInstallning() är synkron: fältet
+     * finns och är framme när den returnerat. Rullningen är mjuk och pågår
+     * fortfarande, men focus() bryter inte en rullning, den flyttar bara
+     * markören.
+     *
+     * preventScroll, för att fokus annars drar fram fältet med ett hopp och
+     * äter upp den mjuka rullningen som just startat. Rubriken ska hinna
+     * komma på plats så att föraren ser VILKET kort han hamnade i — annars
+     * står han med ett textfält utan sammanhang.
+     */
+    $('plNytt')?.focus({ preventScroll: true });
   };
 
   $('btnPlLutning').onclick = async () => {
@@ -5431,7 +5608,12 @@ function wireSettingsUI() {
   $('coverageDesc').textContent = coverage.describe();
 
   $('btnRoute').onclick = async () => {
-    const dest = $('routeDest').value.trim();
+    /* covRouteDest, inte routeDest. Kartvyns egen ruttsökruta äger id:t
+       routeDest, och den låg först i dokumentet — getElementById gav alltså
+       kartans fält. Mätt: resmål skrivet i inställningarna gav tom sträng
+       här, funktionen returnerade tyst, och täckningsläget "Längs min rutt"
+       gick inte att ställa in alls. */
+    const dest = $('covRouteDest').value.trim();
     if (!dest) return;
     const fix = geo.position;
     if (!fix) { toast('Väntar på GPS innan rutten kan beräknas.'); return; }
@@ -8203,7 +8385,15 @@ function renderVersion(state = 'ok', note = '') {
   }[state] || {};
 
   mark.textContent = looks.icon;
-  card.className = 'card card-update ' + (looks.cls || '');
+  /* classList och inte className.
+     En hel omskrivning av class-attributet raderar ALLT annat som ligger på
+     kortet, och det gör två moduler numera: js/inst.js märker hopfällda kort
+     med inst-fallt, och js/rorelse.js lägger rr-avsloja och rr-landad under
+     sina animationer. Mätt: kortet stod kvar synligt i en hopfälld grupp
+     eftersom renderVersion() körde efter hopfällningen och tog bort märket —
+     ett kort som inte gick att fälla ihop, utan felmeddelande. */
+  card.classList.remove('ok', 'busy', 'found', 'warn');
+  if (looks.cls) card.classList.add(looks.cls);
   $('updateState').textContent = looks.text;
 }
 

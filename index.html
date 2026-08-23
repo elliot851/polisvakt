@@ -583,7 +583,776 @@
 <div id="view-settings" class="view scroll" hidden>
   <h1 class="page-title">Inställningar</h1>
 
-  <section class="card card-update" id="updateCard">
+  <!-- SÖKRADEN, och varför den ligger först och klistrad.
+
+       Vyn har 41 innehållsblock. Den som vet vad han letar efter ska inte
+       behöva veta vilken grupp vi råkade lägga det i — han ska kunna skriva
+       "regnr" och få upp Bilingenkännaren. Sökningen är alltså inte en
+       bekvämlighet, det är den andra vägen in, och den enda som inte kräver
+       att vår gruppering råkar stämma med hans bild av appen.
+
+       Ingen autofokus. Öppnar man inställningarna i en bil ska tangentbordet
+       inte hoppa upp och äta halva skärmen; den som vill söka trycker.
+
+       "Öppna allt" står bredvid med flit. Hopfällda grupper gör att man
+       aldrig ser Vinterläge av misstag när man rullar förbi, och den
+       upptäckten var värd något. Ett tryck ger tillbaka den gamla flata
+       rullen, med gruppnamnen kvar som landmärken.
+
+       Raden står med hidden, och det är inte en bugg. js/inst.js tar bort
+       det när lyssnarna finns. Uteblir modulen — trasig utrullning, gammal
+       service worker — finns ingen sökruta alls, och det är avsikten: ett
+       fält som tar emot text utan att filtrera något är sämre än inget
+       fält. Samma resonemang styr grupprubrikerna nedanför, som varken bär
+       role, tabindex eller aria-expanded här. -->
+  <div class="sokrad" hidden>
+    <input id="sokInstallning" type="search" inputmode="search" autocomplete="off"
+           enterkeyhint="search" placeholder="Sök inställning, t.ex. regnr"
+           aria-label="Sök inställning">
+    <button class="btn-ghost small" id="btnOppnaAlla" type="button">Öppna allt</button>
+  </div>
+  <p class="hint" id="sokTraffar" role="status" aria-live="polite"></p>
+
+  <!-- ============================================================
+       HJÄLTEYTAN — utanför alla grupper, aldrig hopfällbar.
+
+       Av 41 avsnitt är det exakt ETT som rörs medan bilen rullar: rutten
+       under "Var vill du bli varnad?". Då är det också det enda avsnitt som
+       aldrig får kunna gömma sig bakom en stängd grupprubrik.
+
+       "Plats och notiser" ligger kvar direkt under, av samma skäl som förut:
+       inget nedanför fungerar utan de två tillstånden, och påminnelseraden
+       högst upp i appen rullar hit.
+
+       De två korten bär data-grupp="hjalte" så att SÖKNINGEN når dem — skriver
+       man "rutt" ska rutten hittas. Men de bär också data-alltid-oppen="1",
+       och den flaggan är ett kontrakt mot js/inst.js: gruppen "hjalte" har
+       ingen grupprubrik och får ALDRIG hidden-sättas av kollapslogiken. En
+       loop som stänger varje grupp den hittar skulle annars gömma hjälteytan
+       vid första start, och då är det enda avsnitt som rörs under körning det
+       enda man inte kommer åt.
+       ============================================================ -->
+
+  <section class="card" data-grupp="hjalte" data-alltid-oppen="1"
+           data-sok="var vill du bli varnad område radie rutt täckning karta stad län västerås västmanland resmål mål coverage">
+    <!-- id:t covRubrik är rullmålet för GPS-chippet i kartvyn.
+         Ändras det måste js/app.js ändras samtidigt. -->
+    <h3 id="covRubrik">Var vill du bli varnad?</h3>
+    <!-- Nuvarande val i klartext, direkt under rubriken och inte längst ner
+         i kortet: den som öppnar vyn för att kontrollera vad som gäller ska
+         få svaret innan han läst en enda inställning. -->
+    <p class="hint" id="coverageDesc"></p>
+    <label class="row"><span>Område</span>
+      <select id="setCoverage">
+        <option value="radius">Radie runt mig</option>
+        <option value="city">Hela Västerås</option>
+        <option value="county">Hela Västmanland</option>
+        <option value="route">Längs min rutt</option>
+      </select>
+    </label>
+    <label class="row" id="radiusRow"><span>Radie <b id="setCovRadiusVal">30 km</b></span>
+      <input type="range" id="setCovRadius" min="5000" max="80000" step="5000" value="30000"></label>
+    <div id="routeRow" hidden>
+      <!-- covRouteDest och INTE routeDest.
+           Kartvyns ruttsökruta (längre upp i filen) äger id:t routeDest, och
+           två element med samma id är inte ett skönhetsfel: getElementById
+           returnerar det första, alltså kartans. Mätt före omdöpningen —
+           föraren skrev sitt resmål här, tryckte Beräkna, och absolut
+           ingenting hände, utan felmeddelande, eftersom js/app.js läste ett
+           tomt fält i en annan vy. Byts namnet tillbaka måste
+           btnRoute-hanteraren i js/app.js ändras i samma svep. -->
+      <label class="stack"><span>Vart ska du?</span>
+        <span class="inline">
+          <input type="text" id="covRouteDest" placeholder="t.ex. Stockholm" autocomplete="off">
+          <button class="btn-ghost small" id="btnRoute" type="button">Beräkna</button>
+        </span>
+      </label>
+      <button class="btn-ghost small" id="btnRouteClear" type="button">Rensa rutt</button>
+    </div>
+    <!-- Den dyra förväxlingen, utskriven i klartext.
+         Det finns två reglage i appen som båda frågar "var?" och båda har en
+         kilometerslider. Det här styr vad som ritas och sägs MEDAN du kör.
+         Det andra, under Notiser, styr vad som väcker telefonen när appen är
+         STÄNGD. Intervallen skiljer sig (80 km mot 300 km), så den som
+         ställer fel reglage märker det inte förrän varningen uteblir. -->
+    <p class="hint">Det här styr vad du ser och hör <b>medan appen är öppen</b>.
+      Vad som väcker telefonen när appen är stängd ställer du under
+      <b>Notiser</b>.</p>
+  </section>
+
+  <!-- Plats och notiser ligger först, före allt annat man kan ställa in.
+       Inget nedanför fungerar utan dem: utan plats vet appen inte var du är,
+       utan notiser når den dig aldrig när den är stängd.
+
+       Det här är också hamnen för påminnelseraden högst upp i appen. Trycker
+       föraren "Fixa det" öppnas den här vyn, rullar hit och pekar på knappen
+       nedanför — därför måste id:na stå kvar. Byt aldrig behRubrik,
+       btnBehPlats eller btnBehNotiser utan att ändra BEH_MAL i js/app.js. -->
+  <section class="card" id="behKort" data-grupp="hjalte" data-alltid-oppen="1"
+           data-sok="tillstånd behörighet plats gps notiser tillåt neka permission">
+    <h3 id="behRubrik">Plats och notiser</h3>
+    <p class="hint">Två tillstånd som telefonen äger, inte appen. Polisvakt kan
+      fråga, men bara du kan svara ja — och sedan ligger svaret kvar tills du
+      ändrar det.</p>
+
+    <div class="row" id="behPlatsRad">
+      <span>Plats</span>
+      <button class="btn-ghost small" id="btnBehPlats" type="button">Tillåt plats</button>
+    </div>
+    <p class="hint" id="behPlatsText"></p>
+
+    <div class="row" id="behNotisRad">
+      <span>Notiser</span>
+      <button class="btn-ghost small" id="btnBehNotiser" type="button">Slå på notiser</button>
+    </div>
+    <p class="hint" id="behNotisText"></p>
+  </section>
+
+  <!-- ============================================================
+       GRUPPRUBRIKERNA.
+
+       De är SYSKON till korten, inte föräldrar. Ingen sektion har flyttats
+       in i någon behållare, och det är hela poängen: omkapsling är den enda
+       redigering där ett helt block kan försvinna utan att något ser trasigt
+       ut. Här ligger allt kvar som raka syskon i samma rullbehållare, precis
+       som förut, och js/inst.js sätter bara hidden på sektionerna mellan två
+       rubriker.
+
+       Inget hidden står utskrivet på korten. Laddar js/inst.js inte — en
+       trasig deploy, en gammal service worker, en telefon offline — får
+       föraren den gamla flata rullen i stället för en tom skärm. En
+       inställningsvy som inte går att öppna är värre än en som är lång.
+
+       Av samma skäl bär rubrikerna varken role="button", tabindex eller
+       aria-expanded här. Attributen sätts av js/inst.js i samma svep som
+       lyssnarna binds. Det var mätt fel förut: sju rubriker annonserade
+       "knapp, expanderad" för skärmläsare och tangentbord, krympte under
+       fingret via rörelsemodulens tryckkvittens, och gjorde sedan
+       ingenting. Ett löfte som bryts är värre än ett som aldrig ges.
+       ============================================================ -->
+
+  <!-- ---------- G1 · LJUD OCH RÖST ---------- -->
+  <h2 class="grupp" data-grupp="ljud">
+    Ljud och röst
+    <small class="grupp-under">Uppläsning · toner · ljudprov · klickljud</small>
+  </h2>
+
+  <section class="card" data-grupp="ljud"
+           data-sok="varningar uppläsning tts röst tala tyst vad du vill höra polis kamera kontroll civil nivå">
+    <h3 id="varningarRubrik">Varningar</h3>
+
+    <!-- KEDJERUTAN.
+
+         Tre olika reglage kan tysta samma varning, och resultatet är alltid
+         det tystaste av dem. Det är den vanligaste felsökningsfrågan i hela
+         appen: "varför sa den inget?"
+
+         Rutan RÄKNAR INTE. Frestelsen är att skriva ut ett utfall — "Polis:
+         läses upp inom 25 km" — men den meningen kräver en sjunde kopia av
+         en regel som redan drivit isär sex gånger i den här kodbasen, och en
+         app som ljuger om varför den teg är värre än en som inte förklarar.
+         Rutan pekar bara ut de tre leden och var de sitter. Inget påstående.
+
+         id:na finns för att en framtida markering av det led som står på Av
+         ska kunna hängas på utan att markupen skrivs om. -->
+    <div class="kedja">
+      <p class="kedja-topp">Tre saker kan tysta samma varning. Den tystaste vinner.</p>
+      <ol class="kedja-lista">
+        <li id="kedjaTts">Läs upp varningar — global av/på, här nedanför.</li>
+        <li id="kedjaTyper">Vad du vill höra — per typ, längre ner i det här kortet.</li>
+        <li id="kedjaGeo">Var vill du bli varnad — det geografiska filtret, överst i vyn.</li>
+      </ol>
+    </div>
+
+    <label class="row"><span>Läs upp varningar</span><input type="checkbox" id="setTts" checked></label>
+    <p class="hint">Volymen följer telefonens, och varningen kommer som ett
+      trafikmeddelande — musiken dämpas och kommer tillbaka efteråt.</p>
+
+    <h4 class="sub-head">Vad du vill höra</h4>
+    <p class="hint">Alla behöver inte allt. Den som kör E18 varje dag kan
+      kamerorna utantill och vill se dem på kartan utan att bli tilltalad.</p>
+    <div id="notisTyper"></div>
+
+    <p class="hint">Var du blir varnad geografiskt styrs överst i vyn, under
+      <b>Var vill du bli varnad?</b></p>
+  </section>
+
+  <!-- LJUDPROVET, sammanslaget.
+
+       Fram till nu låg tonproven ("Hur låter det?") som en underrubrik i
+       Varningar-kortet, och meningsproven ("Testa hur det låter") i ett eget
+       kort åtta kort längre ner. Det är samma fråga — hur låter appen? — och
+       den som ville jämföra fick rulla mellan dem.
+
+       Ett kort, två underrubriker, alla knappar synliga samtidigt. INGA
+       FLIKAR: kopplingen i js/voice.js hänger på id, och en knapp som ligger
+       i en inaktiv flik är bunden men omöjlig att nå — ett hopp dit landar
+       på tomhet. Kortet blir högt. Det är rätt pris.
+
+       Byt inte id:na. LJUDPROV_KNAPPAR i js/voice.js letar efter exakt
+       btnProvaVarningsljud, btnProvaKvittensljud, btnProvaLjudLugn,
+       btnProvaLjudTydlig, btnProvaLjudKraftig, setVarningsljud och
+       provaLjudStatus. -->
+  <section class="card" data-grupp="ljud"
+           data-sok="ljudprov testa hur det låter demo prova ton signal pip varningsljud kvittens spela lyssna">
+    <h3>Ljudprov</h3>
+    <p class="hint">Kör provet med musiken igång, så hör du att den dämpas och
+      kommer tillbaka — precis som ett trafikmeddelande på radion.</p>
+
+    <!-- Två knappar och inte en, fastän bara varningen är den som ska höras
+         i 90 km/h: hela poängen med ljudet är att det INTE går att förväxla
+         med en kvittens. Den skillnaden går bara att höra genom att höra
+         båda, efter varandra, i den bil man faktiskt kör. -->
+    <h4 class="sub-head">Tonen</h4>
+    <p class="hint">Varningen är byggd för att gå igenom motorljud och musik.
+      Kvittensen är motsatsen — mörk, mjuk och tyst. Prova båda i bilen, med
+      musiken igång, så vet du vilken som är vilken innan det gäller.</p>
+
+    <!-- Väljaren, och varför den finns.
+         Den första varningen var 350 ms i ett tunt högt register. Ägarens
+         omdöme: "ett ynkligt pip". Att bara skruva upp volymen gör den
+         skrämmande i stället, och ett ljud som får någon att rycka till bakom
+         ratten är farligare än inget ljud alls.
+         Vilken av de tre som är rätt går inte att avgöra vid ett skrivbord —
+         den ska höras i en bil i 90 km/h. Därför väljer föraren. -->
+    <label class="row"><span>Varningens styrka</span>
+      <select id="setVarningsljud">
+        <option value="lugn">Lugn</option>
+        <option value="tydlig" selected>Tydlig</option>
+        <option value="kraftig">Kraftig</option>
+      </select>
+    </label>
+    <p class="hint">Byter du här spelas ljudet direkt, så du hör vad du valt.</p>
+
+    <div class="row-inline ljudprov">
+      <button class="btn-ghost small" id="btnProvaLjudLugn" type="button">Lugn</button>
+      <button class="btn-ghost small" id="btnProvaLjudTydlig" type="button">Tydlig</button>
+      <button class="btn-ghost small" id="btnProvaLjudKraftig" type="button">Kraftig</button>
+    </div>
+    <div class="row-inline ljudprov">
+      <button class="btn-ghost small" id="btnProvaVarningsljud" type="button">Spela vald varning</button>
+      <button class="btn-ghost small" id="btnProvaKvittensljud" type="button">Spela kvittensljudet</button>
+    </div>
+    <p class="hint" id="provaLjudStatus"></p>
+
+    <!-- Skillnaden mot tonerna ovanför: här spelas HELA den talade meningen,
+         och varningsbannern visas samtidigt. Alltså hela upplevelsen, inte
+         bara signalen. Knapparna kopplas på data-demo i js/app.js. -->
+    <h4 class="sub-head">Hela meningen</h4>
+    <p class="hint">Ovanför hör du signalen. Här hör du vad appen faktiskt
+      säger, och ser varningen dyka upp på skärmen samtidigt.</p>
+    <div class="test-grid">
+      <button class="btn-ghost small" data-demo="police">🚓 Polis framför</button>
+      <button class="btn-ghost small" data-demo="camera">📷 Fartkamera</button>
+      <button class="btn-ghost small" data-demo="control">🛑 Trafikkontroll</button>
+      <button class="btn-ghost small" data-demo="unmarked">🚗 Civil polisbil</button>
+      <button class="btn-ghost small" data-demo="speed">⚡ Kör för fort</button>
+      <button class="btn-ghost small" data-demo="report">✅ Din rapport</button>
+      <button class="btn-ghost small" data-demo="hotspot">📍 Känd plats</button>
+    </div>
+    <p class="hint" id="demoText"></p>
+  </section>
+
+  <section class="card" data-grupp="ljud"
+           data-sok="ljud i appen klickljud knappljud vibration haptik feedback">
+    <h3>Ljud i appen</h3>
+    <p class="hint">Återkoppling när du trycker — inte varningsljud.</p>
+    <label class="row"><span>Ljud när du trycker</span><input type="checkbox" id="setLjudPa" checked></label>
+    <label class="row"><span>Vibration</span><input type="checkbox" id="setHaptikPa" checked></label>
+    <p class="hint">Klickljuden är avsiktligt tysta och tystnar helt medan en
+      varning läses upp.</p>
+  </section>
+
+  <!-- ---------- G2 · NOTISER ---------- -->
+  <h2 class="grupp" data-grupp="notiser">
+    Notiser
+    <small class="grupp-under">När telefonen väcker dig</small>
+  </h2>
+
+  <!-- Räckvidden är ett eget kort nu, och inte en underrubrik inne i
+       Varningar. Skälet är förväxlingsrisken: frågan "var?" ställs på två
+       ställen i appen med två olika svar, och så länge den ena låg gömd som
+       en underrubrik i ett ljudkort gick den inte att jämföra med den andra.
+
+       id:t notisOmfangRubrik är ett rullmål och har flyttats från h4 till
+       kortets h3 — samma id, samma landning, en rubriknivå upp. -->
+  <section class="card" data-grupp="notiser"
+           data-sok="notiser push låst skärm appen stängd räckvidd omfång nära mig hela landet kilometer notisljud">
+    <h3 id="notisOmfangRubrik">Notiser när appen är stängd</h3>
+    <!-- Två frågor som ser lika ut men inte är det, och som inte får slås
+         ihop: "Var vill du bli varnad?" högst upp i vyn styr vad som ritas
+         på kartan medan du kör. Det här styr vad som väcker telefonen när du
+         inte kör. Samma ord, olika rätt svar, därför två reglage. -->
+    <p class="hint">Det här gäller när appen är <b>stängd</b>. Vad du ser och
+      hör medan den är öppen ställer du högst upp, under
+      <b>Var vill du bli varnad?</b></p>
+
+    <!-- "Nära mig" är förvalt, och selected står utskrivet fastän alternativet
+         redan ligger först. En webbläsare väljer nämligen första alternativet
+         av sig själv, men den som flyttar en rad i listan i framtiden ska
+         behöva ta bort ordet selected för att ändra förvalet — inte råka
+         ändra det genom att kasta om två rader.
+
+         Varför "Nära mig" och inte "Hela landet": en varning från Malmö säger
+         ingenting till den som kör i Hallstahammar, och en telefon som piper
+         för sådant blir en telefon man stänger av. Då tystnar också den
+         varning som gällde. Räckvidden är tio mil, alltså större än hela
+         upptagningsområdet, så förvalet smalnar i praktiken inte av något
+         för dagens förare — det håller bara dörren stängd för bruset den dag
+         appen finns i fler län. Koden håller samma förval: notisFolj i
+         js/app.js står på true. -->
+    <label class="row"><span>Var vill du få notiser?</span>
+      <select id="setNotisOmfang">
+        <option value="nara" selected>Nära mig</option>
+        <option value="alla">Hela landet</option>
+      </select>
+    </label>
+    <label class="row" id="notisRadieRow"><span>Räckvidd <b id="setNotisRadieVal">100 km</b></span>
+      <input type="range" id="setNotisRadie" min="25000" max="300000" step="25000" value="100000"></label>
+    <p class="hint">Notisen kommer fram om varningen ligger inom räckvidden från
+      de trakter du brukar köra i. Appen skickar aldrig upp var du står — bara
+      vilken ruta på ungefär tre mil du hör hemma i, och först när telefonen
+      varit där två olika dagar.</p>
+    <p class="hint" id="notisPlatsStatus"></p>
+
+    <!-- Notisljudet är en annan sak än appens egna ljud, och skillnaden är
+         värd en egen rubrik.
+
+         Ljudprovet under "Ljud och röst" spelar appens EGNA ljud, som appen
+         äger fullt ut. Knappen nedanför skickar en riktig NOTIS till
+         telefonen, och det ljudet ägs av telefonen. Appen kan varken välja
+         det eller läsa av om det är påslaget — Notification-API:t har inget
+         sätt att fråga.
+
+         Mätt 23 aug 2026: en push nådde båda ägarens enheter med noll fel och
+         han hörde ingenting. Det är därför provet finns: det är enda sättet
+         att veta. Knappen flyttades hit från ljudkortet just för att det är
+         notisen som testas, inte ljudet. -->
+    <h4 class="sub-head">Hör du notiserna?</h4>
+    <p class="hint">Notisljudet ägs av telefonen, inte av appen — vi kan varken
+      välja det eller se om det är påslaget. Skicka en riktig notis och
+      lyssna.</p>
+    <div class="row-inline ljudprov">
+      <button class="btn-ghost small" id="btnProvaNotisljud" type="button">Skicka provnotis</button>
+    </div>
+    <p class="hint" id="provaNotisStatus"></p>
+    <!-- Skrivet här också, inte bara i koden, så frågan inte kommer tillbaka:
+         en notis med appen stängd spelar telefonens systemljud, och en
+         webbsida kan inte byta det. -->
+    <p class="hint">Kommer en notis när appen är stängd spelar telefonen sitt
+      eget notisljud — det kan Polisvakt inte byta, men du kan välja det själv
+      i telefonens inställningar.</p>
+  </section>
+
+  <section class="card" data-grupp="notiser"
+           data-sok="påminnelse påminn körtider starta appen tillåt notiser">
+    <h3 id="paminnelseRubrik">Påminnelse när du kör</h3>
+    <p class="hint">Appen lär sig när du brukar köra och påminner dig att slå på den. Börjar bilen rulla med appen öppen men ljudet av säger den till direkt.</p>
+    <label class="row"><span>Påminn mig</span><input type="checkbox" id="setDriveReminder" checked></label>
+    <p class="hint" id="driveStatus"></p>
+    <!-- Samma åtgärd som btnBehNotiser i hjälteytan, med flit.
+         Den som står här och läser att påminnelsen inte når fram ska kunna
+         åtgärda det där han står — inte skickas uppåt i vyn för ett tryck
+         till, i precis det ögonblick då något redan inte fungerar.
+         Båda knapparna kör behKnapp('notiser') i js/app.js. -->
+    <button class="btn-ghost small" id="btnNotify" type="button">Tillåt notiser</button>
+    <p class="hint" id="notifyStatus"></p>
+  </section>
+
+  <!-- PÅ som standard sedan 21 aug 2026.
+       Var förut av, av oro för att den som får för många notiser stänger
+       av dem för hela appen och därmed tystar körpåminnelsen med. Det
+       motivet står kvar, men en varning som ingen ser är värdelös, och
+       serverns takt håller antalet nere: en notis per omgång, tio minuter
+       emellan, tyst 23–06, högst tolv per dygn.
+
+       Reglaget låg tidigare inne i påminnelsekortet, under rubriken
+       "Facebook-gruppen". Det var fel plats: det handlar inte om att bli
+       påmind om att köra, det handlar om vad som väcker telefonen. -->
+  <section class="card" data-grupp="notiser"
+           data-sok="facebook gruppnotis notis vid ny varning fb grupp väcka">
+    <h3>Notis vid ny Facebook-varning</h3>
+    <label class="row"><span>Notis när någon skrivit i gruppen</span>
+      <input type="checkbox" id="setGruppnotiser" checked></label>
+    <p class="hint">Servern håller igen: högst en notis per omgång, minst tio
+      minuter emellan, tyst mellan 23 och 06, och max tolv per dygn.
+      Nykterhetskontroller ger aldrig någon notis alls.</p>
+    <p class="hint" id="gruppnotisStatus"></p>
+    <p class="hint"><b>Vilka</b> grupper som läses ställer du under
+      <b>Delning och grupper</b>, i <b>Källor från Facebook</b>.</p>
+  </section>
+
+  <!-- Visa hur ett gruppinlägg ser ut, utan att röra den delade databasen.
+       Rapporten läggs bara i den här telefonen, försvinner vid omladdning,
+       och skickas aldrig vidare till någon annan förare. Den finns för att
+       man ska kunna se VAR varningen dyker upp innan man litar på kedjan. -->
+  <section class="card" data-grupp="notiser"
+           data-sok="se hur det ser ut exempel demo påhittad varning gruppinlägg test">
+    <h3>Se hur det ser ut</h3>
+    <p class="hint">Lägger en påhittad varning i din egen app, som om någon
+      just skrivit den i gruppen. Den syns bara hos dig, skickas aldrig vidare,
+      och försvinner när du laddar om.</p>
+    <div class="row-inline">
+      <input id="fbDemoText" type="text" autocomplete="off"
+             placeholder="Polis vid Nacka" value="Polis vid Nacka">
+    </div>
+    <div class="row-inline">
+      <button class="btn-ghost small" id="btnDemoInlagg" type="button">Visa exempel i appen</button>
+    </div>
+    <p class="hint" id="demoStatus"></p>
+  </section>
+
+  <!-- ---------- G3 · VAD APPEN VARNAR FÖR ---------- -->
+  <h2 class="grupp" data-grupp="varnar">
+    Vad appen varnar för
+    <small class="grupp-under">Faror, kameror och kartan</small>
+  </h2>
+
+  <section class="card" data-grupp="varnar"
+           data-sok="vinterläge halka is vilt älg rådjur smhi väder skymning">
+    <h3>Vinterläge</h3>
+    <p class="hint">Varnar för halka och för vilt kring skymningen. Vägbanan kan ligga under noll trots plusgrader i luften — det är den situationen som fäller flest. Väderdata från SMHI.</p>
+    <label class="row"><span>Varna för halka och vilt</span><input type="checkbox" id="setWinter" checked></label>
+    <p class="hint" id="winterStatus"></p>
+  </section>
+
+  <section class="card" data-grupp="varnar"
+           data-sok="hastighetsgräns fortkörning fart för fort km/h osm vägdata skyltad hastighet">
+    <h3>Hastighetsgräns</h3>
+    <label class="row"><span>Varna när du kör för fort</span><input type="checkbox" id="setSpeedWarn" checked></label>
+    <p class="hint">Appen varnar först vid 7 km/h över gränsen. Marginalen finns för att GPS-farten ligger några km/h fel och för att bilens mätare visar högre än verklig fart.</p>
+    <p class="hint" id="limitStatus">Vägdata hämtas automatiskt för området du kör i.</p>
+    <!-- Knappen "Rensa nedladdad vägdata" låg här förut. Den är flyttad till
+         Appen och felsökning, där den står bredvid den andra rensningen och
+         får samma varningsbehandling. Att ha en destruktiv knapp inkilad i
+         ett vanligt inställningskort var en olycka som väntade. -->
+  </section>
+
+  <section class="card" data-grupp="varnar"
+           data-sok="karta tema mörkt ljust nattläge dagläge utseende">
+    <h3>Karta</h3>
+    <label class="row"><span>Tema</span>
+      <select id="setTheme">
+        <option value="auto">Automatiskt</option>
+        <option value="night">Mörkt</option>
+        <option value="day">Ljust</option>
+      </select>
+    </label>
+  </section>
+
+  <section class="card" data-grupp="varnar"
+           data-sok="fartkameror kamera atk trafiksäkerhetskamera openstreetmap import antal">
+    <h3>Fartkameror</h3>
+    <p class="hint" id="camCount">Laddar…</p>
+    <p class="hint">Kameradata kommer från OpenStreetMap och täcker hela Sverige — 2 466 fasta kameror. Kör <code>tools/hamta-kameror.ps1</code> för att hämta färsk data. Mobila kameror och sträckmätning finns inte i underlaget.</p>
+    <a class="btn-ghost small" href="./tools/import-cameras.html" target="_blank" rel="noopener">Öppna importverktyget</a>
+  </section>
+
+  <section class="card" data-grupp="varnar"
+           data-sok="inlärda platser platsnamn utpekade egna namn minne">
+    <h3>Inlärda platser</h3>
+    <p class="hint">Platser du pekat ut på kartan. Appen kommer ihåg dem för alltid.</p>
+    <ul class="learned-list" id="learnedList"></ul>
+  </section>
+
+  <!-- Policyn ligger bland varningsreglerna och inte som en fotnot längst
+       ner: det ÄR en regel för vad appen varnar för, lika mycket som
+       Vinterläge är det. Den som läser gruppen ska se hela svaret. -->
+  <section class="card" data-grupp="varnar"
+           data-sok="vad vi inte rapporterar nykterhet nykterhetskontroll drogkontroll rattfylleri civil polisbil register policy">
+    <h3>Vad vi inte rapporterar</h3>
+    <p class="hint"><b>Nykterhets- och drogkontroller.</b> Appen känner igen dem i text och tal och
+      vägrar lägga upp dem, oavsett om de kommer från en knapp, från rösten eller från
+      Facebook-gruppen. Att hjälpa någon köra vidare berusad är inte vad det här är till för.</p>
+    <p class="hint"><b>Register över civila polisbilar.</b> Vi sparar inga registreringsnummer,
+      bilmärken eller foton på polisfordon. "Civil"-rapporten visar att en civil bil setts på en
+      plats, och försvinner efter 30 minuter.</p>
+  </section>
+
+  <!-- ---------- G4 · BILEN OCH UTRUSTNINGEN ---------- -->
+  <h2 class="grupp" data-grupp="bilen">
+    Bilen och utrustningen
+    <small class="grupp-under">Styr appen utan att röra den</small>
+  </h2>
+
+  <section class="card" data-grupp="bilen"
+           data-sok="rattknappar ratt styrknappar mediaknappar bluetooth dosa spotify nästa spår play paus">
+    <h3>Rattknappar</h3>
+    <p class="hint">Rapportera utan att släppa ratten. En Bluetooth-dosa på ratten fungerar direkt. Bilens egna mediaknappar kräver att appen tar över mediakontrollen — då tystnar Spotify.</p>
+    <label class="row"><span>Ta över bilens mediaknappar</span><input type="checkbox" id="setRemote"></label>
+    <div id="remoteBindings">
+      <label class="row"><span>Nästa spår</span><select id="bindNext"></select></label>
+      <label class="row"><span>Föregående spår</span><select id="bindPrev"></select></label>
+      <label class="row"><span>Play / paus</span><select id="bindPlay"></select></label>
+    </div>
+    <p class="hint" id="remoteStatus"></p>
+  </section>
+
+  <!-- Röststyrningen står granne med rattknapparna med flit: båda svarar på
+       samma fråga — hur rapporterar jag med händerna kvar på ratten? -->
+  <section class="card" data-grupp="bilen"
+           data-sok="röststyrning väckningsord hej vakt tala mikrofon handsfree">
+    <h3>Röststyrning</h3>
+    <label class="row"><span>Väckningsord "Hej vakt"</span><input type="checkbox" id="setWake"></label>
+    <p class="hint" id="wakeHint"></p>
+    <p class="hint">Säg till exempel: <i>"Hej vakt … polis vid Dillos"</i>, <i>"polis här"</i>, <i>"polisen är borta"</i>, <i>"tyst"</i>.</p>
+  </section>
+
+  <section class="card" data-grupp="bilen"
+           data-sok="krockdetektering krock smäll kollision inbromsning lås klipp dashcam g-sensor">
+    <h3>Krockdetektering</h3>
+    <p class="hint">Telefonen känner en smäll långt innan du hinner trycka på en knapp. Vid kraftig inbromsning eller kollision låses dashcam-klippet automatiskt.</p>
+    <label class="row"><span>Lås klipp vid smäll</span><input type="checkbox" id="setImpact" checked></label>
+    <p class="hint" id="impactStatus"></p>
+  </section>
+
+  <section class="card" data-grupp="bilen"
+           data-sok="bilingenkännare regnr registreringsnummer skylt nummerplåt plåt ocr skyltläsare mina fordon volvo pip">
+    <h3>Bilingenkännare</h3>
+    <p class="hint">Läser registreringsskyltar genom kameran. Väljs under
+      <b>Dashcam</b> — kameran kan bara användas av en sak i taget, så inspelning
+      och skyltläsning går inte samtidigt.</p>
+
+    <p class="hint">Läsaren visar en skylt först när två bildrutor läst samma sak. Motorn kan vara helt säker på ett felläst tecken, och det är det enda som skiljer en läsning från en gissning.</p>
+
+    <label class="row"><span>Pip vid träff</span><input type="checkbox" id="setPlPip" checked></label>
+
+    <!-- id:t minaFordonRubrik är rullmålet för knappen btnPlMinaFordon i
+         dashcam-vyn. Ändras det slutar hoppet mellan vyerna fungera. -->
+    <h4 class="sub-head" id="minaFordonRubrik">Mina fordon</h4>
+    <p class="hint">Egna registreringsnummer. Känner läsaren igen ett pipar appen.
+      <b>Numren sparas aldrig som text.</b> De lagras som saltade hashar, bara i
+      den här telefonen — därför visar listan namnet du gett fordonet, inte
+      numret. Appen kan inte visa ett nummer den inte har.</p>
+
+    <label class="row"><span>Registreringsnummer</span>
+      <input type="text" id="plNytt" placeholder="ABC 123" autocomplete="off"></label>
+    <label class="row"><span>Namn (valfritt)</span>
+      <input type="text" id="plNyttNamn" placeholder="Volvon" autocomplete="off"></label>
+    <button class="btn-ghost small" id="btnPlLagg" type="button">Lägg till fordon</button>
+
+    <ul class="pl-list" id="plFordonLista"></ul>
+    <p class="sheet-empty" id="plFordonTom">Inga fordon tillagda.</p>
+
+    <!-- Enda sättet att kontrollera att rätt fordon ligger inne, när numret
+         inte går att visa. -->
+    <label class="row"><span>Prova ett nummer</span>
+      <input type="text" id="plProva" placeholder="ABC 123" autocomplete="off"></label>
+    <button class="btn-ghost small" id="btnPlProva" type="button">Prova</button>
+    <p class="hint" id="plEgnaStatus"></p>
+
+    <p class="hint" id="plSupportNote"></p>
+    <p class="hint">Kvalitet, buffert, mikrofon och kameraval sitter i
+      <b>Dashcam</b>-vyn, där du ser bilden medan du ändrar.</p>
+  </section>
+
+  <!-- ---------- G5 · DELNING OCH GRUPPER ---------- -->
+  <h2 class="grupp" data-grupp="delning">
+    Delning och grupper
+    <small class="grupp-under">Vem som ser dina rapporter</small>
+  </h2>
+
+  <!-- NAMNKROCKEN, löst i rubrikerna och ingenstans annars.
+
+       Kortet hette förut bara "Grupper" och låg två kort från
+       "Facebook-grupper". De har noll gemensam kod och noll gemensam data:
+       det här är PRIVATA delningsgrupper man bjuds in till, det andra är
+       PUBLIKA Facebook-grupper som bryggan skrapar varningar ur. Bara
+       rubriktexten är ändrad — inga id, ingen logik. -->
+  <section class="card" data-grupp="delning"
+           data-sok="grupper privat delning åkeri körskola kompisgäng inbjudningskod skapa grupp gå med rapportera till">
+    <h3>Mitt åkeri — privat delning</h3>
+    <p class="hint">En privat grupp för åkeriet, körskolan eller kompisgänget. Ni ser varandras rapporter utöver det vanliga flödet — men ingen utanför gruppen ser era.</p>
+
+    <div class="group-list" id="groupList"></div>
+    <p class="hint" id="groupEmpty">Du är inte med i någon grupp än.</p>
+
+    <!-- Var rapporterna hamnar.
+         Publikt är utgångsläget med flit: inget ska bli privat av misstag,
+         och en rapport som bara syns för fem personer varnar fem personer. -->
+    <label class="row" id="groupTargetRow" hidden><span>Rapportera till</span>
+      <select id="groupTarget"></select>
+    </label>
+    <p class="hint" id="groupTargetNote" hidden></p>
+
+    <div class="row-inline">
+      <input id="groupCode" type="text" inputmode="latin" autocomplete="off" placeholder="Inbjudningskod">
+      <button class="btn-ghost small" id="btnGroupJoin" type="button">Gå med</button>
+    </div>
+    <div class="row-inline">
+      <input id="groupName" type="text" autocomplete="off" placeholder="Namn på ny grupp">
+      <button class="btn-ghost small" id="btnGroupCreate" type="button">Skapa</button>
+    </div>
+    <p class="hint" id="groupStatus"></p>
+  </section>
+
+  <!-- Bryggan läser bara de grupper som står här. Tom lista = bryggan
+       startar inte alls; det är med flit, se tools/fb-bridge.user.js.
+
+       Rubriken heter "Källor från Facebook" och inte "Facebook-grupper", av
+       samma skäl som kortet ovanför bytte namn: två kort som båda hette
+       något med "grupper" gick inte att skilja åt på en skärm i solljus. -->
+  <section class="card" data-grupp="delning"
+           data-sok="facebook grupper källor brygga bridge groupids lägg till grupp område hitta mina grupper">
+    <h3>Källor från Facebook</h3>
+    <p class="hint">Bryggan läser polisvarningar ur de grupper du är med i. Kör du i
+      Stockholm ansluter du Stockholmsgruppen, kör du i Västerås din. Varje grupp får
+      ett område, så att en varning från en annan stad aldrig hamnar på din karta.</p>
+
+    <div class="group-list" id="fbGruppLista"></div>
+    <p class="hint" id="fbGruppTom">Ingen grupp ansluten. Bryggan läser ingenting förrän du lägger till en.</p>
+
+    <h4 class="sub-head">Lägg till en grupp</h4>
+    <div class="row-inline">
+      <input id="fbGruppUrl" type="text" autocomplete="off" inputmode="url"
+             placeholder="Adress till gruppen, t.ex. facebook.com/groups/317968668373072/">
+    </div>
+    <div class="row-inline">
+      <input id="fbGruppNamn" type="text" autocomplete="off" placeholder="Namn (valfritt)">
+    </div>
+    <label class="row"><span>Område</span>
+      <select id="fbGruppRegion"></select>
+    </label>
+    <!-- Rutan var förut en nödvändighet: notisvägen på servern saknade
+         geografi och skickade varje rapport till varenda prenumerant, så en
+         grupp i en annan stad måste hållas borta från låsskärmen. Numera
+         väljer servern mottagare på avståndet mellan varningen och de
+         trakter telefonen brukar vara i, och rutan är ett val i stället —
+         "den här gruppen ska aldrig kunna väcka någon", oavsett var. Se
+         fbBryggKonfig i js/app.js. -->
+    <label class="row"><span>Notis till låst skärm</span>
+      <input type="checkbox" id="fbGruppNotis" checked>
+    </label>
+    <p class="hint">Låt den vara ikryssad. Vem som väcks styrs av räckvidden du
+      satt under Notiser, så en grupp i en annan stad når bara dem som kör
+      där. Kryssa ur bara om gruppens varningar aldrig ska hamna på någons
+      låsskärm — de syns då ändå på kartan och hörs i appen.</p>
+    <div class="row-inline">
+      <button class="btn-ghost small" id="btnFbGruppLagg" type="button">Lägg till</button>
+      <button class="btn-ghost small" id="btnFbGruppUpptack" type="button">Hitta mina grupper</button>
+    </div>
+    <p class="hint">Vet du inte gruppens id? "Hitta mina grupper" kopierar en liten
+      kodsnutt. Öppna <b>facebook.com/groups/joins/</b>, tryck F12 och klistra in den i
+      Console, så får du en rad per grupp med id och namn. Appen kan inte läsa
+      Facebook-fliken själv — den ligger på en annan adress, och Meta stängde
+      möjligheten att fråga efter grupper 2024.</p>
+
+    <h4 class="sub-head">Till bryggan</h4>
+    <p class="hint">Listan här är en <b>redigerare</b>, inte det som körs. Grupplistan
+      har ett enda hem: <code>groupIds:</code> i <code>tools/fb-bridge.user.js</code>.
+      Både användarskriptet och bryggan på datorn läser den raden — appen ligger på en
+      annan adress och kan inte skriva till någon av dem. Kopiera raden nedan och ersätt
+      den som börjar med <code>groupIds:</code> i filen, så läser båda samma lista.</p>
+    <textarea id="fbGruppKonfig" class="kod-ruta" rows="5" readonly spellcheck="false"></textarea>
+    <button class="btn-ghost small" id="btnFbGruppKopiera" type="button">Kopiera inställning till bryggan</button>
+    <p class="hint" id="fbGruppStatus"></p>
+  </section>
+
+  <section class="card" data-grupp="delning"
+           data-sok="dela appen qr qr-kod länk bjud in sprid kompis">
+    <h3>Dela appen</h3>
+    <p class="hint">Låt någon skanna koden med mobilkameran så öppnas appen direkt hos dem. Ju fler som rapporterar, desto bättre fungerar den för alla.</p>
+    <div class="qr-wrap" id="qrWrap"></div>
+    <p class="qr-url" id="qrUrl"></p>
+    <div class="dc-row">
+      <button class="btn-ghost small" id="btnQrShare" type="button">Dela länk</button>
+      <button class="btn-ghost small" id="btnQrSave" type="button">Spara koden</button>
+    </div>
+  </section>
+
+  <!-- ---------- G6 · KONTO, POÄNG OCH HISTORIK ---------- -->
+  <h2 class="grupp" data-grupp="konto">
+    Konto, poäng och historik
+    <small class="grupp-under">Inloggning · betalning · statistik</small>
+  </h2>
+
+  <!-- Konto och Prenumeration var två kort med "Tillbehör" inkilat emellan,
+       och BÅDA skrev ut prenumerationsstatus i en .billing-status-rad. Två
+       rader om samma sak, ritade av två olika renderare, kunde stå och säga
+       emot varandra på samma skärm.
+
+       Nu ett kort. Båda raderna finns kvar med sina id — accountStatus
+       skrivs av kontokoden, billingStatus av betalkoden — men de står
+       under varandra där motsägelsen syns direkt i stället för att gömma
+       sig bakom en rullning. -->
+  <section class="card" data-grupp="konto"
+           data-sok="konto logga in skapa konto logga ut prenumeration abonnemang betala pris 99 kr rabattkod kod lös in plan">
+    <h3>Konto och prenumeration</h3>
+    <p class="billing-status" id="accountStatus"></p>
+    <div class="dc-row" id="accountActions"></div>
+
+    <h4 class="sub-head">Prenumeration</h4>
+    <p id="billingStatus" class="billing-status"></p>
+    <div class="plans" id="planList"></div>
+    <p class="hint" id="fineCompare"></p>
+    <button class="btn-primary" id="btnSubscribe" type="button">Fortsätt för 99 kr/mån</button>
+    <label class="stack"><span>Har du en kod?</span>
+      <span class="inline"><input type="text" id="redeemCode" placeholder="KOD"><button class="btn-ghost small" id="btnRedeem" type="button">Lös in</button></span>
+    </label>
+    <p class="hint" id="redeemHint"></p>
+  </section>
+
+  <section class="card" data-grupp="konto"
+           data-sok="rapportpoäng poäng topplista leaderboard smeknamn nick gratis månad belöning">
+    <h3>Din rapportpoäng</h3>
+    <p class="hint">De <b>10 som rapporterar mest</b> under en månad får nästa månad gratis. Poängen belönar rapporter som andra bekräftar, inte flest rapporter.</p>
+    <div class="score-big"><span id="repScore">0</span><small>poäng denna månad</small></div>
+    <ul class="rep-breakdown" id="repBreakdown"></ul>
+    <label class="stack"><span>Namn på topplistan (valfritt)</span>
+      <span class="inline"><input type="text" id="repNick" placeholder="t.ex. Elliot V" maxlength="20"><button class="btn-ghost small" id="btnRepSave" type="button">Spara</button></span>
+    </label>
+    <h4 class="sub-head">Månadens topplista</h4>
+    <ol class="leaderboard" id="leaderboard"></ol>
+    <p class="hint" id="repHint"></p>
+  </section>
+
+  <section class="card" data-grupp="konto"
+           data-sok="historik mönster statistik dagens tidslinje återkommande platser hotspot idag">
+    <h3>Historik och mönster</h3>
+    <p class="hint" id="statsSummary">Samlar in…</p>
+    <!-- Två olika frågor, därför två ingångar.
+         Listan längre ned svarar på "var brukar det stå polis" — ett mönster
+         över veckor. Knappen här svarar på "vad har hänt idag" — en tidslinje
+         över ett dygn. Samma lagring, men den som undrar det ena undrar
+         sällan det andra samtidigt. -->
+    <button class="btn-ghost small" id="btnDagenInst" type="button">Visa dagens historik</button>
+    <label class="row"><span>Visa återkommande platser på kartan</span><input type="checkbox" id="setHotspots" checked></label>
+    <ul class="hotspot-list" id="hotspotList"></ul>
+    <!-- Knappen "Rensa historiken" låg här förut. Den står nu bredvid den
+         andra rensningen under Appen och felsökning, så att de två
+         destruktiva knapparna får samma behandling och samma granne. -->
+  </section>
+
+  <section class="card" data-grupp="konto"
+           data-sok="tillbehör butik hållare rattdosa produkter beställa intresseanmälan">
+    <h3>Tillbehör</h3>
+    <p class="hint">Sakerna som gör appen bättre i bilen. Inget går att beställa än — anmäl intresse så hör vi av oss när lagret är på plats.</p>
+    <div class="shop" id="shopList"></div>
+  </section>
+
+  <!-- ---------- G7 · APPEN OCH FELSÖKNING ---------- -->
+  <h2 class="grupp" data-grupp="appen">
+    Appen och felsökning
+    <small class="grupp-under">Version · guider · logg · rensa</small>
+  </h2>
+
+  <!-- Två enknappskort blev ett. Introduktionsguiden och
+       hemskärmsguiden är olika guider, men båda svarar på "visa mig hur" och
+       båda var ett helt kort med en enda knapp i. -->
+  <section class="card" data-grupp="appen"
+           data-sok="guide introduktionsguide rundtur genomgång hemskärm installera lägg till på hemskärmen ikon pwa">
+    <h3>Guider</h3>
+    <p class="hint">Genomgången du fick när du skapade kontot, och guiden som
+      lägger appen som en ikon på hemskärmen.</p>
+    <div class="dc-row">
+      <button class="btn-ghost small" id="btnTour" type="button">Visa guiden igen</button>
+      <button class="btn-ghost small" id="btnGuide" type="button">Lägg till på hemskärmen</button>
+    </div>
+  </section>
+
+  <section class="card card-update" id="updateCard" data-grupp="appen"
+           data-sok="version uppdatering uppdatera bygge sök ny version service worker cache tvinga om">
+    <h3>Version och uppdatering</h3>
     <div class="update-row">
       <span class="update-mark" id="updateMark">✓</span>
       <div class="update-text">
@@ -618,161 +1387,6 @@
     </p>
   </section>
 
-  <!-- Plats och notiser ligger först, före allt annat man kan ställa in.
-       Inget nedanför fungerar utan dem: utan plats vet appen inte var du är,
-       utan notiser når den dig aldrig när den är stängd.
-
-       Det här är också hamnen för påminnelseraden högst upp i appen. Trycker
-       föraren "Fixa det" öppnas den här vyn, rullar hit och pekar på knappen
-       nedanför — därför måste id:na stå kvar. Byt aldrig behRubrik,
-       btnBehPlats eller btnBehNotiser utan att ändra BEH_MAL i js/app.js. -->
-  <section class="card" id="behKort">
-    <h3 id="behRubrik">Plats och notiser</h3>
-    <p class="hint">Två tillstånd som telefonen äger, inte appen. Polisvakt kan
-      fråga, men bara du kan svara ja — och sedan ligger svaret kvar tills du
-      ändrar det.</p>
-
-    <div class="row" id="behPlatsRad">
-      <span>Plats</span>
-      <button class="btn-ghost small" id="btnBehPlats" type="button">Tillåt plats</button>
-    </div>
-    <p class="hint" id="behPlatsText"></p>
-
-    <div class="row" id="behNotisRad">
-      <span>Notiser</span>
-      <button class="btn-ghost small" id="btnBehNotiser" type="button">Slå på notiser</button>
-    </div>
-    <p class="hint" id="behNotisText"></p>
-  </section>
-
-  <section class="card">
-    <h3 id="varningarRubrik">Varningar</h3>
-    <label class="row"><span>Läs upp varningar</span><input type="checkbox" id="setTts" checked></label>
-    <p class="hint">Volymen följer telefonens, och varningen kommer som ett
-      trafikmeddelande — musiken dämpas och kommer tillbaka efteråt.</p>
-
-    <!-- Prova ljudet utan att vänta på en polis.
-
-         Knapparna kopplas i js/voice.js, inte i js/app.js: de spelar receptet
-         som bor i den filen, och en koppling som ligger i en annan fil än
-         ljudet den spelar är en koppling som glider isär. Byt inte id:na —
-         LJUDPROV_KNAPPAR i js/voice.js letar efter exakt btnProvaVarningsljud
-         och btnProvaKvittensljud, och provaLjudStatus för svarsraden.
-
-         Två knappar och inte en, fastän bara varningen är den som ska höras
-         i 90 km/h: hela poängen med ljudet är att det INTE går att förväxla
-         med en kvittens. Den skillnaden går bara att höra genom att höra
-         båda, efter varandra, i den bil man faktiskt kör. -->
-    <h4 class="sub-head">Hur låter det?</h4>
-    <p class="hint">Varningen är byggd för att gå igenom motorljud och musik.
-      Kvittensen är motsatsen — mörk, mjuk och tyst. Prova båda i bilen, med
-      musiken igång, så vet du vilken som är vilken innan det gäller.</p>
-
-    <!-- Väljaren, och varför den finns.
-         Den första varningen var 350 ms i ett tunt högt register. Ägarens
-         omdöme: "ett ynkligt pip". Att bara skruva upp volymen gör den
-         skrämmande i stället, och ett ljud som får någon att rycka till bakom
-         ratten är farligare än inget ljud alls.
-         Vilken av de tre som är rätt går inte att avgöra vid ett skrivbord —
-         den ska höras i en bil i 90 km/h. Därför väljer föraren. -->
-    <label class="row"><span>Varningens styrka</span>
-      <select id="setVarningsljud">
-        <option value="lugn">Lugn</option>
-        <option value="tydlig" selected>Tydlig</option>
-        <option value="kraftig">Kraftig</option>
-      </select>
-    </label>
-    <p class="hint">Byter du här spelas ljudet direkt, så du hör vad du valt.</p>
-
-    <div class="row-inline ljudprov">
-      <button class="btn-ghost small" id="btnProvaLjudLugn" type="button">Lugn</button>
-      <button class="btn-ghost small" id="btnProvaLjudTydlig" type="button">Tydlig</button>
-      <button class="btn-ghost small" id="btnProvaLjudKraftig" type="button">Kraftig</button>
-    </div>
-    <div class="row-inline ljudprov">
-      <button class="btn-ghost small" id="btnProvaVarningsljud" type="button">Spela vald varning</button>
-      <button class="btn-ghost small" id="btnProvaKvittensljud" type="button">Spela kvittensljudet</button>
-    </div>
-
-    <!-- Notisljudet är en annan sak än ljudet ovanför, och skillnaden är värd
-         en egen rubrik.
-
-         Knapparna ovanför spelar appens EGNA ljud, som appen äger fullt ut.
-         Knappen nedanför skickar en riktig NOTIS till telefonen, och det
-         ljudet ägs av telefonen. Appen kan varken välja det eller läsa av om
-         det är påslaget — Notification-API:t har inget sätt att fråga.
-
-         Mätt 23 aug 2026: en push nådde båda ägarens enheter med noll fel och
-         han hörde ingenting. Det är därför provet finns: det är enda sättet
-         att veta. -->
-    <h4 class="sub-head">Hör du notiserna?</h4>
-    <p class="hint">Det här är ett annat ljud än det ovanför. Notisljudet ägs av
-      telefonen, inte av appen — vi kan varken välja det eller se om det är
-      påslaget. Skicka en riktig notis och lyssna.</p>
-    <div class="row-inline ljudprov">
-      <button class="btn-ghost small" id="btnProvaNotisljud" type="button">Skicka provnotis</button>
-    </div>
-    <p class="hint" id="provaNotisStatus"></p>
-    <p class="hint" id="provaLjudStatus"></p>
-    <!-- Skrivet här också, inte bara i koden, så frågan inte kommer tillbaka:
-         det här ljudet gäller när appen är öppen. En notis med appen stängd
-         spelar telefonens systemljud, och en webbsida kan inte byta det. -->
-    <p class="hint">Det här ljudet gäller när appen är öppen. Kommer en notis
-      när appen är stängd spelar telefonen sitt eget notisljud — det kan
-      Polisvakt inte byta, men du kan välja det själv i telefonens
-      inställningar.</p>
-
-    <h4 class="sub-head">Vad du vill höra</h4>
-    <p class="hint">Alla behöver inte allt. Den som kör E18 varje dag kan
-      kamerorna utantill och vill se dem på kartan utan att bli tilltalad.</p>
-    <div id="notisTyper"></div>
-
-    <!-- Räckvidden hör hemma här, bland de andra "vad vill du höra"-frågorna,
-         och inte nere vid Facebook-rutan. Frågan är densamma som resten av
-         kortet ställer — hur mycket ska appen säga till? — bara för den
-         stund då telefonen ligger i fickan och appen är stängd.
-
-         Två frågor som ser lika ut men inte är det, och som inte får slås
-         ihop: "Var vill du bli varnad?" längre ner styr vad som ritas på
-         kartan medan du kör. Det här styr vad som väcker telefonen när du
-         inte kör. Samma ord, olika rätt svar, därför två reglage. -->
-    <!-- id:t finns för att påminnelseraden ska kunna rulla hit. -->
-    <h4 class="sub-head" id="notisOmfangRubrik">Notiser när appen är stängd</h4>
-    <!-- "Nära mig" är förvalt, och selected står utskrivet fastän alternativet
-         redan ligger först. En webbläsare väljer nämligen första alternativet
-         av sig själv, men den som flyttar en rad i listan i framtiden ska
-         behöva ta bort ordet selected för att ändra förvalet — inte råka
-         ändra det genom att kasta om två rader.
-
-         Varför "Nära mig" och inte "Hela landet": en varning från Malmö säger
-         ingenting till den som kör i Hallstahammar, och en telefon som piper
-         för sådant blir en telefon man stänger av. Då tystnar också den
-         varning som gällde. Räckvidden är tio mil, alltså större än hela
-         upptagningsområdet, så förvalet smalnar i praktiken inte av något
-         för dagens förare — det håller bara dörren stängd för bruset den dag
-         appen finns i fler län. Koden håller samma förval: notisFolj i
-         js/app.js står på true. -->
-    <label class="row"><span>Var vill du få notiser?</span>
-      <select id="setNotisOmfang">
-        <option value="nara" selected>Nära mig</option>
-        <option value="alla">Hela landet</option>
-      </select>
-    </label>
-    <label class="row" id="notisRadieRow"><span>Räckvidd <b id="setNotisRadieVal">100 km</b></span>
-      <input type="range" id="setNotisRadie" min="25000" max="300000" step="25000" value="100000"></label>
-    <p class="hint">Notisen kommer fram om varningen ligger inom räckvidden från
-      de trakter du brukar köra i. Appen skickar aldrig upp var du står — bara
-      vilken ruta på ungefär tre mil du hör hemma i, och först när telefonen
-      varit där två olika dagar.</p>
-    <p class="hint" id="notisPlatsStatus"></p>
-
-    <h4 class="sub-head">Ljud i appen</h4>
-    <label class="row"><span>Ljud när du trycker</span><input type="checkbox" id="setLjudPa" checked></label>
-    <label class="row"><span>Vibration</span><input type="checkbox" id="setHaptikPa" checked></label>
-    <p class="hint">Klickljuden är avsiktligt tysta och tystnar helt medan en
-      varning läses upp.</p>
-  </section>
-
   <!-- VARFÖR DEN HÄR RUTAN FINNS.
 
        Den 23 augusti 2026 kom tre rapporter in medan appen stod öppen. Alla
@@ -787,8 +1401,12 @@
 
        Nykterhetsregeln gäller också här: en rapport som inte får beskrivas
        får ingen plats och ingen text i listan, bara ett konstaterande att
-       något stoppades. -->
-  <section class="card">
+       något stoppades.
+
+       Rutan låg förut på tredje plats i hela vyn, mellan två
+       inställningskort. Det är ett felsökningsspår och hör hemma här. -->
+  <section class="card" data-grupp="appen"
+           data-sok="vad appen sa senast teg om logg spår beslut varför sa den inget tyst felsökning">
     <h3>Vad appen sa senast — och vad den teg om</h3>
     <p class="hint">Varje rapport som kommer in medan appen är öppen bedöms, och
       beslutet hamnar här. Läste appen inte upp något du tycker att den borde
@@ -796,238 +1414,9 @@
     <div id="inkommandeSpar"></div>
   </section>
 
-  <section class="card">
-    <h3>Var vill du bli varnad?</h3>
-    <label class="row"><span>Område</span>
-      <select id="setCoverage">
-        <option value="radius">Radie runt mig</option>
-        <option value="city">Hela Västerås</option>
-        <option value="county">Hela Västmanland</option>
-        <option value="route">Längs min rutt</option>
-      </select>
-    </label>
-    <label class="row" id="radiusRow"><span>Radie <b id="setCovRadiusVal">30 km</b></span>
-      <input type="range" id="setCovRadius" min="5000" max="80000" step="5000" value="30000"></label>
-    <div id="routeRow" hidden>
-      <label class="stack"><span>Vart ska du?</span>
-        <span class="inline">
-          <input type="text" id="routeDest" placeholder="t.ex. Stockholm" autocomplete="off">
-          <button class="btn-ghost small" id="btnRoute" type="button">Beräkna</button>
-        </span>
-      </label>
-      <button class="btn-ghost small" id="btnRouteClear" type="button">Rensa rutt</button>
-    </div>
-    <p class="hint" id="coverageDesc"></p>
-  </section>
-
-  <section class="card">
-    <h3 id="paminnelseRubrik">Påminnelse när du kör</h3>
-    <p class="hint">Appen lär sig när du brukar köra och påminner dig att slå på den. Börjar bilen rulla med appen öppen men ljudet av säger den till direkt.</p>
-    <label class="row"><span>Påminn mig</span><input type="checkbox" id="setDriveReminder" checked></label>
-    <p class="hint" id="driveStatus"></p>
-    <button class="btn-ghost small" id="btnNotify" type="button">Tillåt notiser</button>
-    <p class="hint" id="notifyStatus"></p>
-
-    <!-- PÅ som standard sedan 21 aug 2026.
-         Var förut av, av oro för att den som får för många notiser stänger
-         av dem för hela appen och därmed tystar körpåminnelsen med. Det
-         motivet står kvar, men en varning som ingen ser är värdelös, och
-         serverns takt håller antalet nere: en notis per omgång, tio minuter
-         emellan, tyst 23–06, högst tolv per dygn. -->
-    <h4 class="sub-head">Facebook-gruppen</h4>
-    <label class="row"><span>Notis när någon skrivit i gruppen</span>
-      <input type="checkbox" id="setGruppnotiser" checked></label>
-    <p class="hint">Servern håller igen: högst en notis per omgång, minst tio
-      minuter emellan, tyst mellan 23 och 06, och max tolv per dygn.
-      Nykterhetskontroller ger aldrig någon notis alls.</p>
-    <p class="hint" id="gruppnotisStatus"></p>
-
-    <!-- Visa hur ett gruppinlägg ser ut, utan att röra den delade databasen.
-         Rapporten läggs bara i den här telefonen, försvinner vid omladdning,
-         och skickas aldrig vidare till någon annan förare. Den finns för att
-         man ska kunna se VAR varningen dyker upp innan man litar på kedjan. -->
-    <h4 class="sub-head">Se hur det ser ut</h4>
-    <p class="hint">Lägger en påhittad varning i din egen app, som om någon
-      just skrivit den i gruppen. Den syns bara hos dig, skickas aldrig vidare,
-      och försvinner när du laddar om.</p>
-    <div class="row-inline">
-      <input id="fbDemoText" type="text" autocomplete="off"
-             placeholder="Polis vid Nacka" value="Polis vid Nacka">
-    </div>
-    <div class="row-inline">
-      <button class="btn-ghost small" id="btnDemoInlagg" type="button">Visa exempel i appen</button>
-    </div>
-    <p class="hint" id="demoStatus"></p>
-  </section>
-
-  <!-- Bryggan läser bara de grupper som står här. Tom lista = bryggan
-       startar inte alls; det är med flit, se tools/fb-bridge.user.js. -->
-  <section class="card">
-    <h3>Facebook-grupper</h3>
-    <p class="hint">Bryggan läser polisvarningar ur de grupper du är med i. Kör du i
-      Stockholm ansluter du Stockholmsgruppen, kör du i Västerås din. Varje grupp får
-      ett område, så att en varning från en annan stad aldrig hamnar på din karta.</p>
-
-    <div class="group-list" id="fbGruppLista"></div>
-    <p class="hint" id="fbGruppTom">Ingen grupp ansluten. Bryggan läser ingenting förrän du lägger till en.</p>
-
-    <h4 class="sub-head">Lägg till en grupp</h4>
-    <div class="row-inline">
-      <input id="fbGruppUrl" type="text" autocomplete="off" inputmode="url"
-             placeholder="Adress till gruppen, t.ex. facebook.com/groups/317968668373072/">
-    </div>
-    <div class="row-inline">
-      <input id="fbGruppNamn" type="text" autocomplete="off" placeholder="Namn (valfritt)">
-    </div>
-    <label class="row"><span>Område</span>
-      <select id="fbGruppRegion"></select>
-    </label>
-    <!-- Rutan var förut en nödvändighet: notisvägen på servern saknade
-         geografi och skickade varje rapport till varenda prenumerant, så en
-         grupp i en annan stad måste hållas borta från låsskärmen. Numera
-         väljer servern mottagare på avståndet mellan varningen och de
-         trakter telefonen brukar vara i, och rutan är ett val i stället —
-         "den här gruppen ska aldrig kunna väcka någon", oavsett var. Se
-         fbBryggKonfig i js/app.js. -->
-    <label class="row"><span>Notis till låst skärm</span>
-      <input type="checkbox" id="fbGruppNotis" checked>
-    </label>
-    <p class="hint">Låt den vara ikryssad. Vem som väcks styrs av räckvidden du
-      satt under Varningar, så en grupp i en annan stad når bara dem som kör
-      där. Kryssa ur bara om gruppens varningar aldrig ska hamna på någons
-      låsskärm — de syns då ändå på kartan och hörs i appen.</p>
-    <div class="row-inline">
-      <button class="btn-ghost small" id="btnFbGruppLagg" type="button">Lägg till</button>
-      <button class="btn-ghost small" id="btnFbGruppUpptack" type="button">Hitta mina grupper</button>
-    </div>
-    <p class="hint">Vet du inte gruppens id? "Hitta mina grupper" kopierar en liten
-      kodsnutt. Öppna <b>facebook.com/groups/joins/</b>, tryck F12 och klistra in den i
-      Console, så får du en rad per grupp med id och namn. Appen kan inte läsa
-      Facebook-fliken själv — den ligger på en annan adress, och Meta stängde
-      möjligheten att fråga efter grupper 2024.</p>
-
-    <h4 class="sub-head">Till bryggan</h4>
-    <p class="hint">Listan här är en <b>redigerare</b>, inte det som körs. Grupplistan
-      har ett enda hem: <code>groupIds:</code> i <code>tools/fb-bridge.user.js</code>.
-      Både användarskriptet och bryggan på datorn läser den raden — appen ligger på en
-      annan adress och kan inte skriva till någon av dem. Kopiera raden nedan och ersätt
-      den som börjar med <code>groupIds:</code> i filen, så läser båda samma lista.</p>
-    <textarea id="fbGruppKonfig" class="kod-ruta" rows="5" readonly spellcheck="false"></textarea>
-    <button class="btn-ghost small" id="btnFbGruppKopiera" type="button">Kopiera inställning till bryggan</button>
-    <p class="hint" id="fbGruppStatus"></p>
-  </section>
-
-  <section class="card">
-    <h3>Vinterläge</h3>
-    <p class="hint">Varnar för halka och för vilt kring skymningen. Vägbanan kan ligga under noll trots plusgrader i luften — det är den situationen som fäller flest. Väderdata från SMHI.</p>
-    <label class="row"><span>Varna för halka och vilt</span><input type="checkbox" id="setWinter" checked></label>
-    <p class="hint" id="winterStatus"></p>
-  </section>
-
-  <section class="card">
-    <h3>Grupper</h3>
-    <p class="hint">En privat grupp för åkeriet, körskolan eller kompisgänget. Ni ser varandras rapporter utöver det vanliga flödet — men ingen utanför gruppen ser era.</p>
-
-    <div class="group-list" id="groupList"></div>
-    <p class="hint" id="groupEmpty">Du är inte med i någon grupp än.</p>
-
-    <!-- Var rapporterna hamnar.
-         Publikt är utgångsläget med flit: inget ska bli privat av misstag,
-         och en rapport som bara syns för fem personer varnar fem personer. -->
-    <label class="row" id="groupTargetRow" hidden><span>Rapportera till</span>
-      <select id="groupTarget"></select>
-    </label>
-    <p class="hint" id="groupTargetNote" hidden></p>
-
-    <div class="row-inline">
-      <input id="groupCode" type="text" inputmode="latin" autocomplete="off" placeholder="Inbjudningskod">
-      <button class="btn-ghost small" id="btnGroupJoin" type="button">Gå med</button>
-    </div>
-    <div class="row-inline">
-      <input id="groupName" type="text" autocomplete="off" placeholder="Namn på ny grupp">
-      <button class="btn-ghost small" id="btnGroupCreate" type="button">Skapa</button>
-    </div>
-    <p class="hint" id="groupStatus"></p>
-  </section>
-
-  <section class="card">
-    <h3>Testa hur det låter</h3>
-    <p class="hint">Kör provet med musiken igång, så hör du att den dämpas och kommer tillbaka — precis som ett trafikmeddelande på radion.</p>
-    <div class="test-grid">
-      <button class="btn-ghost small" data-demo="police">🚓 Polis framför</button>
-      <button class="btn-ghost small" data-demo="camera">📷 Fartkamera</button>
-      <button class="btn-ghost small" data-demo="control">🛑 Trafikkontroll</button>
-      <button class="btn-ghost small" data-demo="unmarked">🚗 Civil polisbil</button>
-      <button class="btn-ghost small" data-demo="speed">⚡ Kör för fort</button>
-      <button class="btn-ghost small" data-demo="report">✅ Din rapport</button>
-      <button class="btn-ghost small" data-demo="hotspot">📍 Känd plats</button>
-    </div>
-    <p class="hint" id="demoText"></p>
-  </section>
-
-  <section class="card">
-    <h3>Röststyrning</h3>
-    <label class="row"><span>Väckningsord "Hej vakt"</span><input type="checkbox" id="setWake"></label>
-    <p class="hint" id="wakeHint"></p>
-    <p class="hint">Säg till exempel: <i>"Hej vakt … polis vid Dillos"</i>, <i>"polis här"</i>, <i>"polisen är borta"</i>, <i>"tyst"</i>.</p>
-  </section>
-
-  <section class="card">
-    <h3>Hastighetsgräns</h3>
-    <label class="row"><span>Varna när du kör för fort</span><input type="checkbox" id="setSpeedWarn" checked></label>
-    <p class="hint">Appen varnar först vid 7 km/h över gränsen. Marginalen finns för att GPS-farten ligger några km/h fel och för att bilens mätare visar högre än verklig fart.</p>
-    <p class="hint" id="limitStatus">Vägdata hämtas automatiskt för området du kör i.</p>
-    <button class="btn-ghost small" id="btnClearRoads" type="button">Rensa nedladdad vägdata</button>
-  </section>
-
-  <section class="card">
-    <h3>Rattknappar</h3>
-    <p class="hint">Rapportera utan att släppa ratten. En Bluetooth-dosa på ratten fungerar direkt. Bilens egna mediaknappar kräver att appen tar över mediakontrollen — då tystnar Spotify.</p>
-    <label class="row"><span>Ta över bilens mediaknappar</span><input type="checkbox" id="setRemote"></label>
-    <div id="remoteBindings">
-      <label class="row"><span>Nästa spår</span><select id="bindNext"></select></label>
-      <label class="row"><span>Föregående spår</span><select id="bindPrev"></select></label>
-      <label class="row"><span>Play / paus</span><select id="bindPlay"></select></label>
-    </div>
-    <p class="hint" id="remoteStatus"></p>
-  </section>
-
-  <section class="card">
-    <h3>Krockdetektering</h3>
-    <p class="hint">Telefonen känner en smäll långt innan du hinner trycka på en knapp. Vid kraftig inbromsning eller kollision låses dashcam-klippet automatiskt.</p>
-    <label class="row"><span>Lås klipp vid smäll</span><input type="checkbox" id="setImpact" checked></label>
-    <p class="hint" id="impactStatus"></p>
-  </section>
-
-  <section class="card">
-    <h3>Historik och mönster</h3>
-    <p class="hint" id="statsSummary">Samlar in…</p>
-    <!-- Två olika frågor, därför två ingångar.
-         Listan längre ned svarar på "var brukar det stå polis" — ett mönster
-         över veckor. Knappen här svarar på "vad har hänt idag" — en tidslinje
-         över ett dygn. Samma lagring, men den som undrar det ena undrar
-         sällan det andra samtidigt. -->
-    <button class="btn-ghost small" id="btnDagenInst" type="button">Visa dagens historik</button>
-    <label class="row"><span>Visa återkommande platser på kartan</span><input type="checkbox" id="setHotspots" checked></label>
-    <ul class="hotspot-list" id="hotspotList"></ul>
-    <button class="btn-ghost small danger" id="btnClearStats" type="button">Rensa historiken</button>
-  </section>
-
-  <section class="card">
-    <h3>Din rapportpoäng</h3>
-    <p class="hint">De <b>10 som rapporterar mest</b> under en månad får nästa månad gratis. Poängen belönar rapporter som andra bekräftar, inte flest rapporter.</p>
-    <div class="score-big"><span id="repScore">0</span><small>poäng denna månad</small></div>
-    <ul class="rep-breakdown" id="repBreakdown"></ul>
-    <label class="stack"><span>Namn på topplistan (valfritt)</span>
-      <span class="inline"><input type="text" id="repNick" placeholder="t.ex. Elliot V" maxlength="20"><button class="btn-ghost small" id="btnRepSave" type="button">Spara</button></span>
-    </label>
-    <h4 class="sub-head">Månadens topplista</h4>
-    <ol class="leaderboard" id="leaderboard"></ol>
-    <p class="hint" id="repHint"></p>
-  </section>
-
-  <section class="card">
-    <h3>Delning</h3>
+  <section class="card" data-grupp="appen"
+           data-sok="synk synkläge delning server anslutning uppkoppling offline supabase status">
+    <h3>Synkläge</h3>
     <!-- Här låg tidigare en serverkonfiguration: adress, API-nyckel och ett
          reglage för hur ofta data hämtas. Det är utvecklarinställningar och
          hörde aldrig hemma framför en förare. Appen är kopplad till sin
@@ -1036,128 +1425,39 @@
     <p class="hint" id="syncHint"></p>
   </section>
 
-  <section class="card">
-    <h3>Karta</h3>
-    <label class="row"><span>Tema</span>
-      <select id="setTheme">
-        <option value="auto">Automatiskt</option>
-        <option value="night">Mörkt</option>
-        <option value="day">Ljust</option>
-      </select>
-    </label>
-  </section>
+  <!-- DE TVÅ RENSNINGARNA, ÄNTLIGEN BREDVID VARANDRA.
 
-  <section class="card">
-    <h3>Bilingenkännare</h3>
-    <p class="hint">Läser registreringsskyltar genom kameran. Väljs under
-      <b>Dashcam</b> — kameran kan bara användas av en sak i taget, så inspelning
-      och skyltläsning går inte samtidigt.</p>
+       btnClearRoads satt inkilad i Hastighetsgräns och btnClearStats i
+       Historik, fyra kort isär, och bara den ena var rödmarkerad. Samma
+       handling, samma risknivå, olika behandling — det är så en förare
+       råkar trycka på fel sak.
 
-    <p class="hint">Läsaren visar en skylt först när två bildrutor läst samma sak. Motorn kan vara helt säker på ett felläst tecken, och det är det enda som skiljer en läsning från en gissning.</p>
-
-    <label class="row"><span>Pip vid träff</span><input type="checkbox" id="setPlPip" checked></label>
-
-    <h4 class="sub-head" id="minaFordonRubrik">Mina fordon</h4>
-    <p class="hint">Egna registreringsnummer. Känner läsaren igen ett pipar appen.
-      <b>Numren sparas aldrig som text.</b> De lagras som saltade hashar, bara i
-      den här telefonen — därför visar listan namnet du gett fordonet, inte
-      numret. Appen kan inte visa ett nummer den inte har.</p>
-
-    <label class="row"><span>Registreringsnummer</span>
-      <input type="text" id="plNytt" placeholder="ABC 123" autocomplete="off"></label>
-    <label class="row"><span>Namn (valfritt)</span>
-      <input type="text" id="plNyttNamn" placeholder="Volvon" autocomplete="off"></label>
-    <button class="btn-ghost small" id="btnPlLagg" type="button">Lägg till fordon</button>
-
-    <ul class="pl-list" id="plFordonLista"></ul>
-    <p class="sheet-empty" id="plFordonTom">Inga fordon tillagda.</p>
-
-    <!-- Enda sättet att kontrollera att rätt fordon ligger inne, när numret
-         inte går att visa. -->
-    <label class="row"><span>Prova ett nummer</span>
-      <input type="text" id="plProva" placeholder="ABC 123" autocomplete="off"></label>
-    <button class="btn-ghost small" id="btnPlProva" type="button">Prova</button>
-    <p class="hint" id="plEgnaStatus"></p>
-
-    <p class="hint" id="plSupportNote"></p>
-  </section>
-
-  <section class="card">
-    <h3>Fartkameror</h3>
-    <p class="hint" id="camCount">Laddar…</p>
-    <p class="hint">Kameradata kommer från OpenStreetMap och täcker hela Sverige — 2 466 fasta kameror. Kör <code>tools/hamta-kameror.ps1</code> för att hämta färsk data. Mobila kameror och sträckmätning finns inte i underlaget.</p>
-    <a class="btn-ghost small" href="./tools/import-cameras.html" target="_blank" rel="noopener">Öppna importverktyget</a>
-  </section>
-
-  <section class="card">
-    <h3>Inlärda platser</h3>
-    <p class="hint">Platser du pekat ut på kartan. Appen kommer ihåg dem för alltid.</p>
-    <ul class="learned-list" id="learnedList"></ul>
-  </section>
-
-  <section class="card">
-    <h3>Konto</h3>
-    <p class="billing-status" id="accountStatus"></p>
-    <div class="dc-row" id="accountActions"></div>
-  </section>
-
-  <section class="card">
-    <h3>Tillbehör</h3>
-    <p class="hint">Sakerna som gör appen bättre i bilen. Inget går att beställa än — anmäl intresse så hör vi av oss när lagret är på plats.</p>
-    <div class="shop" id="shopList"></div>
-  </section>
-
-  <section class="card">
-    <h3>Prenumeration</h3>
-    <p id="billingStatus" class="billing-status"></p>
-    <div class="plans" id="planList"></div>
-    <p class="hint" id="fineCompare"></p>
-    <button class="btn-primary" id="btnSubscribe" type="button">Fortsätt för 99 kr/mån</button>
-    <label class="stack"><span>Har du en kod?</span>
-      <span class="inline"><input type="text" id="redeemCode" placeholder="KOD"><button class="btn-ghost small" id="btnRedeem" type="button">Lös in</button></span>
-    </label>
-    <p class="hint" id="redeemHint"></p>
-  </section>
-
-  <section class="card">
-    <h3>Introduktionsguide</h3>
-    <p class="hint">Genomgången du fick när du skapade kontot. Visar varje knapp och när du använder den.</p>
-    <button class="btn-ghost small" id="btnTour" type="button">Visa guiden igen</button>
-  </section>
-
-  <section class="card">
-    <h3>Lägg till på hemskärmen</h3>
-    <button class="btn-ghost small" id="btnGuide" type="button">Visa guide</button>
-  </section>
-
-  <section class="card">
-    <h3>Dela appen</h3>
-    <p class="hint">Låt någon skanna koden med mobilkameran så öppnas appen direkt hos dem. Ju fler som rapporterar, desto bättre fungerar den för alla.</p>
-    <div class="qr-wrap" id="qrWrap"></div>
-    <p class="qr-url" id="qrUrl"></p>
+       Båda ligger nu här, båda som .danger, båda med bekräftelse i koden.
+       id:na är oförändrade: js/app.js hittar dem på samma namn som förut. -->
+  <section class="card" data-grupp="appen"
+           data-sok="rensa data töm vägdata historik statistik nollställ radera clear">
+    <h3>Rensa data</h3>
+    <p class="hint">Två saker går att slänga. Ingen av dem rör dina klipp,
+      dina fordon eller ditt konto — och båda byggs upp igen av sig själva
+      när du kör.</p>
     <div class="dc-row">
-      <button class="btn-ghost small" id="btnQrShare" type="button">Dela länk</button>
-      <button class="btn-ghost small" id="btnQrSave" type="button">Spara koden</button>
+      <button class="btn-ghost small danger" id="btnClearRoads" type="button">Rensa nedladdad vägdata</button>
+      <button class="btn-ghost small danger" id="btnClearStats" type="button">Rensa historiken</button>
     </div>
+    <p class="hint">Vägdatan hämtas om automatiskt för området du kör i.
+      Historiken börjar om från noll — dagens tidslinje och de återkommande
+      platserna försvinner.</p>
   </section>
 
-  <section class="card">
+  <section class="card" data-grupp="appen"
+           data-sok="vart appen är på väg roadmap framtid kommande planerat kedja">
     <h3>Vart appen är på väg</h3>
     <p class="hint">Rötterna nertill är det som redan står stadigt. Uppåt växer det mot det som inte finns än.</p>
     <div class="roadmap" id="roadmapChain"></div>
   </section>
 
-  <section class="card">
-    <h3>Vad vi inte rapporterar</h3>
-    <p class="hint"><b>Nykterhets- och drogkontroller.</b> Appen känner igen dem i text och tal och
-      vägrar lägga upp dem, oavsett om de kommer från en knapp, från rösten eller från
-      Facebook-gruppen. Att hjälpa någon köra vidare berusad är inte vad det här är till för.</p>
-    <p class="hint"><b>Register över civila polisbilar.</b> Vi sparar inga registreringsnummer,
-      bilmärken eller foton på polisfordon. "Civil"-rapporten visar att en civil bil setts på en
-      plats, och försvinner efter 30 minuter.</p>
-  </section>
-
-  <section class="card">
+  <section class="card" data-grupp="appen"
+           data-sok="om ansvarsfriskrivning källor openstreetmap osrm nominatim smhi licens odbl">
     <h3>Om</h3>
     <p class="hint">Polisvakt Västmanland. Rapporter är användargenererade och kan vara felaktiga eller inaktuella. Du kör — appen gissar. Titta på vägen, inte på skärmen.</p>
     <p class="hint">Kartdata och kameradata © OpenStreetMap-bidragsgivare (ODbL). Rutter: OSRM. Adressökning: Nominatim. Väder: SMHI.</p>

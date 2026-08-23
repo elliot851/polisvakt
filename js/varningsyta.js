@@ -158,8 +158,37 @@ const CSS = `
    att något rör sig, och då missar föraren den. Att låta ytan åka in uppifrån
    igen vore fel — den skulle försvinna ur bild ett ögonblick, precis när den
    bär ny information. En kort ljusning gör samma sak utan att flytta något. */
-.pv-vy-puls { animation: pvVyPuls .34s ease-out; }
-@keyframes pvVyPuls { 40% { filter: brightness(1.55); } }
+/* Ljusningen ligger på ett eget skikt, inte på remsan själv.
+ *
+ * Den var förut filter: brightness(1.55) på hela ytan. Det ser likadant ut
+ * men kostar något helt annat: ett filter tvingar webbläsaren att måla om
+ *
+ * (Och nej — skriv inga bakåtfnuttar i den här kommentaren. Hela CSS-blocket
+ * är en mallsträng, så en bakåtfnutt här avslutar strängen och tar med sig
+ * hela varningsytan. Det hände precis, och felet syntes bara som
+ * "Unexpected identifier" långt nere i filen.)
+ *
+ * lagret varje bildruta. Och det sker i exakt det ögonblick appen minst har
+ * råd med det — telefonen ritar karta och tar samtidigt emot video, och en
+ * andra varning är just då föraren måste se att något ändrat sig. Att tappa
+ * bildrutor där är att tappa själva poängen med ytan.
+ *
+ * Opacitet på ett skikt som redan är utlagt flyttar kompositorn i stället
+ * utan en enda om-målning. Skiktet ligger därför alltid på plats och är
+ * genomskinligt — pulsen ska aldrig behöva skapa en nod mitt i en varning.
+ *
+ * pointer-events: none, för remsan är värd ett tryck och skiktet täcker den
+ * helt. Utan den raden hade ljusningen ätit varje tryck på varningen. */
+.pv-varningsyta::after {
+  content: '';
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+.pv-vy-puls::after { animation: pvVyPuls .3s ease-out; }
+@keyframes pvVyPuls { 40% { opacity: .22; } }
 
 .pv-vy-rad {
   display: flex; align-items: center; gap: 13px;
@@ -255,7 +284,9 @@ const CSS = `
 .pv-vy-camera   { background: linear-gradient(180deg, #1668c4, #0f4a8f); }
 
 @media (prefers-reduced-motion: reduce) {
-  .pv-varningsyta, .pv-vy-puls { animation: none; }
+  /* Även ::after — annars överlever ljusningen dämpningen, eftersom
+     animationen numera bor på pseudoelementet och inte på ytan. */
+  .pv-varningsyta, .pv-vy-puls, .pv-vy-puls::after { animation: none; }
 }
 
 /* ------------------------------------------------------------------

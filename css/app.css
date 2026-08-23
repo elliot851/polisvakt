@@ -3,17 +3,81 @@
    få element, inget som kräver precision med fingret. */
 
 :root {
-  --bg: #0b0f14;
-  --bg-2: #141b23;
-  --bg-3: #1d2733;
-  --line: #26323f;
-  --fg: #eef4fa;
+  /* ---- YTOR ----
+     Tre nivåer och inte fler: sidan, kortet, det inre fältet. De ligger nära
+     varandra i ljusstyrka med flit — nattkörning är normalfallet, och en ljus
+     yta i ögonvrån förstör mörkerseendet. Skillnaden mellan kort och sida
+     bärs därför av KANTEN, inte av ljuset. Se --line-stark. */
+  --bg: #0b0f14;         /* sidan, kartan, tabbaren */
+  --bg-2: #151e28;       /* kort, paneler, modaler */
+  --bg-3: #212d3b;       /* fält, reglagespår, inre ytor */
+
+  /* ---- KANTER ----
+     Kanterna gör hela jobbet i solljus. Gamla #26323f försvann helt när
+     omgivningsljuset lyfte skärmens svartnivå, och då såg raderna ut att sitta
+     ihop i en enda gröt. Två nivåer: --line delar rader INNE i ett kort,
+     --line-stark ritar kortets ytterkant mot sidan. */
+  --line: #33445a;
+  --line-stark: #44586f;
+
+  /* ---- TEXT ----
+     Två nivåer man får använda och en man nästan aldrig får. */
+  --fg: #eef4fa;         /* allt som ska läsas på under en sekund */
+  --fg-2: #b9c7d6;       /* sekundärt: hela meningar, etiketter, metadata */
+  /* --fg-dim är kvar för enstaka ord, enheter och ikoner — ALDRIG för en
+     mening. Tunn grå text mäter fint i ett mörkt rum och är oläslig bakom en
+     vindruta mitt på dagen, hur snyggt det än ser ut i en skärmbild. */
   --fg-dim: #93a4b6;
+
+  /* ---- BETYDELSEFÄRGER ----
+     Färg är ett påstående, aldrig dekoration. Accent = valt eller aktivt.
+     Rött = destruktivt. Gult = något DU har stängt av. Grönt = fungerar nu. */
   --accent: #3d9dff;
   --danger: #ff4d4f;
   --warn: #ffb020;
   --ok: #2fd07a;
-  --radius: 16px;
+  /* Rött och grönt som TEXT på mörk yta. Ren --danger på --bg-3 ger 4,3:1 och
+     ligger under gränsen; de ljusa varianterna ger runt 7:1. */
+  --danger-2: #ff9c9d;
+  --ok-2: #6ee2a6;
+
+  /* Text OVANPÅ en färgad yta är alltid nästan svart, aldrig vit.
+     Vit på --accent ger 2,8:1 och är det första som suddas ut vid middagstid;
+     #0b0f14 på samma blå ger 7,7:1. Regeln gäller även rött och grönt — en
+     röd knapp med vit text ser farligare ut och läses sämre. */
+  --pa-farg: #0b0f14;
+
+  /* Ringen som pekar ut var man landade efter ett hopp i inställningarna.
+     Egen token eftersom den ska gå att känna igen som EN sak, oavsett om den
+     ritas runt ett kort, en rad eller en knapp. */
+  --ring: rgba(61,157,255,.55);
+
+  /* ---- AVSTÅNDSRYTM ----
+     Vitlista. Nya regler använder dessa och inget annat. Att den går att
+     kontrollera i efterhand med en grep är hela poängen — utan den driver
+     avstånden isär ett par pixlar i taget tills ingen rytm finns kvar. */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-6: 24px; --sp-8: 32px; --sp-12: 48px;
+
+  /* ---- TYPOGRAFISK SKALA ----
+     Golvet för allt som är en MENING är --t-md. Under det ligger bara
+     enstaka ord, enheter och versaletiketter. --t-base är radernas storlek i
+     inställningarna, --t-lg är kortrubriken. */
+  --t-xs: 12px;  --t-sm: 14px;  --t-md: 15px;  --t-base: 16px;
+  --t-lg: 17px;  --t-xl: 20px;  --t-2xl: 26px;
+
+  /* ---- KANTRADIER ---- tre steg, inget mellanting. */
+  --radius: 16px;        /* kort, modaler, stora ytor */
+  --radius-2: 12px;      /* knappar, fält */
+  --radius-3: 10px;      /* små inre ytor */
+
+  /* ---- SKUGGOR ----
+     Höjd ska avläsas, inte anas: ett kort ligger PÅ sidan, en modal ligger
+     ÖVER allt. Fler steg än tre blir bara oskärpa på en telefon i solsken. */
+  --skugga-1: 0 1px 2px rgba(0,0,0,.4);
+  --skugga-2: 0 10px 28px rgba(0,0,0,.5);
+  --skugga-3: 0 24px 60px rgba(0,0,0,.62);
+
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --tabbar-h: 62px;
@@ -27,6 +91,24 @@
      baren, vilket är precis varför "Radera olåsta" och "Radera allt" i
      dashcamens klippbibliotek låg halvt dolda. */
   --bar-total: calc(var(--tabbar-h) + var(--safe-bottom));
+
+  /* Hur långt ner en genväg i inställningarna ska landa.
+
+     Läses av js/rorelse.js som scroll-margin-top. Talet är UPPMÄTT, inte
+     räknat: med raden fastklistrad ligger dess underkant på 80 px, plus
+     8 px andrum = 88.
+
+     De 80 är två saker. 64 är raden själv (48 px fält plus 8 px luft över
+     och under), och 16 är .view.scroll:s padding-top — en klistrad ruta
+     fastnar inte vid rullbehållarens överkant utan vid dess INNERKANT, och
+     den skillnaden är hela felet man annars ser: målet hamnar sexton pixlar
+     bakom sökraden, alltså exakt det den klistrade raden skulle skydda mot.
+
+     Stod tidigare på 104px, räknat som "sökrad 52 + grupprubrik 52" — två
+     tal som ingendera stämde, och där grupprubriken inte ens är klistrad.
+     Mätt utfall: var åttonde skärmpixel lämnades tom ovanför målet.
+     Ändras .sokrad eller vyns padding ändras den här raden i samma svep. */
+  --rr-rull-marginal: calc(var(--safe-top) + 88px);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -43,6 +125,14 @@ button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; border: none; background: none; }
 h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 
+/* Reglagen ärver appens blå i stället för webbläsarens systemfärg. Utan den
+   här raden ritade iOS ett grönt skjutreglage mitt i ett blått gränssnitt,
+   och grönt betyder "fungerar nu" här — inte "dra i mig".
+   Höjden är inte dekoration: ett 4px spår går inte att träffa i rörelse.
+   32px låg under golvet på 44 — mätt på #setCovRadius och #setNotisRadie,
+   som båda är reglage man drar med tummen. */
+input[type=range] { accent-color: var(--accent); height: 44px; }
+
 /* ---------- Vyer ---------- */
 
 .view {
@@ -52,7 +142,7 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .view[hidden] { display: none; }
 .view.scroll {
   overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: calc(var(--safe-top) + 16px) 16px 24px;
+  padding: calc(var(--safe-top) + var(--sp-4)) var(--sp-4) var(--sp-6);
 }
 
 #map { position: absolute; inset: 0; background: #0b0f14; z-index: 0; }
@@ -63,7 +153,7 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
    en karta som var några pixlar hög. */
 .pv-map { position: absolute; inset: 0; }
 .leaflet-container { background: #0b0f14; font: inherit; }
-.leaflet-control-attribution { background: rgba(11,15,20,.7) !important; color: #6d7d8e !important; font-size: 10px !important; }
+.leaflet-control-attribution { background: rgba(11,15,20,.7) !important; color: #8195a8 !important; font-size: 10px !important; }
 .leaflet-control-attribution a { color: #8fa3b6 !important; }
 .leaflet-bar a { background: var(--bg-2) !important; color: var(--fg) !important; border-color: var(--line) !important; }
 
@@ -90,27 +180,35 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
   padding: 6px 12px 5px; text-align: center; min-width: 78px;
 }
 .speedo-num { display: block; font-size: 30px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
-.speedo-unit { display: block; font-size: 10px; color: var(--fg-dim); letter-spacing: .08em; text-transform: uppercase; }
+/* Enheten under siffran är ett av de få ställen --fg-dim får användas: det är
+   ett ord man aldrig läser, bara känner igen formen på. */
+.speedo-unit { display: block; font-size: 11px; color: var(--fg-dim); letter-spacing: .08em; text-transform: uppercase; }
 .speedo.fast .speedo-num { color: var(--warn); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+/* Chippen är kartans enda statusrad. De satt tidigare på 11,5px i dimmad grå
+   ovanpå en karta — alltså den sämsta tänkbara kombinationen i solljus:
+   liten text, låg kontrast, orolig bakgrund. Större text, ljusare färg och en
+   tätare platta bakom. */
 .chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  background: rgba(11,15,20,.86); backdrop-filter: blur(12px);
-  border: 1px solid var(--line); border-radius: 999px;
-  padding: 5px 10px; font-size: 11.5px; color: var(--fg-dim);
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(11,15,20,.9); backdrop-filter: blur(12px);
+  border: 1px solid var(--line-stark); border-radius: 999px;
+  padding: 6px 11px; font-size: 13px; font-weight: 600; color: var(--fg-2);
 }
-.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: #5a6a7a; flex: none; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: #7b8d9f; flex: none; }
 .chip.on { color: var(--fg); }
 .chip.on .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 .chip.warn .dot { background: var(--warn); }
 .chip.err .dot { background: var(--danger); }
 .chip-trial { color: var(--warn); border-color: rgba(255,176,32,.4); }
 
+/* 48 och inte 44: tystknappen är den enda knappen i HUD:en, och den trycks
+   med tummen medan bilen rör sig. 44 är golvet, inte målet. */
 .icon-btn {
-  width: 44px; height: 44px; flex: none;
-  background: rgba(11,15,20,.86); backdrop-filter: blur(12px);
-  border: 1px solid var(--line); border-radius: 14px;
+  width: 48px; height: 48px; flex: none;
+  background: rgba(11,15,20,.9); backdrop-filter: blur(12px);
+  border: 1px solid var(--line-stark); border-radius: var(--radius-2);
   font-size: 19px; display: grid; place-items: center;
 }
 .icon-btn.muted { color: var(--danger); border-color: rgba(255,77,79,.45); }
@@ -122,53 +220,65 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .route-input input {
   flex: 1; min-width: 0;
   background: rgba(11,15,20,.9); backdrop-filter: blur(12px);
-  border: 1px solid var(--line); border-radius: 14px;
-  padding: 12px 14px; font-size: 15px; color: var(--fg);
-  /* 16px eller större krävs för att iOS inte ska zooma in vid fokus. Här
-     räcker 15px eftersom hela sidan har user-scalable=no. */
+  border: 1px solid var(--line-stark); border-radius: var(--radius-2);
+  padding: 13px 14px; font-size: var(--t-base); color: var(--fg);
+  /* 16px och inte 15: under 16px zoomar Safari in vid fokus, och även om
+     sidan har user-scalable=no är det inget att luta sig mot — det är också
+     den minsta storlek man kan skriva i medan bilen står och guppar. */
 }
-.route-input input::placeholder { color: #6d7d8e; }
+.route-input input::placeholder { color: var(--fg-dim); }
 .route-go {
-  width: 46px; height: 46px; flex: none;
-  background: var(--accent); color: #04101d;
-  border-radius: 14px; display: grid; place-items: center;
+  width: 48px; height: 48px; flex: none;
+  background: var(--accent); color: var(--pa-farg);
+  border-radius: var(--radius-2); display: grid; place-items: center;
 }
 .route-go svg { width: 22px; height: 22px; }
 
 .route-results { list-style: none; margin: 8px 0 0; padding: 0; }
 .route-results:empty { display: none; }
+/* Träfflistan trycks med tummen i en gungande bil: 48px hög rad, inte 40. */
 .route-results li {
   background: rgba(13,18,25,.96); backdrop-filter: blur(16px);
-  border: 1px solid var(--line); border-top: none;
-  padding: 13px 14px; font-size: 14.5px;
+  border: 1px solid var(--line-stark); border-top: none;
+  padding: 14px; font-size: var(--t-base); min-height: 48px;
+  display: flex; align-items: center;
 }
-.route-results li:first-child { border-top: 1px solid var(--line); border-radius: 12px 12px 0 0; }
+.route-results li:first-child { border-top: 1px solid var(--line-stark); border-radius: 12px 12px 0 0; }
 .route-results li:last-child { border-radius: 0 0 12px 12px; }
 .route-results li:only-child { border-radius: 12px; }
-.route-hint { color: var(--fg-dim); }
+.route-hint { color: var(--fg-2); }
 
 .route-bar {
   display: flex; align-items: center; gap: 12px; margin-top: 8px;
   background: rgba(13,18,25,.96); backdrop-filter: blur(16px);
-  border: 1px solid var(--accent); border-radius: 12px;
-  padding: 10px 12px; font-size: 13.5px;
+  border: 1px solid var(--accent); border-radius: var(--radius-2);
+  padding: 11px 12px; font-size: var(--t-md);
 }
 .route-bar[hidden] { display: none; }
 .route-bar span { flex: 1; min-width: 0; }
-.route-stop { color: var(--danger); font-size: 13.5px; font-weight: 650; padding: 4px 2px; }
+/* "Avbryt rutt" är destruktiv och trycks i rörelse — den måste både gå att
+   läsa och gå att träffa. 4px padding gav en 22px hög träffyta. */
+.route-stop {
+  color: var(--danger-2); font-size: var(--t-md); font-weight: 700;
+  padding: var(--sp-3) var(--sp-2); margin: -8px -4px -8px 0;
+}
 
 /* ---------- Lägesväljare ---------- */
 
-.mode-pick { display: flex; gap: 10px; margin: 4px 0 10px; }
+.mode-pick { display: flex; gap: var(--sp-2); margin: var(--sp-1) 0 var(--sp-3); }
+/* Korten ligger INNE i ett .card, och båda hade bakgrunden --bg-2. De gick
+   ihop till en enda yta och valet såg ut som text. Ett reglage ska ligga på en
+   egen, inre yta — därför --bg-3. */
 .mode-card {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  background: var(--bg-2); border: 1.5px solid var(--line); border-radius: 16px;
-  padding: 14px 10px 13px; text-align: center; color: var(--fg);
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp-1);
+  background: var(--bg-3); border: 1.5px solid var(--line); border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-2); text-align: center; color: var(--fg);
+  min-height: 88px; justify-content: center;
 }
 .mode-card .mode-ico { font-size: 26px; line-height: 1; }
-.mode-card b { font-size: 14.5px; }
-.mode-card small { font-size: 11.5px; color: var(--fg-dim); line-height: 1.35; }
+.mode-card b { font-size: var(--t-md); }
+.mode-card small { font-size: var(--t-sm); color: var(--fg-2); line-height: 1.35; }
 /* Det valda läget ska synas på en armlängds avstånd i solljus, inte anas. */
 .mode-card.on {
   border-color: var(--accent);
@@ -179,11 +289,11 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 
 /* ---------- Grupper ---------- */
 
-.row-inline { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.row-inline { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-3); }
 .row-inline input {
-  flex: 1; min-width: 0;
+  flex: 1; min-width: 0; min-height: 48px;
   background: var(--bg-3); border: 1px solid var(--line);
-  border-radius: 10px; padding: 11px 12px; font-size: 15px;
+  border-radius: var(--radius-2); padding: 12px; font-size: var(--t-base);
 }
 /* Provknapparna för varningsljudet. Två knappar bredvid varandra ryms inte på
    en smal telefon i liggande text — utan radbrytning kläms den andra ihop
@@ -194,11 +304,12 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 
 .group-list:empty { display: none; }
 .group-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 11px 0; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-3) 0; border-bottom: 1px solid var(--line);
+  min-height: 48px;
 }
 .group-row span { flex: 1; min-width: 0; font-weight: 600; }
-.btn-ghost.small.danger { color: var(--danger); }
+.btn-ghost.small.danger { color: var(--danger-2); }
 
 /* Facebook-grupper: namnet i fetstil, område och id som underrad. Id:t står
    med för att det är det enda som måste stämma överens med bryggan — den som
@@ -206,14 +317,14 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .fb-group-row span { font-weight: 600; overflow-wrap: anywhere; }
 .fb-group-row small {
   display: block; margin-top: 2px;
-  font-weight: 400; font-size: 12.5px; color: var(--fg-dim);
+  font-weight: 400; font-size: var(--t-sm); color: var(--fg-2);
 }
 
 .kod-ruta {
-  display: block; width: 100%; box-sizing: border-box; margin-top: 8px;
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 10px;
-  padding: 10px 12px; color: var(--fg-dim);
-  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  display: block; width: 100%; box-sizing: border-box; margin-top: var(--sp-2);
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius-3);
+  padding: var(--sp-3); color: var(--fg-2);
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre; overflow-x: auto; resize: vertical;
 }
 
@@ -236,7 +347,7 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .alert-icon { font-size: 30px; line-height: 1; }
 .alert-body { flex: 1; min-width: 0; }
 .alert-title { font-size: 19px; font-weight: 700; line-height: 1.2; }
-.alert-sub { font-size: 13px; opacity: .88; margin-top: 2px; }
+.alert-sub { font-size: var(--t-sm); opacity: .95; margin-top: 2px; }
 .alert-close { font-size: 17px; opacity: .75; padding: 6px 4px; }
 
 /* ---------- Följ-knapp ---------- */
@@ -244,8 +355,8 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .follow-btn {
   position: absolute; z-index: 500; right: 12px;
   bottom: calc(var(--bar-total) + 176px);
-  background: var(--accent); color: #04101d; font-weight: 650;
-  border-radius: 999px; padding: 10px 18px; font-size: 14px;
+  background: var(--accent); color: var(--pa-farg); font-weight: 700;
+  border-radius: 999px; padding: 12px 18px; font-size: var(--t-md); min-height: 48px;
   box-shadow: 0 6px 20px rgba(61,157,255,.35);
 }
 .follow-btn[hidden] { display: none; }
@@ -267,16 +378,37 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .hazard-icon.type-police, .hazard-icon.type-control { border-color: var(--danger); }
 .hazard-icon.type-camera { border-color: var(--warn); }
 .hazard-icon.type-unmarked { border-color: #b07cff; }
-.hazard-icon.fresh { animation: pulse 1.8s ease-out infinite; }
-@keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(255,77,79,.55); }
-  70% { box-shadow: 0 0 0 14px rgba(255,77,79,0); }
-  100% { box-shadow: 0 0 0 0 rgba(255,77,79,0); }
+/* Färsk rapport: en ring som växer ut och tonar bort.
+
+   Låg tidigare på box-shadow-spridning, alltså en målningsegenskap — och
+   inte en gång, utan en gång PER färsk markör, oändligt. Varje bildruta
+   ritades om samtidigt som Leaflet ritade brickor och dashcamen läste en
+   videoström. Det är precis den kombinationen regeln om transform/opacity
+   finns för.
+
+   Ingen position: relative här. Leaflet placerar redan markörens div
+   absolut via .leaflet-marker-icon, och en egen position hade tagit över
+   den placeringen — nålen hade hamnat i kartans hörn i stället för på
+   vägen. ::after mäts därför mot den divens 38x38 direkt. */
+.hazard-icon.fresh::after {
+  content: '';
+  position: absolute; inset: -3px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,77,79,.6);
+  pointer-events: none;
+  animation: pvPuls 1.8s ease-out infinite;
+}
+/* Delas med färdplanens pågående-punkt längre ner. En sjunde egen variant av
+   samma ring var det som gjorde att sex av dem kunde ligga kvar på
+   box-shadow utan att någon såg mönstret. */
+@keyframes pvPuls {
+  from { opacity: .9; transform: scale(1); }
+  to   { opacity: 0;  transform: scale(1.7); }
 }
 .pick-pin { font-size: 26px; text-align: center; }
 .leaflet-popup-content-wrapper { background: var(--bg-2); color: var(--fg); border-radius: 12px; }
 .leaflet-popup-tip { background: var(--bg-2); }
-.pop-dist, .pop-age, .pop-src { color: var(--fg-dim); font-size: 12px; }
+.pop-dist, .pop-age, .pop-src { color: var(--fg-2); font-size: var(--t-sm); }
 
 /* ---------- Lista ---------- */
 
@@ -293,24 +425,25 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .sheet.collapsed { transform: translateY(calc(100% - 34px)); }
 .sheet-grip {
   display: block; width: 42px; height: 5px; margin: 7px auto 6px;
-  background: #3a4756; border-radius: 3px;
+  background: var(--line-stark); border-radius: 3px;
 }
 .sheet-head { display: flex; justify-content: space-between; align-items: baseline; }
-.sheet-head h2 { font-size: 14px; margin: 0; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .06em; }
-.sheet-count { font-size: 12px; color: var(--fg-dim); }
-.sheet-empty { color: var(--fg-dim); font-size: 13px; padding: 8px 0 4px; margin: 0; }
+.sheet-head h2 { font-size: 13px; margin: 0; color: var(--fg-2); text-transform: uppercase; letter-spacing: .06em; }
+.sheet-count { font-size: 13px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.sheet-empty { color: var(--fg-2); font-size: var(--t-md); padding: var(--sp-2) 0 var(--sp-1); margin: 0; }
 .sheet-empty[hidden] { display: none; }
 
 .hazard-list { list-style: none; margin: 6px 0 0; padding: 0; }
 .hazard-list li {
-  display: flex; align-items: center; gap: 11px;
-  padding: 9px 0; border-top: 1px solid var(--line);
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) 0; border-top: 1px solid var(--line);
+  min-height: 52px;
 }
 .hz-ico { font-size: 21px; width: 26px; text-align: center; flex: none; }
 .hz-main { flex: 1; min-width: 0; }
-.hz-title { font-size: 15px; font-weight: 600; }
-.hz-meta { font-size: 12px; color: var(--fg-dim); }
-.hz-dist { font-size: 14px; font-weight: 650; color: var(--accent); font-variant-numeric: tabular-nums; }
+.hz-title { font-size: var(--t-base); font-weight: 600; }
+.hz-meta { font-size: var(--t-sm); color: var(--fg-2); }
+.hz-dist { font-size: var(--t-base); font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
 .hz-btns { display: flex; gap: 4px; }
 .hz-btns button {
   width: 34px; height: 34px; border-radius: 9px;
@@ -332,9 +465,16 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 }
 .act span { font-size: 21px; line-height: 1; }
 .act:active { transform: scale(.95); background: var(--bg-3); }
-.act-mic { background: var(--accent); border-color: var(--accent); color: #04101d; }
+.act-mic { background: var(--accent); border-color: var(--accent); color: var(--pa-farg); }
+/* Lyssnar: knappen andas.
+
+   Låg på box-shadow-spridning, oändligt, mitt i kartvyn. Ett ringlager
+   utanför knappen var ingen väg: .act har overflow: hidden (fyllnaden för
+   tryck-och-håll klipps mot knappen), så allt som växer utanför försvinner —
+   medan en box-shadow inte klipps alls. Kvar blir knappen själv, och en
+   skalning läser lika tydligt som glöden gjorde. */
 .act-mic.listening { animation: mic 1.1s ease-in-out infinite; }
-@keyframes mic { 50% { box-shadow: 0 0 0 12px rgba(61,157,255,.18); } }
+@keyframes mic { 50% { transform: scale(1.045); } }
 .act[disabled] { opacity: .4; }
 
 /* ---------- Tabbar ---------- */
@@ -348,7 +488,7 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 }
 .tab {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 2px; font-size: 10.5px; color: var(--fg-dim); font-weight: 600;
+  gap: 2px; font-size: 12px; color: var(--fg-2); font-weight: 600;
 }
 .tab span { font-size: 20px; }
 .tab.active { color: var(--accent); }
@@ -363,8 +503,8 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .dc-idle { padding: 26px 20px 30px; text-align: center; }
 .dc-idle[hidden] { display: none; }
 .dc-idle-icon { font-size: 44px; }
-.dc-idle p { color: var(--fg-dim); font-size: 14px; max-width: 34em; margin: 8px auto; }
-.dc-idle-note { font-size: 13px !important; }
+.dc-idle p { color: var(--fg-2); font-size: var(--t-md); line-height: 1.55; max-width: 34em; margin: var(--sp-2) auto; }
+.dc-idle-note { font-size: var(--t-md) !important; }
 .dc-warn { color: var(--warn) !important; }
 .dc-rec {
   position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 7px;
@@ -377,7 +517,7 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 .dc-controls { padding: 12px 14px; display: grid; gap: 11px; }
 .dc-controls[hidden] { display: none; }
 .dc-zooms { display: grid; gap: 9px; }
-.zoom { display: grid; gap: 5px; font-size: 13px; color: var(--fg-dim); }
+.zoom { display: grid; gap: 5px; font-size: var(--t-md); color: var(--fg-2); }
 .zoom b { color: var(--fg); font-variant-numeric: tabular-nums; }
 .zoom input[type=range] { width: 100%; }
 .dc-row { display: flex; gap: 8px; }
@@ -385,111 +525,228 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 
 .dc-library { padding: 6px 14px 24px; }
 .lib-head { display: flex; justify-content: space-between; align-items: baseline; }
-.lib-head h3 { font-size: 14px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .06em; margin: 0; }
-.lib-storage { font-size: 12px; color: var(--fg-dim); }
-.clip-list { list-style: none; margin: 8px 0; padding: 0; }
-.clip-list li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.lib-head h3 { font-size: 13px; color: var(--fg-2); text-transform: uppercase; letter-spacing: .06em; margin: 0; }
+.lib-storage { font-size: var(--t-sm); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.clip-list { list-style: none; margin: var(--sp-2) 0; padding: 0; }
+.clip-list li { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0; border-top: 1px solid var(--line); min-height: 56px; }
 .clip-main { flex: 1; min-width: 0; }
-.clip-when { font-size: 14px; font-weight: 600; }
-.clip-meta { font-size: 12px; color: var(--fg-dim); }
-.clip-lock { font-size: 17px; width: 34px; height: 34px; border-radius: 9px; background: var(--bg-3); }
+.clip-when { font-size: var(--t-base); font-weight: 600; }
+.clip-meta { font-size: var(--t-sm); color: var(--fg-2); }
+/* Låsknappen satt på 34px. Den trycks stillastående, men den avgör om ett
+   klipp överlever nästa rensning — den får kosta 44. */
+.clip-lock { font-size: 19px; width: 44px; height: 44px; border-radius: var(--radius-3); background: var(--bg-3); }
 .clip-lock.on { color: var(--warn); }
-.lib-actions { display: flex; gap: 8px; margin-top: 10px; padding-bottom: 20px; }
+.lib-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); padding-bottom: var(--sp-6); }
 
 /* ---------- Kort och formulär ---------- */
 
-.page-title { font-size: 26px; margin-bottom: 14px; }
+.page-title { font-size: var(--t-2xl); font-weight: 700; letter-spacing: -.02em; margin-bottom: var(--sp-4); }
+
+/* Kortet är sidans enda behållare. Det ligger PÅ sidan — därför en starkare
+   ytterkant och en nätt skugga i stället för en ljusare bakgrund. Ljusare
+   bakgrund hade lyst i ögonvrån på natten, och natt är normalfallet här. */
 .card {
-  background: var(--bg-2); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 14px; margin-bottom: 12px;
+  background: var(--bg-2); border: 1px solid var(--line-stark);
+  border-radius: var(--radius); padding: var(--sp-4); margin-bottom: var(--sp-3);
+  box-shadow: var(--skugga-1);
 }
-.card h3 { font-size: 13px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .06em; }
+
+/* Rubriken var 13px versaler i dimmad grå — en etikett man läste med möda och
+   som såg likadan ut som all annan småtext på skärmen. Med 41 avsnitt i rad är
+   det just rubrikerna man skannar efter, så de ska synas FÖRST: gemener,
+   nästan vit, större än raderna under sig. Versaler tar dessutom längre tid
+   att känna igen som ordform, vilket är fel egenskap i en bil. */
+.card h3 {
+  font-size: var(--t-lg); font-weight: 650; color: var(--fg);
+  text-transform: none; letter-spacing: -.01em; margin: 0 0 var(--sp-2);
+}
+
+/* En rad var 43px hög (8+8 padding runt 14,5px text) och bröt därmed
+   44px-golvet. 12px padding plus 48px min-height ger en yta en tumme träffar
+   i en gupp. Rader med vippa får 52 — vippan är själv 28 hög. */
 .row {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 8px 0; border-top: 1px solid var(--line); font-size: 14.5px;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  padding: var(--sp-3) 0; border-top: 1px solid var(--line);
+  font-size: var(--t-base); min-height: 48px;
 }
-.card h3 + .row, .card h3 + .stack { border-top: none; }
+.row:has(input[type=checkbox]) { min-height: 52px; }
+.card h3 + .row, .card h3 + .stack,
+.sub-head + .row, .sub-head + .stack { border-top: none; }
 .row input[type=range] { flex: 1; max-width: 55%; }
-.row input[type=checkbox] { width: 46px; height: 27px; appearance: none; background: var(--bg-3); border-radius: 999px; position: relative; transition: background .18s; flex: none; }
-.row input[type=checkbox]::after { content: ''; position: absolute; top: 3px; left: 3px; width: 21px; height: 21px; border-radius: 50%; background: #8b9bad; transition: .18s; }
-.row input[type=checkbox]:checked { background: var(--accent); }
-.row input[type=checkbox]:checked::after { left: 22px; background: #fff; }
-.row select, .stack input, .stack select {
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 10px;
-  padding: 8px 10px; min-width: 0;
+
+/* VIPPAN.
+   Knoppen flyttades tidigare med `left`, alltså en layoutegenskap: varje
+   bildruta i övergången tvingade fram en ny layout på en telefon som samtidigt
+   ritar en karta och läser en videoström. transform kostar ingenting av det
+   och är den enda egenskap utom opacity som får animeras här.
+   Färgbytet sker UTAN övergång, rörelsen MED: färgen är till för den som
+   tittade bort och kommer tillbaka, rörelsen för den som tittar just nu. */
+.row input[type=checkbox] {
+  width: 48px; height: 28px; flex: none; appearance: none; position: relative;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px;
 }
-.stack { display: grid; gap: 6px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; color: var(--fg-dim); }
+.row input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+.row input[type=checkbox]::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 22px; height: 22px; border-radius: 50%; background: #c3cfdb;
+  transform: translateX(0);
+  transition: transform .16s cubic-bezier(.22,.61,.36,1);
+}
+.row input[type=checkbox]:checked::after { transform: translateX(20px); background: #fff; }
+/* Osynlig greppyta runt vippan. 48x28 är rätt storlek att LÄSA av och för
+   liten att träffa; ::before ger 56x52 att trycka på utan att flytta något. */
+.row input[type=checkbox]::before {
+  content: ''; position: absolute; top: 50%; left: 50%;
+  width: 56px; height: 52px; transform: translate(-50%, -50%);
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Kvittensen ligger i lägesbytet, inte i rörelsen. */
+  .row input[type=checkbox]::after { transition: none; }
+}
+
+/* Textfälten INNE i en rad stod inte med här, och det var inte kosmetiskt.
+   Utan regel ärvde de `color: inherit` från button/input/select-raden längst
+   upp — alltså --fg, nästan vitt — ovanpå webbläsarens vita standardbotten.
+   Uppmätt kontrast 1,11:1 mot kravet 4,5. Fältet ser användbart ut ända tills
+   man skriver i det, eftersom platshållaren ritas grå. Mätt på #plNytt,
+   #plNyttNamn och #plProva, alltså Bilingenkännarens tre fält — de enda
+   ställen i appen där man skriver in ett registreringsnummer.
+
+   :not på kryssruta och reglage: båda har egna, helt andra regler nedanför
+   respektive ovanför, och en bakgrund här hade ätit upp vippan.
+   48 och inte 44: raden är själv 48 hög, så det kostar ingen höjd. */
+.row select,
+.row input:not([type=checkbox]):not([type=range]),
+.stack input, .stack select {
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius-3);
+  padding: 10px var(--sp-3); min-width: 0; min-height: 48px; color: var(--fg);
+}
+.row input:not([type=checkbox]):not([type=range]) { flex: 1; max-width: 55%; }
+.row input::placeholder, .stack input::placeholder { color: var(--fg-dim); }
+.stack { display: grid; gap: var(--sp-2); padding: var(--sp-3) 0; border-top: 1px solid var(--line); font-size: var(--t-md); color: var(--fg-2); }
 .stack input { width: 100%; color: var(--fg); }
-.inline { display: flex; gap: 8px; }
+.inline { display: flex; gap: var(--sp-2); }
 .inline input { flex: 1; }
-.hint { font-size: 12.5px; color: var(--fg-dim); margin: 8px 0 0; }
+/* Hjälptexten är den vanligaste MENINGEN i appen. 12,5px i dimmad grå var
+   exakt den text som försvinner i sol — och det är den som förklarar vad ett
+   reglage gör. Golvet 15px gäller här utan undantag. */
+.hint { font-size: var(--t-md); line-height: 1.5; color: var(--fg-2); margin: var(--sp-2) 0 0; }
 .hint i { color: var(--fg); font-style: normal; background: var(--bg-3); padding: 1px 6px; border-radius: 6px; }
-.learned-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13.5px; }
-.learned-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); }
-.learned-list button { color: var(--danger); font-size: 13px; }
-.billing-status { font-size: 14.5px; margin: 6px 0 12px; }
+.learned-list { list-style: none; margin: var(--sp-2) 0 0; padding: 0; font-size: var(--t-md); }
+.learned-list li { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); padding: 10px 0; border-top: 1px solid var(--line); min-height: 44px; }
+.learned-list button { color: var(--danger-2); font-size: var(--t-sm); padding: 10px 6px; }
+.billing-status { font-size: var(--t-base); margin: var(--sp-2) 0 var(--sp-3); }
+
+/* ---------- Reserverad höjd för listor som fylls i efterhand ----------
+
+   Inställningsvyn ritar ett tiotal listor från kod när den öppnas. Fram till
+   att svaret kommer är behållarna nollhöga, och när de fylls växer de — allt
+   under dem hoppar nedåt, ofta mitt i att man sträcker sig efter ett reglage.
+   Det är den verkliga orsaken till att vyn känns ostadig; det är inte en
+   animation som saknas, det är höjd som saknas.
+
+   Talen är den ungefärliga höjd listan brukar sluta på, inte ett maxvärde:
+   blir listan högre växer den vidare, blir den kortare står en tom yta kvar
+   en kort stund. Att gissa lite för högt är billigare än att låta sidan
+   flytta sig under fingret.
+
+   min-height och inte height: en tom lista ska kunna vara tom. */
+#notisTyper    { min-height: 232px; }
+#roadmapChain  { min-height: 260px; }
+#planList      { min-height: 210px; }
+#leaderboard   { min-height: 176px; }
+#shopList      { min-height: 132px; }
+#inkommandeSpar{ min-height: 120px; }
+#repBreakdown  { min-height: 88px; }
+#hotspotList   { min-height: 88px; }
+#learnedList   { min-height: 64px; }
+#groupList     { min-height: 64px; }
+#fbGruppLista  { min-height: 64px; }
+#plFordonLista { min-height: 64px; }
+#accountActions{ min-height: 56px; }
 
 /* ---------- Knappar ---------- */
 
+/* Alla knappar är minst 48px höga. 44 är golvet i riktlinjerna, 48 är vad en
+   tumme faktiskt träffar när bilen guppar. */
 .btn-primary {
-  background: var(--accent); color: #04101d; font-weight: 650;
-  border-radius: 12px; padding: 12px 18px; width: 100%;
+  background: var(--accent); color: var(--pa-farg); font-weight: 700;
+  border-radius: var(--radius-2); padding: 13px 18px; width: 100%;
+  min-height: 48px; font-size: var(--t-base);
 }
-.btn-primary.big { padding: 15px 22px; font-size: 16.5px; }
+.btn-primary.big { padding: 15px 22px; font-size: var(--t-lg); min-height: 54px; }
 .btn-ghost {
-  background: var(--bg-3); border: 1px solid var(--line); color: var(--fg);
-  border-radius: 12px; padding: 11px 16px; font-weight: 600;
+  background: var(--bg-3); border: 1px solid var(--line-stark); color: var(--fg);
+  border-radius: var(--radius-2); padding: 12px 16px; font-weight: 600;
+  min-height: 48px; font-size: var(--t-md);
 }
-.btn-ghost.small { padding: 8px 13px; font-size: 13.5px; width: auto; }
-.btn-ghost.danger, .btn-ghost .danger { color: var(--danger); }
-.btn-danger { background: var(--danger); color: #fff; font-weight: 700; border-radius: 12px; padding: 12px 18px; }
-.btn-danger.big { padding: 15px; font-size: 16px; }
+.btn-ghost.small { padding: 10px 13px; font-size: var(--t-sm); width: auto; min-height: 44px; }
+/* Rent --danger som TEXT ger 4,3:1 mot fältbakgrunden och ligger under
+   gränsen. --danger-2 är samma betydelse, läsbar. */
+.btn-ghost.danger, .btn-ghost .danger { color: var(--danger-2); border-color: rgba(255,77,79,.4); }
+/* Vit text på rött ger 3,3:1 och är oläslig i sol; nästan svart på samma röda
+   ger 5,9:1. Att det ser ovant ut väger lättare än att det inte går att läsa
+   precis innan man raderar något som inte kommer tillbaka. */
+.btn-danger {
+  background: var(--danger); color: var(--pa-farg); font-weight: 800;
+  border-radius: var(--radius-2); padding: 13px 18px; min-height: 48px;
+  font-size: var(--t-base);
+}
+.btn-danger.big { padding: 15px; font-size: var(--t-lg); min-height: 54px; }
+
+/* Tangentbord och rattknappar ska kunna se var de står. Ringen är samma som
+   den appen använder för att peka ut ett landat avsnitt — en mekanism, inte
+   två. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- Modaler ---------- */
 
 .modal {
   position: fixed; inset: 0; z-index: 1000;
-  background: rgba(4,7,11,.78); backdrop-filter: blur(6px);
-  display: grid; place-items: center; padding: 20px;
+  background: rgba(4,7,11,.82); backdrop-filter: blur(6px);
+  display: grid; place-items: center; padding: var(--sp-4);
   overflow-y: auto;
 }
 .modal[hidden] { display: none; }
+/* Modalen ligger ÖVER allt annat, och det ska synas utan att läsas: djupaste
+   skuggan i skalan plus den starka kanten. */
 .modal-card {
-  background: var(--bg-2); border: 1px solid var(--line); border-radius: 20px;
-  padding: 22px; width: 100%; max-width: 380px;
-  box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  background: var(--bg-2); border: 1px solid var(--line-stark); border-radius: var(--radius);
+  padding: var(--sp-6); width: 100%; max-width: 380px;
+  box-shadow: var(--skugga-3);
   margin: auto;
 }
 .modal-card.wide { max-width: 520px; }
-.modal-card h2 { font-size: 20px; }
-.modal-card p { font-size: 14.5px; color: var(--fg-dim); margin: 0 0 14px; }
+.modal-card h2 { font-size: var(--t-xl); margin: 0 0 var(--sp-2); }
+.modal-card p { font-size: var(--t-md); line-height: 1.5; color: var(--fg-2); margin: 0 0 var(--sp-3); }
 .modal-actions { display: flex; gap: 9px; margin-top: 16px; }
 .modal-actions > * { flex: 1; }
 .modal-actions.column { flex-direction: column; }
 #clipVideo { width: 100%; border-radius: 12px; background: #000; max-height: 55vh; }
 
 .paywall-icon { font-size: 40px; text-align: center; }
-.paywall-list { margin: 0 0 6px; padding-left: 20px; font-size: 14px; color: var(--fg-dim); }
+.paywall-list { margin: 0 0 var(--sp-2); padding-left: 20px; font-size: var(--t-md); line-height: 1.5; color: var(--fg-2); }
 .paywall-list li { margin: 5px 0; }
 
-.platform-pick { display: flex; gap: 8px; margin: 4px 0 16px; }
+.platform-pick { display: flex; gap: var(--sp-2); margin: var(--sp-1) 0 var(--sp-4); }
 .platform-pick button {
-  flex: 1; background: var(--bg-3); border: 1px solid var(--line); border-radius: 12px;
-  padding: 11px 6px; font-size: 13.5px; font-weight: 600;
+  flex: 1; background: var(--bg-3); border: 1px solid var(--line-stark); border-radius: var(--radius-2);
+  padding: 12px 6px; font-size: var(--t-md); font-weight: 600; min-height: 48px;
 }
-.platform-pick button.active { background: var(--accent); border-color: var(--accent); color: #04101d; }
+.platform-pick button.active { background: var(--accent); border-color: var(--accent); color: var(--pa-farg); }
 .guide-steps { margin: 0; padding: 0; list-style: none; counter-reset: g; }
 .guide-steps li {
-  display: flex; gap: 11px; padding: 11px 0; border-top: 1px solid var(--line);
-  font-size: 14.5px; line-height: 1.45;
+  display: flex; gap: var(--sp-3); padding: var(--sp-3) 0; border-top: 1px solid var(--line);
+  font-size: var(--t-md); line-height: 1.5;
 }
 .guide-steps li:first-child { border-top: none; }
 .guide-steps .g-ico { font-size: 20px; flex: none; width: 26px; text-align: center; }
 .guide-steps b { color: var(--fg); }
 .guide-note {
   background: rgba(255,176,32,.1); border: 1px solid rgba(255,176,32,.3);
-  border-radius: 12px; padding: 11px 13px; font-size: 13px !important; color: var(--warn) !important;
-  margin-top: 12px !important;
+  border-radius: var(--radius-2); padding: var(--sp-3); font-size: var(--t-md) !important;
+  line-height: 1.5; color: var(--warn) !important;
+  margin-top: var(--sp-3) !important;
 }
 
 /* ---------- Röstoverlay ---------- */
@@ -510,16 +767,16 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
   100% { transform: scale(1.28); opacity: 0; }
 }
 .voice-text { font-size: 21px; font-weight: 650; text-align: center; padding: 0 24px; min-height: 1.4em; }
-.voice-hint { font-size: 14px; color: var(--fg-dim); }
+.voice-hint { font-size: var(--t-md); color: var(--fg-2); }
 
 /* ---------- Toast ---------- */
 
 .toast {
   position: fixed; z-index: 1200; left: 50%; transform: translateX(-50%);
   bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 18px);
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 12px;
-  padding: 11px 17px; font-size: 14px; max-width: 88vw; text-align: center;
-  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  background: var(--bg-3); border: 1px solid var(--line-stark); border-radius: var(--radius-2);
+  padding: var(--sp-3) var(--sp-4); font-size: var(--t-base); max-width: 88vw; text-align: center;
+  box-shadow: var(--skugga-2);
   animation: rise .22s ease;
 }
 .toast[hidden] { display: none; }
@@ -530,17 +787,17 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 @media (orientation: landscape) and (max-height: 500px) {
   :root { --tabbar-h: 52px; }
   .sheet { max-height: 40vh; bottom: calc(var(--bar-total) + 74px); }
-  .act { min-height: 50px; font-size: 10px; }
+  .act { min-height: 50px; font-size: 11px; }
   .act span { font-size: 18px; }
   .speedo-num { font-size: 24px; }
   #dcCanvas { max-height: 62vh; }
 }
 
 /* Kvalitet och buffert i dashcam-kontrollerna */
-.dc-selects label { display: grid; gap: 4px; font-size: 12px; color: var(--fg-dim); }
+.dc-selects label { display: grid; gap: var(--sp-1); font-size: var(--t-sm); color: var(--fg-2); }
 .dc-selects select {
   background: var(--bg-3); border: 1px solid var(--line); color: var(--fg);
-  border-radius: 12px; padding: 10px 12px; width: 100%;
+  border-radius: var(--radius-2); padding: var(--sp-3); width: 100%; min-height: 48px;
 }
 #dcEstimate { margin: 0; }
 
@@ -564,10 +821,15 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
   color: #111; font-weight: 800; font-size: 22px; line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.limit-sign.alarm { animation: signAlarm .6s ease-in-out 8; }
-@keyframes signAlarm {
-  50% { transform: scale(1.12); box-shadow: 0 0 0 10px rgba(216,35,42,.35); }
-}
+/* Skylten larmar: två pulser, ren transform.
+
+   Var åtta pulser à 600 ms = 4,8 sekunder — längre än föraren över huvud
+   taget tittar på skärmen — och keyframen animerade box-shadow. Nu 300 ms
+   per puls (taket) och två varv. Att den ligger kvar och skalar i fem
+   sekunder gör inte skylten mer läst; den konkurrerar bara med varningsytan
+   om blicken. */
+.limit-sign.alarm { animation: signAlarm .3s ease-in-out 2; }
+@keyframes signAlarm { 50% { transform: scale(1.12); } }
 .speedo.over .speedo-num { color: var(--warn); }
 .speedo.way-over .speedo-num { color: var(--danger); }
 .speedo.way-over { border-color: rgba(255,77,79,.6); }
@@ -579,47 +841,55 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 
 .hotspot-list { list-style: none; margin: 10px 0 12px; padding: 0; }
 .hotspot-list li {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; cursor: pointer;
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 10px 0; border-top: 1px solid var(--line);
+  font-size: var(--t-base); min-height: 48px; cursor: pointer;
 }
-.hotspot-list li.muted { color: var(--fg-dim); font-size: 13px; cursor: default; }
+.hotspot-list li.muted { color: var(--fg-2); font-size: var(--t-md); cursor: default; min-height: 0; }
 .hs-ico { font-size: 18px; width: 24px; text-align: center; flex: none; }
 .hs-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .hs-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hs-meta { font-size: 12px; color: var(--fg-dim); }
-.hs-count { font-size: 13px; color: var(--accent); font-weight: 650; }
+.hs-meta { font-size: var(--t-sm); color: var(--fg-2); }
+.hs-count { font-size: var(--t-md); color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* ---------- Rapportpoäng ---------- */
 
-.score-big { text-align: center; padding: 10px 0 14px; }
-.score-big span { display: block; font-size: 44px; font-weight: 750; line-height: 1; color: var(--accent); }
-.score-big small { color: var(--fg-dim); font-size: 12px; letter-spacing: .05em; text-transform: uppercase; }
-.rep-breakdown { list-style: none; margin: 0 0 12px; padding: 0; font-size: 13.5px; }
+.score-big { text-align: center; padding: var(--sp-3) 0 var(--sp-4); }
+.score-big span { display: block; font-size: 44px; font-weight: 750; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+.score-big small { color: var(--fg-2); font-size: var(--t-xs); letter-spacing: .05em; text-transform: uppercase; }
+.rep-breakdown { list-style: none; margin: 0 0 var(--sp-3); padding: 0; font-size: var(--t-md); }
 .rep-breakdown li {
-  display: flex; justify-content: space-between; gap: 10px;
-  padding: 7px 0; border-top: 1px solid var(--line); color: var(--fg-dim);
+  display: flex; justify-content: space-between; gap: var(--sp-3);
+  padding: 10px 0; border-top: 1px solid var(--line); color: var(--fg-2);
 }
 .rep-breakdown li.muted { justify-content: flex-start; }
-.sub-head { font-size: 12px !important; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .06em; margin: 16px 0 4px; }
-.leaderboard { margin: 0; padding-left: 22px; font-size: 14px; }
-.leaderboard li { padding: 6px 0; display: flex; justify-content: space-between; gap: 10px; }
+/* Underrubriken inne i ett kort. Var 12px versaler i grått — samma utseende
+   som all annan småtext, alltså osynlig som rubrik. Nu är den en mindre
+   syskonrubrik till .card h3: gemener, nästan vit, ett steg ner i storlek.
+   !important står kvar eftersom flera kort sätter font-size på h4 lokalt. */
+.sub-head {
+  font-size: var(--t-md) !important; font-weight: 600; color: var(--fg);
+  text-transform: none; letter-spacing: 0; margin: var(--sp-4) 0 var(--sp-1);
+}
+.leaderboard { margin: 0; padding-left: 22px; font-size: var(--t-md); }
+.leaderboard li { padding: var(--sp-2) 0; display: flex; justify-content: space-between; gap: var(--sp-3); }
 .leaderboard li.me { color: var(--accent); font-weight: 650; }
-.leaderboard li.muted { color: var(--fg-dim); list-style: none; margin-left: -22px; }
+.leaderboard li.muted { color: var(--fg-2); list-style: none; margin-left: -22px; }
 
 /* ---------- Ansvarsfriskrivning ---------- */
 
 .disclaimer { max-width: 540px; }
-.disc-item { display: flex; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.disc-item { display: flex; gap: var(--sp-3); padding: var(--sp-3) 0; border-top: 1px solid var(--line); }
 .disc-item:first-of-type { border-top: none; }
-.disc-item div { font-size: 14px; line-height: 1.5; color: var(--fg-dim); }
+.disc-item div { font-size: var(--t-md); line-height: 1.55; color: var(--fg-2); }
 .disc-item b { color: var(--fg); display: block; margin-bottom: 2px; font-weight: 650; }
 .disc-ico { font-size: 21px; flex: none; width: 28px; text-align: center; }
 .disc-accept {
-  display: flex; gap: 11px; align-items: flex-start; margin-top: 18px;
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 14px; padding: 13px;
-  font-size: 14px; line-height: 1.45; cursor: pointer;
+  display: flex; gap: var(--sp-3); align-items: flex-start; margin-top: var(--sp-4);
+  background: var(--bg-3); border: 1px solid var(--line-stark); border-radius: var(--radius-2); padding: var(--sp-3);
+  font-size: var(--t-md); line-height: 1.5; cursor: pointer;
 }
-.disc-accept input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); margin: 0; }
+.disc-accept input { width: 26px; height: 26px; flex: none; accent-color: var(--accent); margin: 0; }
 #discAccept[disabled] { opacity: .4; }
 
 /* ---------- QR-delning ---------- */
@@ -630,8 +900,8 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 }
 .qr-wrap svg { display: block; width: 100%; max-width: 230px; height: auto; }
 .qr-url {
-  text-align: center; font-size: 12.5px; color: var(--fg-dim);
-  margin: 0 0 12px; word-break: break-all;
+  text-align: center; font-size: var(--t-md); color: var(--fg-2);
+  margin: 0 0 var(--sp-3); word-break: break-all;
 }
 
 /* ---------- Inloggning ---------- */
@@ -654,70 +924,71 @@ h1, h2, h3 { margin: 0 0 .5em; font-weight: 650; letter-spacing: -.01em; }
 }
 .auth-brand h1 { font-size: 30px; margin: 0; letter-spacing: -.03em; }
 .auth-region {
-  margin: 2px 0 0; font-size: 12px; color: var(--fg-dim);
+  margin: 2px 0 0; font-size: 12px; color: var(--fg-2);
   text-transform: uppercase; letter-spacing: .16em;
 }
 .auth-lead {
-  text-align: center; font-size: 14px; color: var(--fg-dim);
-  line-height: 1.5; margin: 0 0 22px;
+  text-align: center; font-size: var(--t-md); color: var(--fg-2);
+  line-height: 1.55; margin: 0 0 var(--sp-6);
 }
 
 .auth-tabs {
-  display: flex; gap: 4px; background: var(--bg-2);
-  border: 1px solid var(--line); border-radius: 14px; padding: 4px; margin-bottom: 18px;
+  display: flex; gap: var(--sp-1); background: var(--bg-2);
+  border: 1px solid var(--line-stark); border-radius: var(--radius-2); padding: var(--sp-1); margin-bottom: var(--sp-4);
 }
 .auth-tabs button {
-  flex: 1; padding: 10px 8px; border-radius: 10px;
-  font-size: 14.5px; font-weight: 600; color: var(--fg-dim);
+  flex: 1; padding: 12px var(--sp-2); border-radius: var(--radius-3); min-height: 48px;
+  font-size: var(--t-base); font-weight: 600; color: var(--fg-2);
 }
 .auth-tabs button.active { background: var(--bg-3); color: var(--fg); }
 
 .auth-field { display: block; margin-bottom: 14px; }
 .auth-field > span {
-  display: block; font-size: 12.5px; color: var(--fg-dim);
-  margin-bottom: 6px; font-weight: 600;
+  display: block; font-size: var(--t-sm); color: var(--fg-2);
+  margin-bottom: var(--sp-2); font-weight: 600;
 }
 .auth-field small { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .auth-field input {
-  width: 100%; background: var(--bg-2); border: 1px solid var(--line);
-  border-radius: 12px; padding: 14px 14px; font-size: 16px; color: var(--fg);
+  width: 100%; background: var(--bg-2); border: 1px solid var(--line-stark);
+  border-radius: var(--radius-2); padding: 14px; font-size: var(--t-base); color: var(--fg);
+  min-height: 52px;
 }
 .auth-field input:focus {
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(61,157,255,.16);
 }
-.auth-field input::placeholder { color: #5d6e80; }
+.auth-field input::placeholder { color: var(--fg-dim); }
 
 .pw-wrap { position: relative; display: block; }
 .pw-peek {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-  padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--accent);
+  padding: var(--sp-3); font-size: var(--t-md); font-weight: 700; color: var(--accent);
 }
 
 .auth-msg {
-  font-size: 13.5px; line-height: 1.45; border-radius: 12px;
-  padding: 11px 13px; margin: 0 0 14px;
-  background: rgba(255,77,79,.1); border: 1px solid rgba(255,77,79,.32); color: #ff8f90;
+  font-size: var(--t-md); line-height: 1.5; border-radius: var(--radius-2);
+  padding: var(--sp-3); margin: 0 0 var(--sp-3);
+  background: rgba(255,77,79,.1); border: 1px solid rgba(255,77,79,.32); color: var(--danger-2);
 }
 .auth-msg[hidden] { display: none; }
 .auth-msg.ok {
-  background: rgba(47,208,122,.1); border-color: rgba(47,208,122,.32); color: #6ee2a6;
+  background: rgba(47,208,122,.1); border-color: rgba(47,208,122,.32); color: var(--ok-2);
 }
 
 .auth-link {
-  display: block; width: 100%; text-align: center; padding: 14px 0 4px;
-  font-size: 13.5px; color: var(--fg-dim);
+  display: block; width: 100%; text-align: center; padding: var(--sp-4) 0 var(--sp-1);
+  font-size: var(--t-md); color: var(--fg-2); min-height: 48px;
 }
 .auth-divider {
-  display: flex; align-items: center; gap: 12px;
-  margin: 16px 0; color: var(--fg-dim); font-size: 12px;
+  display: flex; align-items: center; gap: var(--sp-3);
+  margin: var(--sp-4) 0; color: var(--fg-2); font-size: var(--t-sm);
 }
 .auth-divider::before, .auth-divider::after {
   content: ''; flex: 1; height: 1px; background: var(--line);
 }
 .auth-fine {
-  font-size: 12px; color: #6d7d8e; text-align: center;
-  line-height: 1.5; margin: 12px 0 0;
+  font-size: var(--t-sm); color: var(--fg-2); text-align: center;
+  line-height: 1.5; margin: var(--sp-3) 0 0;
 }
 #authSubmit[disabled] { opacity: .55; }
 
@@ -738,14 +1009,14 @@ button, .act, .tab, .chip, .icon-btn { touch-action: manipulation; user-select: 
 input, select, textarea { font-size: 16px; }
 
 /* ---------- Testknappar ---------- */
-.test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 4px; }
-.test-grid button { width: 100%; text-align: left; }
+.test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); margin: var(--sp-3) 0 var(--sp-1); }
+.test-grid button { width: 100%; text-align: left; min-height: 48px; }
 
 /* ---------- Inloggning: trygghetstext ---------- */
 .auth-hint {
-  font-size: 12.5px; color: #7f8fa1; line-height: 1.5;
+  font-size: var(--t-md); color: var(--fg-2); line-height: 1.5;
   background: var(--bg-2); border: 1px solid var(--line);
-  border-radius: 12px; padding: 11px 13px; margin: 0 0 14px;
+  border-radius: var(--radius-2); padding: var(--sp-3); margin: 0 0 var(--sp-3);
 }
 
 /* ---------- Introduktionsguide ---------- */
@@ -756,10 +1027,22 @@ body.tour-open { overflow: hidden; }
 .tour-ring {
   position: absolute; border: 2px solid var(--accent); border-radius: 16px;
   box-shadow: 0 0 0 4px rgba(61,157,255,.22), 0 0 26px rgba(61,157,255,.4);
-  pointer-events: none; animation: tourPulse 1.9s ease-out infinite;
+  pointer-events: none;
+}
+/* Pulsen låg på box-shadow-spridningen och gick oändligt. Den stilla glöden
+   ovanför är kvar som den är — en skugga som inte ändras kostar ingenting.
+   Det som rör sig är ett eget lager, och det rör bara kompositören. */
+.tour-ring::after {
+  content: '';
+  position: absolute; inset: -5px;
+  border-radius: 20px;
+  border: 3px solid rgba(61,157,255,.45);
+  pointer-events: none;
+  animation: tourPulse 1.9s ease-out infinite;
 }
 @keyframes tourPulse {
-  50% { box-shadow: 0 0 0 9px rgba(61,157,255,.12), 0 0 30px rgba(61,157,255,.5); }
+  from { opacity: .75; transform: scale(1); }
+  to   { opacity: 0;  transform: scale(1.05); }
 }
 .tour-arrow {
   position: absolute; font-size: 22px; color: var(--accent);
@@ -770,9 +1053,9 @@ body.tour-open { overflow: hidden; }
 
 .tour-card {
   position: absolute; left: 14px; right: 14px;
-  background: var(--bg-2); border: 1px solid var(--line);
-  border-radius: 20px; padding: 20px 20px 16px;
-  box-shadow: 0 22px 60px rgba(0,0,0,.7);
+  background: var(--bg-2); border: 1px solid var(--line-stark);
+  border-radius: var(--radius); padding: var(--sp-6) var(--sp-6) var(--sp-4);
+  box-shadow: var(--skugga-3);
   max-width: 440px; margin-inline: auto;
 }
 .tour-card.centered { top: 50%; transform: translateY(-50%); }
@@ -780,21 +1063,25 @@ body.tour-open { overflow: hidden; }
   font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
   color: var(--accent); font-weight: 700; margin-bottom: 6px;
 }
-.tour-card h2 { font-size: 21px; margin: 0 0 8px; letter-spacing: -.02em; }
-.tour-card p { font-size: 15px; line-height: 1.55; color: var(--fg-dim); margin: 0; }
-.tour-actions { display: flex; align-items: center; gap: 9px; margin-top: 18px; }
+.tour-card h2 { font-size: var(--t-xl); margin: 0 0 var(--sp-2); letter-spacing: -.02em; }
+.tour-card p { font-size: var(--t-md); line-height: 1.55; color: var(--fg-2); margin: 0; }
+.tour-actions { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-4); }
 .tour-actions .btn-primary { flex: 1; }
 .tour-skip {
-  font-size: 13.5px; color: var(--fg-dim); padding: 10px 4px; margin-right: auto;
+  font-size: var(--t-md); color: var(--fg-2); padding: var(--sp-3) var(--sp-2); margin-right: auto;
+  min-height: 44px;
 }
 .tour-dots { display: flex; gap: 5px; justify-content: center; margin-top: 14px; }
 .tour-dots span {
-  width: 6px; height: 6px; border-radius: 50%; background: #33404f; transition: .2s;
+  /* Ingen transition: den gällde alla egenskaper, och punkten byter BREDD när
+     den blir aktiv — alltså en layoutändring per bildruta. Punkten ska ändå
+     bara svara på ett tryck, och ett svar får komma direkt. */
+  width: 6px; height: 6px; border-radius: 50%; background: var(--line-stark);
 }
 .tour-dots span.on { background: var(--accent); width: 18px; border-radius: 3px; }
 
-.modal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
-.modal-actions button { flex: 1; min-width: 96px; padding: 12px 10px; border-radius: 12px; }
+.modal-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
+.modal-actions button { flex: 1; min-width: 96px; padding: 13px 10px; border-radius: var(--radius-2); min-height: 48px; }
 
 /* Nattläge: dämpa gränssnittet ytterligare när det är mörkt ute */
 body.is-night .speedo,
@@ -815,72 +1102,83 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 
 /* ---------- Uppdateringskort ---------- */
 .card-update { border-color: rgba(61,157,255,.35); background: rgba(61,157,255,.06); }
-.update-row { display: flex; align-items: center; gap: 14px; justify-content: space-between; }
-.update-row b { display: block; font-size: 14.5px; }
-.update-row .hint { margin: 2px 0 0; }
-.update-row .btn-primary { width: auto; flex: none; padding: 11px 20px; }
+.update-row { display: flex; align-items: center; gap: var(--sp-3); justify-content: space-between; }
+.update-row b { display: block; font-size: var(--t-base); }
+.update-row .hint { margin: var(--sp-1) 0 0; }
+.update-row .btn-primary { width: auto; flex: none; padding: 13px 20px; }
 
 /* ---------- Prisnivåer ---------- */
-.plans { display: grid; gap: 10px; margin: 10px 0 12px; }
+.plans { display: grid; gap: var(--sp-3); margin: var(--sp-3) 0; }
+/* Ingen `transition: .15s` här längre. Den gällde ALLA egenskaper, alltså även
+   kanttjocklek och skugga — omritning per bildruta för en effekt ingen ser.
+   Valet ska dessutom slå till direkt: det är ett svar på ett tryck. */
 .plan {
   position: relative; background: var(--bg-3); border: 1px solid var(--line);
-  border-radius: 16px; padding: 14px 16px; cursor: pointer; transition: .15s;
+  border-radius: var(--radius); padding: var(--sp-4); cursor: pointer;
 }
 .plan.popular { border-color: rgba(61,157,255,.5); }
 .plan.chosen { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(61,157,255,.15); }
 .plan-badge {
-  position: absolute; top: -9px; right: 14px; background: var(--accent); color: #04101d;
-  font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+  position: absolute; top: -9px; right: 14px; background: var(--accent); color: var(--pa-farg);
+  font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
   text-transform: uppercase; letter-spacing: .05em;
 }
 .plan-head { display: flex; justify-content: space-between; align-items: baseline; }
-.plan-name { font-size: 17px; font-weight: 650; }
-.plan-price { font-size: 22px; font-weight: 750; color: var(--accent); }
-.plan-price small { font-size: 12px; font-weight: 500; color: var(--fg-dim); }
-.plan-tagline { font-size: 13px; color: var(--fg-dim); margin: 2px 0 8px; }
-.plan ul { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--fg-dim); }
-.plan li { margin: 3px 0; }
+.plan-name { font-size: var(--t-lg); font-weight: 650; }
+.plan-price { font-size: 22px; font-weight: 750; color: var(--accent); font-variant-numeric: tabular-nums; }
+.plan-price small { font-size: var(--t-sm); font-weight: 500; color: var(--fg-2); }
+.plan-tagline { font-size: var(--t-md); color: var(--fg-2); margin: var(--sp-1) 0 var(--sp-2); }
+.plan ul { margin: 0; padding-left: 18px; font-size: var(--t-md); line-height: 1.5; color: var(--fg-2); }
+.plan li { margin: var(--sp-1) 0; }
 .prepay {
   background: rgba(47,208,122,.08); border: 1px solid rgba(47,208,122,.3);
-  border-radius: 14px; padding: 12px 15px;
+  border-radius: var(--radius-2); padding: var(--sp-3) var(--sp-4);
 }
-.prepay b { display: block; font-size: 14px; color: #6ee2a6; margin-bottom: 3px; }
-.prepay span { font-size: 13px; color: var(--fg-dim); }
+.prepay b { display: block; font-size: var(--t-base); color: var(--ok-2); margin-bottom: 3px; }
+.prepay span { font-size: var(--t-md); color: var(--fg-2); }
 
 /* ---------- Tillbehör ---------- */
-.shop { display: grid; gap: 10px; margin-top: 12px; }
+.shop { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
 .product {
-  display: flex; gap: 13px; background: var(--bg-3); border: 1px solid var(--line);
-  border-radius: 16px; padding: 14px;
+  display: flex; gap: var(--sp-3); background: var(--bg-3); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: var(--sp-4);
 }
 .prod-ico { font-size: 28px; flex: none; }
 .prod-body { flex: 1; min-width: 0; }
-.prod-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.prod-head b { font-size: 15.5px; }
-.prod-price { font-size: 15px; font-weight: 700; color: var(--accent); white-space: nowrap; }
-.prod-tag { font-size: 13px; color: var(--fg); margin: 2px 0 5px; }
-.prod-text { font-size: 12.5px; color: var(--fg-dim); line-height: 1.5; }
+.prod-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-3); }
+.prod-head b { font-size: var(--t-base); }
+.prod-price { font-size: var(--t-base); font-weight: 700; color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.prod-tag { font-size: var(--t-md); color: var(--fg); margin: var(--sp-1) 0; }
+.prod-text { font-size: var(--t-md); color: var(--fg-2); line-height: 1.5; }
 .prod-status {
-  display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
-  color: var(--warn); background: rgba(255,176,32,.12); border-radius: 6px;
-  padding: 2px 7px; margin: 8px 0;
+  display: inline-block; font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .05em;
+  font-weight: 700;
+  color: var(--warn); background: rgba(255,176,32,.14); border-radius: 6px;
+  padding: 3px 8px; margin: var(--sp-2) 0;
 }
 .product .btn-ghost { display: block; margin-top: 4px; }
-.product .btn-ghost.chosen { border-color: var(--ok); color: #6ee2a6; }
+.product .btn-ghost.chosen { border-color: var(--ok); color: var(--ok-2); }
 
 /* Statusrad under användarnamnsfältet */
-.field-note { display: block; font-size: 12px; margin-top: 5px; color: var(--fg-dim); min-height: 1em; }
-.field-note.good { color: #6ee2a6; }
-.field-note.bad { color: #ff8f90; }
+/* min-height i em och inte 0: statusraden fylls i efter att fältet lämnats,
+   och utan reserverad höjd hoppar hela kortet när texten dyker upp. */
+.field-note { display: block; font-size: var(--t-sm); margin-top: var(--sp-2); color: var(--fg-2); min-height: 1.4em; }
+.field-note.good { color: var(--ok-2); }
+.field-note.bad { color: var(--danger-2); }
 
 /* ---------- Tryck och håll ---------- */
 .act { position: relative; overflow: hidden; }
+/* Fyllnaden växte tidigare med `width` från 0 till 100%. Bredd är en
+   layoutegenskap: varje bildruta under de 600 millisekundrarna räknade om
+   ytan — på kartvyn, alltså samtidigt som Leaflet ritar brickor. scaleX ger
+   exakt samma bild och rör bara kompositören. */
 .act::after {
-  content: ''; position: absolute; left: 0; bottom: 0; height: 100%; width: 0;
-  background: rgba(61,157,255,.28); pointer-events: none; border-radius: 14px;
+  content: ''; position: absolute; left: 0; bottom: 0; height: 100%; width: 100%;
+  background: rgba(61,157,255,.28); pointer-events: none; border-radius: var(--radius);
+  transform: scaleX(0); transform-origin: left center;
 }
-.act.holding::after { width: 100%; transition: width var(--hold-ms, 600ms) linear; }
-.act.fired { background: var(--ok); border-color: var(--ok); color: #04101d; }
+.act.holding::after { transform: scaleX(1); transition: transform var(--hold-ms, 600ms) linear; }
+.act.fired { background: var(--ok); border-color: var(--ok); color: var(--pa-farg); }
 .act-mic::after { background: rgba(255,255,255,.3); }
 
 /* ---------- Ångra ---------- */
@@ -888,41 +1186,44 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   position: absolute; z-index: 750; left: 12px; right: 12px;
   bottom: calc(var(--bar-total) + 96px);
   display: flex; align-items: center; gap: 12px;
-  background: var(--bg-3); border: 1px solid var(--line);
-  border-radius: 14px; padding: 11px 14px; font-size: 14px;
-  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  background: var(--bg-3); border: 1px solid var(--line-stark);
+  border-radius: var(--radius-2); padding: var(--sp-3) var(--sp-4); font-size: var(--t-base);
+  box-shadow: var(--skugga-2);
   animation: rise .2s ease;
 }
 .undo-bar[hidden] { display: none; }
 .undo-bar span { flex: 1; min-width: 0; }
+/* Ångra trycks inom några sekunder, med en hand, medan bilen rullar. Den var
+   30px hög. */
 .undo-bar button {
-  color: var(--accent); font-weight: 700; font-size: 14px; padding: 6px 10px;
-  border-radius: 9px; background: rgba(61,157,255,.14);
+  color: var(--accent); font-weight: 700; font-size: var(--t-base);
+  padding: var(--sp-2) var(--sp-3); min-height: 44px;
+  border-radius: var(--radius-3); background: rgba(61,157,255,.16);
 }
 
 /* ---------- Dashcam: varför ---------- */
 .dc-why { text-align: left; max-width: 36em; margin: 18px auto 4px; }
 .dc-why h3 {
-  font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em;
-  color: var(--fg-dim); margin: 0 0 8px;
+  font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--fg-2); margin: 0 0 var(--sp-2);
 }
-.why-item { display: flex; gap: 11px; padding: 9px 0; border-top: 1px solid var(--line); }
+.why-item { display: flex; gap: var(--sp-3); padding: var(--sp-2) 0; border-top: 1px solid var(--line); }
 .why-item:first-of-type { border-top: none; }
 .why-item span { font-size: 19px; flex: none; width: 26px; text-align: center; }
-.why-item div { font-size: 13.5px; color: var(--fg-dim); line-height: 1.5; }
+.why-item div { font-size: var(--t-md); color: var(--fg-2); line-height: 1.55; }
 .why-item b { color: var(--fg); }
 
 /* Bekräfta eller avfärda — ord istället för tummar */
-.hz-btns { display: flex; gap: 5px; flex: none; }
+.hz-btns { display: flex; gap: var(--sp-2); flex: none; }
 .hz-btns button {
-  width: auto; height: auto; padding: 7px 10px; border-radius: 9px;
-  background: var(--bg-3); font-size: 12px; font-weight: 600; white-space: nowrap;
-  border: 1px solid var(--line);
+  width: auto; min-height: 44px; padding: var(--sp-3); border-radius: var(--radius-3);
+  background: var(--bg-3); font-size: 13px; font-weight: 700; white-space: nowrap;
+  border: 1px solid var(--line-stark);
 }
-.hz-btns .hz-yes { color: #6ee2a6; border-color: rgba(47,208,122,.3); }
-.hz-btns .hz-no  { color: #ff9c9d; border-color: rgba(255,77,79,.28); }
+.hz-btns .hz-yes { color: var(--ok-2); border-color: rgba(47,208,122,.3); }
+.hz-btns .hz-no  { color: var(--danger-2); border-color: rgba(255,77,79,.28); }
 @media (max-width: 380px) {
-  .hz-btns button { padding: 7px 8px; font-size: 11px; }
+  .hz-btns button { padding: 10px var(--sp-2); font-size: var(--t-xs); }
 }
 
 /* ---------- Ny version-banner på kartan ---------- */
@@ -940,10 +1241,10 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .ub-icon { font-size: 20px; font-weight: 700; flex: none; }
 .ub-text { flex: 1; min-width: 0; }
 .ub-text b { display: block; font-size: 15px; }
-.ub-text span { font-size: 12.5px; opacity: .9; }
+.ub-text span { font-size: var(--t-sm); opacity: .95; }
 .update-banner > button {
-  background: #fff; color: #14477f; font-weight: 700; font-size: 13.5px;
-  padding: 9px 14px; border-radius: 10px; flex: none;
+  background: #fff; color: #14477f; font-weight: 700; font-size: var(--t-md);
+  padding: 12px 14px; min-height: 44px; border-radius: var(--radius-3); flex: none;
 }
 .update-banner .ub-close {
   background: transparent; color: #fff; opacity: .7; font-size: 15px;
@@ -954,7 +1255,7 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .update-mark {
   flex: none; width: 30px; height: 30px; border-radius: 50%;
   display: grid; place-items: center; font-size: 15px; font-weight: 700;
-  background: rgba(47,208,122,.16); color: #6ee2a6;
+  background: rgba(47,208,122,.16); color: var(--ok-2);
 }
 .card-update.busy .update-mark { background: rgba(61,157,255,.16); color: var(--accent); }
 .card-update.found .update-mark { background: rgba(61,157,255,.2); color: var(--accent); }
@@ -987,7 +1288,7 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   gap: 5px; min-height: var(--act-h);
   background: rgba(24,32,42,.92); backdrop-filter: blur(14px);
   border: 1px solid var(--line); border-radius: 16px;
-  font-size: 11.5px; font-weight: 600; color: var(--fg);
+  font-size: 12px; font-weight: 600; color: var(--fg);
   letter-spacing: -.01em;
 }
 .act svg { width: 26px; height: 26px; flex: none; }
@@ -1001,7 +1302,7 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .act-mic {
   flex: 1.6;
   background: linear-gradient(180deg, #6cb8ff, #3d9dff);
-  border-color: #9ad0ff; color: #04121f;
+  border-color: #9ad0ff; color: var(--pa-farg);
   box-shadow: 0 6px 22px rgba(61,157,255,.55);
 }
 .act-mic svg { width: 30px; height: 30px; }
@@ -1010,7 +1311,9 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   letter-spacing: .04em; text-transform: uppercase;
 }
 .act-mic:active { background: linear-gradient(180deg, #3d9dff, #2b7fd6); }
-.act-mic.listening { animation: mic 1.1s ease-in-out infinite; }
+/* Ingen andra .act-mic.listening här. Regeln stod skriven två gånger i den
+   här filen med identiskt innehåll; den enda som finns kvar ligger vid
+   @keyframes mic längre upp. */
 
 /* Mikrofonen är nekad. Gult säger "du måste göra något" — grått hade sagt
    "trasig", och det är den inte. */
@@ -1039,15 +1342,17 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .undo-bar   { bottom: calc(var(--act-h) + 22px); }
 
 /* Tabbar med riktiga ikoner */
-.tab svg { width: 23px; height: 23px; }
-.tab { gap: 4px; font-size: 11px; letter-spacing: -.01em; }
+.tab svg { width: 24px; height: 24px; }
+/* Fliketiketterna är appens enda alltid synliga navigering. 11px i dimmad grå
+   var en etikett man gissade sig till; 12px i --fg-2 är en man läser. */
+.tab { gap: 4px; font-size: 12px; letter-spacing: -.01em; }
 .tab.active svg { filter: drop-shadow(0 0 8px rgba(61,157,255,.5)); }
 
 /* Ljudknappen får också ikon */
 .icon-btn svg { width: 21px; height: 21px; }
 
 @media (max-width: 380px) {
-  .act { font-size: 10.5px; }
+  .act { font-size: 11px; }
   .act svg { width: 23px; height: 23px; }
 }
 @media (orientation: landscape) and (max-height: 500px) {
@@ -1069,7 +1374,8 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   box-shadow: 0 0 12px rgba(240,207,107,.45);
 }
 .rm-count {
-  font-size: 12px; color: var(--fg-dim); margin-top: 6px; text-align: right;
+  font-size: var(--t-sm); color: var(--fg-2); margin-top: var(--sp-2); text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .rm-node { display: flex; gap: 13px; }
@@ -1079,10 +1385,10 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 }
 .rm-dot {
   width: 15px; height: 15px; border-radius: 50%; flex: none; margin-top: 3px;
-  border: 2px solid #3a4756; background: var(--bg);
+  border: 2px solid var(--line-stark); background: var(--bg);
 }
 /* Länken går nedåt mot nästa nod — kedjan byggs underifrån */
-.rm-link { flex: 1; width: 3px; background: #26323f; margin: 3px 0; border-radius: 2px; }
+.rm-link { flex: 1; width: 3px; background: var(--line); margin: 3px 0; border-radius: 2px; }
 .rm-link.gold {
   background: linear-gradient(180deg, #f0cf6b, #c8971f);
   box-shadow: 0 0 8px rgba(240,207,107,.35);
@@ -1090,12 +1396,12 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 
 .rm-body { flex: 1; min-width: 0; padding-bottom: 18px; }
 .rm-head { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
-.rm-head b { font-size: 14.5px; }
-.rm-body p { font-size: 12.5px; color: var(--fg-dim); margin: 3px 0 0; line-height: 1.5; }
+.rm-head b { font-size: var(--t-base); }
+.rm-body p { font-size: var(--t-md); color: var(--fg-2); margin: var(--sp-1) 0 0; line-height: 1.55; }
 .rm-tag {
-  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
-  padding: 3px 8px; border-radius: 999px; white-space: nowrap; flex: none;
-  background: var(--bg-3); color: var(--fg-dim);
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  padding: var(--sp-1) var(--sp-2); border-radius: 999px; white-space: nowrap; flex: none;
+  background: var(--bg-3); color: var(--fg-2);
 }
 
 /* Klart: guld */
@@ -1107,20 +1413,26 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .rm-node.done .rm-tag { background: rgba(240,207,107,.14); color: #f0cf6b; }
 .rm-node.done .rm-head b { color: var(--fg); }
 
-/* Pågår: pulserar blått */
+/* Pågår: pulserar blått.
+   Samma byte som markörerna på kartan, och samma keyframe — pvPuls längre
+   upp. Punkten bor i inställningsvyn under "Appen", alltså en yta som ligger
+   framme så fort den gruppen är öppen. */
 .rm-node.now .rm-dot {
   border-color: var(--accent); background: var(--accent);
-  animation: rmPulse 1.8s ease-out infinite;
+  position: relative;
+}
+.rm-node.now .rm-dot::after {
+  content: '';
+  position: absolute; inset: -2px;
+  border-radius: 50%;
+  border: 2px solid rgba(61,157,255,.55);
+  pointer-events: none;
+  animation: pvPuls 1.8s ease-out infinite;
 }
 .rm-node.now .rm-tag { background: rgba(61,157,255,.16); color: var(--accent); }
-@keyframes rmPulse {
-  0%   { box-shadow: 0 0 0 0 rgba(61,157,255,.55); }
-  70%  { box-shadow: 0 0 0 10px rgba(61,157,255,0); }
-  100% { box-shadow: 0 0 0 0 rgba(61,157,255,0); }
-}
 
-.rm-node.next .rm-dot { border-color: #5a6a7a; }
-.rm-node.later .rm-dot { border-color: #33404f; }
+.rm-node.next .rm-dot { border-color: var(--line-stark); }
+.rm-node.later .rm-dot { border-color: var(--line); }
 .rm-node.later .rm-head b, .rm-node.later p { opacity: .72; }
 
 /* Byggs inte: överstruket, matt */
@@ -1141,18 +1453,18 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .pl-controls { padding: 12px 14px 4px; }
 
 .pl-status {
-  margin: 0 0 10px;
-  font-size: 15px; font-weight: 600;
-  color: var(--ink, #eef4fa);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--t-base); font-weight: 600;
+  color: var(--fg);
   min-height: 1.4em;
 }
 
 .pl-list { list-style: none; margin: 6px 0 0; padding: 0; }
 
 .pl-item {
-  display: flex; align-items: baseline; gap: 10px;
-  padding: 9px 2px;
-  border-bottom: 1px solid var(--line, #1a232d);
+  display: flex; align-items: baseline; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-1);
+  border-bottom: 1px solid var(--line);
 }
 
 /* Regnumret är det enda man faktiskt läser här, så det får vara stort och
@@ -1163,7 +1475,7 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   font-variant-numeric: tabular-nums;
 }
 
-.pl-meta { font-size: 12.5px; color: var(--dim, #93a4b6); }
+.pl-meta { font-size: var(--t-sm); color: var(--fg-2); }
 
 .pl-item.egen .pl-nr { color: #2fd07a; }
 .pl-item.egen { background: rgba(47, 208, 122, .07); }
@@ -1171,13 +1483,13 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 #setPlEgna {
   width: 100%;
   box-sizing: border-box;
-  margin: 6px 0 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--line, #26323f);
-  border-radius: 8px;
-  background: var(--field, #0f1620);
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--bg-3);
   color: inherit;
-  font: 600 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  font: 600 16px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
   letter-spacing: .05em;
   resize: vertical;
 }
@@ -1210,11 +1522,11 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 }
 
 .chatt-rad {
-  padding: 9px 12px;
-  margin-bottom: 8px;
-  border-radius: 12px;
-  background: var(--kort, #131c26);
-  border: 1px solid var(--line, #1a232d);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  border-radius: var(--radius-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
   max-width: 88%;
 }
 
@@ -1227,26 +1539,30 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 }
 
 .chatt-huvud {
-  display: flex; justify-content: space-between; gap: 10px;
-  font-size: 12.5px; color: var(--dim, #93a4b6); margin-bottom: 3px;
+  display: flex; justify-content: space-between; gap: var(--sp-3);
+  font-size: var(--t-sm); color: var(--fg-2); margin-bottom: var(--sp-1);
 }
-.chatt-huvud b { color: var(--ink, #eef4fa); font-weight: 650; }
+.chatt-huvud b { color: var(--fg); font-weight: 650; }
 
 .chatt-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.chatt-knappar { display: flex; gap: 12px; margin-top: 6px; }
+.chatt-knappar { display: flex; gap: var(--sp-4); margin-top: var(--sp-1); }
+/* Padding och inte bara text: "Visa på kartan" är en knapp, och en
+   understruken rad utan höjd går inte att träffa. Negativ vänstermarginal så
+   texten fortfarande står i linje med meddelandet ovanför. */
 .lank-knapp {
-  background: none; border: 0; padding: 0;
-  color: var(--dim, #93a4b6); font-size: 12.5px; text-decoration: underline;
-  cursor: pointer;
+  background: none; border: 0; padding: var(--sp-2) var(--sp-1);
+  margin-left: calc(var(--sp-1) * -1);
+  color: var(--fg-2); font-size: var(--t-md); text-decoration: underline;
+  min-height: 44px; cursor: pointer;
 }
 .lank-knapp:disabled { text-decoration: none; opacity: .55; cursor: default; }
 
 .chatt-botten {
   flex: 0 0 auto;
   padding: 8px 14px 10px;
-  border-top: 1px solid var(--line, #1a232d);
-  background: var(--bg, #0b0f14);
+  border-top: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .chatt-skriv { display: flex; gap: 8px; align-items: flex-end; }
@@ -1254,11 +1570,11 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 #chattText {
   flex: 1 1 auto;
   resize: none;
-  min-height: 42px; max-height: 120px;
-  padding: 10px 12px;
-  border: 1px solid var(--line, #26323f);
-  border-radius: 12px;
-  background: var(--field, #0f1620);
+  min-height: 48px; max-height: 120px;
+  padding: var(--sp-3);
+  border: 1px solid var(--line-stark);
+  border-radius: var(--radius-2);
+  background: var(--bg-3);
   color: inherit;
   font: inherit;
 }
@@ -1267,13 +1583,13 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 /* Spärrtexten är gul, inte röd. Att fältet är låst under körning är inget
    fel — det är appen som gör sitt jobb. */
 .chatt-sparr {
-  margin: 0 0 8px;
-  padding: 8px 11px;
-  border-radius: 10px;
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-3);
   background: rgba(255, 176, 32, .12);
   border: 1px solid rgba(255, 176, 32, .3);
-  color: #ffb020;
-  font-size: 13px;
+  color: var(--warn);
+  font-size: var(--t-md);
 }
 
 /* Prick på chattfliken när det kommit något medan man var någon annanstans. */
@@ -1332,13 +1648,13 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   position: absolute;
   right: 12px; bottom: 12px;
   z-index: 5;
-  display: flex; align-items: center; gap: 6px;
-  padding: 9px 13px;
-  border: 1px solid var(--line, #26323f);
-  border-radius: 20px;
-  background: rgba(11, 15, 20, .82);
-  color: var(--ink, #eef4fa);
-  font: 600 14px/1 -apple-system, system-ui, sans-serif;
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4); min-height: 44px;
+  border: 1px solid var(--line-stark);
+  border-radius: 999px;
+  background: rgba(11, 15, 20, .88);
+  color: var(--fg);
+  font: 600 15px/1 -apple-system, system-ui, sans-serif;
   backdrop-filter: blur(6px);
 }
 .dc-chatt-visa.har-nytt { border-color: #ff4d4f; color: #fff; }
@@ -1351,7 +1667,7 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   right: 10px; bottom: 10px; left: 10px;
   max-width: 380px; margin-left: auto;
   z-index: 6;
-  border: 1px solid var(--line, #26323f);
+  border: 1px solid var(--line);
   border-radius: 12px;
   background: rgba(11, 15, 20, .88);
   backdrop-filter: blur(8px);
@@ -1361,19 +1677,19 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 
 .dc-chatt-topp {
   display: flex; align-items: center; justify-content: space-between;
-  font-size: 12.5px; color: var(--dim, #93a4b6); margin-bottom: 4px;
+  font-size: var(--t-sm); color: var(--fg-2); margin-bottom: var(--sp-1);
 }
-.dc-chatt-x { background: none; border: 0; color: var(--dim, #93a4b6); font-size: 15px; padding: 2px 6px; }
+.dc-chatt-x { background: none; border: 0; color: var(--fg-2); font-size: 17px; padding: var(--sp-2) var(--sp-3); min-height: 44px; }
 
 .dc-chatt ul {
   list-style: none; margin: 0; padding: 0;
   max-height: 132px; overflow-y: auto;
-  font-size: 13.5px; line-height: 1.45;
+  font-size: var(--t-md); line-height: 1.5;
 }
 .dc-chatt li { padding: 3px 0; overflow-wrap: anywhere; }
 .dc-chatt li b { color: #8fcaff; font-weight: 650; margin-right: 4px; }
 .dc-chatt li.mitt b { color: #2fd07a; }
-.dc-chatt li.tom { color: var(--dim, #93a4b6); }
+.dc-chatt li.tom { color: var(--fg-2); }
 
 /* ============================================================
    hidden ska betyda dold. Alltid.
@@ -1396,8 +1712,8 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
    från vilken del av landet som helst, och det ska synas — annars letar man
    efter en rondell som ligger sjuttio mil bort. */
 .chatt-utan-omrade {
-  font-size: 11px;
-  color: #ffb020;
+  font-size: var(--t-xs);
+  color: var(--warn);
   border: 1px solid rgba(255, 176, 32, .35);
   border-radius: 6px;
   padding: 1px 5px;
@@ -1416,19 +1732,19 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
 .nav-pil { font-size: 40px; line-height: 1; color: #3d9bff; }
 .nav-text { min-width: 0; flex: 1; }
 .nav-text b { display: block; font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.nav-text span { display: block; font-size: 15px; color: var(--fg-dim, #93a4b6);
+.nav-text span { display: block; font-size: 15px; color: var(--fg-2);
                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nav-text small { display: block; margin-top: 3px; font-size: 12.5px; color: var(--fg-dim, #93a4b6); }
+.nav-text small { display: block; margin-top: 3px; font-size: var(--t-sm); color: var(--fg-2); }
 
 .nav-ankomst { font-weight: 650; color: #3d9bff; white-space: nowrap; }
 
 /* Varning när kartlinjen och vägbeskrivningen inte kommer från samma rutt. */
 .nav-varning {
-  margin: 8px 0 0; padding: 8px 11px;
-  border-radius: 10px;
+  margin: var(--sp-2) 0 0; padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-3);
   background: rgba(255, 176, 32, .12);
   border: 1px solid rgba(255, 176, 32, .3);
-  color: #ffb020; font-size: 12.5px;
+  color: var(--warn); font-size: var(--t-md);
 }
 
 /* Svängpilarna på kartan. pv-upright motroteras av kartrotationen — en pil
@@ -1445,7 +1761,7 @@ body.is-night .sheet { background: rgba(9,13,18,.96); }
   display: flex; gap: 4px; justify-content: center;
   margin-top: 6px; padding: 7px 8px;
   background: rgba(13, 18, 25, .96); backdrop-filter: blur(16px);
-  border: 1px solid var(--line, #26323f); border-radius: 12px;
+  border: 1px solid var(--line); border-radius: 12px;
 }
 .nav-filer .fil {
   display: flex; align-items: center; justify-content: center; gap: 1px;
@@ -1547,6 +1863,21 @@ body.is-morkt .topp { visibility: hidden; }
 }
 .fordonslarm[hidden] { display: none; }
 
+/* DET ENDA UNDANTAGET från "bara transform och opacity", och det är medvetet
+   lämnat kvar.
+
+   Fordonslarmet är en låst yta — den ändras inte utan att ägaren sagt till.
+   Larmet täcker dessutom hela skärmen, så det finns inget under det som
+   konkurrerar om bildrutorna: kartan är övermålad, listan är övermålad, och
+   larmet är själva anledningen till att föraren tittar. Kostnaden för en
+   omritning är alltså en helt annan än för en markör bland trettio på en
+   karta som samtidigt panorerar.
+
+   Ska den någon gång skrivas om är formen densamma som de andra fem fick: en
+   ::after i vitt som tonas med opacity ovanpå en fast botten. Men det är ett
+   beslut för den som äger larmet, inte ett städjobb i förbifarten.
+
+   Avstängningen vid prefers-reduced-motion finns redan strax nedanför. */
 @keyframes larmpuls {
   50% {
     background: radial-gradient(ellipse at center, rgba(214,38,40,.95), rgba(255,77,79,.99));
@@ -1589,7 +1920,7 @@ body.is-morkt .topp { visibility: hidden; }
    En hel mening i stället för etikett + tid + källa på var sin rad. Den är
    längre än det den ersatte, så den behöver luft och radavstånd — annars
    läser man den inte i en bil. */
-.pop-sum { font-size: 13px; line-height: 1.45; margin: 5px 0 0; }
+.pop-sum { font-size: var(--t-md); line-height: 1.5; margin: 5px 0 0; }
 
 /* ---------- "Sedan sist"-banner på kartan ----------
 
@@ -1618,14 +1949,233 @@ body.is-morkt .topp { visibility: hidden; }
 .nya-text { flex: 1; min-width: 0; }
 .nya-text b { display: block; font-size: 15px; }
 .nya-text span {
-  font-size: 12.5px; opacity: .9;
+  font-size: var(--t-sm); opacity: .95;
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .nya-banner > button {
-  background: #fff; color: #145433; font-weight: 700; font-size: 13.5px;
-  padding: 9px 14px; border-radius: 10px; flex: none;
+  background: #fff; color: #145433; font-weight: 700; font-size: var(--t-md);
+  padding: 12px 14px; min-height: 44px; border-radius: var(--radius-3); flex: none;
 }
 .nya-banner .nya-close {
   background: transparent; color: #fff; opacity: .7; font-size: 15px;
   padding: 6px 2px; width: auto;
+}
+
+
+/* ==================================================================
+   INSTÄLLNINGSVYNS NAVIGATION
+   Sökrad, grupprubriker och kedjerutan.
+
+   Markupen ligger i index.html, beteendet i js/inst.js. Reglerna här måste
+   finnas även om modulen uteblir: då står rubrikerna kvar som rubriker över
+   synligt innehåll, och det ska fortfarande gå att skanna dem. Det som
+   FÖRSVINNER utan modulen är sökraden (hidden i markupen) och pilen — inte
+   läsbarheten.
+   ================================================================== */
+
+/* ---------- Sökraden ---------- */
+
+/* Klistrad mot rullbehållarens överkant. Den som söker gör det ofta efter att
+   redan ha rullat en bit, och ett sökfält man måste rulla tillbaka till är
+   samma sak som inget sökfält.
+
+   ::before målar remsan OVANFÖR raden. En klistrad ruta fastnar vid
+   rullbehållarens innerkant, inte vid dess överkant, så det blir kvar ett
+   band lika högt som .view.scroll:s padding-top (16 px plus safe-area) där
+   korten annars syns glida förbi. Höjden är exakt det bandet — mer och den
+   skulle nå upp och kapa underkanten på "Inställningar", som ligger 28 px
+   ovanför (16 px rubrikmarginal + 12 px radmarginal). */
+.sokrad {
+  position: sticky; top: var(--safe-top); z-index: 5;
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-3) 0 var(--sp-4);
+  padding: var(--sp-2) 0;
+  background: var(--bg);
+}
+.sokrad[hidden] { display: none; }
+.sokrad::before {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: 100%;
+  height: calc(var(--safe-top) + var(--sp-4));
+  background: var(--bg);
+  pointer-events: none;
+}
+
+/* Fältet hade ingen regel alls och renderades med webbläsarens standard: vit
+   botten, och --fg ärvt från body — alltså nästan vit text på vit botten,
+   uppmätt 1,11:1 mot kravet 4,5. Det såg dessutom användbart ut ända tills
+   man skrev i det, eftersom platshållaren är grå. Och det var en lysande vit
+   rektangel överst i ett nattgränssnitt, precis det som --bg-skalan finns
+   för att undvika.
+   48px och inte 44: fältet är det första man möter i vyn. */
+#sokInstallning {
+  flex: 1; min-width: 0; min-height: 48px;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--line-stark);
+  border-radius: var(--radius-2);
+  padding: 0 var(--sp-3);
+  font-size: var(--t-base);
+  -webkit-appearance: none; appearance: none;
+}
+#sokInstallning::placeholder { color: var(--fg-dim); }
+#sokInstallning:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Webbläsarens eget kryss ritas svart oavsett fältets färg och försvinner mot
+   --bg-3. js/inst.js lägger ett eget bredvid fältet i stället. */
+#sokInstallning::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+
+/* Träffraden är tom nästan jämt. En tom <p> med marginal skjuter ner hela
+   vyn ett par pixlar av ingen anledning. */
+#sokTraffar { margin-top: 0; }
+#sokTraffar:empty { display: none; }
+
+/* ---------- Grupprubrikerna ---------- */
+
+/* Sju landmärken. De ska gå att skilja från brödtext i en solbelyst bil, och
+   de ska se ut som något man trycker på — därför en egen yta med kant, inte
+   bara större text.
+
+   56px fast minsta höjd och inte "det texten råkar bli": rubrikerna varierade
+   mätt mellan 34,8 och 69,6 px beroende på om undertexten radbröts, och en
+   rad som är hälften så hög som sin granne läses inte som samma sorts sak.
+   34,8 bröt dessutom 44px-golvet. */
+h2.grupp {
+  position: relative;
+  display: block;
+  min-height: 56px;
+  margin: var(--sp-6) 0 var(--sp-3);
+  padding: var(--sp-3) var(--sp-8) var(--sp-3) var(--sp-4);
+  background: var(--bg-2);
+  border: 1px solid var(--line-stark);
+  border-radius: var(--radius-2);
+  font-size: var(--t-lg);
+  font-weight: 650;
+  color: var(--fg);
+  letter-spacing: -.01em;
+  -webkit-user-select: none; user-select: none;
+}
+h2.grupp[role="button"] { cursor: pointer; }
+h2.grupp:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Öppen grupp får en blå kant till vänster. Inset-skugga och inte en border:
+   en border hade flyttat texten två pixlar varje gång man fällde ut, och det
+   hoppet är exakt vad rörelsemodulen finns för att slippa. */
+h2.grupp[aria-expanded="true"] {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* Undertexten ärvde h2:ns vikt 650 och färg, och <small> gav bara 24 x 0,833
+   = 20px. Gruppnamn och beskrivning såg alltså ut som två rubriker på samma
+   rad. Egen rad, egen vikt, sekundär färg. */
+.grupp-under {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--t-md);
+  font-weight: 400;
+  color: var(--fg-2);
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+
+/* Pilen. Ritas bara när rubriken faktiskt är en knapp, alltså när js/inst.js
+   har bundit den — se h2.grupp[role="button"]. Roterar med transform, ingen
+   annan egenskap rör sig. */
+h2.grupp[role="button"]::after {
+  content: '';
+  position: absolute; right: var(--sp-4); top: 50%;
+  width: 11px; height: 11px; margin-top: -8px;
+  border-right: 2.5px solid var(--fg-2);
+  border-bottom: 2.5px solid var(--fg-2);
+  transform: rotate(45deg);
+  transition: transform 160ms cubic-bezier(.22,.61,.36,1);
+}
+h2.grupp[role="button"][aria-expanded="true"]::after {
+  transform: rotate(-135deg);
+}
+
+/* ---------- Kedjerutan ---------- */
+
+/* "Tre saker kan tysta samma varning." Renderades som ett naket <ol> med
+   webbläsarens 40px indrag och ingen ram — alltså som brödtext, fast
+   indragen. Det är den enda text i vyn som förklarar varför en varning kan
+   utebli trots att allt ser påslaget ut, och den måste avgränsas för att
+   läsas som en varning och inte som en uppräkning. */
+.kedja {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-3);
+  border: 1px solid var(--line-stark);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-3);
+}
+.kedja-topp {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--t-md);
+  font-weight: 700;
+  color: var(--fg);
+}
+.kedja-lista {
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: var(--t-md);
+  line-height: 1.5;
+  color: var(--fg-2);
+}
+.kedja-lista li { padding: 3px 0; }
+.kedja-lista b, .kedja-lista i { color: var(--fg); font-style: normal; }
+
+/* ==================================================================
+   RÖRELSE AV
+   prefers-reduced-motion, samlat på ETT ställe.
+
+   Stilmallen hade två sådana block: vippan och fordonslarmet. Tretton
+   animerade selektorer stod helt utanför, så en förare som slagit på
+   reducerad rörelse i telefonen fick fortfarande pulserande markörer på
+   kartan, en andande mikrofonknapp, en studsande pil i rundturen och en
+   hastighetsskylt som skalade.
+
+   Gränsdragningen, som saknades i skrift: 300 ms-taket gäller ÖVERGÅNGAR.
+   En oändlig statusindikator är en annan sak — den säger "det här pågår
+   just nu" — och får leva, men bara på transform och opacity, och bara tills
+   någon ber om lugn. Då stängs den av, för tillståndet den visar syns ändå:
+   markören finns kvar, knappen är fortfarande blå, punkten är fortfarande
+   ifylld.
+
+   Två undantag som INTE nollas här:
+     • .fordonslarm har sitt eget block längre upp och rörs inte (låst yta).
+     • .rr-landad i js/rorelse.js bär information om var man hamnade efter en
+       genväg och blir en stilla ram i stället — den regeln bor i den filen.
+   ================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  /* Banners som slår in respektive stiger upp. Att de dök upp är
+     informationen; rörelsen dit är bara ett kvitto. */
+  .alert-banner, .update-banner, .nya-banner, .toast, .undo-bar { animation: none; }
+
+  /* Oändliga statusindikatorer. Tillståndet syns i färg och form. */
+  .hazard-icon.fresh::after,
+  .act-mic.listening,
+  .rec-dot,
+  .voice-ring,
+  .tour-ring::after,
+  .tour-arrow,
+  .rm-node.now .rm-dot::after { animation: none; }
+
+  /* Hastighetsskylten larmar med sin röda ram och sin siffra, inte med
+     rörelsen. */
+  .limit-sign.alarm { animation: none; }
+
+  /* Listan som fälls ihop, pilen på grupprubriken och tryck-och-håll-
+     fyllnaden. Alla tre är övergångar, alla tre har sitt slutläge kvar. */
+  .sheet,
+  h2.grupp[role="button"]::after,
+  .act.holding::after { transition: none; }
+
+  /* .rec-dot och .voice-ring blir osynliga utan sin animation om de tonar
+     ut i sitt from-läge. Lås dem synliga. */
+  .rec-dot { opacity: 1; }
+  .voice-ring { opacity: 1; transform: none; }
+  .hazard-icon.fresh::after { opacity: .9; }
+  .tour-ring::after { opacity: .75; }
+  .rm-node.now .rm-dot::after { opacity: .9; }
 }

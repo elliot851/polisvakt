@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-08-23-92';
+const VERSION = '2026-08-23-94';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -103,6 +103,18 @@ const SHELL = [
   // och app.js evalueras aldrig. Det blir alltså inte en app utan varningsyta
   // — det blir ingen app alls.
   './js/varningsyta.js',
+  // Rörelsen i navigationen. Importeras STATISKT av js/app.js, alltså exakt
+  // samma kalla-start-fälla som varningsytan beskriver ovanför: saknas raden
+  // svarar reservgrenen index.html på modulbegäran, importen kastar, och det
+  // blir inte en app utan animationer — det blir ingen app alls.
+  './js/rorelse.js',
+  // Inställningsvyns hopfällning och sökning. Importeras DYNAMISKT av
+  // js/app.js, så en utebliven fil tar inte appen med sig — men utfallet är
+  // ändå tydligt: hela inställningsvyn faller tillbaka till en flat rulle på
+  // fyrtiotalet avsnitt, mätt 27 skärmar lång, utan sökruta. Raden ligger
+  // här för att den vyn ska fungera lika bra i ett källargarage som på
+  // fyra streck.
+  './js/inst.js',
   './js/platsstart.js',
   './js/push.js',
   './js/groups.js',

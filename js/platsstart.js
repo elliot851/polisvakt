@@ -114,6 +114,42 @@ const CSS = `
   background: var(--danger, #ff4d4f); border-color: var(--danger, #ff4d4f); color: #2a0507;
 }
 
+/* ------------------------------------------------------------------
+   Kartans HUD viker undan för remsan.
+
+   z-index räckte inte, och det var inte ett skönhetsfel. Remsan är
+   position: fixed, top: 0, z890 och uppmätt 74 px hög. .topp (css/app.css)
+   ligger på z550 med top: safe-top + 10. Mätt med elementsFromPoint i
+   blockerat läge:
+
+     #btnMute mittpunkt (356,34) → överst låg BUTTON.pv-ps-knapp
+     #chipGps mittpunkt (129,26) → överst låg remsans <b>
+
+   Hela chipsraden (GPS, Röst, Nät, Prova) och tystknappen låg alltså innanför
+   remsans rektangel. Tystknappen var inte bara död — tummen landade på "Så
+   slår du på" och öppnade behörighetsflödet mitt under körning. css/app.css
+   motiverar knappens 48 px med att den trycks med tummen medan bilen rör
+   sig; den gick inte att träffa alls. Samma sak gällde genvägen på #chipGps
+   (js/app.js), som pekar mot täckningsinställningen — alltså oåtkomlig i
+   exakt det GPS-lösa läge den finns för.
+
+   pointer-events: none på remsan hade inte räckt: remsan HAR en egen knapp,
+   och den ska gå att trycka på.
+
+   Lösningen är samma som varningsyta.js redan använder mot samma .topp: den
+   som ligger under viker ned. Höjden mäts och skrivs till en variabel i
+   stället för att gissas — remsan växer när texten radbryts, och en
+   hårdkodad siffra hade blivit fel på varannan telefon.
+
+   :not(.pv-vy-uppe) med flit. Är varningsytan uppe göms remsan helt
+   (regeln bor i varningsyta.js) och DEN äger då nedskjutningen. Utan
+   undantaget hade två regler med samma specificitet slagits om .topp, och
+   vinnaren avgjorts av vilken modul som råkade injicera sin stil sist.
+   ------------------------------------------------------------------ */
+body.pv-ps-remsa-uppe:not(.pv-vy-uppe) .topp {
+  top: calc(var(--pv-ps-remsa-h, 84px) + 10px);
+}
+
 .pv-ps-steg { margin: 0 0 14px; padding: 0; list-style: none; counter-reset: pvps; }
 .pv-ps-steg li {
   counter-increment: pvps;
@@ -288,6 +324,35 @@ function svaretPaFragan(svar, ja, nej) {
 function stangRemsa() {
   remsaEl?.remove();
   remsaEl = null;
+  markeraRemsa(false);
+}
+
+/**
+ * Säg till resten av appen att remsan äger toppen av skärmen.
+ *
+ * Klassen på <body> är kontraktet, precis som varningsyta.js markeraLage():
+ * css/app.css behöver inte veta att den här filen finns, den behöver bara
+ * vika undan. Höjden skickas med som variabel eftersom remsan växer när
+ * texten radbryts — se CSS-kommentaren vid .pv-ps-remsa.
+ *
+ * Mätningen är SYNKRON och ligger inte i en requestAnimationFrame, trots att
+ * det hade varit den vanliga reflexen. rAF körs inte i en flik som inte
+ * ritas — mätt: höjden sattes aldrig, variabeln stod tom och HUD:en föll
+ * tillbaka på reservtalet 84px. En avläsning som bara fungerar när någon
+ * tittar är ingen avläsning.
+ *
+ * offsetWidth här tvingar fram en layout, men bara när platstillståndet
+ * ändras — inte per bildruta. Höjden bärs dessutom av textblocket, som är
+ * satt innan det här anropet; knappen är kortare och kan inte ändra måttet.
+ */
+function markeraRemsa(uppe) {
+  if (typeof document === 'undefined' || !document.body) return;
+  document.body.classList.toggle('pv-ps-remsa-uppe', !!uppe);
+  const rotStil = document.documentElement?.style;
+  if (!rotStil) return;
+  if (!uppe || !remsaEl) { rotStil.removeProperty('--pv-ps-remsa-h'); return; }
+  const h = remsaEl.offsetHeight;
+  if (h > 0) rotStil.setProperty('--pv-ps-remsa-h', h + 'px');
 }
 
 /**
@@ -366,28 +431,35 @@ async function ritaRemsaNu() {
   const knapp = remsaEl.querySelector('.pv-ps-knapp');
   if (lage === 'saknas') {
     knapp.hidden = true;
-    return;
-  }
-  knapp.hidden = false;
+  } else {
+    knapp.hidden = false;
 
-  if (lage === 'avstangd') {
-    // Ett tryck räcker: rutan är aldrig visad, så webbläsaren frågar gärna.
-    knapp.textContent = 'Slå på';
-    knapp.onclick = () => {
-      markeraPlatsFragad();
-      // Direkt i gesten, av samma skäl som i kortet ovanför.
-      begarPlats().then(svar => {
-        if (svar.ok) slappFramPlats('remsan');
-        else if (svar.state === 'denied') slappFramPlats('nekad');
-        ritaRemsa();
-      });
-    };
-    return;
+    if (lage === 'avstangd') {
+      // Ett tryck räcker: rutan är aldrig visad, så webbläsaren frågar gärna.
+      knapp.textContent = 'Slå på';
+      knapp.onclick = () => {
+        markeraPlatsFragad();
+        // Direkt i gesten, av samma skäl som i kortet ovanför.
+        begarPlats().then(svar => {
+          if (svar.ok) slappFramPlats('remsan');
+          else if (svar.state === 'denied') slappFramPlats('nekad');
+          ritaRemsa();
+        });
+      };
+    } else {
+      // Blockerad: det finns ingen ruta kvar att visa, bara en menyväg.
+      knapp.textContent = 'Så slår du på';
+      knapp.onclick = () => visaHjalp();
+    }
   }
 
-  // Blockerad: det finns ingen ruta kvar att visa, bara en menyväg.
-  knapp.textContent = 'Så slår du på';
-  knapp.onclick = () => visaHjalp();
+  /* SIST, och inte tidigare — de tre grenarna ovanför returnerade förut var
+     för sig, och en mätning före dem läste fel höjd. Inte för att knappen är
+     hög (den är kortare än texten) utan för att den är BRED: med tom
+     knapptext fick textblocket hela raden och rymdes på två rader, med
+     "Så slår du på" bredvid sig blev det tre. Uppmätt 55 px mot verkliga 74,
+     alltså en HUD som lades nitton pixlar för högt — mitt i remsan. */
+  markeraRemsa(true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -523,6 +595,13 @@ function bevakaTillstand() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') ritaRemsa();
   });
+
+  // Remsans höjd styr hur långt kartans HUD skjuts ned. Texten radbryts olika
+  // i stående och liggande läge, och en telefon som vänds mitt i en körning
+  // hade annars lämnat hastighetsrutan antingen under remsan igen eller
+  // svävande med ett hål över sig.
+  addEventListener('resize', () => { if (remsaEl) markeraRemsa(true); });
+  addEventListener('orientationchange', () => { if (remsaEl) markeraRemsa(true); });
 }
 
 async function start() {
