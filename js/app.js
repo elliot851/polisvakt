@@ -377,6 +377,7 @@ async function boot() {
   wireRemote();
   wireImpact();
   wireStats();
+  wireDagensHistorik();
   wireTour();
   wireDriving();
   wireUpdates();
@@ -435,7 +436,7 @@ async function boot() {
 
   setInterval(nardenSyns(renderHazards), 20000);
   setInterval(nardenSyns(maybeShowPaywall), 60000);
-  setInterval(nardenSyns(() => { stats.recordAll(store.active()); renderStats(); }), 120000);
+  setInterval(nardenSyns(() => { stats.recordAll(fickSparas(store.active())); renderStats(); }), 120000);
   registerSW();
 
   // Säg till räddningsnätet i index.html att allt gick bra. Uteblir den här
@@ -627,8 +628,18 @@ async function confirmNearest() {
    * behövde ingen ändring — Speaker tar emot färdiga strängar och bygger
    * inga fraser om rapporter.
    */
+  /*
+   * "Din bekräftelse är räknad", inte "den ligger kvar längre nu".
+   *
+   * Den gamla formuleringen var mätbart osann. expires_at sätts ur
+   * VISNING_MINUTER (240 min) medan store.confirm() förlänger på
+   * TTL_MINUTES × 0,6 (27 min), och greatest() vinner för den befintliga
+   * tiden — delta noll minuter ända till 214 minuters ålder. Se den långa
+   * motiveringen i js/store.js confirm(). Bekräftelsen gör något verkligt:
+   * confirms+1 höjer graderingen i js/kvalitet.js, och det är det som sägs.
+   */
   const talat = sammanfattaTal(near[0], { egen: arMin(near[0]) });
-  speaker.say(talat ? `Tack. ${talat} Den ligger kvar längre nu.`
+  speaker.say(talat ? `Tack. ${talat} Din bekräftelse är räknad.`
                     : `Tack. ${TYPE_LABEL[near[0].type]} bekräftad.`, { priority: 0 });
   renderReputation();
 }
@@ -653,8 +664,37 @@ function wireImpact() {
 
 /* ================= Historik och mönster ================= */
 
+/**
+ * Sållet framför historiklagringen.
+ *
+ * NYKTERHETSREGELN, ETT STEG TIDIGARE ÄN FÖRUT.
+ *
+ * stats.js sparar magert med flit: id, typ, koordinat, tidpunkt och de
+ * fyrtio första tecknen av etiketten. `note` och `raw` — alltså det som
+ * faktiskt skrevs — följer inte med. Det är rätt för mönsterletandet, men det
+ * betyder att en rad som väl hamnat i pv.history.v1 inte längre GÅR att pröva
+ * mot spärren i sin helhet: allt spärren skulle ha reagerat på ligger i de
+ * fält som kastades.
+ *
+ * Så länge historiken bara räknades ihop till hotspots spelade det mindre
+ * roll — en prick i ett rutnät säger ingenting. Dagens historik läser samma
+ * lagring och skriver ut den som text, och då blir det plötsligt en väg fram
+ * till en människa. Alltså frågas farBeskrivas() HÄR, medan hela rapporten
+ * fortfarande finns, i stället för när bara etiketten är kvar.
+ *
+ * Visningen frågar en gång till. Rader som lagrats innan den här raden fanns
+ * ligger kvar i telefonerna, och för dem är etiketten det enda som går att
+ * pröva. Två grindar där den andra ser mindre än den första är inte en kopia
+ * att hålla i takt — det är samma fråga ställd till det som återstår.
+ *
+ * Deklarerad som function och inte som const: boot() startar högre upp i
+ * filen än den här raden, och en const hade legat i sin dödzon om någon
+ * framtida ändring flyttar ett anrop före den första await:en.
+ */
+function fickSparas(rapporter) { return rapporter.filter(farBeskrivas); }
+
 function wireStats() {
-  store.addEventListener('change', () => stats.recordAll(store.active()));
+  store.addEventListener('change', () => stats.recordAll(fickSparas(store.active())));
   stats.addEventListener('change', () => { renderStats(); renderHotspotLayer(); });
   if (settings.mode === 'supabase') stats.syncFromServer().then(renderStats);
 }
@@ -700,6 +740,300 @@ function renderStats() {
     li.onclick = () => { showView('map'); map.setFollow(false); map.centerOn(s.lat, s.lon, 15); };
     ul.appendChild(li);
   }
+}
+
+/* ================= Dagens historik =================
+ *
+ * "Sen kan man se tidigare historiken under dagen." — ägaren.
+ *
+ * VARFÖR DEN INTE ÄR NÅLAR PÅ KARTAN.
+ * En utgången rapport tas bort ur kartan med flit. En karta där morgonens
+ * polis fortfarande står kvar klockan sex på kvällen är en karta man slutar
+ * tro på, och när man slutat tro på den hjälper inte heller de nålar som
+ * stämmer. Uppgiften är däremot inte värdelös bara för att den inte längre är
+ * en varning — den svarar på "vad har hänt idag", vilket är en annan fråga än
+ * "vad ska jag akta mig för nu". Två frågor, två ytor. Den här öppnar man.
+ *
+ * VARIFRÅN RADERNA KOMMER, OCH VARFÖR DET ÄR TVÅ KÄLLOR.
+ *
+ *   store.reports — hela rapportobjekt, även utgångna. Bäst i allo: de bär
+ *   källa, bekräftelser och de textfält nykterhetsspärren läser. Men store
+ *   städar bort en rad tre timmar efter att den gått ut, så en polis som
+ *   rapporterades i morse finns inte kvar där i eftermiddag.
+ *
+ *   stats.entries — pv.history.v1, samma lagring som mönsterlistan bygger på.
+ *   Magrare (typ, koordinat, tidpunkt, kapad etikett) men den lever kvar hela
+ *   dagen och långt därefter. Den fyller i det store hunnit glömma.
+ *
+ * Att bygga en tredje, egen dagslagring hade varit en fjärde kopia av samma
+ * rader att hålla i takt. Sammanslagningen är billigare och kan inte glida.
+ *
+ * ENDAST DET DEN HÄR TELEFONEN SJÄLV HAR SETT.
+ * stats.syncFromServer() hämtar också nittio dygn ur report_history, och de
+ * raderna saknar id. De hoppas över här. Skälet är inte prydlighet:
+ * report_history bär ingen grupptillhörighet men är läsbar för alla, så en
+ * rapport som skickats inne i en sluten grupp ligger där utan sitt skydd. Det
+ * som gått genom store har däremot passerat radsäkerheten på vägen in.
+ * Ett id är alltså inte bara ett id — det är kvittot på att raden var vår att
+ * se. Sidoeffekten är dessutom precis vad ägaren bad om: listan fungerar utan
+ * nät, eftersom allt den läser redan ligger i telefonens lagring.
+ *
+ * NYKTERHETSREGELN.
+ * farBeskrivas() frågas om varje rad, här igen. Se fickSparas() ovanför för
+ * varför det inte är en överflödig kopia: den grinden ser hela rapporten,
+ * den här ser det som återstår av en rad som lagrades innan grinden fanns.
+ */
+
+/** Hur många rader listan visar. Längre än så bläddrar ingen igenom. */
+const DAGEN_TAK = 120;
+
+/** Midnatt i förarens egen tidszon — "idag" är en lokal fråga. */
+function dygnetsBorjan(nu = Date.now()) {
+  const d = new Date(nu);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+const dagenSkapad = r => Number(r?.createdAt ?? r?.created_at);
+
+/**
+ * Dagens rapporter, senast först.
+ *
+ * @returns {Array<object>} rapportobjekt. De som bara fanns i stats-lagringen
+ *   är märkta med `urHistoriken: true` och saknar källa och utgångstid — se
+ *   dagenStatus() för varför det inte spelar någon roll.
+ */
+function dagensRapporter(nu = Date.now()) {
+  const fran = dygnetsBorjan(nu);
+  // Telefonklockor går isär. En stämpel någon minut fram är inte fel data,
+  // men en som ligger timmar fram hör inte hemma i "idag". Samma tolerans
+  // som sammanfattning.js använder mot framtidsstämplar.
+  const till = nu + 2 * 60000;
+  const inomDagen = t => Number.isFinite(t) && t >= fran && t <= till;
+
+  const ut = new Map();
+
+  for (const r of store.reports.values()) {
+    // Fasta kameror är inte händelser. De stod där igår också.
+    if (!r || r.fixed) continue;
+    if (!inomDagen(dagenSkapad(r))) continue;
+    ut.set(r.id, r);
+  }
+
+  for (const e of stats.entries) {
+    if (!e || !e.i) continue;        // utan id = hämtad ur report_history
+    if (ut.has(e.i)) continue;       // store har en rikare version av samma rad
+    if (!inomDagen(Number(e.a))) continue;
+    ut.set(e.i, {
+      id: e.i,
+      type: e.t,
+      lat: e.y,
+      lon: e.x,
+      label: e.n || '',
+      createdAt: e.a,
+      urHistoriken: true,
+    });
+  }
+
+  return [...ut.values()]
+    .filter(farBeskrivas)
+    .sort((a, b) => dagenSkapad(b) - dagenSkapad(a))
+    .slice(0, DAGEN_TAK);
+}
+
+/**
+ * Vad raden ska stå för i listan.
+ *
+ * Kravet är enkelt att skriva och lätt att gå bet på: en utgången rapport får
+ * ALDRIG se ut som en aktuell. Därför säger varje rad rakt ut vad den är, i
+ * stället för att lämna det åt läsaren att räkna ut ur ett klockslag.
+ *
+ * TVÅ LÄGEN RÄCKTE INTE, OCH DET VAR MÄTBART FEL.
+ *
+ * Funktionen läste bara expiresAt, alltså VISNINGSTIDEN — fyra timmar sedan
+ * store.js delades i TTL_MINUTES och VISNING_MINUTER. Följden: en polisrapport
+ * skapad 13:00 och öppnad 16:00 fick statusordet "Aktiv nu" i accentfärg och
+ * räknades in i "3 räknas fortfarande som aktuella", medan sammanfattaKort()
+ * om exakt samma rad sa "Troligen inte kvar" och bedomRapport() satte den till
+ * tyst. Två ytor i samma app sa motsatta saker om samma rapport, och den yta
+ * som sa fel var just den som byggdes för att göra det utgångna synligt UTAN
+ * att låta det se aktuellt ut.
+ *
+ * Gränserna är därför trovärdighetstiden (TTL_MINUTES) och inte visningstiden,
+ * och orden är samma ord som aktualitet() i js/sammanfattning.js använder —
+ * annars hade det här blivit den sjunde formuleringen av samma sak. Andelen
+ * 0,5 är samma brytpunkt som där.
+ */
+function dagenStatus(r, nu = Date.now()) {
+  if (r.removed) return { text: 'Borttagen', ton: 'var(--fg-dim)', aktiv: false };
+
+  const emot = Number(r.denials) || 0;
+  const for_ = Number(r.confirms) || 0;
+  if (emot >= 3 && emot > for_) return { text: 'Nedröstad', ton: 'var(--fg-dim)', aktiv: false };
+
+  /*
+   * En rad som bara finns i stats-lagringen påstås aldrig vara aktiv.
+   *
+   * Frestelsen är att räkna fram en utgångstid ur typens livslängd. Men det
+   * hade varit en gissning presenterad som ett faktum, och gissningen lutar
+   * åt fel håll: den enda anledningen till att raden inte längre finns i
+   * store är att store redan städat bort den, vilket sker först tre timmar
+   * EFTER att den gått ut. Är den borta därifrån är den slut.
+   */
+  if (r.urHistoriken) return { text: 'Utgången', ton: 'var(--fg-dim)', aktiv: false };
+
+  const slut = Number(r.expiresAt ?? r.expires_at);
+  const synsAn = Number.isFinite(slut) && slut > nu;
+
+  // Trovärdighetstiden, inte visningstiden. Samma skala som graderingen,
+  // aktualitetstexten och kartnålens uttoning räknar på.
+  const ttlMs = (TTL_MINUTES[r.type] ?? 45) * 60000;
+  const skapad = Number(dagenSkapad(r));
+  const andel = Number.isFinite(skapad) ? Math.max(0, nu - skapad) / ttlMs : Infinity;
+
+  if (andel < 0.5) return { text: 'Aktiv nu', ton: 'var(--accent)', aktiv: true };
+  if (andel < 1)   return { text: 'Kan ha flyttat på sig', ton: 'var(--warn)', aktiv: true };
+  // Kvar på kartan i upp till fyra timmar, men appen tror inte längre på den.
+  // Ordet är detsamma som rapporten själv bär i sin sammanfattning.
+  if (synsAn)      return { text: 'Troligen inte kvar', ton: 'var(--fg-dim)', aktiv: false };
+  return { text: 'Utgången', ton: 'var(--fg-dim)', aktiv: false };
+}
+
+const dagenKlockslag = t => Number.isFinite(Number(t))
+  ? new Date(Number(t)).toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' })
+  : '–';
+
+function renderDagensHistorik() {
+  const ul = $('dagenLista');
+  if (!ul) return;
+
+  const nu = Date.now();
+  const rader = dagensRapporter(nu);
+  const aktiva = rader.filter(r => dagenStatus(r, nu).aktiv).length;
+
+  const sum = $('dagenSum');
+  if (sum) {
+    // Tom dag sägs bara EN gång. Sammanfattningen och tomraden hade annars
+    // stått under varandra och sagt samma sak med olika ord, vilket läses
+    // som att den ena betyder något mer än den andra.
+    sum.hidden = rader.length === 0;
+    /*
+     * "Räknas fortfarande som aktuella", inte "ligger på kartan".
+     *
+     * En aktiv rapport SYNS inte nödvändigtvis: bevakningsområdet och
+     * notisinställningarna kan sålla bort den efteråt. Raden får inte lova
+     * något den inte vet, och den enda uppgift den faktiskt har är om
+     * rapportens tid gått ut eller inte.
+     */
+    sum.textContent =
+      `${rader.length} ${rader.length === 1 ? 'rapport' : 'rapporter'} sedan midnatt. ` +
+      (aktiva
+        ? `${aktiva} räknas fortfarande som ${aktiva === 1 ? 'aktuell' : 'aktuella'}, ` +
+          `${rader.length - aktiva} har passerat sin tid.`
+        : 'Ingen av dem är aktuell längre.');
+  }
+
+  $('dagenTom').hidden = rader.length > 0;
+
+  ul.innerHTML = '';
+  for (const r of rader) {
+    const status = dagenStatus(r, nu);
+    const egen = arMin(r);
+
+    /*
+     * Rubriken kommer ur sammanfattning.js, inte ur ett eget strängbygge här.
+     * "Polis vid Hälla" och "Trafikkontroll, plats okänd" är den modulens
+     * formuleringar, och en lista som säger det på sitt eget vis blir den
+     * sjunde platsen där samma sak formuleras olika.
+     *
+     * delar är null när spärren sa nej — men då har raden redan sållats bort
+     * av farBeskrivas() ovanför, så det här är enbart ett bälte till.
+     */
+    const d = beskrivning(r, { egen, nu }).delar;
+    if (!d) continue;
+
+    const li = document.createElement('li');
+    if (!status.aktiv) li.style.opacity = '.62';
+
+    li.innerHTML =
+      `<span class="hs-ico">${TYPE_ICON[r.type] || '📍'}</span>` +
+      `<span class="hs-main">` +
+        `<span class="hs-title">${escapeHtml(`${d.typ}${d.plats}`)}</span>` +
+        `<span class="hs-meta">` +
+          `<b style="color:${status.ton}; font-weight:650;">${status.text}</b>` +
+          // Källan följer med. "Utgången" ensamt säger inte om det var en
+          // förare eller ett Facebook-inlägg, och det är skillnaden mellan
+          // en uppgift man kan gå tillbaka till och en man inte kan.
+          (d.kalla ? ` · ${escapeHtml(cap(d.kalla))}.` : '') +
+        `</span>` +
+      `</span>` +
+      `<span class="hs-count" style="font-variant-numeric:tabular-nums;">${dagenKlockslag(dagenSkapad(r))}</span>`;
+
+    // Tryck = "var låg det?". Ingen nål tänds — den är utgången och ska
+    // förbli det — men kartan går dit, vilket är hela frågan raden väcker.
+    li.onclick = () => {
+      stangDagensHistorik();
+      showView('map');
+      map.setFollow(false);
+      map.centerOn(r.lat, r.lon, 15);
+    };
+    ul.appendChild(li);
+  }
+
+  const fot = $('dagenFot');
+  if (fot) {
+    const kapad = rader.length >= DAGEN_TAK;
+    fot.hidden = !kapad;
+    if (kapad) fot.textContent =
+      `Visar de ${DAGEN_TAK} senaste. Äldre rapporter från idag är inte borta — ` +
+      'de får bara inte plats i listan, och finns kvar i mönstren under Inställningar.';
+  }
+}
+
+function oppnaDagensHistorik() {
+  renderDagensHistorik();
+  $('modalDagen').hidden = false;
+}
+
+function stangDagensHistorik() {
+  const m = $('modalDagen');
+  if (m) m.hidden = true;
+}
+
+function wireDagensHistorik() {
+  const m = $('modalDagen');
+  if (!m) return;
+
+  $('btnDagen')?.addEventListener('click', oppnaDagensHistorik);
+  $('btnDagenInst')?.addEventListener('click', oppnaDagensHistorik);
+  $('dagenStang')?.addEventListener('click', stangDagensHistorik);
+  /*
+   * Tryck utanför kortet stänger också.
+   *
+   * Appens övriga modaler gör INTE så, och det är rätt för dem: de ställer en
+   * fråga som ska besvaras, och ett tryck bredvid kortet är då lika ofta en
+   * miss som ett svar. Den här ställer ingen fråga — den visar en lista man
+   * är klar med när man är klar med den. Att tvinga fram ett träffsäkert
+   * tryck på en knapp för att komma ur en läsvy är att göra det svårt att
+   * sluta läsa.
+   */
+  m.addEventListener('click', ev => { if (ev.target === m) stangDagensHistorik(); });
+
+  /*
+   * Rita om medan den ligger uppe, men bara då.
+   *
+   * En rapport kan gå ut, bekräftas eller komma in medan listan är öppen, och
+   * en rad som står kvar som "Aktiv nu" efter att den slutat vara det är
+   * exakt det fel kravet handlar om. Ligger modalen stängd görs ingenting —
+   * store 'change' kommer var trettionde sekund och listan är inte gratis att
+   * bygga.
+   */
+  const omDenSyns = () => { if (!m.hidden) renderDagensHistorik(); };
+  store.addEventListener('change', omDenSyns);
+  stats.addEventListener('change', omDenSyns);
+  // Klockan går vidare även utan nya rapporter. En minut är tätt nog för att
+  // "Aktiv nu" ska hinna bli "Utgången" medan man tittar.
+  setInterval(omDenSyns, 60000);
 }
 
 /* ================= Rapportpoäng ================= */
@@ -2785,9 +3119,37 @@ function graderadeFaror() {
         return false;
       });
   } catch {
-    // Graderingen får aldrig kunna släcka varningarna. Går något fel faller
-    // vi tillbaka på ograderade rapporter — hellre en osäker varning än ingen.
-    graderade = aktiva;
+    /*
+     * Graderingen får aldrig kunna släcka varningarna. Går något fel faller
+     * vi tillbaka på ograderade rapporter — hellre en osäker varning än ingen.
+     *
+     * MEN ÅLDERSGRINDEN FÖLJER MED NER, och det är nytt.
+     *
+     * Utan bedomning svarar kvalitetsTak() i js/notiser.js NIVA_ROST, alltså
+     * "får läsas upp". Konsekvensen var begränsad när aktiva rapporter var
+     * högst 45-60 minuter gamla; med fyra timmars visningstid hade ett enda
+     * undantag i bedomFlodet matat varningsmotorn med fyra timmars eftersläp
+     * och läst upp varje gammal rapport föraren körde förbi — inklusive de som
+     * graderingen skulle ha tystat för att de överlevt sin trovärdighetstid.
+     *
+     * Filtret räknar på TTL_MINUTES, samma tal graderingen ändå hade använt,
+     * och det kan inte kasta.
+     *
+     * PRISET, UTTALAT: i nödfallet försvinner de gamla nålarna också från
+     * kartan, för listan delas upp längre ner och den uppdelningen behöver
+     * just den bedömning som nyss kastade. Fyra timmars visning är alltså av
+     * så länge graderingen är trasig. Det är rätt håll att fela åt — en app
+     * som visar mindre än den borde är en olägenhet, en app som ropar ut fyra
+     * timmar gamla poliser är en app man stänger av. Samma nödfall finns i
+     * js/rutt.js och räknar likadant.
+     */
+    const nuMs = Date.now();
+    graderade = aktiva.filter(r => {
+      const ttlMs = (TTL_MINUTES[r.type] ?? 45) * 60000;
+      const skapad = Number(r.createdAt ?? r.created_at);
+      if (!Number.isFinite(skapad)) return true;   // okänd ålder: som förut
+      return nuMs - skapad < ttlMs;
+    });
   }
 
   /*
@@ -2840,10 +3202,36 @@ function renderHazards() {
     return;
   }
 
+  /*
+   * AKTUELLA FÖRE UTGÅNGNA, DÄREFTER NÄRMAST FÖRST.
+   *
+   * Listan sorterade bara på avstånd och kapade vid tolv rader. Det var
+   * ofarligt så länge pölen bara innehöll rapporter yngre än 45-60 minuter.
+   * Med fyra timmars visningstid är pölen fyra timmar djup, och de tolv
+   * platserna kan fyllas av rapporter appen själv har slutat tro på.
+   *
+   * MÄTT: 15 aktiva rapporter, varav 14 är 60-190 minuter gamla och 300-820 m
+   * bort och en är två minuter gammal 1,4 km bort. Med ren avståndssortering
+   * föll den färska ur listan — föraren såg tolv rader som alla sa "Troligen
+   * inte kvar" och den enda rad som gällde syntes inte. Samma mekanism gjorde
+   * att #sheetCount aldrig kunde visa mer än "12 st".
+   *
+   * Bedömningen finns redan: graderingen sätter flaggan 'overlevd' på det som
+   * levt längre än sin trovärdighetstid (js/kvalitet.js). Saknas bedömningen —
+   * nödfallet i graderadeFaror() — räknas åldern direkt ur TTL_MINUTES, samma
+   * tal graderingen ändå hade använt.
+   */
+  const harOverlevt = h => {
+    if (h.bedomning?.flaggor) return h.bedomning.flaggor.includes('overlevd');
+    const ttlMs = (TTL_MINUTES[h.type] ?? 45) * 60000;
+    const skapad = Number(h.createdAt ?? h.created_at);
+    return Number.isFinite(skapad) && Date.now() - skapad >= ttlMs;
+  };
+
   const near = list
-    .map(h => ({ ...h, distance: haversineFix(fix, h) }))
+    .map(h => ({ ...h, distance: haversineFix(fix, h), overlevd: harOverlevt(h) }))
     .filter(h => h.distance <= Math.max(settings.hazardRadiusM * 3, 5000))
-    .sort((a, b) => a.distance - b.distance)
+    .sort((a, b) => (a.overlevd - b.overlevd) || (a.distance - b.distance))
     .slice(0, 12);
 
   $('sheetEmpty').hidden = near.length > 0;
@@ -2876,7 +3264,9 @@ function renderHazards() {
         ev.stopPropagation();
         store.confirm(h.id);
         reputation.addVerify();
-        toast('Tack. Varningen ligger kvar längre nu.', 3500);
+        // Samma sanning som rattknappen säger, se motiveringen där och i
+        // js/store.js confirm(): bekräftelsen räknas, den förlänger inte.
+        toast('Tack. Din bekräftelse är räknad.', 3500);
         renderReputation();
       };
       btns.children[1].onclick = ev => {
@@ -6590,13 +6980,31 @@ function sedanSistSpara(t = Date.now()) {
   try { localStorage.setItem(SEDAN_SIST_NYCKEL, String(t)); } catch {}
 }
 
-/** De rapporter som kommit in sedan man tittade sist, nyast först. */
+/**
+ * De rapporter som kommit in sedan man tittade sist, nyast först.
+ *
+ * SPÄRREN FRÅGAS HÄR OCKSÅ. Bannern läste förut store.active() rått och
+ * filtrerade bara på fixed, createdAt och arMin — den frågade aldrig
+ * farBeskrivas(). Alla andra vägar fram till en människa gör det
+ * (js/varningsyta.js, notisOverallt, dagensRapporter, js/sammanfattning.js),
+ * och en ny väg ska bära spärren själv i stället för att lita på att någon
+ * uppströms gjorde det.
+ *
+ * MÄTT: en rad med etiketten "Nykterhetskontroll Skultuna" ger
+ * farBeskrivas() === false och sammanfattaKort() === "". Bannern släppte ändå
+ * igenom den, och var den nyast blev resultatet kontrollikonen i #nyaIkon,
+ * rubriken "1 ny rapport sedan sist" och en tom undertext — en varning om en
+ * nykterhetskontroll, utan ord men med ikon, tidpunkt och en Visa-knapp.
+ * Fönstret var dessutom 45-60 minuter och är nu 240, alltså fem gånger så stor
+ * chans att en spärrad rad hamnar i räkningen.
+ */
 function nyaSedanSist() {
   const sedan = sedanSistLast();
   return store.active()
     .filter(h => !h.fixed                       // fasta kameror är aldrig nyheter
               && Number(h.createdAt) > sedan
               && !arMin(h))                     // inte det man själv rapporterat
+    .filter(farBeskrivas)                       // nykterhetsspärren, samma som app.js:829
     .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
 }
 

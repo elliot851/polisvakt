@@ -39,6 +39,9 @@ import {
   distance, bearing, clamp, spokenDistance, spokenAge, shortDistance,
 } from './util.js';
 import { TYPE_SPOKEN, isSobrietyCheck } from './parser.js';
+// Trovärdighetstiden per typ. Behövs bara i nödfallet nedan, där bedömningen
+// saknas och åldersgrinden måste räknas ur samma tal graderingen använder.
+import { TTL_MINUTES } from './store.js';
 import { searchPlaces, localSuggestions } from './geocode.js';
 
 /**
@@ -869,9 +872,23 @@ export class RouteGuide extends EventTarget {
        * det som aldrig får sägas. Därför samma fråga som parser.js äger,
        * ställd direkt: allt som ser ut som en nykterhets- eller drogkontroll
        * lämnas utanför även när graderingen inte gick att nå.
+       *
+       * ÅLDERSGRINDEN FÖLJER MED NER AV SAMMA SKÄL. store.active() släpper
+       * numera fram fyra timmar (js/store.js VISNING_MINUTER) medan appen
+       * slutar TRO på rapporten efter TTL_MINUTES. Utan bedömning svarar
+       * kvalitetsTak() i js/notiser.js "får läsas upp", och nödfallet hade
+       * därmed låtit ruttvakten ropa ut fyra timmar gamla poliser — precis
+       * det fyrtimmarsdelningen finns för att undvika. Talet är samma som
+       * graderingen ändå hade räknat på, och jämförelsen kan inte kasta.
        */
       flode = this.store.active(now)
-        .filter(r => !isSobrietyCheck(`${r?.note || ''} ${r?.label || ''}`));
+        .filter(r => !isSobrietyCheck(`${r?.note || ''} ${r?.label || ''}`))
+        .filter(r => {
+          const ttlMs = (TTL_MINUTES[r?.type] ?? 45) * 60000;
+          const skapad = Number(r?.createdAt ?? r?.created_at);
+          if (!Number.isFinite(skapad)) return true;   // okänd ålder: som förut
+          return now - skapad < ttlMs;
+        });
     }
 
     for (const r of flode) {

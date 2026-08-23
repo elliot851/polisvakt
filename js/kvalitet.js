@@ -109,13 +109,46 @@ export const DEFAULTS = {
   // Standardradie för olika sorters geokodning, i meter. Ett gatunamn utan
   // husnummer i Västerås är i storleksordningen 250 m långt; en stadsdel
   // närmare en kilometer; ett ortsnamn flera.
-  geokodRadieM: { punkt: 15, adress: 40, vag: 250, stadsdel: 900, ort: 2500, okand: 1200 },
+  //
+  // TALEN ÄR NUMERA ETT GOLV, INTE HELA SANNINGEN. Bryggan och daemonen
+  // skriver sedan 2026-08-23 ett mätt geokod_radius_m ur OSM-svaret när svaret
+  // bär en riktig geometri, och positionsOsakerhet() föredrar det framför den
+  // här tabellen. Tabellen svarar alltså bara när ingen mätning finns.
+  //
+  // 'led' är ny och gäller genomfartsvägarna — E18, riksväg 66, riksväg 56.
+  // De är inte platser: E18 går tre mil genom länet, och OSM svarar med ETT
+  // godtyckligt vägavsnitt på hundra meter. 8 000 m är valt så att osäkerheten
+  // passerar platsHopplosOverM (3 000) och rapporten faller bort i stället för
+  // att bli en självsäker nål någonstans längs vägen. Vill man ha tillbaka
+  // E18-rapporterna är svaret att inlägget måste peka ut VAR på E18 — inte att
+  // sänka det här talet.
+  geokodRadieM: {
+    punkt: 15, adress: 40, vag: 250, stadsdel: 900, ort: 2500, led: 8000, okand: 1200,
+  },
   //
   // GPS-osäkerhet att anta när telefonen inte rapporterar någon.
   antagenGpsM: 25,
 
   /* --- Dubbletter --------------------------------------------------- */
-  dubblettTidMs: 12 * 60000,     // längre isär än så: rimligen två tillfällen
+  //
+  // GOLV för hur långt isär två rapporter får ligga i tid och ändå räknas som
+  // samma patrull. Det verkliga fönstret är typens trovärdighetstid när den är
+  // längre — se dubblettFonsterMs() nedan.
+  //
+  // Det fasta talet 12 minuter var ofarligt så länge en rapport bara levde
+  // 45-60 minuter: det fanns sällan mer än två samtidiga rapporter om samma
+  // patrull att slå ihop. Med fyra timmars visningstid (js/store.js
+  // VISNING_MINUTER) ligger fyra Facebook-inlägg om samma polis kvar samtidigt,
+  // och eftersom aliasuppslaget ger EXAKT samma koordinat för samma platsnamn
+  // staplas nålarna ovanpå varandra så att bara den översta går att trycka på.
+  // Mätt med bedomFlodet(): fyra inlägg om polis vid Hälla, identisk koordinat,
+  // 0/20/45/80 minuter gamla, gav fyra kluster med en medlem vardera.
+  //
+  // store.add() slog redan ihop på typens trovärdighetstid (js/store.js), men
+  // den spärren gäller bara det som skrivs på den här telefonen — bryggans
+  // rader kommer in via refresh() och passerar den aldrig. Nu räknar båda på
+  // samma tal.
+  dubblettTidMs: 12 * 60000,     // golv; typens livslängd vinner när den är längre
   dubblettGrundM: 150,           // grundtillägg längs vägen
   dubblettTvarsGrundM: 60,       // grundtillägg tvärs vägen (parallellgator)
   dubblettMaxM: 700,             // aldrig, oavsett vad osäkerheten säger
@@ -161,35 +194,101 @@ const slaktskap = (a, b) =>
 // knapptryckning i appen bär ett underförstått "jag är här och ser det nu".
 // Röst lägger till ett taltolkningssteg. Ett Facebook-inlägg lägger till en
 // okänd författare, en okänd tidpunkt och en geokodning.
+// FACEBOOK STOD PÅ 0,42 OCH DET TALET BESKREV INTE LÄNGRE VERKLIGHETEN.
+//
+// Motiveringen ovan räknade upp tre okända: författare, tidpunkt, geokodning.
+// Två av dem är inte längre okända:
+//
+//   Tidpunkten  Inlägget bär sin egen tidsstämpel, och bryggan mäter den
+//               (observeradTid i tools/fb-bridge.user.js). createdAt är
+//               inläggets tid, inte sveptidpunkten.
+//   Geokodningen Svaret från OSM GRANSKAS numera: stadsspärren kastar en stad
+//               som svar på ett vägnamn, och geokod_typ och geokod_radius_m
+//               läses ur svaret i stället för att gissas ur frågan.
+//
+// Kvar av det ursprungliga skälet är den okända författaren, och den är skälet
+// till att talet fortfarande ligger klart under app (0,62) och röst (0,56).
+//
+// MÄTT FÖRE ÄNDRINGEN: en aliasgeokodad grupprapport landade på 0,44 mot
+// gransHedga 0,48 och var alltså TYST utom under de första minuterna. Ägarens
+// ord var "eftersom gruppen är i Västerås måste den ju varna" — och den
+// enda anledningen till att den inte gjorde det var det här talet.
+// Poängfördelningen efter ändringen står i docs/KVALITET.md.
+//
+// 'import' rörs INTE. Den vägen är en bulkinläsning utan tidsstämpel och utan
+// granskat svar, alltså precis det 0,42 en gång beskrev.
 const BAS_KALLA = {
   app: 0.62,
   voice: 0.56,
-  facebook: 0.42,
+  facebook: 0.46,
   import: 0.42,
   okand: 0.45,
 };
 
 /* --- Geokodningens bidrag -------------------------------------------- */
 //
-// Det här är fallet "rätt gatunamn i fel del av stan". Ett ortsnamn drar ner
-// hårt eftersom det pekar på en kommun, inte på en väg.
+// Det här är fallet "rätt gatunamn i fel del av stan". Stegen är ordnade efter
+// hur mycket MÄNSKLIG kontroll som ligger bakom koordinaten:
+//
+//   gps/karta   föraren var där, eller pekade själv på kartan
+//   alias       en människa har skrivit söksträngen, ställt den till OSM och
+//               LÄST svaret innan raden lades in i data/aliases.vasteras.json
+//   learned     föraren pekade ut platsen en gång och den har suttit sedan dess
+//   nominatim   ingen har sett svaret, men koden granskar det: stadsspärren,
+//               områdeskontrollen, och typ + radie ur svaret i stället för ur
+//               frågan. Det var 0 när "nominatim" betydde ogranskad genomsläpp.
+//   cache       ett tidigare nominatim-svar, alltså samma sak en gång till
+//
+// ALIAS LYFTES FRÅN 0,02, och skälet är mätt: med 0,02 blev en aliasrad
+// 0,42 + 0,02 + 0 = 0,44 och tystnade, medan samma rad utan alias fick 0,42.
+// Skillnaden mellan att höras och att tiga låg alltså på två hundradelar och
+// avgjordes av om någon råkat skriva in namnet i en lista. Nu är steget
+// alias → nominatim två hundradelar men ligger inte längre över tröskeln:
+// för VARJE geokodtyp hamnar aliasraden och nominatimraden på samma sida om
+// gransHedga (se tabellen i docs/KVALITET.md). Listan avgör inte längre om
+// föraren får höra något — den avgör bara hur säkert det sägs.
 const GEOKOD_DELTA = {
   gps: 0.10,        // egen position, ingen namntolkning inblandad
   karta: 0.08,      // föraren pekade själv, stillastående
+  alias: 0.06,      // handprovad söksträng ur aliasfilen, svaret läst av en människa
   learned: 0.05,    // inlärd plats som pekats ut en gång och suttit sedan dess
-  alias: 0.02,
-  cache: 0.02,
-  nominatim: 0,     // neutral: bra på adresser, sämre på "rondellen"
+  nominatim: 0.04,  // ogranskat av människa, men granskat av koden — se ovan
+  cache: 0.04,      // ett sparat nominatim-svar är ett nominatim-svar
   okand: -0.15,
 };
 
+// HUR BRETT SVARET PEKAR STÅR NUMERA I geokod_radius_m, INTE HÄR.
+//
+// Tabellen hade två jobb och gjorde dem otydligt: den sa både "hur brett" och
+// "hur troligt att det är rätt objekt". Bredden mäts nu ur OSM-svaret och
+// verkar genom positionsOsakerhet() — hedgaPlatsOverM får appen att säga "i
+// området kring Hälla", platsOanvandbarOverM tystar, platsHopplosOverM slänger
+// nålen. Att också dra av på poängen för samma sak var att räkna bredden två
+// gånger, och det var det som tystade varje stadsdelsrapport i gruppen.
+//
+// Kvar här är bara den andra frågan: hur troligt är det att svaret pekar på
+// RÄTT sak?
+//   punkt/adress  ett namngivet objekt som OSM matchade exakt — lite plus
+//   vag/stadsdel  "Norrleden" är nästan alltid rätt led och "Bäckby" nästan
+//                 alltid rätt stadsdel. Att stadsdelen är stor sägs i radien.
+//   ort           ett kommunnamn i ett länsflöde är lika ofta ett samtalsämne
+//                 som en observation. Det är en annan sorts tvivel än bredd.
+//   led           genomfartsväg: se geokodRadieM. Radien gör jobbet; avdraget
+//                 finns för att en rapport som bara säger "E18" inte ska kunna
+//                 klättra tillbaka på bekräftelser.
 const GEOKODTYP_DELTA = {
   punkt: 0.04,
   adress: 0.02,
   vag: 0,
-  stadsdel: -0.10,
+  stadsdel: 0,
   ort: -0.22,
-  okand: -0.06,
+  led: -0.22,
+  //   okand         vi vet inte VAD svaret pekar på. Stod på −0,06, vilket
+  //                 räckte så länge geokoddeltat var 0; med det höjda deltat
+  //                 hamnade en färsk okänd träff på 0,49 och blev hörbar under
+  //                 sina första minuter. En rapport vi inte kan beskriva
+  //                 platsen för ska inte sägas högt i någon ålder.
+  okand: -0.10,
 };
 
 /* ========================= Små hjälpare ============================== */
@@ -286,7 +385,7 @@ export function positionsOsakerhet(rapport, opts = DEFAULTS) {
  * @property {number} [kurs]             rapportörens kurs i grader
  * @property {number} [fordrojningS]     sekunder mellan iakttagelse och inlämning
  * @property {'gps'|'karta'|'learned'|'alias'|'cache'|'nominatim'|'okand'} [geokod]
- * @property {'punkt'|'adress'|'vag'|'stadsdel'|'ort'|'okand'} [geokodTyp]
+ * @property {'punkt'|'adress'|'vag'|'stadsdel'|'ort'|'led'|'okand'} [geokodTyp]
  * @property {number} [geokodRadiusM]
  * @property {number} [parserConfidence] 0-1 från parser.js
  */
@@ -426,7 +525,10 @@ export function bedomRapport(rapport, kontext = {}, opts = {}) {
   if (rapport.geokodTyp) {
     poang += lagg('geokodtyp', GEOKODTYP_DELTA[rapport.geokodTyp] ?? 0,
       `Träffen löste till nivå "${rapport.geokodTyp}".`);
-    if (rapport.geokodTyp === 'ort' || rapport.geokodTyp === 'stadsdel') {
+    // 'led' hör hit lika mycket som de andra två: en genomfartsväg pekar
+    // bredare än en stadsdel, inte smalare.
+    if (rapport.geokodTyp === 'ort' || rapport.geokodTyp === 'stadsdel' ||
+        rapport.geokodTyp === 'led') {
       flaggor.push('grov-geokod');
     }
   }
@@ -487,11 +589,34 @@ export function bedomRapport(rapport, kontext = {}, opts = {}) {
   // en patrull rimligen står kvar. Här används samma tal som skala, så en
   // civil bil (30 min) åldras dubbelt så fort som en trafikkontroll (60 min)
   // utan att någon siffra behöver upprepas.
+  //
+  // OBS att skalan är TTL_MINUTES och inte den tid rapporten SYNS. Sedan
+  // visningstiden blev fyra timmar (store.js VISNING_MINUTER) är det två
+  // olika frågor: hur länge nålen ligger kvar, och hur länge vi tror på den.
+  // Den här filen svarar bara på den andra, och ska fortsätta göra det —
+  // byts skalan mot visningstiden blir en timmesgammal rapport "färsk".
   const ttl = livslangdMs(rapport.type);
   const alder = Math.max(0, nu - nz(rapport.createdAt, nu));
   const andel = alder / ttl;
+  // Poängen innan åldern rörde den. Behövs längre ner: åldern får tysta en
+  // rapport, men den får inte ensam radera den från kartan.
+  const poangForeAlder = clamp01(poang);
+  // Sant när rapporten hunnit leva längre än vi tror på den. Den syns
+  // fortfarande — visningstiden är fyra timmar — men det som följer nedan ser
+  // till att den syns som just gammal och inte sägs högt.
+  const overlevdTrovardighet = andel >= 1;
   if (andel < o.farskUnderAndel) {
     poang += lagg('alder', 0.05, 'Färsk rapport, mindre än 15 % av livslängden.');
+  } else if (overlevdTrovardighet) {
+    // Samma avdrag som steget under, inte ett större. Ett större avdrag hade
+    // bara knuffat rapporten under gransKarta och släckt nålen — alltså gjort
+    // om fyra timmars visning till 36 minuters visning en omväg. Tystnaden
+    // ordnas i stället som ett tak på nivån längre ner, där den inte kan
+    // kompenseras bort och inte heller kan radera något.
+    poang += lagg('alder', -0.18,
+      'Rapporten har levt längre än den tid en patrull rimligen står kvar. Visas, sägs inte.');
+    flaggor.push('gammal');
+    flaggor.push('overlevd');
   } else if (andel > o.mycketGammalOverAndel) {
     poang += lagg('alder', -0.18, 'Rapporten har nästan gått ut. Patrullen har troligen flyttat.');
     flaggor.push('gammal');
@@ -531,6 +656,56 @@ export function bedomRapport(rapport, kontext = {}, opts = {}) {
     : poang >= o.gransHedga ? NIVA.MEDEL
     : poang >= o.gransKarta ? NIVA.LAG
     : NIVA.SVAG;
+
+  /*
+   * EFTER TROVÄRDIGHETSTIDEN: SYNS, HÖRS INTE.
+   *
+   * Det här är hela mekaniken bakom fyra timmars visningstid, och den är
+   * medvetet skriven som två rörelser mot MITTEN i stället för som ett avdrag:
+   *
+   *   NEDÅT   En rapport som överlevt sin trovärdighetstid får aldrig sägas
+   *           högt. Ett avdrag hade gått att kompensera bort med bekräftelser
+   *           — och en tre timmar gammal rapport som fyra personer bekräftade
+   *           för tre timmar sedan är fortfarande tre timmar gammal.
+   *
+   *   UPPÅT   Åldern får inte ensam vara det som raderar nålen. Utan den här
+   *           halvan hade ändringen varit meningslös i praktiken: en typisk
+   *           Facebook-rad ligger runt 0,37, åldersavdraget på 0,18 tar den
+   *           till 0,19 och därmed under gransKarta 0,28. Nålen hade alltså
+   *           släckts efter 36 minuter trots att raden lever i fyra timmar,
+   *           och ägaren hade sett exakt ingen skillnad.
+   *
+   * Uppåtsteget lyfter inte en rapport som var för svag redan innan åldern
+   * rörde den (poangForeAlder), och det ligger FÖRE positionsgrindarna nedan
+   * så att en hopplös plats fortfarande kan slänga ut nålen. Åldern är det
+   * enda den räddar från, och bara till kartan — aldrig till högtalaren.
+   *
+   * DE TVÅ STEGEN HAR OLIKA GRÄNSER, och det är inte slarv.
+   *
+   * Tystnaden börjar när trovärdighetstiden är slut (andel >= 1). Räddningen
+   * börjar tidigare, vid samma gräns som åldersavdragen själva. Provet visade
+   * varför: med räddningen bunden till 1,0 blev en 44 minuter gammal rapport
+   * UNDANHÅLLEN medan samma rapport två minuter senare syntes igen. En nyare
+   * uppgift hade alltså varit osynlig och en äldre synlig — kartan hade
+   * blinkat i fel ordning. Räddningen måste täcka hela den sträcka där
+   * avdraget kan trycka något under kartgränsen, alltså från första avdraget.
+   */
+  const alderDrogNer = andel > o.gammalOverAndel;
+  if (overlevdTrovardighet && (niva === NIVA.HOG || niva === NIVA.MEDEL)) {
+    niva = NIVA.LAG;
+    skal.push({
+      namn: 'alder',
+      delta: 0,
+      varfor: 'Äldre än sin livslängd. Får synas på kartan, men inte läsas upp som en varning.',
+    });
+  } else if (alderDrogNer && niva === NIVA.SVAG && poangForeAlder >= o.gransKarta) {
+    niva = NIVA.LAG;
+    skal.push({
+      namn: 'alder',
+      delta: 0,
+      varfor: 'Åldern tystar rapporten men raderar den inte — föraren ska kunna se att den fanns.',
+    });
+  }
 
   // En punkt som är över en kilometer osäker kan inte pekas ut. Varningen
   // skulle handla om ett område större än varningsradien och därmed säga
@@ -764,6 +939,31 @@ function raknaStod(rapport, kontext, o) {
 /* ======================= Dubbletthantering =========================== */
 
 /**
+ * Hur långt isär i tid två rapporter får ligga och ändå vara samma patrull.
+ *
+ * FÖNSTRET FÖLJER TYPENS TROVÄRDIGHETSTID, inte ett fast tal. Så länge en
+ * patrull rimligen står kvar kan två inlägg om den vara samma patrull; efter
+ * det är de två tillfällen. Det är samma resonemang och samma tal som
+ * store.add() redan använde för sin egen sammanslagning (js/store.js) — och
+ * att de två inte räknade likadant var hela felet: telefonens egna rapporter
+ * slogs ihop under 45 minuter medan bryggans rader, som kommer in via
+ * refresh(), bara slogs ihop under 12.
+ *
+ * Den KORTASTE av de två typernas livslängd vinner. En civil bil är otrolig
+ * redan efter 30 minuter, och att para ihop den med en polisrapport en timme
+ * senare vore att låta den längre livslängden smitta den kortare.
+ *
+ * dubblettTidMs är kvar som golv, för typer utan känd livslängd.
+ */
+function dubblettFonsterMs(a, b, o) {
+  const ttlA = TTL_MINUTES[a?.type];
+  const ttlB = TTL_MINUTES[b?.type];
+  const kanda = [ttlA, ttlB].filter(Number.isFinite);
+  if (!kanda.length) return o.dubblettTidMs;
+  return Math.max(o.dubblettTidMs, Math.min(...kanda) * 60000);
+}
+
+/**
  * Är de här två rapporterna samma fysiska patrull?
  *
  * Den svåra avvägningen: två rapporter om samma patrull från olika positioner
@@ -795,8 +995,10 @@ export function arSammaPatrull(a, b, opts = DEFAULTS) {
   }
 
   const dt = Math.abs(nz(a.createdAt, 0) - nz(b.createdAt, 0));
-  if (dt > o.dubblettTidMs) {
-    return nej(`${Math.round(dt / 60000)} min isär — behandlas som två tillfällen`);
+  const fonster = dubblettFonsterMs(a, b, o);
+  if (dt > fonster) {
+    return nej(`${Math.round(dt / 60000)} min isär — behandlas som två tillfällen ` +
+               `(fönstret är ${Math.round(fonster / 60000)} min)`);
   }
 
   const sep = distance(a.lat, a.lon, b.lat, b.lon);
@@ -1078,7 +1280,12 @@ export function byggMening(bedomning, rapport, visning = {}) {
 export function kortText(bedomning, rapport, nu = Date.now()) {
   if (!bedomning || bedomning.niva === NIVA.EJ_TILLAMPLIG) return '';
   const min = Math.round(Math.max(0, nu - nz(rapport.createdAt, nu)) / 60000);
-  const alder = min < 1 ? 'nyss' : `${min} min`;
+  // Timform över en timme. Med fyra timmars visningstid går det här numera
+  // ända till "4 h" och "217 min" hade varit ett tal föraren måste räkna om i
+  // farten. Minuterna behålls under timmen där de faktiskt betyder något.
+  const alder = min < 1 ? 'nyss'
+    : min < 60 ? `${min} min`
+    : `${Math.floor(min / 60)} h${min % 60 ? ' ' + (min % 60) + ' min' : ''}`;
   const stod = bedomning.oberoendeStod > 0
     ? `Bekräftad av ${bedomning.oberoendeStod + 1}`
     : 'Enskild rapport';

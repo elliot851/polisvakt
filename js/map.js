@@ -10,7 +10,25 @@ import { shortDistance, relativeTime } from './util.js';
 import { VASTERAS } from './geocode.js';
 import { MapRotation } from './kartrotation.js';
 import { sammanfattaLang } from './sammanfattning.js';
-import { isMine } from './store.js';
+import { isMine, TTL_MINUTES } from './store.js';
+
+/**
+ * Hur länge nålen ska tona ut, i minuter.
+ *
+ * TROVÄRDIGHETSTIDEN (TTL_MINUTES), inte visningstiden. Uttoningen räknades
+ * förut ur expiresAt − createdAt, vilket var samma sak så länge de två talen
+ * var samma tal. Sedan visningstiden blev fyra timmar (store.js
+ * VISNING_MINUTER) är de det inte: hade uttoningen följt expiresAt skulle en
+ * polisnål stå på 84 % styrka efter 45 minuter och bli "stale" först efter
+ * tre timmar. Då hade den längre livslängden gjort kartan MER påstridig om
+ * gamla uppgifter, vilket var precis vad som skulle undvikas.
+ *
+ * Nålen bleknar alltså i takt med att appen slutar tro på rapporten, och
+ * ligger sedan kvar blek tills visningstiden går ut.
+ */
+function trovardighetMin(h) {
+  return TTL_MINUTES[h.type] ?? 45;
+}
 
 const TILES = {
   day: {
@@ -355,10 +373,10 @@ export class HazardMap extends EventTarget {
   #ikonSignatur(h) {
     if (h.fixed || !h.createdAt) return `${h.type}|fast`;
     const ageMin = (Date.now() - h.createdAt) / 60000;
-    const lifeMin = h.expiresAt ? (h.expiresAt - h.createdAt) / 60000 : 45;
-    // Avrundas till tiondelar — annars byggs ikonen om vid varje sekundslag
-    // för en skillnad ingen kan se.
-    return `${h.type}|${Math.round(Math.min(1, ageMin / lifeMin) * 10)}`;
+    // Samma skala som #hazardIcon, annars slutar nålen ritas om mitt i
+    // uttoningen. Den kopplingen är lätt att missa: signaturen är inte en
+    // cachenyckel bredvid utseendet, den ÄR utseendet uttryckt som text.
+    return `${h.type}|${Math.round(Math.min(1, ageMin / trovardighetMin(h)) * 10)}`;
   }
 
   /**
@@ -406,6 +424,10 @@ export class HazardMap extends EventTarget {
    * En 40 minuter gammal polisrapport är oftast skräp. Låt kartan visa det
    * utan att föraren behöver läsa en tidsangivelse: färsk rapport pulserar,
    * gammal bleknar. Kartan sanerar sig själv visuellt.
+   *
+   * Sedan rapporten ligger kvar i fyra timmar är det här inte längre en
+   * finess utan bärande. Nålen tas inte bort när vi slutar tro på den — den
+   * bleknar ner till ett golv och stannar där. Se trovardighetMin() ovan.
    */
   #hazardIcon(h) {
     const cls = [`hazard-icon`, `type-${h.type}`];
@@ -413,13 +435,15 @@ export class HazardMap extends EventTarget {
 
     if (!h.fixed && h.createdAt) {
       const ageMin = (Date.now() - h.createdAt) / 60000;
-      const lifeMin = h.expiresAt ? (h.expiresAt - h.createdAt) / 60000 : 45;
-      const left = 1 - Math.min(1, ageMin / lifeMin);
+      const kvar = 1 - Math.min(1, ageMin / trovardighetMin(h));
 
       if (ageMin < 5) cls.push('fresh');
-      else if (left < 0.25) cls.push('stale');
-      // Blekna från full styrka ner till 40 % under livslängden
-      opacity = 0.4 + 0.6 * left;
+      else if (kvar < 0.25) cls.push('stale');
+      // Blekna från full styrka ner till 40 % under trovärdighetstiden, och
+      // ligg sedan kvar på 30 % resten av visningstiden. Golvet är lägre än
+      // slutet på uttoningen med flit: skillnaden mellan "nästan slut" och
+      // "har passerat" ska synas utan att nålen försvinner.
+      opacity = kvar > 0 ? 0.4 + 0.6 * kvar : 0.3;
     }
 
     // pv-upright: symbolen motroteras när kartan är vriden. Ringen runt den är

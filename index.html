@@ -311,7 +311,22 @@
     <button class="sheet-grip" id="sheetGrip" type="button" aria-label="Visa lista"></button>
     <div class="sheet-head">
       <h2 id="sheetTitle">I närheten</h2>
-      <span class="sheet-count" id="sheetCount"></span>
+      <!-- Antalet och Idag-knappen ligger i en egen grupp.
+           .sheet-head är space-between, så ett tredje syskon direkt i raden
+           hade knuffat antalet till mitten. Gruppen håller ihop dem till
+           höger och lämnar rubriken där den alltid legat.
+
+           Knappen ligger HÄR och inte bara i inställningarna: dagens
+           historik svarar på samma fråga som listan under den ("vad har
+           hänt runt mig"), bara med tidsaxeln i stället för avståndet. Det
+           som bara går att nå via inställningar slutar man nå. -->
+      <span style="display:flex; align-items:baseline; gap:10px;">
+        <span class="sheet-count" id="sheetCount"></span>
+        <button class="sheet-count" id="btnDagen" type="button"
+                aria-haspopup="dialog"
+                title="Dagens rapporter, även de som gått ut"
+                style="padding:0; color:var(--accent); font-weight:650;">Idag</button>
+      </span>
     </div>
     <ul class="hazard-list" id="hazardList"></ul>
     <p class="sheet-empty" id="sheetEmpty">Inga rapporter i närheten just nu.</p>
@@ -987,6 +1002,12 @@
   <section class="card">
     <h3>Historik och mönster</h3>
     <p class="hint" id="statsSummary">Samlar in…</p>
+    <!-- Två olika frågor, därför två ingångar.
+         Listan längre ned svarar på "var brukar det stå polis" — ett mönster
+         över veckor. Knappen här svarar på "vad har hänt idag" — en tidslinje
+         över ett dygn. Samma lagring, men den som undrar det ena undrar
+         sällan det andra samtidigt. -->
+    <button class="btn-ghost small" id="btnDagenInst" type="button">Visa dagens historik</button>
     <label class="row"><span>Visa återkommande platser på kartan</span><input type="checkbox" id="setHotspots" checked></label>
     <ul class="hotspot-list" id="hotspotList"></ul>
     <button class="btn-ghost small danger" id="btnClearStats" type="button">Rensa historiken</button>
@@ -1202,6 +1223,35 @@
 </nav>
 
 <!-- ============ MODALER ============ -->
+
+<!-- Dagens historik.
+     Det som gått ut försvinner från kartan med flit — en nål som stått kvar
+     sedan i morse gör hela kartan otrovärdig. Men uppgiften finns kvar, och
+     den som vill bläddra i dagen ska kunna göra det utan att det som gått ut
+     kommer tillbaka som en varning.
+
+     Därför en lista man ÖPPNAR, inte en yta som lyser av sig själv. Och
+     därför en statusetikett på varje rad: en utgången rapport får aldrig se
+     ut som en aktuell.
+
+     Listan återanvänder .hotspot-list, samma stil som mönsterlistan i
+     inställningarna. Ingen ny css: raderna har samma form (ikon, rubrik,
+     underrad, ett tal till höger) och skulle ha fått exakt samma regler. -->
+<div class="modal" id="modalDagen" hidden>
+  <div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="dagenTitel">
+    <h2 id="dagenTitel">Idag</h2>
+    <p id="dagenSum">Samlar in…</p>
+    <!-- Listan rullar i sig själv, inte hela överlägget. Med en livlig dag
+         hade kortet vuxit förbi skärmen och Stäng-knappen hamnat under
+         hundra rader. Ett sätt ut ska alltid synas. -->
+    <ul class="hotspot-list" id="dagenLista" style="max-height:52vh; overflow-y:auto;"></ul>
+    <p class="sheet-empty" id="dagenTom" hidden>Inga rapporter idag ännu.</p>
+    <p class="hint" id="dagenFot" hidden></p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="dagenStang" type="button">Stäng</button>
+    </div>
+  </div>
+</div>
 
 <!-- Rapportbekräftelse / platsval -->
 <div class="modal" id="modalReport" hidden>

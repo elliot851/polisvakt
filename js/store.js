@@ -19,13 +19,65 @@ const LOCAL_KEY = 'pv.reports.v1';
 const QUEUE_KEY = 'pv.queue.v1';
 const DEVICE_KEY = 'pv.device.v1';
 
-/** Hur länge en rapport anses aktuell, i minuter. */
+/**
+ * Hur länge en rapport anses AKTUELL, i minuter.
+ *
+ * Det här är trovärdighetsskalan: hur länge det är rimligt att patrullen
+ * fortfarande står kvar. Den styr graderingen (js/kvalitet.js), aktualitets-
+ * texten (js/sammanfattning.js) och åldersgrinden för notiser (js/app.js samt
+ * supabase/migrationer/2026-08-22-aldersgrind-for-notiser.sql).
+ *
+ * Den styr INTE längre hur länge rapporten syns — se VISNING_MINUTER nedan.
+ */
 export const TTL_MINUTES = {
   police: 45,
   control: 60,
   unmarked: 30,
   camera: 60 * 24 * 365,     // användartillagd kamera lever tills den tas bort
 };
+
+/**
+ * Hur länge en rapport SYNS, i minuter. Det är det här talet som skrivs in i
+ * expires_at och som därmed avgör vad active() släpper fram.
+ *
+ * Ägaren ville ha fyra timmar. Att bara skriva 240 i TTL_MINUTES hade varit
+ * fel svar på rätt önskemål, och skälen skrivs ut här eftersom nästa person
+ * kommer att frestas att "förenkla" tillbaka det till ett enda tal:
+ *
+ *   1. Allt i js/kvalitet.js räknar ålder som ANDEL av livslängden. Med 240
+ *      minuter hade en timmesgammal polisrapport legat på 25 % och alltså
+ *      graderats som färsk — med plus i poängen, och utan att åldern ens
+ *      nämndes högt (namnAlderOverAndel 0,40 = 96 minuter). Appen hade låtit
+ *      MER säker ju äldre uppgiften blev. Det är raka motsatsen till vad en
+ *      längre livslängd behöver.
+ *   2. js/app.js räknar notisfönstret som halva livslängden, med taket
+ *      Math.max över de rörliga typerna. Ett fyrtimmarstal där hade skickat
+ *      notiser om sådant som hände för två timmar sedan — precis det ägaren
+ *      själv sagt att appen aldrig får göra. Samma konstruktion finns på
+ *      servern (fbmejl_ttl_tak_minuter), och migrationens PROV 1 hade
+ *      dessutom vägrat köra om taket rörde sig från 60.
+ *
+ * Därför är talet delat i två. Rapporten ligger kvar i fyra timmar, bleknar
+ * på kartan (js/map.js) och får en allt tydligare aktualitetstext ("Kan ha
+ * flyttat på sig" → "Troligen inte kvar", js/sammanfattning.js) — men appen
+ * slutar TRO på den efter TTL_MINUTES och slutar därmed säga den högt.
+ * Föraren ser den; högtalaren tiger. Det är hela poängen med delningen.
+ *
+ * Skillnaden mellan typerna bor kvar i TTL_MINUTES där den hör hemma: en
+ * civil bil är otrolig redan efter 30 minuter och en trafikkontroll först
+ * efter 60, men båda går att titta på i fyra timmar.
+ */
+export const VISNING_MINUTER = {
+  police: 240,
+  control: 240,
+  unmarked: 240,
+  camera: TTL_MINUTES.camera,   // kameran står kvar där den står
+};
+
+/** Hur länge typen syns. Faller tillbaka på trovärdighetstiden om typen är okänd. */
+export function visningMinuter(typ) {
+  return VISNING_MINUTER[typ] ?? TTL_MINUTES[typ] ?? 45;
+}
 
 /*
  * Postgres svarar med snake_case, resten av appen talar camelCase.
@@ -218,7 +270,10 @@ export class ReportStore extends EventTarget {
    */
   async add(input) {
     const now = Date.now();
-    const ttl = input.ttlMinutes ?? TTL_MINUTES[input.type] ?? 45;
+    // Visningstiden, inte trovärdighetstiden. expires_at är enbart frågan
+    // "ska den här synas?" — hur mycket appen tror på den avgörs av
+    // TTL_MINUTES i js/kvalitet.js, långt innan den slutar synas.
+    const ttl = input.ttlMinutes ?? visningMinuter(input.type);
     const report = {
       id: uid(),
       type: input.type,
@@ -277,10 +332,33 @@ export class ReportStore extends EventTarget {
     // är INTE en rapport till åkeriet, och tvärtom: hade en grupprapport fått
     // svälja en publik rapport skulle hela länet blivit utan varning för att
     // en förare råkade stå på samma gata.
-    const dupe = this.active(now).find(r =>
-      r.type === report.type
-      && (r.group_id ?? null) === report.group_id
-      && distance(r.lat, r.lon, report.lat, report.lon) < 250);
+    // TIDSFÖNSTRET ÄR INTE PYNT — det är det som gör fyra timmars visningstid
+    // ofarlig.
+    //
+    // Sammanslagningen hade tidigare ingen tidsgräns alls; den enda gränsen
+    // var att den gamla rapporten fortfarande var aktiv. Det gick bra så länge
+    // "aktiv" betydde 45 minuter. Med fyra timmar hade en helt ny polis vid
+    // Erikslund klockan 17:00 svalts som en "bekräftelse" på 13:10-rapporten:
+    // föraren hade fått noll ny varning, bara confirms+1 — och confirms+1
+    // hade dessutom förlängt den GAMLA rapporten. En ny iakttagelse hade
+    // alltså gjort appen tystare i stället för mer vaken.
+    //
+    // Gränsen är trovärdighetstiden, samma tal som graderingen använder: inom
+    // den kan det rimligen vara samma patrull, efter den är det två tillfällen
+    // och ska visas som två. (kvalitet.js har en egen, kortare gräns på 12
+    // minuter för sin klustring — den får gärna hålla isär mer, den slår bara
+    // ihop i texten och går att ångra. Den här sammanslagningen kastar en rad.)
+    const dubblettFonsterMs = (TTL_MINUTES[report.type] ?? 45) * 60000;
+    const dupe = this.active(now).find(r => {
+      if (r.type !== report.type) return false;
+      if ((r.group_id ?? null) !== report.group_id) return false;
+      // Okänd ålder räknas som noll, alltså som förut: hellre en sammanslagning
+      // för mycket än två nålar på samma punkt när vi inte vet bättre.
+      const skapad = Number(r.createdAt ?? r.created_at);
+      const alder = Number.isFinite(skapad) ? now - skapad : 0;
+      if (alder >= dubblettFonsterMs) return false;
+      return distance(r.lat, r.lon, report.lat, report.lon) < 250;
+    });
     if (dupe) {
       await this.confirm(dupe.id);
       return { ...dupe, merged: true };
@@ -299,7 +377,31 @@ export class ReportStore extends EventTarget {
     const r = this.reports.get(id);
     if (!r) return;
     r.confirms = (r.confirms || 0) + 1;
-    // Bekräftelse förlänger livslängden
+    // Bekräftelse förlänger livslängden.
+    //
+    // TROVÄRDIGHETSTIDEN, INTE VISNINGSTIDEN, och det är med flit. Servern
+    // har en egen inbakad kopia av samma tal i confirm_report
+    // (supabase/schema.sql) och gör exakt samma greatest(). Räknade klienten
+    // på 240 minuter skulle den sätta ett expires_at som servern sedan skrev
+    // över vid nästa refresh. En bekräftelse på en färsk rapport förlänger som
+    // förut; en bekräftelse på en som redan har timmar kvar är en
+    // nolloperation, vilket är rätt — den syns redan.
+    //
+    // ...OCH DÄRFÖR FÅR KNAPPEN INTE SÄGA ATT DEN FÖRLÄNGER.
+    //
+    // expires_at sätts vid skapandet ur VISNING_MINUTER (240 min) medan
+    // förlängningen räknas på TTL_MINUTES × 0,6 (27 min för police). greatest()
+    // vinner alltid för den befintliga tiden. MÄTT mot den riktiga
+    // ReportStore: på en färsk polisrapport är expiresAt före och efter
+    // confirm identiska, delta noll minuter, och förlängningen börjar ge
+    // utslag först vid 214 minuters ålder — alltså under de sista 26 av 240.
+    // För 89 procent av rapportens liv var toasten "Varningen ligger kvar
+    // längre nu" osann, och osann på ett sätt föraren kan mäta.
+    //
+    // Texten är därför bytt till vad bekräftelsen FAKTISKT gör (js/app.js:632
+    // och js/app.js:3175): den räknas som confirms+1 och lyfter graderingen.
+    // Talet här är kvar orört — det gör rätt sak för den rapport som verkligen
+    // närmar sig sitt slut.
     const ttl = TTL_MINUTES[r.type] ?? 45;
     r.expiresAt = r.expires_at = Math.max(r.expiresAt, Date.now() + ttl * 0.6 * 60000);
     this.#persist();
@@ -498,7 +600,12 @@ export class ReportStore extends EventTarget {
   }
 
   #persist() {
-    writeJSON(LOCAL_KEY, [...this.reports.values()].slice(-400));
+    // Taket höjdes från 400 när visningstiden gick från 45 minuter till fyra
+    // timmar. Ungefär fem gånger så många rapporter är aktiva samtidigt, och
+    // ett tak som biter tyst hade tappat de äldsta — alltså precis dem den
+    // längre livslängden finns för. 1200 rader är fortfarande små pengar i
+    // localStorage.
+    writeJSON(LOCAL_KEY, [...this.reports.values()].slice(-1200));
   }
 
   #emit(name) { this.dispatchEvent(new CustomEvent(name)); }

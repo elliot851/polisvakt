@@ -257,6 +257,9 @@ function markeraRostKlar(orsak) {
   rost.orsak = orsak;
   rost.senastKlar = Date.now();
   ljudlas.rost = true;
+  // Rösten har bevisligen låtit. Skulle den tystna igen längre fram är rutan
+  // relevant på nytt — men först då, inte en gång per varning. Se visaRostFel.
+  rostFelVisad = false;
   if (varTyst) {
     doljRostFel();
     meddelaRostlage();
@@ -787,13 +790,36 @@ function byggRostFelNod() {
  *        inte. Utan flaggan dröjer strimman några sekunder, så ett startfel
  *        som löser sig vid nästa tryck aldrig hinner blinka förbi.
  */
+/*
+ * En gång per session, inte en gång per varning.
+ *
+ * Rutan restes från vakthunden som utlöses varje gång en yttring inte startar.
+ * Kommer två varningar in efter varandra på en telefon där rösten ännu inte
+ * är upplåst restes den alltså två gånger, och ägaren fick godkänna samma sak
+ * om igen. Hans ord: "det ska väl bara komma upp en gång".
+ *
+ * Han har rätt, och det är värre än irriterande: en ruta som kommer tillbaka
+ * efter att man svarat på den lär föraren att svaret inte spelar någon roll.
+ * Nästa gång trycker han bort den utan att läsa, och då är den värdelös
+ * precis när den behövs.
+ *
+ * Flaggan nollställs när rösten faktiskt talar (markeraRostKlar) — löser sig
+ * problemet är rutan relevant igen om det återkommer, men inte förrän dess.
+ */
+let rostFelVisad = false;
+
+/** Kallas när rösten bevisligen låtit. Då får rutan komma tillbaka en gång till. */
+export function nollstallRostFelRuta() { rostFelVisad = false; }
+
 function visaRostFel(text, { genast = false } = {}) {
   if (typeof document === 'undefined') return;
+  if (rostFelVisad) return;
   clearTimeout(rostFelTimer);
   const visa = () => {
     if (rost.lage === 'klar') return;      // löste sig under tiden
     const nod = byggRostFelNod();
     if (!nod) return;
+    rostFelVisad = true;
     nod.querySelector('.pv-rost-fel-text').textContent = text;
     nod.hidden = false;
   };

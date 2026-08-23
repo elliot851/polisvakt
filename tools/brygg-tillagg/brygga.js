@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Polisvakt — Facebook-brygga
 // @namespace    polisvakt
-// @version      2.3
+// @version      2.4
 // @description  Läser nya inlägg i de Facebook-grupper du är medlem i och skickar polisvarningar vidare till Polisvakt.
 // @match        https://www.facebook.com/*
 // @match        https://m.facebook.com/*
@@ -440,7 +440,29 @@
   const { grupper: GRUPPER, fel: GRUPPFEL } = normaliseraGrupper(RATT);
   const gruppMedId = id => GRUPPER.find(g => g.id === id) || null;
 
+  /*
+   * TVÅ TIDER, INTE EN. Samma delning som js/store.js gör, av samma skäl.
+   *
+   *   TTL_MINUTES      hur länge appen TROR på rapporten. Styr graderingen,
+   *                    aktualitetstexten och åldersgrinden för notiser.
+   *   VISNING_MINUTER  hur länge rapporten SYNS. Det här talet, och bara det
+   *                    här, går in i expires_at.
+   *
+   * Att i stället höja TTL_MINUTES till fyra timmar hade fått appen att
+   * gradera en timmesgammal rapport som färsk och skicka notiser om sådant
+   * som hände för två timmar sedan. Hela resonemanget står vid
+   * VISNING_MINUTER i js/store.js och upprepas inte här — men det gäller.
+   *
+   * BRYGGAN MÅSTE FÖLJA MED, annars händer ingenting i verkligheten: det är
+   * härifrån merparten av Västeråsrapporterna kommer, och det är den här
+   * koden som stämplar expires_at.
+   *
+   * tools/brygg-daemon.ps1 läser BÅDA tabellerna ur den här filen med en
+   * regex vid start. Döps någon av dem om faller daemonen tyst tillbaka på
+   * sina inbyggda tal — ändra där i samma andetag.
+   */
   const TTL_MINUTES = { police: 45, control: 60, unmarked: 30 };
+  const VISNING_MINUTER = { police: 240, control: 240, unmarked: 240 };
   const DEDUP_WINDOW_MS = 3 * 60 * 60 * 1000;
   const MAX_TRIES = 3;                            // innan ett inlägg ges upp
   const TAG = '[Polisvakt]';
@@ -1103,6 +1125,67 @@
   // skiljetecken.
   const utanBindestreck = w => w.replace(/^-+|-+$/g, '');
 
+  // Gatuord som får bära ett husnummer. Samma vokabulär som ADRESS_RE nedan
+  // och $script:AdressRe i tools/brygg-daemon.ps1 — listan finns på tre
+  // ställen och måste vara samma på alla tre.
+  const GATUEFTERLED_RE = /(gatan|gata|vägen|gränd|allén|stigen)$/;
+
+  /**
+   * Bredda en träff med det som står bredvid den och hör till den.
+   *
+   * TVÅ UTVIDGNINGAR, BÅDA MÄTTA PÅ RIKTIGA GRUPPINLÄGG.
+   *
+   * 1. SÄRSKRIVEN ALIASNYCKEL. Uppslaget nedan kräver att nyckelns led står som
+   *    en SAMMANHÄNGANDE ordföljd. Gruppen skriver dem isär: "Vallby vid entrén
+   *    till Golfklubb." ger orden ['vallby','vid','entrén','till','golfklubb'],
+   *    och eftersom 'vallby golfklubb' inte är sammanhängande blev platsen
+   *    'vallby'. Aliasfilen har raden "vallby golfklubb" just för det här
+   *    inlägget, och den nåddes aldrig: nålen hamnade på stadsdelsnoden
+   *    59,6225/16,5036 i stället för på golfbanan 59,6278/16,5085 — 651 m fel,
+   *    och banan är dessutom 1 532 x 1 250 m.
+   *
+   *    Mellanorden måste ALLA vara ord som binder ihop eller preciserar en
+   *    plats (PLATS_BINDEORD, PLATSPRECISERING). Ett enda okänt ord emellan och
+   *    vi avstår — annars hade "Vallby igår, kompisen bor vid Golfklubb" blivit
+   *    en utpekad punkt vid golfbanan. Den sammansatta nyckeln måste dessutom
+   *    redan finnas i PLATSORD; regeln hittar aldrig på ett namn.
+   *
+   * 2. HUSNUMRET. "Polis vid Vasagatan 12" gav platsen 'vasagatan', eftersom
+   *    det kända namnet vann och resten av frasen kastades. Följden var att
+   *    ADRESS_RE aldrig fick se numret och adressvägen var död för VARJE gata
+   *    som råkar stå i PLATSORD — alltså precis de gator gruppen skriver om
+   *    oftast. Numret följer därför med när namnet slutar på ett gatuord och
+   *    nästa ord är ett rent 1-4-siffrigt tal som inte är halva ett klockslag.
+   */
+  function utvidga(rena, traff) {
+    // 1. Särskriven aliasnyckel.
+    for (let j = traff.i + traff.n; j < rena.length; j++) {
+      const w = rena[j];
+      if (!w) continue;
+      const sammansatt = traff.namn + ' ' + w;
+      if (PLATSORD_SET.has(sammansatt)) {
+        return utvidga(rena, { namn: sammansatt, i: traff.i, n: j - traff.i + 1 });
+      }
+      if (PLATS_BINDEORD.has(w) || PLATSPRECISERING.has(w)) continue;
+      break;
+    }
+
+    // 2. Husnumret.
+    if (GATUEFTERLED_RE.test(traff.namn)) {
+      const idx = traff.i + traff.n;
+      const nasta = rena[idx];
+      // klockslagsindex() ställer samma fråga som extractPlace redan gör, och
+      // svaret måste bli detsamma: "Vasagatan 11 15" är ett klockslag och inte
+      // hus nummer elva. platsEnsamSomTyp anropar hittaKandPlats på den RÅA
+      // ordföljden, där klockslaget fortfarande står kvar, så kontrollen kan
+      // inte lämnas åt anroparen.
+      if (nasta && /^\d{1,4}$/.test(nasta) && !klockslagsindex(rena)[idx]) {
+        return { namn: traff.namn + ' ' + nasta, i: traff.i, n: traff.n + 1 };
+      }
+    }
+    return traff;
+  }
+
   /**
    * Hittar det längsta kända platsnamnet i ordföljden.
    * @returns {null | {namn: string, i: number, n: number}} namn = aliasnyckeln,
@@ -1114,7 +1197,7 @@
     for (let n = Math.min(PLATS_MAX_LED, rena.length); n >= 1; n--) {
       for (let i = 0; i + n <= rena.length; i++) {
         const fras = rena.slice(i, i + n).join(' ');
-        if (PLATSORD_SET.has(fras)) return { namn: fras, i, n };
+        if (PLATSORD_SET.has(fras)) return utvidga(rena, { namn: fras, i, n });
       }
     }
     /*
@@ -1388,14 +1471,19 @@
    * hittaKandPlats vänder på frågan och letar POSITIVT efter det längsta
    * kända namnet någonstans i frasen, så delfrasen "hammarby" vinner.
    *
-   * Det väger extra tungt HÄR: bryggans geokodare gör ETT Nominatim-anrop med
-   * hela frasen, utan aliaslista och utan att korta den. Appen har en
-   * prefixkortning som ibland räddar en skräpig fras; bryggan har ingenting.
+   * Det vägde extra tungt HÄR så länge bryggans geokodare gjorde ETT rått
+   * uppslag på hela frasen. Sedan 2026-08-23 slår den i aliaslistan och kortar
+   * frasen precis som appen, så en skräpig fras räddas numera i båda banorna.
+   * Den positiva sökningen här är ändå kvar: den hittar namn mitt i frasen,
+   * och prefixkortningen bara i början.
    *
-   * Priset, uttalat: hittas ett känt namn kastas resten av frasen. "Polis på
-   * Vasagatan 12" geokodas som "vasagatan" och nålen hamnar på gatan i
-   * stället för vid huset — ett känt namn har en provad söksträng, ett
-   * husnummer har ingen.
+   * Priset var förut att resten av frasen kastades när ett känt namn hittades:
+   * "Polis på Vasagatan 12" geokodades som "vasagatan", nålen hamnade på gatan
+   * i stället för vid huset, och adressvägen nedan var därmed död för VARJE
+   * gata som står i PLATSORD. Det är lagat i utvidga(), som låter husnumret
+   * och ett särskrivet aliasled följa med — se motiveringen där. Ändringen
+   * gjordes i js/parser.js och här i samma andetag, eftersom de två
+   * funktionerna jämförs tecken för tecken.
    */
   function extractPlace(words) {
     const kept = [];
@@ -2297,6 +2385,26 @@
    * vore precis den trafik läsdelen inte får ha. Tabellen måste finnas i
    * koden.
    *
+   * VARFÖR KOPIAN INTE TOGS BORT 2026-08-23, när uppdraget var att undvika
+   * just kopior. Tre kanaler läser tabellen, och bara en av dem kan läsa
+   * filen:
+   *   tools/brygg-daemon.ps1  läser data/aliases.vasteras.json från DISK och
+   *                           geokodar i PowerShell. Den rör aldrig den här
+   *                           tabellen — dess uppslag kan alltså inte glida.
+   *                           Det är den kanal som sveper gruppen i drift.
+   *   brygg-tillagg/brygga.js Chrome-tillägget. Kör i sidan, geokodar i
+   *                           sidan, och det är DEN här tabellen som gäller.
+   *   Tampermonkey            samma sak, för den som kör skriptet fristående.
+   * Att radera tabellen hade alltså inte tagit bort en kopia, bara tystat de
+   * två kanaler som inte kan läsa filen — och en brygga utan aliaslista
+   * skriver nålen på fel ställe (se den mätta 'apalby ip' nedan), vilket är
+   * det enda utfall som är värre än ingen nål alls.
+   *
+   * SÅ HÅLLS DEN LIKA: blocket nedan är GENERERAT ur filen, rad för rad, och
+   * ska genereras om och inte handredigeras. Daemonen jämför nyckel OCH värde
+   * vid start och loggar varje rad som skiljer sig. Vill man ändra ett alias
+   * ändras FILEN först; tabellen här följer efter.
+   *
    * VARFÖR HÄR OCH INTE I GEOKODNINGSAVSNITTET. Allt före rubriken
    * "Geokodning" är LÄSDELEN, och läsdelen är det tools/brygg-daemon.ps1
    * jämför tecken för tecken mellan den här filen och Chrome-tilläggets
@@ -2325,7 +2433,7 @@
     'erikslund': 'Erikslunds köpcentrum, Västerås',
     'erikslundsrondellen': 'Erikslund, Västerås',
     'hälla': 'Hälla, Västerås',
-    'hälla köpcentrum': 'Hälla köpcentrum, Västerås',
+    'hälla köpcentrum': 'ICA Maxi Hälla',
     'gallerian': 'Punkt Västerås',
     'punkt': 'Punkt Västerås',
     'resecentrum': 'Västerås centralstation',
@@ -2338,11 +2446,10 @@
     'lasarettet': 'Västmanlands sjukhus Västerås',
     'mdh': 'Mälardalens universitet, Västerås',
     'mdu': 'Mälardalens universitet, Västerås',
-    'bombardier': 'Hallstahammarsvägen, Västerås',
+    'bombardier': 'Bombardier, Västerås',
     'rocklunda': 'Rocklunda, Västerås',
     'arenan': 'ABB Arena, Västerås',
     'abb arena': 'ABB Arena Nord, Västerås',
-    'djurgårdsvägen': 'Djurgårdsvägen, Västerås',
     'apalby': 'Apalby, Västerås',
     'apalby ip': 'Apalby, Västerås',
     'irstamacken': 'Circle K, Irsta',
@@ -2387,7 +2494,6 @@
     'gäddeholm': 'Gäddeholm, Västerås',
     'johannisberg': 'Johannisberg, Västerås',
     'öster mälarstrand': 'Öster Mälarstrand, Västerås',
-    'lillåudden': 'Lillåudden, Västerås',
     'stora gatan': 'Stora gatan, Västerås',
     'vasagatan': 'Vasagatan, Västerås',
     'kopparbergsvägen': 'Kopparbergsvägen, Västerås',
@@ -2402,16 +2508,36 @@
     'pilgatan': 'Pilgatan, Västerås',
     'sigurdsgatan': 'Sigurdsgatan, Västerås',
     'ängsgärdsgatan': 'Ängsgärdsgatan, Västerås',
-    'e18': 'E18, Västerås',
-    'e18 västerut': 'E18, Västerås',
-    'e18 österut': 'E18, Västerås',
-    'riksväg 66': 'Riksväg 66, Västmanland',
-    'rv66': 'Riksväg 66, Västmanland',
-    '66an': 'Riksväg 66, Västmanland',
-    'riksväg 56': 'Riksväg 56, Västmanland',
-    'rv56': 'Riksväg 56, Västmanland',
-    '56an': 'Riksväg 56, Västmanland',
-    'räta linjen': 'Riksväg 56, Västmanland',
+    'e18': 'E 18, Västerås',
+    'e18 västerut': 'E 18, Västerås',
+    'e18 österut': 'E 18, Västerås',
+    'riksväg 66': 'Rv 66',
+    'rv66': 'Rv 66',
+    '66an': 'Rv 66',
+    'riksväg 56': 'Rv 56',
+    'rv56': 'Rv 56',
+    '56an': 'Rv 56',
+    'räta linjen': 'Rv 56',
+    'halla': 'Hälla, Västerås',
+    'halla kopcentrum': 'ICA Maxi Hälla',
+    'onsta': 'Önsta-Gryta, Västerås',
+    'blasbo': 'Blåsbo, Västerås',
+    'gaddeholm': 'Gäddeholm, Västerås',
+    'oster malarstrand': 'Öster Mälarstrand, Västerås',
+    'hemkop oster malarstrand': 'Hemköp Västerås Öster Mälarstrand',
+    'barkaro': 'Barkarö',
+    'kungsara': 'Kungsåra',
+    'lillharad': 'Lillhärad',
+    'kopingsvagen': 'Köpingsvägen, Västerås',
+    'surahammarsvagen': 'Surahammarsvägen, Västerås',
+    'bergslagsvagen': 'Bergslagsvägen, Västerås',
+    'osterleden': 'Österleden, Västerås',
+    'vasterleden': 'Västerleden, Västerås',
+    'angsgardsgatan': 'Ängsgärdsgatan, Västerås',
+    'vasteras golfklubb': 'Västerås golfklubb, Vallby',
+    'riksvag 66': 'Rv 66',
+    'riksvag 56': 'Rv 56',
+    'rata linjen': 'Rv 56',
     'sala': 'Sala',
     'köping': 'Köping',
     'arboga': 'Arboga',
@@ -2419,6 +2545,8 @@
     'hallstahammar': 'Hallstahammar',
     'surahammar': 'Surahammar',
     'kungsör': 'Kungsör',
+    'kungsor': 'Kungsör',
+    'koping': 'Köping',
     'norberg': 'Norberg',
     'skinnskatteberg': 'Skinnskatteberg',
     'kvicksund': 'Kvicksund',
@@ -2453,6 +2581,247 @@
     lat >= ruta[1] && lat <= ruta[3];
 
   /*
+   * EN EXAKT ADRESS BEHÖVER INGET ALIAS.
+   *
+   * "Kristinagatan 8" är redan så precis som en text kan bli. Går den genom
+   * aliaslistan kan bara gatan slås upp, och Vasagatan är tre kilometer lång.
+   * Adressen får alltså gå förbi listan.
+   *
+   * REGELN AVGÖR VILKEN FRÅGA SOM STÄLLS, INGENTING ANNAT. Den sa förut också
+   * att svaret var en adress, alltså geokod_typ 'adress' med 40 m — det
+   * snävaste icke-GPS-läget i js/kvalitet.js — enbart därför att TEXTEN bar ett
+   * husnummer. Regeln bevisar att texten innehåller ett husnummer, inte att OSM
+   * hittade huset, och skillnaden är mätt: "Kristinagatan 8, Västerås" svarar
+   * med HELA Kristinagatan (320 x 197 m) och "Björnövägen 12, Västerås" svarar
+   * med ett avsnitt 4,4 km från det avsnitt gatunamnet utan husnummer landar
+   * på. Typen läses därför ur svaret, se typFranSvar().
+   *
+   * REGELN ÄR MEDVETET SNÅL. Gatuordet måste sitta som efterled i ett
+   * sammansatt namn ("björnövägen 12", "storgatan 4") eller vara en av de
+   * fyra särskrivna Västeråsgatorna. Därför:
+   *   "riksväg 66"  -> INTE adress. 'väg' står ensamt och 66 är ett vägnummer,
+   *                    inte ett husnummer. Den ska till aliasraden 'riksväg
+   *                    66' och bli hela riksvägen, inte hus nummer 66.
+   *   "e18 vid hälla" -> INTE adress. Ingen siffra efter ett gatuord.
+   * Missar regeln en riktig adress blir följden ett alias- eller gatuuppslag,
+   * alltså en bredare men sann nål. Träffar den fel blir följden en nål på ett
+   * hus som inte finns. Den asymmetrin är hela skälet till att den är snål.
+   */
+  const ADRESS_RE = new RegExp(
+    '(?:^|\\s)(?:[\\wåäöéèü]{2,}(?:gatan|gata|vägen|gränd|allén|stigen)' +
+    '|(?:stora|lilla|nya|gamla)\\s+gatan)\\s+\\d{1,4}(?![\\wåäöéèü])'
+  );
+  const arExaktAdress = nyckel => ADRESS_RE.test(nyckel);
+
+  /*
+   * Aliasuppslaget, med samma steg som js/geocode.js:106-124 tar.
+   *
+   * FYRA STEG, OCH INGET AV DEM GISSAR. Varje träff är en handprovad
+   * söksträng ur data/aliases.vasteras.json, inte en fras vi hoppas att OSM
+   * förstår:
+   *   1. hela nyckeln            "apalby ip"
+   *   2. nyckeln utan mellanslag "rv 66" -> 'rv66', "e 18" -> 'e18'
+   *   3. kortare och kortare prefix  "e18 vid avfarten mot hälla" -> "e18"
+   *   4. sista ordet ensamt          "polisbil vid hälla" -> "hälla"
+   * Steg 2 saknades i daemonen och steg 3-4 i båda bryggbanorna. Priset för
+   * att lägga in dem är noll nätanrop — listan ligger i minnet — och vinsten
+   * är att en fras med ett extra ord i inte längre går till OSM rå, där den
+   * antingen ger noll träffar eller fel hus på fel sida stan.
+   *
+   * VARFÖR PREFIX FÖRE SISTA ORDET: "hälla köpcentrum" ska bli köpcentrumet
+   * och inte stadsdelen. Det längsta som matchar vinner, precis som i appen.
+   *
+   * ...MEN EN GENOMFARTSVÄG FÅR ALDRIG VINNA ÖVER EN RIKTIG PLATS.
+   *
+   * "E18 vid Hälla" träffar prefixet 'e18' på steg 3 och skulle därmed bli
+   * hela E18 — tre mil väg, geokod_typ 'led', 8 000 m osäkerhet, alltså
+   * bortkastad. Sista ordet är 'hälla', en stadsdel med en provad söksträng.
+   * Den frasen SÄGER var på E18 polisen står, och det är just den upplysningen
+   * som gör rapporten användbar. Uppslaget samlar därför alla träffar och
+   * lämnar tillbaka den första som inte är en genomfartsväg; är alla
+   * genomfartsvägar lämnas den bästa av dem, precis som förut.
+   */
+  const AR_LED_RE = /^(e\s?\d{1,3}|rv\s?\d{1,3}|riksväg\s?\d{1,3}|väg\s?\d{1,3})\b/;
+
+  function slaUppAlias(nyckel) {
+    const traffar = [];
+    const lagg = v => { if (v && !traffar.includes(v)) traffar.push(v); };
+
+    lagg(ALIAS_VASTERAS[nyckel] || ALIAS_VASTERAS[nyckel.replace(/\s+/g, '')]);
+
+    const ord = nyckel.split(' ').filter(Boolean);
+    if (ord.length >= 2) {
+      for (let n = ord.length - 1; n >= 1; n--) {
+        const q = ord.slice(0, n).join(' ');
+        if (q.length < 3) continue;
+        lagg(ALIAS_VASTERAS[q] || ALIAS_VASTERAS[q.replace(/\s+/g, '')]);
+      }
+      const sista = ord[ord.length - 1];
+      if (sista.length >= 3) lagg(ALIAS_VASTERAS[sista]);
+    }
+
+    if (!traffar.length) return null;
+    return traffar.find(v => !AR_LED_RE.test(normalize(v))) || traffar[0];
+  }
+
+  /*
+   * Hur brett pekar platsnamnet? Ordagrant samma funktion som
+   * gissaGeokodTyp() i js/telegram.js:242 — och den likheten är ett krav, inte
+   * en tillfällighet: samma inlägg ska få samma betyg oavsett om appen,
+   * bryggan eller daemonen läste det. Motsvarigheten i PowerShell heter
+   * Gissa-GeokodTyp och bär samma uttryck tecken för tecken.
+   *
+   * Gissningen lutar åt det försiktiga hållet. Vet vi inte blir det 'okand',
+   * vilket ger en STÖRRE antagen radie — en bedömning som chansar åt det
+   * snäva hållet ljuger om hur säker den är.
+   */
+  function gissaGeokodTyp(plats) {
+    const t = normalize(plats || '');
+    if (!t) return 'okand';
+    /*
+     * GENOMFARTSVÄGARNA PRÖVAS FÖRST, och ordningen är hela poängen.
+     *
+     * "riksväg 66" innehåller både en siffra och 'väg' följt av ordgräns, så
+     * adressgrenen svarade 'adress' på den — 40 m antagen radie på en väg som
+     * går sex mil genom länet. 'led' ger 8 000 m i js/kvalitet.js, vilket
+     * passerar platsHopplosOverM och gör att rapporten faller bort i stället
+     * för att bli en självsäker nål på ett godtyckligt vägavsnitt.
+     */
+    if (AR_LED_RE.test(t)) return 'led';
+    if (/\d/.test(t) && /(gatan|vägen|gata|väg)\b/.test(t)) return 'adress';
+    if (/(gatan|vägen|leden|gränd|torget|bron|rondell|rondellen|korsning|korsningen|motet|avfart|påfart|infart|rampen)/.test(t)) return 'vag';
+    if (ORT_RE.test(t)) return 'ort';
+    return 'okand';
+  }
+
+  // Ortnamnen i länet, brutna ut ur gissaGeokodTyp därför att stadsspärren
+  // nedan ställer samma fråga: bad någon om ett ortnamn får svaret vara en ort.
+  const ORT_RE = /^(västerås|sala|köping|arboga|fagersta|hallstahammar|surahammar|kungsör|norberg|skinnskatteberg|västmanland)$/;
+
+  /* ---- Vad OSM faktiskt svarade ---------------------------------------- */
+  //
+  // De tre hjälparna nedan finns i tre kopior: här, i js/geocode.js och som
+  // Typ-FranSvar / Radie-FranSvar / Ar-Ortssvar i tools/brygg-daemon.ps1.
+  // Likheten är ett KRAV, inte en tillfällighet — samma inlägg ska få samma
+  // betyg oavsett vem som läste det.
+
+  /**
+   * Hur brett pekar det OSM svarade?
+   *
+   * VARFÖR SVARET OCH INTE FRÅGAN, och det är hela fynd 3 och 4:
+   *
+   *   Typen sattes förut ur FRÅGAN. 'alias' gav alltid 'vag' (250 m), oavsett
+   *   om söksträngen pekade på en pizzeria, en stadsdel eller hela Sala
+   *   kommun; och 'adress' (40 m, det snävaste icke-GPS-läget) sattes så fort
+   *   texten bar ett husnummer, oavsett om OSM hittade huset. Mätt:
+   *   "Kristinagatan 8, Västerås" svarar highway/residential "Kristinagatan",
+   *   alltså HELA gatan, och "Björnövägen 12, Västerås" svarar med ett avsnitt
+   *   4,4 km från det avsnitt namnet utan husnummer landar på. Båda fick 40 m,
+   *   alltså nästan full poäng, uppläsning och notis — med en nål som kunde stå
+   *   fyra kilometer fel.
+   *
+   * Regeln är därför: ett HUS är en adress, ingenting annat.
+   */
+  function typFranSvar(rad) {
+    const kat = String((rad && (rad.category || rad.class)) || '').toLowerCase();
+    const typ = String((rad && rad.type) || '').toLowerCase();
+    const at = String((rad && rad.addresstype) || '').toLowerCase();
+
+    if (at === 'building' || at === 'house' || kat === 'building' ||
+        (kat === 'place' && (typ === 'house' || typ === 'building'))) return 'adress';
+
+    if (kat === 'highway') return 'vag';
+    if (kat === 'boundary') return 'ort';
+    if (kat === 'place') {
+      if (['city', 'town', 'municipality', 'county', 'state', 'region'].includes(typ)) return 'ort';
+      if (['suburb', 'neighbourhood', 'quarter', 'borough', 'city_block', 'village',
+           'hamlet', 'locality', 'farm', 'isolated_dwelling', 'island', 'islet',
+           'square', 'allotments'].includes(typ)) return 'stadsdel';
+      return 'okand';
+    }
+    // amenity, shop, leisure, tourism, aeroway, landuse, office, man_made...
+    // Ett namngivet objekt. Radien breddas nedan om polygonen är stor.
+    if (kat) return 'punkt';
+    return 'okand';
+  }
+
+  // Samma tabell som geokodRadieM i js/kvalitet.js. Den filen äger talen; den
+  // här kopian finns bara för att kunna säga max(tabell, mätt) redan här.
+  const RADIE_GOLV_M = {
+    punkt: 15, adress: 40, vag: 250, stadsdel: 900, ort: 2500, led: 8000, okand: 1200,
+  };
+
+  /**
+   * Radien i meter, mätt ur svaret där svaret bär en mätning.
+   *
+   * TABELLEN ÄR ETT GOLV OCH BOUNDINGBOXEN FÅR BARA BREDDA. Det låter bakvänt
+   * och är mätt: en NOD får en påhittad ruta av uppslagstjänsten (±0,02° eller
+   * mer beroende på platsens rang — 'Vallby, Västerås' och 'Hälla, Västerås'
+   * fick exakt samma 2 254 x 4 453 m), och en VÄG:s ruta täcker bara det ena
+   * vägavsnitt som råkade svara: 'Björnövägen, Västerås' gav 30 x 72 m på en
+   * gata som i tätorten sträcker sig 8,5 km. Att ta rutan rakt av hade alltså
+   * gjort båda nålarna SÄKRARE än de är. Bara way och relation har riktig
+   * geometri, och bara när den är större än tabellen säger den något nytt.
+   */
+  function radieFranSvar(rad, typ) {
+    const golv = RADIE_GOLV_M[typ] || RADIE_GOLV_M.okand;
+    /*
+     * ORT OCH LED BREDDAS INTE. Talen i tabellen säger redan "en kommun" och
+     * "en genomfartsväg", och polygonen mäter något annat: kommungränsen går
+     * genom skog, inte där någon står. Utan undantaget hade dessutom identiska
+     * frågor fått olika svar beroende på hur OSM råkar modellera orten — mätt
+     * 2026-08-23 svarar "Sala" med en NOD (2 500 m ur tabellen) medan
+     * "Hallstahammar" svarar med en kommunRELATION (14 616 m ur polygonen),
+     * och den skillnaden är inte en skillnad i verkligheten.
+     */
+    if (typ === 'ort' || typ === 'led') return golv;
+    const osmTyp = String((rad && rad.osm_type) || '').toLowerCase();
+    if (osmTyp !== 'way' && osmTyp !== 'relation') return golv;
+    const bb = rad && rad.boundingbox;
+    if (!Array.isArray(bb) || bb.length !== 4) return golv;
+    const tal = bb.map(Number);
+    if (!tal.every(Number.isFinite)) return golv;
+    const [syd, norr, vast, ost] = tal;
+    const hojd = (norr - syd) * 111320;
+    const bredd = (ost - vast) * 111320 * Math.cos(syd * Math.PI / 180);
+    return Math.max(golv, Math.round(Math.hypot(bredd, hojd) / 2));
+  }
+
+  /**
+   * Är svaret en stad eller en kommun?
+   *
+   * EN STAD SOM SVAR PÅ ETT VÄGNAMN ÄR ALLTID FEL SVAR. Uppslagstjänsten
+   * faller tillbaka på orten när den inte hittar det man frågade om, och den
+   * nålen ser ut precis som en riktig. Mätt 2026-08-23 med exakt de parametrar
+   * bryggan skickar: "E18, Västerås" gav place/city Västerås, 59,6110/16,5463
+   * — alltså centrum, medan de E18-avsnitt OSM själv känner ligger 1,3, 2,0
+   * och 3,0 km därifrån. Etiketten som visades blev "Västerås", så föraren
+   * fick läsa "Polis vid Västerås". Ingen befintlig spärr fångade det:
+   * områdeskontrollen är hela Västmanland och radien var konstanten 250.
+   */
+  function arOrtssvar(rad) {
+    const kat = String((rad && (rad.category || rad.class)) || '').toLowerCase();
+    const typ = String((rad && rad.type) || '').toLowerCase();
+    if (kat === 'boundary' && typ === 'administrative') return true;
+    return kat === 'place' && ['city', 'town', 'municipality', 'county', 'state'].includes(typ);
+  }
+
+  /*
+   * Cacheraden bär numera också hur träffen kom till. Rader som sparades före
+   * 2026-08-23 saknar fälten; de läses som ett rått uppslag, vilket är precis
+   * vad de var. Aldrig som 'alias' — ett påhittat 'alias' hade gett rapporten
+   * en poäng den inte förtjänat.
+   */
+  const fyllTraff = (t, place) => ({
+    lat: t.lat,
+    lon: t.lon,
+    label: t.label,
+    radieM: t.radieM,
+    kalla: t.kalla || 'nominatim',
+    typ: t.typ || gissaGeokodTyp(place),
+  });
+
+  /*
    * CACHENYCKELN BÄR GRUPPEN, och det är inte kosmetik.
    *
    * "Storgatan" finns i varenda svensk stad. Slog Västeråsgruppen upp den
@@ -2467,7 +2836,7 @@
       try {
         const c = JSON.parse(cached);
         if (!c) return null;                       // negativt svar, sparat med flit
-        if (inomOmradet(c.lat, c.lon, grupp.ruta)) return c;
+        if (inomOmradet(c.lat, c.lon, grupp.ruta)) return fyllTraff(c, place);
         localStorage.setItem(key, 'null');         // förgiftad rad, kasta den
         return null;
       } catch {}
@@ -2496,11 +2865,19 @@
      * Stockholmsgrupp som slog upp "vasagatan" ur den här listan hade fått
      * Västerås koordinat — samma fel som cachenyckeln per grupp redan
      * skyddar mot, och det värsta utfall den här appen har.
+     *
+     * ORTSGRINDEN LÄSER HELA grupp.orter, inte bara grupp.ort. Daemonen har
+     * alltid gjort det (Geokoda i brygg-daemon.ps1), och en grupp med
+     * ort='Hallstahammar' och omrade='Västerås' fick därför Västeråstabellen
+     * i den ena banan och ingen tabell i den andra. Samma inlägg, två
+     * koordinater, beroende på vem som läste — nu läser båda likadant.
      */
-    const forVasterAs = normalize(grupp.ort) === 'västerås';
-    const alias = forVasterAs
-      ? (ALIAS_VASTERAS[lagt] || ALIAS_VASTERAS[lagt.replace(/\s+/g, '')])
-      : null;
+    const forVasterAs = grupp.orter.some(o => o && normalize(o) === 'västerås');
+
+    // Adressen går före listan: se ADRESS_RE. Tar vi aliasvägen för
+    // "Kristinagatan 8" kastar vi bort husnumret vi faktiskt fick.
+    const adress = arExaktAdress(lagt);
+    const alias = (forVasterAs && !adress) ? slaUppAlias(lagt) : null;
 
     const harOrt = grupp.orter.some(o => o && lagt.includes(o));
     const fraga = alias || ((harOrt || !grupp.ort) ? place : place + ', ' + grupp.ort);
@@ -2520,13 +2897,55 @@
     if (!rows.length) {
       // Negativt svar cachas också, annars slås samma okända plats upp varje
       // skanning och vi bränner Nominatims tålamod på ingenting.
+      //
+      // OCH DET BLIR INGET ANDRA FÖRSÖK. Svarade uppslagstjänsten tomt på en
+      // aliasrad frestar det att fråga om med den råa frasen i stället. Det
+      // är precis så 'apalby ip' blev Apalbyvägen i Norrmalm, 1,7 km fel, med
+      // 0,95 i tillit. Hellre ingen nål än en nål på fel ställe: platsen
+      // hoppas över och inlägget publiceras aldrig.
       localStorage.setItem(key, 'null');
       return null;
     }
+    /*
+     * STADSSPÄRREN, FÖRE ALLT ANNAT. Se arOrtssvar(): en stad som svar på ett
+     * vägnamn är alltid fel svar. Frågade någon EFTER en ort är svaret rätt —
+     * "Polis i Sala" ska ge Sala — och då prövas både den frasen inlägget bar
+     * och den söksträng som faktiskt skickades.
+     */
+    const badOmOrt = ORT_RE.test(lagt) || ORT_RE.test(normalize(fraga));
+    if (arOrtssvar(rows[0]) && !badOmOrt) {
+      localStorage.setItem(key, 'null');
+      console.warn(TAG, 'svaret var en ort men frågan var det inte, kastad:', fraga,
+        rows[0].category + '/' + rows[0].type);
+      return null;
+    }
+
+    /*
+     * HUR TRÄFFEN KOM TILL, HUR BRETT DEN PEKAR OCH HUR BRETT DET ÄR I METER.
+     * De tre fälten går rakt in i raden som geokod, geokod_typ och
+     * geokod_radius_m, och utan dem antar js/kvalitet.js det värsta: 'okand'
+     * ger −0,15 i poäng OCH 1 200 m radie. Med appens antagna GPS-fel på 25 m
+     * ovanpå blir det hypot(25, 1200) = 1200,26 mot tröskeln
+     * platsOanvandbarOverM = 1200 — tjugosex centimeter över, och rapporten
+     * tvingas till NIVA.LAG, alltså BEHANDLING.TYST.
+     *
+     * TYPEN KOMMER UR SVARET, INTE UR FRÅGAN. Fram till 2026-08-23 hårdkodades
+     * varje aliasträff till 'vag' och varje fras med ett husnummer till
+     * 'adress', oavsett vad uppslagstjänsten faktiskt svarade. Se typFranSvar()
+     * och radieFranSvar() för de mätta felen det gav. Det enda frågan
+     * fortfarande får bestämma är genomfartsvägarna: E18 blir inte ett
+     * hundrametersavsnitt bara för att OSM svarar med ett.
+     */
+    const arLed = AR_LED_RE.test(lagt) || AR_LED_RE.test(normalize(fraga));
+    const typ = arLed ? 'led' : typFranSvar(rows[0]);
+
     const hit = {
       lat: parseFloat(rows[0].lat),
       lon: parseFloat(rows[0].lon),
       label: String(rows[0].name || place).trim().slice(0, 120),
+      kalla: alias ? 'alias' : 'nominatim',
+      typ,
+      radieM: radieFranSvar(rows[0], typ),
     };
     if (!inomOmradet(hit.lat, hit.lon, grupp.ruta)) {
       localStorage.setItem(key, 'null');
@@ -2743,7 +3162,10 @@
           continue;
         }
 
-        const ttl = (TTL_MINUTES[parsed.type] || 45) * 60000;
+        // Visningstiden: hur länge nålen ska ligga kvar, inte hur länge vi
+        // tror på den. TTL_MINUTES står kvar som reserv om en ny typ skulle
+        // hinna in i den ena tabellen men inte i den andra.
+        const ttl = (VISNING_MINUTER[parsed.type] || TTL_MINUTES[parsed.type] || 45) * 60000;
         const createdAt = postedAt < Date.now() ? postedAt : Date.now();
         const expiresAt = createdAt + ttl;
         if (expiresAt <= Date.now() + 60000) {
@@ -2780,6 +3202,27 @@
           expires_at: expiresAt,
           confirms: 1,
           denials: 0,
+
+          /*
+           * Kvalitetsfälten. Kolumnerna finns sedan supabase/kvalitetsfalt.sql
+           * och fbmejl_ta_emot läser dem redan — det här är en tilläggsrad,
+           * inte ett schemaarbete.
+           *
+           * VARFÖR INTE OCKSÅ parser_confidence OCH fordrojning_s.
+           * js/facebook.js skriver dem, men de drar poängen åt ANDRA hållet:
+           * fördröjningen ger −0,20 vid tio minuter, och ett facebookinlägg är
+           * nästan alltid några minuter gammalt när bryggan ser det. Att slå på
+           * dem i samma ändring som lagar tystnaden vore att laga och
+           * återinföra felet i ett svep. De mäts för sig.
+           *
+           * geokod_radius_m ÄR NYTT, och det är den mätta bredden ur svaret.
+           * Utan den räknar js/kvalitet.js på typtabellen, alltså en konstant —
+           * och en konstant kan aldrig utlösa platsHopplosOverM hur fel nålen
+           * än står. Se radieFranSvar().
+           */
+          geokod: hit.kalla,
+          geokod_typ: hit.typ,
+          geokod_radius_m: hit.radieM,
         };
 
         if (CONFIG.dryRun) {

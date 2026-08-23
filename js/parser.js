@@ -855,6 +855,73 @@ const TID_RE = /\d{1,2}[.:]\d{2}/;
 // skiljetecken.
 const utanBindestreck = w => w.replace(/^-+|-+$/g, '');
 
+// Gatuord som får bära ett husnummer. Samma vokabulär som ADRESS_RE i
+// tools/fb-bridge.user.js och $script:AdressRe i tools/brygg-daemon.ps1 —
+// listan finns på tre ställen och måste vara samma på alla tre.
+const GATUEFTERLED_RE = /(gatan|gata|vägen|gränd|allén|stigen)$/;
+
+/**
+ * Bredda en träff med det som står bredvid den och hör till den.
+ *
+ * TVÅ UTVIDGNINGAR, BÅDA MÄTTA PÅ RIKTIGA GRUPPINLÄGG.
+ *
+ * 1. SÄRSKRIVEN ALIASNYCKEL. Uppslaget ovan kräver att nyckelns led står som
+ *    en SAMMANHÄNGANDE ordföljd. Gruppen skriver dem isär: "Vallby vid entrén
+ *    till Golfklubb." ger orden ['vallby','vid','entrén','till','golfklubb'],
+ *    och eftersom 'vallby golfklubb' inte är sammanhängande blev platsen
+ *    'vallby'. Aliasfilen har raden "vallby golfklubb" just för det här
+ *    inlägget, och den nåddes aldrig: nålen hamnade på stadsdelsnoden
+ *    59,6225/16,5036 i stället för på golfbanan 59,6278/16,5085 — 651 m fel,
+ *    och banan är dessutom 1 532 x 1 250 m, så entrén kan ligga ytterligare
+ *    ett par hundra meter därifrån.
+ *
+ *    Mellanorden måste ALLA vara ord som binder ihop eller preciserar en plats
+ *    (PLATS_BINDEORD, PLATSPRECISERING). Ett enda okänt ord emellan och vi
+ *    avstår — annars hade "Vallby igår, kompisen bor vid Golfklubb" blivit en
+ *    utpekad punkt vid golfbanan. Den sammansatta nyckeln måste dessutom redan
+ *    finnas i PLATSORD; regeln hittar aldrig på ett namn.
+ *
+ * 2. HUSNUMRET. "Polis vid Vasagatan 12" gav platsen 'vasagatan', eftersom det
+ *    kända namnet vann och resten av frasen kastades. Följden var att
+ *    ADRESS_RE i bryggan aldrig fick se numret och adressvägen var död för
+ *    VARJE gata som råkar stå i PLATSORD — alltså precis de gator gruppen
+ *    skriver om oftast. Numret följer därför med när namnet slutar på ett
+ *    gatuord och nästa ord är ett rent 1-4-siffrigt tal.
+ *
+ *    Bara efter ett gatuord: "Erikslund 4" är inte en adress, och "Hälla 12"
+ *    är ingenting alls. Klockslag är redan sönderdelade av klockslagsindex()
+ *    innan extractPlace kommer hit, och platsEnsamSomTyp släpper inte igenom
+ *    fler än ett fritt tal.
+ */
+function utvidga(rena, traff) {
+  // 1. Särskriven aliasnyckel.
+  for (let j = traff.i + traff.n; j < rena.length; j++) {
+    const w = rena[j];
+    if (!w) continue;
+    const sammansatt = traff.namn + ' ' + w;
+    if (PLATSORD_SET.has(sammansatt)) {
+      return utvidga(rena, { namn: sammansatt, i: traff.i, n: j - traff.i + 1 });
+    }
+    if (PLATS_BINDEORD.has(w) || PLATSPRECISERING.has(w)) continue;
+    break;
+  }
+
+  // 2. Husnumret.
+  if (GATUEFTERLED_RE.test(traff.namn)) {
+    const idx = traff.i + traff.n;
+    const nasta = rena[idx];
+    // klockslagsindex() ställer samma fråga som extractPlace redan gör, och
+    // svaret måste bli detsamma: "Vasagatan 11 15" är ett klockslag och inte
+    // hus nummer elva. platsEnsamSomTyp anropar hittaKandPlats på den RÅA
+    // ordföljden, där klockslaget fortfarande står kvar, så kontrollen kan
+    // inte lämnas åt anroparen.
+    if (nasta && /^\d{1,4}$/.test(nasta) && !klockslagsindex(rena)[idx]) {
+      return { namn: traff.namn + ' ' + nasta, i: traff.i, n: traff.n + 1 };
+    }
+  }
+  return traff;
+}
+
 /**
  * Hittar det längsta kända platsnamnet i ordföljden.
  * @returns {null | {namn: string, i: number, n: number}} namn = aliasnyckeln,
@@ -866,7 +933,7 @@ function hittaKandPlats(words) {
   for (let n = Math.min(PLATS_MAX_LED, rena.length); n >= 1; n--) {
     for (let i = 0; i + n <= rena.length; i++) {
       const fras = rena.slice(i, i + n).join(' ');
-      if (PLATSORD_SET.has(fras)) return { namn: fras, i, n };
+      if (PLATSORD_SET.has(fras)) return utvidga(rena, { namn: fras, i, n });
     }
   }
   /*
@@ -1137,11 +1204,12 @@ function klockslagsindex(words) {
  * "la pizza". hittaKandPlats() vänder på frågan och letar POSITIVT efter det
  * längsta kända namnet någonstans i frasen, så delfrasen "hammarby" vinner.
  *
- * Priset, uttalat: hittas ett känt namn kastas resten av frasen, även när
- * resten var användbar. "Polis på Vasagatan 12" geokodas som "vasagatan" och
- * nålen hamnar på gatan i stället för vid huset. Det är en medveten avvägning
- * — ett känt namn har en provad söksträng i aliasfilen, ett husnummer har
- * ingen — och Västerås gator är korta nog att felet ryms i en varning.
+ * Priset var att resten av frasen kastades när ett känt namn hittades: "Polis
+ * på Vasagatan 12" gav "vasagatan", nålen hamnade på gatan i stället för vid
+ * huset, och bryggans adressväg (ADRESS_RE) var därmed död för VARJE gata som
+ * står i PLATSORD — alltså precis de gator gruppen skriver om oftast. Det är
+ * lagat i utvidga(), som låter både husnumret och ett särskrivet aliasled följa
+ * med. Se motiveringen där.
  */
 function extractPlace(words) {
   const kept = [];
@@ -1617,9 +1685,25 @@ export const PROV = [
             'numera egen nyckel med en provad söksträng, och hela namnet vinner ' +
             'över sammansättningsregeln — rätt mack i stället för rätt by.' },
   { text: 'Vallby vid entrén till Golfklubb.',
-    vanta: { intent: 'report', type: 'police', place: 'vallby', traff: 'plats' },
-    varfor: 'entrén och golfklubb PRECISERAR platsen. Platsen måste komma från ' +
-            'aliasnyckeln, annars blir frasen "vallby entrén till golfklubb".' },
+    vanta: { intent: 'report', type: 'police', place: 'vallby golfklubb', traff: 'plats' },
+    varfor: 'entrén och golfklubb PRECISERAR platsen, och leden i aliasnyckeln står ' +
+            'ISÄR i texten. Gav förut bara "vallby" — nålen hamnade på stadsdelsnoden ' +
+            '651 m från golfbanan, trots att raden "vallby golfklubb" fanns i ' +
+            'aliasfilen just för det här inlägget. Se utvidga().' },
+  { text: 'Vallby igår, kompisen jobbar vid Golfklubb',
+    vanta: null,
+    varfor: 'Samma två kända led, men "kompisen" och "jobbar" är varken bindeord ' +
+            'eller precisering. Sammanslagningen måste avstå, annars blir vardagsprat ' +
+            'en utpekad punkt vid golfbanan.' },
+  { text: 'Polis vid Vasagatan 12',
+    vanta: { intent: 'report', type: 'police', place: 'vasagatan 12' },
+    varfor: 'Husnumret följer med när namnet slutar på ett gatuord. Gav förut ' +
+            '"vasagatan", och då fick ADRESS_RE i bryggan aldrig se numret — ' +
+            'adressvägen var död för varje gata som står i PLATSORD.' },
+  { text: 'Polis vid Hälla 12',
+    vanta: { intent: 'report', type: 'police', place: 'hälla' },
+    varfor: 'Bara efter ett GATUORD. "Hälla 12" är ingen adress, och att skicka ' +
+            'talet vidare hade gjort en provad aliasnyckel till en okänd fras.' },
 
   /* --- ...men vad som helst blir inte polis --- */
   { text: 'Trafikvecka nu hela v34.', vanta: null,

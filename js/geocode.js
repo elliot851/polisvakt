@@ -102,10 +102,17 @@ export async function geocode(place) {
   if (learned[key]) return { ...learned[key], source: 'learned' };
   if (cache[key])   return { ...cache[key], source: 'cache' };
 
-  // Aliaslistan mappar slang och smeknamn till en riktig sökfras
+  // Aliaslistan mappar slang och smeknamn till en riktig sökfras.
+  //
+  // SÖKSTRÄNGEN SKICKAS ORDAGRANT. Förut gick den genom samma suffixregel som
+  // en rå fras och fick ", Västerås" påklistrat om den inte råkade nämna en
+  // ort ur REGION_RE. Det gjorde att appen ställde en ANNAN fråga än bryggan
+  // och daemonen, som alltid skickat värdet rått — och skillnaden var mätbar:
+  // "Rv 66" ger tre riktiga vägavsnitt, "Rv 66, Västerås" ger staden Västerås.
+  // Värdet i aliasfilen bär orten själv där orten behövs.
   const alias = bundled[key] || bundled[key.replace(/\s+/g, '')];
   if (alias) {
-    const hit = await nominatim(alias);
+    const hit = await nominatim(alias, { ordagrant: true, urspring: key });
     if (hit) return remember(key, hit);
   }
 
@@ -119,10 +126,121 @@ export async function geocode(place) {
 
   for (const q of attempts) {
     if (q.length < 3) continue;
-    const hit = await nominatim(bundled[q] || q);
+    const traff = bundled[q];
+    const hit = await nominatim(traff || q, { ordagrant: !!traff, urspring: q });
     if (hit) return remember(key, hit);
   }
   return null;
+}
+
+/* ---- Vad OSM faktiskt svarade ----------------------------------------- */
+//
+// De tre hjälparna nedan finns i tre kopior: här, i tools/fb-bridge.user.js
+// och som Typ-FranSvar / Radie-FranSvar / Ar-Ortssvar i tools/brygg-daemon.ps1.
+// Likheten är ett KRAV, inte en tillfällighet — samma inlägg ska få samma
+// betyg oavsett vem som läste det. Ändras en av dem måste alla tre ändras.
+
+/**
+ * Genomfartsväg? "E18", "Rv 66", "riksväg 56".
+ *
+ * Ett sådant namn är inte en plats: E18 går tre mil genom länet och OSM svarar
+ * med ett godtyckligt vägavsnitt på hundra meter. Typen 'led' ger 8 000 m i
+ * js/kvalitet.js, vilket passerar platsHopplosOverM och gör att rapporten
+ * faller bort i stället för att bli en självsäker nål på fel sida stan.
+ */
+export const AR_LED_RE = /^(e\s?\d{1,3}|rv\s?\d{1,3}|riksväg\s?\d{1,3}|väg\s?\d{1,3})\b/;
+
+/**
+ * Hur brett pekar det OSM svarade?
+ *
+ * VARFÖR SVARET OCH INTE FRÅGAN: en gissning ur frågan vet inte vad den fick.
+ * Mätt 2026-08-23 — "Erikslunds köpcentrum, Västerås" gissas till 'okand'
+ * (1 200 m) men svaret är en köpcentrumpolygon på 301 m; "Kristinagatan 8,
+ * Västerås" gissas till 'adress' (40 m) men svaret är HELA Kristinagatan,
+ * eftersom OSM inte känner husnumret. Den andra riktningen är den farliga:
+ * 40 m på en hel gata ger rapporten nästan full poäng med en nål som kan stå
+ * hundratals meter fel.
+ */
+export function typFranSvar(rad) {
+  const kat = String(rad?.category ?? rad?.class ?? '').toLowerCase();
+  const typ = String(rad?.type ?? '').toLowerCase();
+  const at = String(rad?.addresstype ?? '').toLowerCase();
+
+  // Ett hus, och bara ett hus, är en adress. Se finding om 'adress' ovan.
+  if (at === 'building' || at === 'house' || kat === 'building' ||
+      (kat === 'place' && (typ === 'house' || typ === 'building'))) return 'adress';
+
+  if (kat === 'highway') return 'vag';
+  if (kat === 'boundary') return 'ort';
+  if (kat === 'place') {
+    if (['city', 'town', 'municipality', 'county', 'state', 'region'].includes(typ)) return 'ort';
+    if (['suburb', 'neighbourhood', 'quarter', 'borough', 'city_block', 'village',
+         'hamlet', 'locality', 'farm', 'isolated_dwelling', 'island', 'islet',
+         'square', 'allotments'].includes(typ)) return 'stadsdel';
+    return 'okand';
+  }
+  // amenity, shop, leisure, tourism, aeroway, landuse, office, man_made...
+  // Ett namngivet objekt. Radien breddas nedan om polygonen är stor.
+  if (kat) return 'punkt';
+  return 'okand';
+}
+
+// Samma tabell som geokodRadieM i js/kvalitet.js. Den filen äger talen; den
+// här kopian finns bara för att kunna säga max(tabell, mätt) redan här.
+const RADIE_GOLV_M = {
+  punkt: 15, adress: 40, vag: 250, stadsdel: 900, ort: 2500, led: 8000, okand: 1200,
+};
+
+/**
+ * Radien i meter, mätt ur svaret där svaret bär en mätning.
+ *
+ * TABELLEN ÄR ETT GOLV OCH BOUNDINGBOXEN FÅR BARA BREDDA. Det låter bakvänt
+ * och är mätt: en NOD får en påhittad ruta av Nominatim (±0,02° eller mer
+ * beroende på platsens rang — 'Vallby, Västerås' och 'Hälla, Västerås' fick
+ * exakt samma 2 254 x 4 453 m), och en VÄG:s ruta täcker bara det ena
+ * vägavsnitt som råkade svara: 'Björnövägen, Västerås' gav 30 x 72 m på en
+ * gata som i tätorten sträcker sig 8,5 km. Att ta rutan rakt av hade alltså
+ * gjort båda nålarna SÄKRARE än de är. Bara way och relation har riktig
+ * geometri, och bara när den är större än tabellen säger den något nytt.
+ */
+export function radieFranSvar(rad, typ) {
+  const golv = RADIE_GOLV_M[typ] ?? RADIE_GOLV_M.okand;
+  /*
+   * ORT OCH LED BREDDAS INTE. Talen i tabellen säger redan "en kommun" och
+   * "en genomfartsväg", och polygonen mäter något annat: kommungränsen går
+   * genom skog, inte där någon står. Utan undantaget hade dessutom identiska
+   * frågor fått olika svar beroende på hur OSM råkar modellera orten — mätt
+   * 2026-08-23 svarar "Sala" med en NOD (2 500 m ur tabellen) medan
+   * "Hallstahammar" svarar med en kommunRELATION (14 616 m ur polygonen), och
+   * den skillnaden är inte en skillnad i verkligheten.
+   */
+  if (typ === 'ort' || typ === 'led') return golv;
+  const osmTyp = String(rad?.osm_type ?? '').toLowerCase();
+  if (osmTyp !== 'way' && osmTyp !== 'relation') return golv;
+  const bb = rad?.boundingbox;
+  if (!Array.isArray(bb) || bb.length !== 4) return golv;
+  const [syd, norr, vast, ost] = bb.map(Number);
+  if (![syd, norr, vast, ost].every(Number.isFinite)) return golv;
+  const hojd = (norr - syd) * 111320;
+  const bredd = (ost - vast) * 111320 * Math.cos(syd * Math.PI / 180);
+  return Math.max(golv, Math.round(Math.hypot(bredd, hojd) / 2));
+}
+
+/**
+ * Är svaret en stad eller en kommun?
+ *
+ * EN STAD SOM SVAR PÅ ETT VÄGNAMN ÄR ALLTID FEL SVAR. Nominatim faller
+ * tillbaka på orten när den inte hittar det man frågade om, och den nålen ser
+ * ut precis som en riktig. Mätt: "E18, Västerås" gav place/city Västerås,
+ * 59,6110/16,5463 — alltså centrum, medan de E18-avsnitt OSM själv känner
+ * ligger 1,3, 2,0 och 3,0 km därifrån. Etiketten som visades blev "Västerås",
+ * så föraren fick läsa "Polis vid Västerås".
+ */
+export function arOrtssvar(rad) {
+  const kat = String(rad?.category ?? rad?.class ?? '').toLowerCase();
+  const typ = String(rad?.type ?? '').toLowerCase();
+  if (kat === 'boundary' && typ === 'administrative') return true;
+  return kat === 'place' && ['city', 'town', 'municipality', 'county', 'state'].includes(typ);
 }
 
 function remember(key, hit) {
@@ -181,8 +299,21 @@ async function fetchJSON(url, tries = 2) {
   return null;
 }
 
-async function nominatim(query) {
-  const q = REGION_RE.test(query) ? query : query + ', Västerås';
+// Ortnamnen i länet. Samma uppräkning som ort-grenen i gissaGeokodTyp
+// (js/telegram.js) och i bryggans och daemonens kopior av den.
+const ORT_RE = /^(västerås|sala|köping|arboga|fagersta|hallstahammar|surahammar|kungsör|norberg|skinnskatteberg|västmanland)$/;
+
+/**
+ * @param {string} query   söksträngen
+ * @param {{ordagrant?: boolean, urspring?: string}} [val]
+ *   ordagrant — skicka strängen precis som den står, utan påklistrad ort.
+ *               Sätts för värden ur aliasfilen, som redan bär orten själva.
+ *   urspring  — den fras föraren eller inlägget faktiskt skrev. Används av
+ *               stadsspärren: bad någon om ett ortnamn får svaret vara en ort.
+ */
+async function nominatim(query, val = {}) {
+  const { ordagrant = false, urspring = '' } = val;
+  const q = (ordagrant || REGION_RE.test(query)) ? query : query + ', Västerås';
   const url = new URL('https://nominatim.openstreetmap.org/search');
   url.searchParams.set('q', q);
   url.searchParams.set('format', 'jsonv2');
@@ -195,10 +326,32 @@ async function nominatim(query) {
   const rows = await fetchJSON(url);
   if (!Array.isArray(rows) || !rows.length) return null;
   const hit = rows[0];
+
+  /*
+   * STADSSPÄRREN. Se arOrtssvar(): Nominatim faller tillbaka på orten när den
+   * inte hittar det man frågade om, och den nålen ser ut precis som en riktig.
+   * Frågade någon EFTER en ort är svaret rätt; frågade de efter "E18" eller
+   * "Hantverkargatan" är det alltid fel, och då är ingen nål bättre än en nål
+   * mitt i stan. Både frasen och söksträngen prövas — "sala" och "Sala" är
+   * samma fråga ställd av två olika led.
+   */
+  const badOmOrt = ORT_RE.test(normalize(urspring)) || ORT_RE.test(normalize(query));
+  if (arOrtssvar(hit) && !badOmOrt) return null;
+
+  // En genomfartsväg blir inte smalare av att OSM svarar med ett av sina
+  // vägavsnitt. Frågan vinner över svaret här, och bara här.
+  const arLed = AR_LED_RE.test(normalize(urspring)) || AR_LED_RE.test(normalize(query));
+  const typ = arLed ? 'led' : typFranSvar(hit);
+
   return {
     lat: parseFloat(hit.lat),
     lon: parseFloat(hit.lon),
     label: String(hit.name || hit.display_name.split(',')[0] || query).trim(),
+    // Vad svaret var och hur brett det pekar. Fälten går vidare till
+    // geokod_typ och geokod_radius_m via gissaGeokodTyp(plats, traff) i
+    // js/telegram.js, som föredrar traff.typ framför sin egen gissning.
+    typ,
+    radieM: radieFranSvar(hit, typ),
   };
 }
 

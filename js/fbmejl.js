@@ -91,7 +91,10 @@
 // täckningen mot gruppen första veckan innan du litar på spåret.
 
 import { parseReportText, isSobrietyCheck } from './parser.js';
-import { TTL_MINUTES } from './store.js';
+// Visningstiden, inte trovärdighetstiden — se store.js VISNING_MINUTER.
+// expires_at avgör bara om rapporten syns; hur mycket appen tror på den
+// avgörs av TTL_MINUTES i js/kvalitet.js.
+import { visningMinuter } from './store.js';
 import { normalize, uid, clamp } from './util.js';
 
 /**
@@ -892,9 +895,18 @@ export function gissaGeokodTyp(plats, traff) {
   if (traff?.typ) return traff.typ;
   const t = normalize(traff?.label || plats || '');
   if (!t) return 'okand';
+  /*
+   * GENOMFARTSVÄGARNA PRÖVAS FÖRST, och ordningen är hela poängen.
+   *
+   * "riksväg 66" innehåller både en siffra och 'väg' följt av ordgräns, så
+   * adressgrenen svarade 'adress' på den — 40 m antagen radie på en väg som
+   * går sex mil genom länet. 'led' ger 8 000 m i js/kvalitet.js, vilket
+   * passerar platsHopplosOverM och gör att rapporten faller bort i stället för
+   * att bli en självsäker nål på ett godtyckligt vägavsnitt.
+   */
+  if (/^(e\s?\d{1,3}|rv\s?\d{1,3}|riksväg\s?\d{1,3}|väg\s?\d{1,3})\b/.test(t)) return 'led';
   if (/\d/.test(t) && /(gatan|vägen|gata|väg)\b/.test(t)) return 'adress';
   if (/(gatan|vägen|leden|gränd|torget|bron|rondell|rondellen|korsning|korsningen|motet|avfart|påfart|infart|rampen)/.test(t)) return 'vag';
-  if (/^e\s?\d{1,3}\b|^rv\s?\d|^väg\s?\d/.test(t)) return 'vag';
   if (/^(västerås|sala|köping|arboga|fagersta|hallstahammar|surahammar|kungsör|norberg|skinnskatteberg|västmanland)$/.test(t)) return 'ort';
   return 'okand';
 }
@@ -999,7 +1011,11 @@ export function tolkaMejl(mejl, val = {}) {
   // två rader till "alkohol kontroll" fångas det här.
   if (isSobrietyCheck(text)) return nej(SKAL.NYKTERHET);
 
-  const tolkat = parseReportText(text);
+  // platsKonvention: texten kommer ur gruppen, där konventionen är att man
+  // skriver enbart när man ser en poliskontroll. Ett kort inlägg som bara
+  // pekar ut en känd plats betyder därför polis där. Flaggan är AV som
+  // standard och sätts aldrig för rösten eller appens knappar.
+  const tolkat = parseReportText(text, { platsKonvention: true });
 
   if (tolkat?.intent === 'refused') {
     return nej(tolkat.reason === 'sobriety' ? SKAL.NYKTERHET : SKAL.KAMERA);
@@ -1020,7 +1036,7 @@ export function tolkaMejl(mejl, val = {}) {
   if (!tolkat.place) return nej(SKAL.INGEN_PLATS);
 
   const skrivenAt = skrivenNar(mejl, nu);
-  const ttlMs = (TTL_MINUTES[tolkat.type] ?? 45) * 60000;
+  const ttlMs = visningMinuter(tolkat.type) * 60000;
   const gallerTill = skrivenAt + ttlMs;
 
   // En varning som redan hunnit löpa ut ska aldrig läggas ut. Mejlet kan ha
@@ -1097,7 +1113,10 @@ export function byggRapport(tolkning, traff, val = {}) {
     fordrojning_s: tolkning.fordrojningS,
     geokod: traff.source || 'okand',
     geokod_typ: gissaGeokodTyp(tolkning.plats, traff),
-    geokod_radius_m: null,   // låt kvalitet.js sätta radien utifrån geokod_typ
+    // Radien MÄTT ur OSM-svaret när svaret bar en mätning, annars null så att
+    // kvalitet.js får räkna fram den ur geokod_typ. Se radieFranSvar() i
+    // js/geocode.js: boundingboxen får bara BREDDA, aldrig smalna av.
+    geokod_radius_m: Number.isFinite(traff?.radieM) ? traff.radieM : null,
     gps_accuracy_m: null,
     fart_kmh: null,
 

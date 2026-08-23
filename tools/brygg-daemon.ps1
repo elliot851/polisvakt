@@ -129,6 +129,17 @@ param(
   # torrkörningen skriker numera om vad den är. Se banderollen vid start.
   [switch]$Torr,
 
+  # Skicka driftnotiser till telefonen. AV som förval, och det är en rättelse.
+  #
+  # Notiskanalen till en förares telefon är reserverad för att det står polis
+  # på vägen. "Bryggan ser inte Stockholm" är ett meddelande till den som
+  # driftar appen, inte till någon som kör bil — och varje sådant pling gör
+  # nästa pling mindre värt. Se Skicka-Driftnotis.
+  #
+  # Veckans livstecken går fram ändå: det är det enda som bevisar att
+  # VAPID-signeringen lever, och det kommer en gång i veckan.
+  [switch]$Driftnotiser,
+
   # Bakåtkompatibilitet. Tas emot, men styr ingenting längre — skarpt är
   # förval. Genvägar, dokumentation och schemalagda uppgifter som redan
   # skickar -Skarpt ska inte krascha bara för att förvalet vändes.
@@ -158,6 +169,22 @@ param(
   # likadant som bryggkoden själv läser den, att varje grupp får SIN ruta, och
   # att en Stockholmskoordinat aldrig kan hamna på Västeråskartan.
   [switch]$ProvaGrupper,
+
+  # Slå upp VARJE värde i data\aliases.vasteras.json mot uppslagstjänsten och
+  # avsluta. Rör inte Chrome, skickar ingenting, kräver ingen nyckel.
+  #
+  # VARFÖR PROVET FINNS. Aliasfilens egen kommentar påstod att varje söksträng
+  # var provad och gav en träff på rätt ställe. Sex av dem gav NOLL rader
+  # ('Hälla köpcentrum, Västerås', 'Hallstahammarsvägen, Västerås',
+  # 'Djurgårdsvägen, Västerås', 'Lillåudden, Västerås', 'Riksväg 66,
+  # Västmanland', 'Riksväg 56, Västmanland') och en gav STADEN Västerås
+  # ('E18, Västerås'). Båda felen är tysta: uppslaget gör med flit inget andra
+  # försök, så inlägget publiceras aldrig — eller så sätts nålen mitt i stan
+  # med etiketten "Västerås". Kör provet innan en ny rad läggs in i filen.
+  #
+  # Det tar en dryg minut: uppslagstjänsten tillåter ett anrop i sekunden och
+  # provet håller samma kö som drift.
+  [switch]$ProvaAlias,
 
   # Skicka veckans livstecken NU i stället för att vänta till söndag 18:00.
   # Den ENDA kontrollen som går hela vägen genom VAPID-signeringen och ut till
@@ -286,7 +313,8 @@ function Logga {
 # startproben ska gå att köra när som helst, också mitt under en skarp
 # körning, för det är då man behöver dem. Ingen av dem sveper.
 $script:Mutex = $null
-if (-not $Sjalvtest -and -not $BaraProb -and -not $ProvaVakthund -and -not $ProvaGrupper) {
+if (-not $Sjalvtest -and -not $BaraProb -and -not $ProvaVakthund -and -not $ProvaGrupper -and
+    -not $ProvaAlias) {
   $nyskapad = $false
   try {
     $script:Mutex = New-Object System.Threading.Mutex($true, 'Global\Polisvakt-Brygga', [ref]$nyskapad)
@@ -386,6 +414,72 @@ foreach ($forbjudet in @('nominatim', 'supabase', 'async function send', 'async 
 # CONFIG i samma funktionsscope är dessutom ett SyntaxError.
 if ($script:Lasdel -match 'const\s+CONFIG\s*=') {
   throw 'Läsdelen innehåller bryggans CONFIG. Klippet börjar för högt upp.'
+}
+
+<#
+  ---- Chrome-tilläggets kopia får inte ha glidit isär ----------------------
+
+  tools\brygg-tillagg\brygga.js är en KOPIA av fb-bridge.user.js, och det är
+  den kopian Chrome faktiskt kör (manifest.json pekar content_scripts på den,
+  tillägget installeras en gång och ligger sedan kvar). Daemonen läser
+  originalet. Går de isär tolkar den ena filen ett inlägg och den andra ett
+  annat, och det märks bara som uteblivna varningar i drift.
+
+  MÄTT: när ordmatchningen breddades 2026-08-22 uppdaterades originalet men
+  inte kopian. "Står en mobil trafikkamera vid första avfarten Hälla" gav en
+  rapport i originalet och null i kopian — alltså exakt det driftfel
+  breddningen skulle laga, kvar i den fil som står närmast Facebook-flödet.
+
+  JÄMFÖRELSEN GÅR PÅ HELA FILEN, inte bara på läsdelen. Fram till 2026-08-23
+  jämfördes bara läsdelen, med motiveringen att det är den delen som avgör vad
+  som blir en rapport. Det stämde när motiveringen skrevs. Sedan flyttade
+  koden som avgör VAR nålen hamnar in i den andra halvan:
+
+    MÄTT 2026-08-23. Läsdelen var 107 351 av 155 476 tecken, alltså 69 %.
+    Utanför jämförelsen låg 48 125 tecken — och där ligger ADRESS_RE,
+    arExaktAdress, slaUppAlias, gissaGeokodTyp, typFranSvar, radieFranSvar,
+    arOrtssvar, fyllTraff och geocode, allihop efter rubriken "Geokodning".
+    Även hela skrivdelen och CONFIG.groupIds låg utanför.
+
+  Landar en aliasrättelse i fb-bridge.user.js men inte i kopian startar
+  daemonen grönt och loggar "ordagrant" — samma felmönster som filen redan
+  dokumenterar från 2026-08-22, fast med en koordinat i stället för en utebliven
+  rapport. Det är precis det fel som gjorde 'apalby ip' till en nål 1,7 km bort.
+
+  Läsdelen fälls fortfarande FÖRST och med sitt eget felmeddelande. Den
+  skillnaden är värd att behålla: en drift i läsdelen betyder att daemonen
+  själv kör annan kod än den tror, medan en drift i resten bara drabbar
+  Chrome-tillägget. Båda stoppar starten, men den som läser loggen ska kunna
+  se vilket av de två felen det är.
+
+  Radslut normaliseras — Git och OneDrive får byta CRLF mot LF utan att
+  daemonen vägrar starta för det.
+
+  Saknas kopian är tillägget inte installerat på den här maskinen, och då
+  finns ingenting att jämföra med. Det loggas, det stoppar inte.
+#>
+$script:Tillaggsfil = Join-Path $PSScriptRoot 'brygg-tillagg\brygga.js'
+if (Test-Path $script:Tillaggsfil) {
+  $tillaggKalla = [System.IO.File]::ReadAllText($script:Tillaggsfil, [System.Text.Encoding]::UTF8)
+  $tillaggLasdel = Hamta-Lasdel -Kalla $tillaggKalla
+  # Vagnreturen bort helt, inte CRLF till LF: en fil som råkat få blandade
+  # radslut ska jämföras på innehållet, inte på hur den senast sparades.
+  $normal = { param($s) ($s -replace "`r", '') }
+  $fixaKopian = "Kör:  copy tools\fb-bridge.user.js tools\brygg-tillagg\brygga.js  " +
+                "och läs in tillägget igen. Daemonen startar inte förrän de är lika, " +
+                "eftersom det är kopian Chrome kör."
+  if ((& $normal $tillaggLasdel) -ne (& $normal $script:Lasdel)) {
+    throw ("Chrome-tilläggets kopia har glidit isär från bryggkoden i LÄSDELEN — " +
+           "alltså i parsern, som avgör vad som blir en rapport. " + $fixaKopian)
+  }
+  if ((& $normal $tillaggKalla) -ne (& $normal $script:BryggKalla)) {
+    throw ("Chrome-tilläggets kopia har glidit isär från bryggkoden UTANFÖR läsdelen — " +
+           "alltså i geokodningen eller skrivningen, som avgör var nålen hamnar och " +
+           "vad som skickas. Läsdelen är identisk, så felet syns inte i vad som TOLKAS. " +
+           $fixaKopian)
+  }
+} else {
+  Logga 'START' 'Chrome-tilläggets kopia (brygg-tillagg\brygga.js) finns inte — inget att jämföra med.' DarkGray
 }
 
 # ---- Supabase-uppgifterna, ur samma fil -----------------------------------
@@ -821,14 +915,38 @@ if ($GruppId -and @($GruppId).Count -gt 0) {
 $script:GruppMedId = @{}
 foreach ($g in $script:Grupper) { $script:GruppMedId[$g.id] = $g }
 
+# TVÅ TIDER, INTE EN. Se kommentaren vid VISNING_MINUTER i fb-bridge.user.js
+# och det längre resonemanget i js/store.js.
+#
+#   $script:Livslangd    trovärdighetstiden. Hur länge appen tror på
+#                        rapporten. Används INTE här inne — daemonen graderar
+#                        ingenting — men läses ut och loggas så att drift
+#                        mellan filerna syns.
+#   $script:Visningstid  visningstiden. Det här talet, och bara det här, går
+#                        in i expires_at på raden som skrivs till Supabase.
+#
+# Båda hämtas ur bryggfilen i stället för att skrivas av. Två tabeller som
+# ska betyda samma sak glider isär, och den här kedjan har redan betalat för
+# det en gång (ordlistorna i produktregeln nedan).
 $script:Livslangd = @{ police = 45; control = 60; unmarked = 30 }
-$ml = [regex]::Match($script:BryggKalla, 'const TTL_MINUTES = \{([^}]+)\}')
-if ($ml.Success) {
-  foreach ($par in ($ml.Groups[1].Value -split ',')) {
-    $bit = $par -split ':'
-    if ($bit.Count -eq 2) { $script:Livslangd[$bit[0].Trim()] = [int]($bit[1].Trim()) }
+$script:Visningstid = @{ police = 240; control = 240; unmarked = 240 }
+
+function Las-Minuttabell {
+  param([string]$Namn, [hashtable]$Fallback)
+  $ut = @{}
+  foreach ($n in $Fallback.Keys) { $ut[$n] = $Fallback[$n] }
+  $m = [regex]::Match($script:BryggKalla, ('const ' + $Namn + ' = \{([^}]+)\}'))
+  if ($m.Success) {
+    foreach ($par in ($m.Groups[1].Value -split ',')) {
+      $bit = $par -split ':'
+      if ($bit.Count -eq 2) { $ut[$bit[0].Trim()] = [int]($bit[1].Trim()) }
+    }
   }
+  return $ut
 }
+
+$script:Livslangd   = Las-Minuttabell 'TTL_MINUTES'     $script:Livslangd
+$script:Visningstid = Las-Minuttabell 'VISNING_MINUTER' $script:Visningstid
 
 # =====================================================================
 #  PRODUKTREGELN — nykterhets- och drogkontroller
@@ -884,6 +1002,12 @@ $script:SobStam   = Plocka-Ordlista -Kalla $script:BryggKalla -Namn 'SOBRIETY_ST
 $script:SobForled = Plocka-Ordlista -Kalla $script:BryggKalla -Namn 'SOBRIETY_PREFIX'
 $script:SobHuvud  = Plocka-Ordlista -Kalla $script:BryggKalla -Namn 'SOBRIETY_HEAD'
 
+# Böjningsändelserna plockas ur samma fil av samma skäl som orden: skrivs en
+# ny ändelse in i bryggan ska backstoppen få den utan att någon minns det.
+# Tomma strängen i JS-listan (= ren sammansättning) faller bort i Plocka-
+# Ordlista, och det är rätt här — Ar-Bojning ska aldrig godta sammansättningar.
+$script:Bojningar = Plocka-Ordlista -Kalla $script:BryggKalla -Namn 'BOJNINGAR'
+
 # normalize() ur js/util.js: gemener, skiljetecken bort, bindestreck kvar för
 # gatunamnens skull. .NET:s \w täcker åäöéèü redan, till skillnad från
 # JavaScripts — därför behövs inte den explicita teckenuppräkningen här.
@@ -900,6 +1024,24 @@ function Normalisera-Text {
 # ETT ord och gick igenom både ordlistan och isärskrivningsregeln.
 $script:Skiljetecken = '[\s\-–—_/.]+'
 
+# arBojningAv() ur bryggkoden, ord för ord: exakt ordet eller ordet plus en
+# ändelse ur den slutna listan — aldrig en sammansättning.
+#
+# VARFÖR DEN BEHÖVS HÄR: JS-sidan slutade jämföra med exakt likhet när det
+# mättes att "Polisen har drog kollen på E18" gick igenom ('kollen' fanns inte
+# i listan, bara 'koll'). Backstoppen jämförde fortfarande exakt och var
+# därmed SMALARE än det den ska backa upp — en backstopp med hål på just de
+# ställen där sidans spärr nyss lagades är ingen backstopp.
+function Ar-Bojning {
+  param([string]$Ord, [string]$Bas)
+  if (-not $Ord -or -not $Bas) { return $false }
+  if ($Ord -eq $Bas) { return $true }
+  foreach ($a in $script:Bojningar) {
+    if ($Ord -eq ($Bas + $a)) { return $true }
+  }
+  return $false
+}
+
 function Test-Nykterhetskontroll {
   param([string]$Ratext)
   $text = Normalisera-Text $Ratext
@@ -915,8 +1057,27 @@ function Test-Nykterhetskontroll {
     if ($hop.Contains($s)) { return $true }
     foreach ($w in $ord) { if ($w.StartsWith($s)) { return $true } }
   }
+
+  # Isärskrivet: förled + huvudord som två ord bredvid varandra. Båda leden
+  # får vara böjda ("nykterhets kontrollen", "drog testet", "alko proven").
   for ($i = 0; $i -lt ($ord.Count - 1); $i++) {
-    if (($script:SobForled -contains $ord[$i]) -and ($script:SobHuvud -contains $ord[$i + 1])) { return $true }
+    $arForled = $false
+    foreach ($f in $script:SobForled) { if (Ar-Bojning -Ord $ord[$i] -Bas $f) { $arForled = $true; break } }
+    if (-not $arForled) { continue }
+    foreach ($h in $script:SobHuvud) { if (Ar-Bojning -Ord $ord[$i + 1] -Bas $h) { return $true } }
+  }
+
+  # Hopskrivet: förled + böjt huvudord i ETT ord. Regeln saknades helt här,
+  # och det är den som fångar "drogkollen" — ordet som gick igenom allt annat
+  # eftersom 'drog' med flit inte är ett stamord (det är också imperfekt av
+  # "dra"). Foge-s stryks, så "alkoholskontroll" också hittas.
+  foreach ($w in $ord) {
+    foreach ($f in $script:SobForled) {
+      if ($w.Length -le $f.Length -or -not $w.StartsWith($f)) { continue }
+      $rest = $w.Substring($f.Length)
+      if ($rest.StartsWith('s')) { $rest = $rest.Substring(1) }
+      foreach ($h in $script:SobHuvud) { if (Ar-Bojning -Ord $rest -Bas $h) { return $true } }
+    }
   }
   return $false
 }
@@ -949,7 +1110,17 @@ function Kor-Sjalvtest {
     'DROGSÖKHUND vid stationen',
     'narko kollar vid centrum',
     'nykterhets/kontroll vid Talltorp',
-    'Alkohol.kontroll vid Bäckby'
+    'Alkohol.kontroll vid Bäckby',
+    # De två mätta hålen som lagade sidans spärr men inte den här. De ligger
+    # som PROV i js/parser.js och ska ge samma svar på båda ställena.
+    'Drogkollen vid Erikslund',
+    'Polisen har drog kollen på E18',
+    # Huvudorden som breddningen av typorden gjorde farliga: razzia, polis och
+    # piket är alla typord, alltså blir de rapporter om spärren inte tar dem.
+    'Drograzzia vid Erikslund',
+    'Drogpolisen står vid Erikslund',
+    'Drogpiketen vid Bäckby',
+    'Nyckterhetsrazzia vid Bäckby'
   )
 
   $skaSlappasIgenom = @(
@@ -1624,7 +1795,12 @@ $script:LasarSkalFot = @'
           continue;
         }
 
-        var tolk = parseReportText(p.text);
+        /* platsKonvention: flaggan är AV som standard i parsern, därför att
+           regeln är gruppens egen ("Man skriver enbart när man ser en
+           poliskontroll") och aldrig får gälla rösten eller appens knappar.
+           Här läser vi just den gruppen, så här sätts den — precis som i
+           js/facebook.js och i bryggans egen skanning. */
+        var tolk = parseReportText(p.text, { platsKonvention: true });
 
         /* Spärr 2: parsern säger nej. Täcker både nykterhet och fartkameror,
            och de två skiljs INTE åt utåt — se motiveringen i daemonen. */
@@ -1790,11 +1966,420 @@ if (Test-Path $script:GeoFil) {
 }
 $script:SenasteGeo = [DateTime]::MinValue
 
+<#
+  ---- Aliaslistan: samma uppslag som appen gör ------------------------------
+
+  MÄTT 2026-08-22. Daemonen skickade parserns platsfras + ', Västerås' rakt
+  till uppslagstjänsten, i ETT anrop, utan att först slå i
+  data/aliases.vasteras.json. Parsern lägger numera medvetet ut EXAKTA
+  aliasnycklar, och just de nycklar som lades in senast är sådana OSM inte
+  känner igen i rå form:
+
+    'irstamacken, Västerås'  -> inga träffar. Inlägget "Irstamacken"
+                                publicerades aldrig — och nollsvaret cachas
+                                utan TTL, så platsen var död för gott.
+    'apalby ip, Västerås'    -> Apalbyvägen i Norrmalm, 1,7 km från Apalby IP.
+                                Nålen hamnade på fel sida stan, med 0,95 i
+                                tillit.
+
+  Appen klarade båda, eftersom js/geocode.js slår i aliasfilen FÖRE
+  uppslagstjänsten. Vinsten av varje nytt namn i aliasfilen landade alltså
+  bara i appen och inte i den kanal som faktiskt läser gruppen.
+
+  Filen läses en gång vid start. Saknas den fortsätter daemonen utan
+  uppslag — det är sämre, men det är precis vad den gjorde förut, och ett
+  saknat alias får inte stoppa läsningen av gruppen.
+
+  Listan gäller VÄSTERÅS. Den används därför bara för grupper med den orten;
+  en Stockholmsgrupp som slog upp "vasagatan" här hade fått Västerås
+  koordinat, alltså exakt det fel den gruppade cachenyckeln redan skyddar mot.
+#>
+$script:AliasFil = Join-Path (Split-Path -Parent $PSScriptRoot) 'data\aliases.vasteras.json'
+$script:Alias = @{}
+if (Test-Path $script:AliasFil) {
+  try {
+    $aliasRad = Get-Content -Raw -Encoding UTF8 $script:AliasFil | ConvertFrom-Json
+    foreach ($p in $aliasRad.PSObject.Properties) {
+      if ($p.Name.StartsWith('_')) { continue }      # _kommentar är dokumentation
+      $script:Alias[$p.Name] = [string]$p.Value
+    }
+    Logga 'START' ('Aliaslistan läst: ' + $script:Alias.Count + ' platser ur ' +
+                   (Split-Path -Leaf $script:AliasFil)) DarkGray
+  } catch {
+    $script:Alias = @{}
+    Logga 'START' ('Aliaslistan gick inte att läsa (' + $_.Exception.Message +
+                   '). Fortsätter utan uppslag.') DarkYellow
+  }
+} else {
+  Logga 'START' ('Aliaslistan saknas (' + $script:AliasFil + '). Fortsätter utan uppslag.') DarkYellow
+}
+
+# Tiderna skrivs ut vid start. De läses ur bryggfilen och inte ur den här
+# filen, så utan raden nedan finns det ingen plats där man kan SE vilka tal
+# daemonen faktiskt kör med — och en tabell som tyst föll tillbaka på sitt
+# förval hade sett exakt likadan ut som en som lästes in.
+$fmt = { param($tab) (($tab.GetEnumerator() | Sort-Object Name |
+         ForEach-Object { $_.Name + '=' + $_.Value }) -join ' ') }
+Logga 'START' ('Trovärdighetstid (gradering): ' + (& $fmt $script:Livslangd) +
+               '  ·  Visningstid (expires_at): ' + (& $fmt $script:Visningstid)) DarkGray
+
+<#
+  ---- Uppslaget: fyra steg, och inget av dem gissar -------------------------
+
+  Samma steg som js/geocode.js:106-124 tar, i samma ordning:
+    1. hela nyckeln            "apalby ip"
+    2. nyckeln utan mellanslag "rv 66" -> 'rv66', "e 18" -> 'e18'
+    3. kortare och kortare prefix  "e18 vid avfarten mot hälla" -> "e18"
+    4. sista ordet ensamt          "polisbil vid hälla" -> "hälla"
+
+  Steg 2 fanns i appen och i bryggan men INTE här, i den bana som faktiskt
+  sveper gruppen: uppslaget var ett rent ContainsKey på hela nyckeln. Steg 3
+  och 4 fanns bara i appen. Följden var att ett extra ord i frasen skickade
+  platsen rå till uppslagstjänsten, där den antingen gav noll träffar eller
+  fel ställe.
+
+  Varje träff är en HANDPROVAD söksträng ur filen, inte en fras vi hoppas att
+  OSM förstår, och alla fyra stegen kostar noll nätanrop — listan ligger i
+  minnet. Det längsta som matchar vinner, så "hälla köpcentrum" blir
+  köpcentrumet och inte stadsdelen.
+
+  ---- ...men en genomfartsväg får aldrig vinna över en riktig plats ---------
+
+  "E18 vid Hälla" träffar prefixet 'e18' på steg 3 och skulle därmed bli hela
+  E18 — tre mil väg, geokod_typ 'led', 8 000 m osäkerhet, alltså bortkastad.
+  Sista ordet är 'hälla', en stadsdel med en provad söksträng. Den frasen SÄGER
+  var på E18 polisen står, och det är just den upplysningen som gör rapporten
+  användbar. Uppslaget samlar därför alla träffar och lämnar tillbaka den
+  första som inte är en genomfartsväg; är alla genomfartsvägar lämnas den
+  bästa av dem, precis som förut. Ordagrant samma regel som slaUppAlias i
+  tools\fb-bridge.user.js.
+#>
+$script:ArLedRe = '^(e\s?\d{1,3}|rv\s?\d{1,3}|riksväg\s?\d{1,3}|väg\s?\d{1,3})\b'
+
+function Sok-Alias {
+  param([string]$Nyckel)
+
+  if (-not $Nyckel) { return $null }
+
+  $traffar = New-Object System.Collections.Generic.List[string]
+  $lagg = {
+    param([string]$V)
+    if ($V -and -not $traffar.Contains($V)) { [void]$traffar.Add($V) }
+  }
+
+  if ($script:Alias.ContainsKey($Nyckel)) { & $lagg $script:Alias[$Nyckel] }
+  $utan = ($Nyckel -replace '\s+', '')
+  if ($script:Alias.ContainsKey($utan)) { & $lagg $script:Alias[$utan] }
+
+  $ord = @($Nyckel.Split(' ') | Where-Object { $_ })
+  if ($ord.Count -ge 2) {
+    for ($n = $ord.Count - 1; $n -ge 1; $n--) {
+      $q = (($ord[0..($n - 1)]) -join ' ')
+      if ($q.Length -lt 3) { continue }
+      if ($script:Alias.ContainsKey($q)) { & $lagg $script:Alias[$q] }
+      $qu = ($q -replace '\s+', '')
+      if ($script:Alias.ContainsKey($qu)) { & $lagg $script:Alias[$qu] }
+    }
+    $sista = $ord[$ord.Count - 1]
+    if ($sista.Length -ge 3 -and $script:Alias.ContainsKey($sista)) { & $lagg $script:Alias[$sista] }
+  }
+
+  if ($traffar.Count -eq 0) { return $null }
+  foreach ($v in $traffar) {
+    if ((Normalisera-Text $v) -notmatch $script:ArLedRe) { return $v }
+  }
+  return $traffar[0]
+}
+
+<#
+  ---- En exakt adress behöver inget alias ----------------------------------
+
+  "Kristinagatan 8" är redan så precis som en text kan bli. Skickas den rå
+  till OSM landar nålen på huset och geokod_typ blir 'adress' — 40 meters
+  antagen radie i js/kvalitet.js:112, mot 250 för en gata. Går den i stället
+  genom aliaslistan kan bara gatan slås upp, och Vasagatan är tre kilometer
+  lång.
+
+  REGELN ÄR MEDVETET SNÅL, ordagrant samma uttryck som ADRESS_RE i
+  tools/fb-bridge.user.js. Gatuordet måste sitta som efterled i ett
+  sammansatt namn ("björnövägen 12") eller vara en av de fyra särskrivna
+  gatorna. Därför är "riksväg 66" INTE en adress: 'väg' står ensamt och 66 är
+  ett vägnummer. Missar regeln en riktig adress blir följden ett gatuuppslag,
+  alltså en bredare men sann nål. Träffar den fel blir följden en nål på ett
+  hus som inte finns. Den asymmetrin är hela skälet till att den är snål.
+#>
+$script:AdressRe = '(?:^|\s)(?:\w{2,}(?:gatan|gata|vägen|gränd|allén|stigen)' +
+                   '|(?:stora|lilla|nya|gamla)\s+gatan)\s+\d{1,4}(?!\w)'
+function Ar-ExaktAdress {
+  param([string]$Nyckel)
+  if (-not $Nyckel) { return $false }
+  return ($Nyckel -match $script:AdressRe)
+}
+
+<#
+  ---- Hur brett pekar platsnamnet? -----------------------------------------
+
+  Ordagrant samma funktion som gissaGeokodTyp() i js/telegram.js:242 och i
+  bryggkodens geokodningsavsnitt. Den likheten är ett KRAV, inte en
+  tillfällighet: samma inlägg ska få samma betyg oavsett om appen, bryggan
+  eller daemonen läste det. Ändras uttrycket här måste det ändras på båda de
+  andra ställena i samma andetag, annars får identisk data olika poäng
+  beroende på vem som råkade läsa den.
+
+  Gissningen lutar åt det försiktiga hållet. Vet vi inte blir det 'okand',
+  vilket ger en STÖRRE antagen radie — en bedömning som chansar åt det snäva
+  hållet ljuger om hur säker den är.
+#>
+function Gissa-GeokodTyp {
+  param([string]$Plats)
+
+  $t = Normalisera-Text $Plats
+  if (-not $t) { return 'okand' }
+  # GENOMFARTSVÄGARNA PRÖVAS FÖRST, och ordningen är hela poängen. "riksväg 66"
+  # innehåller både en siffra och 'väg' följt av ordgräns, så adressgrenen
+  # svarade 'adress' på den — 40 m antagen radie på en väg som går sex mil
+  # genom länet. 'led' ger 8 000 m i js/kvalitet.js, vilket passerar
+  # platsHopplosOverM och gör att rapporten faller bort i stället för att bli
+  # en självsäker nål på ett godtyckligt vägavsnitt.
+  if ($t -match $script:ArLedRe) { return 'led' }
+  if ($t -match '\d' -and $t -match '(gatan|vägen|gata|väg)\b') { return 'adress' }
+  if ($t -match '(gatan|vägen|leden|gränd|torget|bron|rondell|rondellen|korsning|korsningen|motet|avfart|påfart|infart|rampen)') { return 'vag' }
+  if ($t -match $script:OrtRe) { return 'ort' }
+  return 'okand'
+}
+
+# Ortnamnen i länet, brutna ut ur Gissa-GeokodTyp därför att stadsspärren i
+# Geokoda ställer samma fråga: bad någon om ett ortnamn får svaret vara en ort.
+$script:OrtRe = '^(västerås|sala|köping|arboga|fagersta|hallstahammar|surahammar|kungsör|norberg|skinnskatteberg|västmanland)$'
+
+<#
+  ---- Vad OSM faktiskt svarade ----------------------------------------------
+
+  De tre funktionerna nedan finns i tre kopior: här, som typFranSvar /
+  radieFranSvar / arOrtssvar i js/geocode.js, och som samma tre namn i
+  tools\fb-bridge.user.js. Likheten är ett KRAV, inte en tillfällighet — samma
+  inlägg ska få samma betyg oavsett vem som läste det.
+
+  VARFÖR SVARET OCH INTE FRÅGAN, och det är hela fyndet:
+
+    Typen sattes förut ur FRÅGAN. En aliasträff gav alltid 'vag' (250 m),
+    oavsett om söksträngen pekade på en pizzeria, en stadsdel eller hela Sala
+    kommun; och 'adress' (40 m, det snävaste icke-GPS-läget) sattes så fort
+    texten bar ett husnummer, oavsett om OSM hittade huset. Mätt 2026-08-23:
+    "Kristinagatan 8, Västerås" svarar highway/residential "Kristinagatan",
+    alltså HELA gatan, och "Björnövägen 12, Västerås" svarar med ett avsnitt
+    4,4 km från det avsnitt gatunamnet utan husnummer landar på. Båda fick
+    40 m, alltså nästan full poäng, uppläsning och notis — med en nål som kunde
+    stå fyra kilometer fel.
+
+  Regeln är därför: ett HUS är en adress, ingenting annat.
+#>
+function Typ-FranSvar {
+  param($Rad)
+
+  $kat = ''
+  if ($Rad.PSObject.Properties['category']) { $kat = [string]$Rad.category }
+  if (-not $kat -and $Rad.PSObject.Properties['class']) { $kat = [string]$Rad.class }
+  $kat = $kat.ToLowerInvariant()
+
+  $typ = ''
+  if ($Rad.PSObject.Properties['type']) { $typ = ([string]$Rad.type).ToLowerInvariant() }
+  $at = ''
+  if ($Rad.PSObject.Properties['addresstype']) { $at = ([string]$Rad.addresstype).ToLowerInvariant() }
+
+  if ($at -eq 'building' -or $at -eq 'house' -or $kat -eq 'building' -or
+      ($kat -eq 'place' -and ($typ -eq 'house' -or $typ -eq 'building'))) { return 'adress' }
+
+  if ($kat -eq 'highway') { return 'vag' }
+  if ($kat -eq 'boundary') { return 'ort' }
+  if ($kat -eq 'place') {
+    if (@('city', 'town', 'municipality', 'county', 'state', 'region') -contains $typ) { return 'ort' }
+    if (@('suburb', 'neighbourhood', 'quarter', 'borough', 'city_block', 'village',
+          'hamlet', 'locality', 'farm', 'isolated_dwelling', 'island', 'islet',
+          'square', 'allotments') -contains $typ) { return 'stadsdel' }
+    return 'okand'
+  }
+  # amenity, shop, leisure, tourism, aeroway, landuse, office, man_made...
+  # Ett namngivet objekt. Radien breddas nedan om polygonen är stor.
+  if ($kat) { return 'punkt' }
+  return 'okand'
+}
+
+# Samma tabell som geokodRadieM i js/kvalitet.js. Den filen äger talen; den här
+# kopian finns bara för att kunna säga max(tabell, mätt) redan här.
+$script:RadieGolvM = @{
+  punkt = 15; adress = 40; vag = 250; stadsdel = 900; ort = 2500; led = 8000; okand = 1200
+}
+
+<#
+  Radien i meter, mätt ur svaret där svaret bär en mätning.
+
+  TABELLEN ÄR ETT GOLV OCH BOUNDINGBOXEN FÅR BARA BREDDA. Det låter bakvänt och
+  är mätt: en NOD får en påhittad ruta av uppslagstjänsten (±0,02° eller mer
+  beroende på platsens rang — 'Vallby, Västerås' och 'Hälla, Västerås' fick
+  exakt samma 2 254 x 4 453 m), och en VÄG:s ruta täcker bara det ena vägavsnitt
+  som råkade svara: 'Björnövägen, Västerås' gav 30 x 72 m på en gata som i
+  tätorten sträcker sig 8,5 km. Att ta rutan rakt av hade alltså gjort båda
+  nålarna SÄKRARE än de är. Bara way och relation har riktig geometri, och bara
+  när den är större än tabellen säger den något nytt.
+#>
+function Radie-FranSvar {
+  param($Rad, [string]$Typ)
+
+  $golv = 1200
+  if ($script:RadieGolvM.ContainsKey($Typ)) { $golv = $script:RadieGolvM[$Typ] }
+
+  # ORT OCH LED BREDDAS INTE. Talen i tabellen säger redan "en kommun" och "en
+  # genomfartsväg", och polygonen mäter något annat: kommungränsen går genom
+  # skog, inte där någon står. Utan undantaget hade dessutom identiska frågor
+  # fått olika svar beroende på hur OSM råkar modellera orten — mätt 2026-08-23
+  # svarar "Sala" med en NOD (2 500 m ur tabellen) medan "Hallstahammar" svarar
+  # med en kommunRELATION (14 616 m ur polygonen), och den skillnaden är inte
+  # en skillnad i verkligheten.
+  if ($Typ -eq 'ort' -or $Typ -eq 'led') { return [int]$golv }
+
+  $osmTyp = ''
+  if ($Rad.PSObject.Properties['osm_type']) { $osmTyp = ([string]$Rad.osm_type).ToLowerInvariant() }
+  if ($osmTyp -ne 'way' -and $osmTyp -ne 'relation') { return $golv }
+  if (-not $Rad.PSObject.Properties['boundingbox']) { return $golv }
+
+  $bb = @($Rad.boundingbox)
+  if ($bb.Count -ne 4) { return $golv }
+  # INVARIANT KULTUR, inte systemets. Uppslagstjänsten svarar med punkt som
+  # decimaltecken; på en svensk maskin läser [double]::Parse punkten som
+  # tusentalsavgränsare och "59.61" blir 5961. Det felet är tyst och gör
+  # radien astronomisk.
+  $inv = [System.Globalization.CultureInfo]::InvariantCulture
+  $tal = @()
+  foreach ($v in $bb) {
+    $d = 0.0
+    if (-not [double]::TryParse([string]$v, [System.Globalization.NumberStyles]::Float, $inv, [ref]$d)) {
+      return $golv
+    }
+    $tal += $d
+  }
+  $syd = $tal[0]; $norr = $tal[1]; $vast = $tal[2]; $ost = $tal[3]
+  $hojd = ($norr - $syd) * 111320
+  $bredd = ($ost - $vast) * 111320 * [math]::Cos($syd * [math]::PI / 180)
+  $matt = [math]::Round([math]::Sqrt($bredd * $bredd + $hojd * $hojd) / 2)
+  if ($matt -gt $golv) { return [int]$matt }
+  return [int]$golv
+}
+
+<#
+  Är svaret en stad eller en kommun?
+
+  EN STAD SOM SVAR PÅ ETT VÄGNAMN ÄR ALLTID FEL SVAR. Uppslagstjänsten faller
+  tillbaka på orten när den inte hittar det man frågade om, och den nålen ser ut
+  precis som en riktig. Mätt 2026-08-23 med exakt de parametrar daemonen
+  skickar: "E18, Västerås" gav place/city Västerås, 59,6110/16,5463 — alltså
+  centrum, medan de E18-avsnitt OSM själv känner ligger 1,3, 2,0 och 3,0 km
+  därifrån. Etiketten som visades blev "Västerås", så föraren fick läsa "Polis
+  vid Västerås". Ingen befintlig spärr fångade det: områdeskontrollen är hela
+  Västmanland och radien var konstanten 250.
+#>
+function Ar-Ortssvar {
+  param($Rad)
+
+  $kat = ''
+  if ($Rad.PSObject.Properties['category']) { $kat = [string]$Rad.category }
+  if (-not $kat -and $Rad.PSObject.Properties['class']) { $kat = [string]$Rad.class }
+  $kat = $kat.ToLowerInvariant()
+
+  $typ = ''
+  if ($Rad.PSObject.Properties['type']) { $typ = ([string]$Rad.type).ToLowerInvariant() }
+
+  if ($kat -eq 'boundary' -and $typ -eq 'administrative') { return $true }
+  return ($kat -eq 'place' -and (@('city', 'town', 'municipality', 'county', 'state') -contains $typ))
+}
+
+<#
+  Bryggans egen kopia av tabellen måste vara samma tabell.
+
+  Sidan kan inte läsa filen — den kör på facebook.com — så bryggkoden bär en
+  kopia (ALIAS_VASTERAS). Den ligger innanför läsdelen och kan därför inte
+  glida isär mellan fb-bridge.user.js och Chrome-tilläggets kopia utan att
+  jämförelsen ovan fäller den. Vad jämförelsen INTE kan se är om kopian
+  glidit isär från aliasfilen, och det felet är tyst: bryggan får en annan
+  koordinat än appen för samma inlägg.
+
+  Det LOGGAS, det stoppar inte. En saknad aliasrad i bryggan betyder ett rått
+  uppslag i stället för ett provat — sämre, men inte fel nog att vara värt en
+  daemon som vägrar starta mitt i natten. Och framför allt: DAEMONEN SJÄLV
+  drabbas inte. Den läser filen från disk och rör aldrig tabellen i sidan. Det
+  är Chrome-tillägget och Tampermonkey som får fel koordinat, och de är inte
+  den kanal som sveper gruppen. Att stanna vore att släcka den kanal som
+  fungerar på grund av ett fel i en som inte kör.
+
+  KONTROLLEN SER NUMERA OCKSÅ VÄRDENA. Fram till 2026-08-23 letade den bara
+  efter "'nyckel':" och kunde därför bara upptäcka SAKNADE rader. En rad som
+  fanns men pekade på fel söksträng gick igenom tyst — och det är just det
+  felet som är dyrast: en nål på fel ställe, inte en utebliven nål.
+#>
+if ($script:Alias.Count -gt 0) {
+  $saknas = @()
+  $avviker = @()
+  foreach ($n in $script:Alias.Keys) {
+    # Blanksteget efter kolon hör till formatet blocket genereras i:
+    # "    'nyckel': 'värde',". Utan det matchar "'hälla':" även raden
+    # "'hälla köpcentrum':" inte — citattecknet stänger nyckeln — men med det
+    # blir jämförelsen mot hela raden entydig.
+    if ($script:Lasdel.IndexOf("'" + $n + "': ") -lt 0) { $saknas += $n; continue }
+    if ($script:Lasdel.IndexOf("'" + $n + "': '" + $script:Alias[$n] + "',") -lt 0) { $avviker += $n }
+  }
+  $fixa = '. Generera om tabellen ur filen och kör sedan:  ' +
+          'copy tools\fb-bridge.user.js tools\brygg-tillagg\brygga.js'
+  if ($saknas.Count -gt 0) {
+    Logga 'START' ('Bryggans aliaskopia SAKNAR ' + $saknas.Count + ' av ' +
+                   $script:Alias.Count + ' platser (' +
+                   (($saknas | Select-Object -First 5) -join ', ') + ')' + $fixa) DarkYellow
+  }
+  if ($avviker.Count -gt 0) {
+    # Värre än en saknad rad: den här ger en koordinat, bara inte den filen
+    # pekar ut. Appen och bryggan sätter då olika nålar för samma inlägg.
+    Logga 'START' ('Bryggans aliaskopia har ' + $avviker.Count +
+                   ' rader med ANNAT VÄRDE än filen (' +
+                   (($avviker | Select-Object -First 5) -join ', ') + ')' + $fixa) Red
+  }
+  if ($saknas.Count -eq 0 -and $avviker.Count -eq 0) {
+    Logga 'START' ('Bryggans aliaskopia stämmer med filen: ' + $script:Alias.Count +
+                   ' platser, nyckel och värde.') DarkGray
+  }
+}
+
 function Spara-Geo {
   try {
     ($script:Geo | ConvertTo-Json -Depth 6) |
       Set-Content -Path $script:GeoFil -Encoding UTF8
   } catch { }
+}
+
+<#
+  Nollrader för platser som numera HAR ett alias måste bort.
+
+  Cachen sparar negativa svar utan TTL, med flit: annars slås samma okända
+  plats upp vid varje svep. Men det betyder också att 'irstamacken' förblir
+  död även efter att uppslaget lagats — nollraden svarar innan koden hinner
+  fråga. Raderna rensas därför en gång vid start, och bara de negativa:
+  en riktig träff är fortfarande en riktig träff.
+
+  Rensningen går via Sok-Alias och inte via ContainsKey, eftersom uppslaget
+  numera har fyra steg. "e18 vid avfarten mot hälla" har inget eget alias men
+  löses av prefixsteget — och just den sortens rad ligger död i cachen från
+  tiden då uppslaget bara var ett rakt ContainsKey.
+#>
+if ($script:Alias.Count -gt 0 -and $script:Geo.Count -gt 0) {
+  $rensade = 0
+  foreach ($n in @($script:Geo.Keys)) {
+    if ($script:Geo[$n]) { continue }                 # bara nollraderna
+    $delar = $n.Split('|', 2)
+    $plats = if ($delar.Count -eq 2) { $delar[1] } else { $delar[0] }
+    if (Sok-Alias -Nyckel $plats) { $script:Geo.Remove($n); $rensade++ }
+  }
+  if ($rensade -gt 0) {
+    Spara-Geo
+    Logga 'START' ('Geocachen: ' + $rensade + ' nollrader för platser med alias rensade.') DarkGray
+  }
 }
 
 <#
@@ -1839,6 +2424,60 @@ function Inom-Omradet {
 }
 
 <#
+  Cacheraden bär numera också HUR träffen kom till.
+
+  Rader som sparades före 2026-08-23 saknar fälten. De läses som ett rått
+  uppslag, vilket är precis vad de var — aldrig som 'alias'. Ett påhittat
+  'alias' hade gett gamla rader en poäng de inte förtjänat, och de raderna är
+  dessutom just de som slogs upp innan aliaslistan fanns.
+
+  Raden kommer som hashtabell när den är färsk och som PSCustomObject när den
+  lästes ur JSON-filen. Funktionen lämnar ifrån sig en hashtabell så att
+  resten av koden slipper bry sig om vilken.
+
+  FÄLTET FRÅGAS EFTER, DET LÄSES INTE RAKT AV. Set-StrictMode 2.0 (rad 176)
+  gör punktnotation mot ett fält som inte finns till ett undantag, och en
+  cacherad från före 2026-08-23 har varken kalla eller typ. Ett kastat
+  undantag här hade fällt hela geokodningen på en gammal rad.
+#>
+function Fyll-Traff {
+  param($Traff, [string]$Plats)
+
+  $Falt = {
+    param($Objekt, [string]$Namn)
+    if ($Objekt -is [System.Collections.IDictionary]) {
+      if ($Objekt.Contains($Namn)) { return [string]$Objekt[$Namn] }
+      return ''
+    }
+    if ($Objekt.PSObject.Properties[$Namn]) { return [string]$Objekt.$Namn }
+    return ''
+  }
+
+  $kalla = & $Falt $Traff 'kalla'
+  if (-not $kalla) { $kalla = 'nominatim' }
+  $typ = & $Falt $Traff 'typ'
+  if (-not $typ) { $typ = Gissa-GeokodTyp -Plats $Plats }
+
+  # Cacherader skrivna före 2026-08-23 saknar radien. Då faller vi tillbaka på
+  # typtabellen, alltså precis vad js/kvalitet.js hade gjort själv — ingen
+  # påhittad mätning.
+  $radie = & $Falt $Traff 'radieM'
+  if (-not $radie) {
+    $radie = 1200
+    if ($script:RadieGolvM.ContainsKey($typ)) { $radie = $script:RadieGolvM[$typ] }
+  }
+
+  return @{
+    lat    = [double]$Traff.lat
+    lon    = [double]$Traff.lon
+    label  = [string]$Traff.label
+    kalla  = $kalla
+    typ    = $typ
+    radieM = [int]$radie
+  }
+}
+
+<#
   Nominatim får både viewbox och bounded=1 — men det är en spärr som ligger
   hos någon annan. Svarar servern ändå med en träff utanför GRUPPENS område,
   eller ligger en gammal felaktig träff kvar i cachen, går koordinaten annars
@@ -1870,7 +2509,9 @@ function Geokoda {
   if ($script:Geo.ContainsKey($nyckel)) {
     $c = $script:Geo[$nyckel]
     if (-not $c) { return $null }                       # negativt svar, sparat med flit
-    if (Inom-Omradet -Lat $c.lat -Lon $c.lon -Grupp $Grupp) { return $c }
+    if (Inom-Omradet -Lat $c.lat -Lon $c.lon -Grupp $Grupp) {
+      return (Fyll-Traff -Traff $c -Plats $Plats)
+    }
     $script:Geo[$nyckel] = $null                        # förgiftad rad, kasta den
     Spara-Geo
     return $null
@@ -1880,6 +2521,23 @@ function Geokoda {
   $sedan = ((Get-Date) - $script:SenasteGeo).TotalMilliseconds
   if ($sedan -lt 1200) { Start-Sleep -Milliseconds ([int](1200 - $sedan)) }
   $script:SenasteGeo = Get-Date
+
+  # ALIASNYCKELN FÖRST, precis som js/geocode.js gör. Parsern lägger ut exakta
+  # aliasnycklar, och flera av dem hittar OSM inte i rå form — se
+  # motiveringen vid $script:Alias. Tabellen är Västerås och används bara för
+  # Västeråsgrupper.
+  $forVasterAs = $false
+  foreach ($o in @($Grupp.orter)) {
+    if ($o -and $o.ToLowerInvariant() -eq 'västerås') { $forVasterAs = $true; break }
+  }
+
+  # Adressen går FÖRE listan: "Kristinagatan 8" är redan precisare än något
+  # alias kan bli, och tar vi aliasvägen kastar vi bort husnumret vi faktiskt
+  # fick. Se Ar-ExaktAdress för varför regeln är så snål.
+  $adress = Ar-ExaktAdress -Nyckel $ren
+
+  $alias = $null
+  if ($forVasterAs -and -not $adress) { $alias = Sok-Alias -Nyckel $ren }
 
   # Lägg till orten om den inte redan står i frasen, så vi slipper fråga
   # Nominatim om "Vasagatan" i hela Sverige. Orten kommer från gruppens egen
@@ -1894,6 +2552,9 @@ function Geokoda {
   if (-not $ortRedanMed -and $orter.Count -gt 0 -and $orter[0]) {
     $fraga = $Plats + ', ' + $orter[0]
   }
+  # Aliasraden bär redan orten ("Circle K, Irsta, Västerås") och vinner över
+  # den påklistrade: den är provad, frasen är gissad.
+  if ($alias) { $fraga = $alias }
 
   $ruta = (@($Grupp.ruta | ForEach-Object { [double]$_ }) -join ',')
   $url = 'https://nominatim.openstreetmap.org/search' +
@@ -1909,15 +2570,63 @@ function Geokoda {
   if ($rader.Count -eq 0) {
     # Negativt svar cachas också, annars slås samma okända plats upp varje
     # svep och vi bränner Nominatims tålamod på ingenting.
+    #
+    # OCH DET BLIR INGET ANDRA FÖRSÖK. Svarade uppslagstjänsten tomt på en
+    # aliasrad frestar det att fråga om med den råa frasen i stället. Det är
+    # precis så 'apalby ip' blev Apalbyvägen i Norrmalm, 1,7 km fel, med 0,95
+    # i tillit. Hellre ingen nål än en nål på fel ställe: platsen hoppas över
+    # och inlägget publiceras aldrig.
     $script:Geo[$nyckel] = $null
     Spara-Geo
     return $null
   }
 
+  <#
+    STADSSPÄRREN, FÖRE ALLT ANNAT. Se Ar-Ortssvar: en stad som svar på ett
+    vägnamn är alltid fel svar. Frågade någon EFTER en ort är svaret rätt —
+    "Polis i Sala" ska ge Sala — och då prövas både den frasen inlägget bar och
+    den söksträng som faktiskt skickades.
+  #>
+  $fragaRen = Normalisera-Text $fraga
+  $badOmOrt = ($ren -match $script:OrtRe) -or ($fragaRen -match $script:OrtRe)
+  if ((Ar-Ortssvar -Rad $rader[0]) -and -not $badOmOrt) {
+    $script:Geo[$nyckel] = $null
+    Spara-Geo
+    Logga 'GEO-KASTAD' ('[' + $Grupp.namn + '] svaret var en ort men frågan var det inte: "' +
+      $fraga + '" -> ' + [string]$rader[0].category + '/' + [string]$rader[0].type) DarkYellow
+    return $null
+  }
+
+  <#
+    HUR TRÄFFEN KOM TILL, HUR BRETT DEN PEKAR OCH HUR BRETT DET ÄR I METER. De
+    tre fälten går rakt in i raden som geokod, geokod_typ och geokod_radius_m.
+    Utan dem antar js/kvalitet.js det värsta: 'okand' ger −0,15 i poäng OCH
+    1 200 m radie, och med appens antagna GPS-fel på 25 m ovanpå blir det
+    hypot(25, 1200) = 1200,26 mot tröskeln platsOanvandbarOverM = 1200.
+    Tjugosex centimeter över — och rapporten tvingas till NIVA.LAG, alltså
+    BEHANDLING.TYST.
+
+    TYPEN KOMMER UR SVARET, INTE UR FRÅGAN. Fram till 2026-08-23 hårdkodades
+    varje aliasträff till 'vag' och varje fras med ett husnummer till 'adress',
+    oavsett vad uppslagstjänsten faktiskt svarade. Se Typ-FranSvar och
+    Radie-FranSvar för de mätta felen det gav. Det enda frågan fortfarande får
+    bestämma är genomfartsvägarna: E18 blir inte ett hundrametersavsnitt bara
+    för att OSM svarar med ett.
+  #>
+  $kalla = 'nominatim'
+  if ($alias) { $kalla = 'alias' }
+
+  $arLed = ($ren -match $script:ArLedRe) -or ($fragaRen -match $script:ArLedRe)
+  if ($arLed) { $typ = 'led' } else { $typ = Typ-FranSvar -Rad $rader[0] }
+  $radie = Radie-FranSvar -Rad $rader[0] -Typ $typ
+
   $traff = @{
-    lat   = [double]$rader[0].lat
-    lon   = [double]$rader[0].lon
-    label = ([string]$rader[0].name)
+    lat    = [double]$rader[0].lat
+    lon    = [double]$rader[0].lon
+    label  = ([string]$rader[0].name)
+    kalla  = $kalla
+    typ    = $typ
+    radieM = $radie
   }
   if (-not $traff.label) { $traff.label = $Plats }
   if ($traff.label.Length -gt 120) { $traff.label = $traff.label.Substring(0, 120) }
@@ -2142,6 +2851,33 @@ function Skicka-Driftnotis {
   # tillståndsmaskinen VILLE skicka, inte hur många som kom fram — annars
   # skulle provet bara gå att köra skarpt, mot en riktig telefon.
   $script:DriftRaknare++
+
+  # ------------------------------------------------------------------
+  # DRIFTNOTISER GÅR TILL LOGGEN, INTE TILL EN TELEFON.
+  #
+  # Ägaren 23 aug 2026: "Sluta skicka massa såna här 'bryggan ser inte
+  # Stockholm', kontot är inte medlem i gruppen — du skickar massa notiser,
+  # vad fan gör du?"
+  #
+  # Han har helt rätt, och felet är principiellt. Notiskanalen till en
+  # förares telefon är reserverad för EN sak: att det står polis på vägen.
+  # Allt annat som tar sig in där gör den kanalen mindre värd. Får man tre
+  # meddelanden om att en Facebook-grupp inte gick att läsa slutar man titta
+  # på nästa pling — och nästa pling kan vara en laserkontroll.
+  #
+  # Att bryggan inte når en grupp är dessutom inget föraren kan göra något
+  # åt. Det är ett meddelande till den som DRIFTAR appen, och den personen
+  # läser loggen.
+  #
+  # -Driftnotiser slår på dem igen för den som felsöker och vill se hela
+  # kedjan hela vägen till luren. Veckans livstecken går fortfarande fram:
+  # det är det enda som bevisar att VAPID-signeringen lever, och det kommer
+  # en gång i veckan, inte var gång en flik krånglar.
+  if (-not $Driftnotiser -and $Titel -notlike '*kedjan lever*') {
+    Logga 'DRIFT' ('(tyst — driftnotiser är av: ' + $Titel + ' — ' + $Text + ')') DarkGray
+    return $false
+  }
+
   if (-not $Skarpt) {
     Logga 'DRIFT' ('(torrkörning — skulle skickat driftnotis: ' + $Titel + ')') DarkGray
     return $false
@@ -3164,17 +3900,25 @@ function Behandla-Svep {
       continue
     }
 
+    # VISNINGSTIDEN, inte trovärdighetstiden. expires_at svarar bara på om
+    # rapporten ska synas — hur mycket appen tror på den räknar js/kvalitet.js
+    # ut på egen hand, ur ålder och typ, och den räkningen använder
+    # $script:Livslangd-talen. Skrev daemonen trovärdighetstiden här skulle
+    # nålen försvinna efter 45 minuter oavsett vad appen tycker, och ägarens
+    # fyra timmar hade blivit en ändring som inte syns.
     $typ = [string]$t.type
-    $minuter = 45
-    if ($script:Livslangd.ContainsKey($typ)) { $minuter = [int]$script:Livslangd[$typ] }
+    $minuter = 240
+    if ($script:Visningstid.ContainsKey($typ)) { $minuter = [int]$script:Visningstid[$typ] }
     $ttl = $minuter * 60000
     $skapad = [int64]$p.tid
     if ($skapad -gt $nu) { $skapad = $nu }
     $forfaller = $skapad + $ttl
 
     if ($forfaller -le ($nu + 60000)) {
-      # Inlägget är äldre än varningen skulle leva. Gammal varning är sämre
-      # än ingen: föraren bromsar i onödan och slutar lita på appen.
+      # Inlägget är äldre än varningen skulle synas. Ett inlägg som är fyra
+      # timmar gammalt hör inte ens hemma på kartan längre — och det som är
+      # yngre kommer in graderat efter sin ålder: blek nål, "Troligen inte
+      # kvar" i texten, ingen uppläsning och ingen notis.
       $script:Summa.hoppade++
       Markera-Klar $p.nyckel
       Logga 'HOPPAS-ÖVER' ('orsak=för-gammalt (' + [math]::Round(($nu - $skapad) / 60000) + ' min)  "' + (Kort $p.text) + '"') DarkGray
@@ -3220,6 +3964,27 @@ function Behandla-Svep {
       expires_at  = $forfaller
       confirms    = 1
       denials     = 0
+
+      # Kvalitetsfälten. Kolumnerna finns sedan supabase/kvalitetsfalt.sql och
+      # fbmejl_ta_emot läser dem redan ur JSON-raden — det här är en
+      # tilläggsrad, inte ett schemaarbete. Se Geokoda för varför de två
+      # värdena ser ut som de gör, och varför en rad UTAN dem tystades av
+      # graderaren med tjugosex centimeters marginal.
+      #
+      # VARFÖR INTE OCKSÅ parser_confidence OCH fordrojning_s. js/facebook.js
+      # skriver dem, men de drar poängen åt ANDRA hållet: fördröjningen ger
+      # −0,20 vid tio minuter, och ett facebookinlägg är nästan alltid några
+      # minuter gammalt när daemonen ser det. Att slå på dem i samma ändring
+      # som lagar tystnaden vore att laga och återinföra felet i ett svep.
+      # De mäts för sig.
+      #
+      # geokod_radius_m ÄR NYTT, och det är den mätta bredden ur svaret. Utan
+      # den räknar js/kvalitet.js på typtabellen, alltså en konstant — och en
+      # konstant kan aldrig utlösa platsHopplosOverM hur fel nålen än står.
+      # Se Radie-FranSvar.
+      geokod          = [string]$traff.kalla
+      geokod_typ      = [string]$traff.typ
+      geokod_radius_m = [int]$traff.radieM
     }
 
     $alderMin = [math]::Round(($nu - $skapad) / 60000)
@@ -3230,6 +3995,7 @@ function Behandla-Svep {
       Logga 'SKULLE-SKICKA' (
         'typ=' + $typ +
         ' plats="' + $traff.label + '" ' + $traff.lat + ',' + $traff.lon +
+        ' geokod=' + $traff.kalla + '/' + $traff.typ +
         ' tilltro=' + [math]::Round([double]$t.confidence * 100) + '%' +
         ' ålder=' + $alderMin + 'min (' + $p.kalla + ')' +
         ' lever=' + $minuter + 'min' +
@@ -3377,7 +4143,10 @@ foreach ($g in $script:Grupper) {
       'adresser till slug, så numeriskt id är det stabila valet.') DarkYellow
   }
 }
-Logga 'START' ('läsdel ur ' + (Split-Path -Leaf $Bryggfil) + ': ' + $script:Lasdel.Length + ' tecken, ordagrant')
+# Båda talen står med, och det är inte pynt: skillnaden mellan dem är precis
+# det som fram till 2026-08-23 inte jämfördes mot Chrome-tilläggets kopia.
+Logga 'START' ('läsdel ur ' + (Split-Path -Leaf $Bryggfil) + ': ' + $script:Lasdel.Length +
+               ' av ' + $script:BryggKalla.Length + ' tecken, ordagrant (hela filen jämförd mot tilläggets kopia)')
 Logga 'START' ('logg: ' + $script:LoggSokvag)
 
 if ($Sjalvtest) {
@@ -3804,6 +4573,164 @@ groupIds: [
     }
   }
 
+  # ---- 3c. Aliasuppslaget: rätt plats på kartan ------------------------
+  #
+  # Mätt 2026-08-22 mot den riktiga gruppen: 'irstamacken, Västerås' gav noll
+  # träffar och 'apalby ip, Västerås' gav Apalbyvägen i Norrmalm, 1,7 km fel.
+  # Proven nedan mäter uppslaget, inte nätet — de rör aldrig OSM.
+  Logga 'PROV' '  — aliasuppslaget: platsnamnet ska hitta hem —' Cyan
+
+  Provfall 'aliasfilen är läst och har platserna gruppen faktiskt skriver' {
+    if ($script:Alias.Count -lt 1) { return 'aliaslistan är tom — filen lästes inte' }
+    foreach ($n in @('hälla', 'dillos', 'erikslund', 'irstamacken', 'apalby ip')) {
+      if (-not $script:Alias.ContainsKey($n)) { return 'saknar nyckeln ' + $n }
+    }
+    return $true
+  }
+
+  Provfall 'de mätta bortfallen slås upp i listan i stället för rått' {
+    if ((Sok-Alias -Nyckel 'irstamacken') -ne 'Circle K, Irsta') { return 'irstamacken' }
+    if ((Sok-Alias -Nyckel 'apalby ip') -ne 'Apalby, Västerås') { return 'apalby ip' }
+    if ((Sok-Alias -Nyckel 'dillos') -ne 'Dillos, Västerås') { return 'dillos' }
+    if ((Sok-Alias -Nyckel 'erikslund') -ne 'Erikslunds köpcentrum, Västerås') { return 'erikslund' }
+    return $true
+  }
+
+  Provfall 'nyckeln utan mellanslag hittas — steget daemonen saknade' {
+    # "rv 66" och "e 18" står som 'rv66' och 'e18' i filen. Appen och bryggan
+    # provade båda varianten utan mellanslag; den bana som kör gjorde det inte.
+    #
+    # Söksträngarna byttes 2026-08-23: 'Riksväg 66, Västmanland' och 'Riksväg
+    # 56, Västmanland' gav MÄTT noll rader hos uppslagstjänsten, och
+    # 'E18, Västerås' gav STADEN Västerås. 'Rv 66' och 'E 18, Västerås' ger
+    # riktiga vägavsnitt. Se -ProvaAlias.
+    if ((Sok-Alias -Nyckel 'rv 66') -ne 'Rv 66') { return 'rv 66' }
+    if ((Sok-Alias -Nyckel 'e 18') -ne 'E 18, Västerås') { return 'e 18' }
+    return $true
+  }
+
+  Provfall 'ett extra ord i frasen dödar inte uppslaget' {
+    if ((Sok-Alias -Nyckel 'polisbil vid hälla') -ne 'Hälla, Västerås') { return 'sista ordet' }
+    # Det längsta som matchar ska vinna: köpcentrumet, inte stadsdelen.
+    if ((Sok-Alias -Nyckel 'hälla köpcentrum') -ne 'ICA Maxi Hälla') { return 'längsta träffen förlorade' }
+    # Prefixsteget lever: 'vasagatan' finns, 'vasagatan mörk volvo' gör det inte.
+    if ((Sok-Alias -Nyckel 'vasagatan mörk volvo') -ne 'Vasagatan, Västerås') { return 'prefixsteget' }
+    return $true
+  }
+
+  Provfall 'en genomfartsväg förlorar mot en riktig plats i samma fras' {
+    # "E18 vid Hälla" träffar prefixet 'e18' och skulle bli hela E18 — tre mil
+    # väg, geokod_typ 'led', 8 000 m osäkerhet, alltså bortkastad. Sista ordet
+    # SÄGER var på E18 polisen står, och det är den upplysningen som gör
+    # rapporten användbar.
+    if ((Sok-Alias -Nyckel 'e18 vid avfarten mot hälla') -ne 'Hälla, Västerås') {
+      return 'genomfartsvägen vann över stadsdelen'
+    }
+    if ((Sok-Alias -Nyckel 'räta linjen vid kvicksund') -ne 'Kvicksund') {
+      return 'räta linjen vann över orten'
+    }
+    # ...men står bara vägen där är vägen svaret, precis som förut.
+    if ((Sok-Alias -Nyckel 'e18 österut') -ne 'E 18, Västerås') { return 'e18 ensamt tappades' }
+    return $true
+  }
+
+  Provfall 'typ och radie läses ur SVARET, inte ur frågan' {
+    # Ett hus är en adress, ingenting annat. Fram till 2026-08-23 räckte det
+    # att TEXTEN bar ett husnummer för att få 40 m — det snävaste
+    # icke-GPS-läget — även när svaret var hela gatan.
+    $gata = [pscustomobject]@{
+      category = 'highway'; type = 'residential'; addresstype = 'road'
+      osm_type = 'way'; boundingbox = @('59.6082', '59.6100', '16.5320', '16.5355')
+    }
+    if ((Typ-FranSvar -Rad $gata) -ne 'vag') { return 'en gata blev inte vag' }
+    if ((Radie-FranSvar -Rad $gata -Typ 'vag') -lt 250) { return 'radien understeg golvet' }
+
+    $hus = [pscustomobject]@{
+      category = 'place'; type = 'house'; addresstype = 'building'
+      osm_type = 'node'; boundingbox = @('59.6082', '59.6083', '16.5320', '16.5321')
+    }
+    if ((Typ-FranSvar -Rad $hus) -ne 'adress') { return 'ett hus blev inte adress' }
+
+    # En NOD får en påhittad ruta av uppslagstjänsten. Den får aldrig krympa
+    # radien: stadsdelsnoden Vallby fick exakt samma 2 254 x 4 453 m som Hälla.
+    $stadsdel = [pscustomobject]@{
+      category = 'place'; type = 'suburb'; addresstype = 'suburb'
+      osm_type = 'node'; boundingbox = @('59.6025', '59.6425', '16.4836', '16.5236')
+    }
+    if ((Typ-FranSvar -Rad $stadsdel) -ne 'stadsdel') { return 'en stadsdel blev inte stadsdel' }
+    if ((Radie-FranSvar -Rad $stadsdel -Typ 'stadsdel') -ne 900) {
+      return 'nodens påhittade ruta togs för en mätning'
+    }
+
+    # En stor polygon får däremot bredda. Golfbanan är 1 532 x 1 250 m.
+    $bana = [pscustomobject]@{
+      category = 'leisure'; type = 'golf_course'; addresstype = 'leisure'
+      osm_type = 'way'; boundingbox = @('59.6222', '59.6334', '16.5000', '16.5270')
+    }
+    if ((Typ-FranSvar -Rad $bana) -ne 'punkt') { return 'en anläggning blev inte punkt' }
+    if ((Radie-FranSvar -Rad $bana -Typ 'punkt') -le 15) { return 'polygonen breddade inte radien' }
+    return $true
+  }
+
+  Provfall 'en stad som svar på ett vägnamn känns igen som fel svar' {
+    $stad = [pscustomobject]@{ category = 'place'; type = 'city'; addresstype = 'city' }
+    if (-not (Ar-Ortssvar -Rad $stad)) { return 'staden kändes inte igen' }
+    $kommun = [pscustomobject]@{ category = 'boundary'; type = 'administrative' }
+    if (-not (Ar-Ortssvar -Rad $kommun)) { return 'kommunen kändes inte igen' }
+    $vag = [pscustomobject]@{ category = 'highway'; type = 'motorway'; addresstype = 'road' }
+    if (Ar-Ortssvar -Rad $vag) { return 'en väg togs för en ort' }
+    # Undantaget: bad frågan om en ort är ortssvaret rätt svar.
+    if ((Normalisera-Text 'Sala') -notmatch $script:OrtRe) { return 'Sala räknades inte som ortnamn' }
+    if ((Normalisera-Text 'e18') -match $script:OrtRe) { return 'e18 räknades som ortnamn' }
+    return $true
+  }
+
+  Provfall 'genomfartsvägarna får typen led, inte adress och inte vag' {
+    if ((Gissa-GeokodTyp -Plats 'riksväg 66') -ne 'led') { return 'riksväg 66 blev inte led' }
+    if ((Gissa-GeokodTyp -Plats 'E18') -ne 'led') { return 'E18 blev inte led' }
+    if ((Gissa-GeokodTyp -Plats 'Rv 56') -ne 'led') { return 'Rv 56 blev inte led' }
+    # ...men en vanlig gata är fortfarande en gata.
+    if ((Gissa-GeokodTyp -Plats 'Vasagatan') -ne 'vag') { return 'Vasagatan blev inte vag' }
+    if ((Gissa-GeokodTyp -Plats 'Vasagatan 12') -ne 'adress') { return 'Vasagatan 12 blev inte adress' }
+    return $true
+  }
+
+  Provfall 'en okänd plats ger INGET alias — hellre ingen nål än fel nål' {
+    if (Sok-Alias -Nyckel 'la pizza') { return 'la pizza fick ett alias' }
+    if (Sok-Alias -Nyckel 'xy') { return 'för kort nyckel gav träff' }
+    return $true
+  }
+
+  Provfall 'en exakt adress går förbi listan, ett vägnummer gör det inte' {
+    if (-not (Ar-ExaktAdress -Nyckel 'kristinagatan 8')) { return 'kristinagatan 8 räknades inte som adress' }
+    if (-not (Ar-ExaktAdress -Nyckel 'björnövägen 12')) { return 'björnövägen 12 räknades inte som adress' }
+    if (-not (Ar-ExaktAdress -Nyckel 'stora gatan 3')) { return 'stora gatan 3 räknades inte som adress' }
+    # 66 är ett vägnummer, inte ett husnummer. Går den här som adress hamnar
+    # nålen på hus 66 vid en gata i stället för på riksvägen.
+    if (Ar-ExaktAdress -Nyckel 'riksväg 66') { return 'riksväg 66 räknades som adress' }
+    if (Ar-ExaktAdress -Nyckel 'gatan 12') { return 'lösryckt gatan 12 räknades som adress' }
+    return $true
+  }
+
+  Provfall 'gissningen ur frasen svarar rätt när svaret inte finns' {
+    # Gissningen används numera BARA som reserv: för cacherader från före
+    # 2026-08-23 och för stadsspärrens ortsfråga. Typen i drift kommer ur
+    # OSM-svaret, se Typ-FranSvar. Reserven ska ändå svara rätt.
+    if ((Gissa-GeokodTyp -Plats 'kristinagatan 8') -ne 'adress') { return 'adress' }
+    if ((Gissa-GeokodTyp -Plats 'norrleden') -ne 'vag') { return 'vag' }
+    if ((Gissa-GeokodTyp -Plats 'västerås') -ne 'ort') { return 'ort' }
+    if ((Gissa-GeokodTyp -Plats 'la pizza') -ne 'okand') { return 'okand' }
+    return $true
+  }
+
+  Provfall 'en cacherad utan kvalitetsfält läses som rått uppslag, inte som alias' {
+    $gammal = @{ lat = 59.6103; lon = 16.5448; label = 'Vasagatan' }
+    $fylld = Fyll-Traff -Traff $gammal -Plats 'vasagatan'
+    if ($fylld.kalla -ne 'nominatim') { return 'kalla blev ' + $fylld.kalla }
+    if ($fylld.typ -ne 'vag') { return 'typ blev ' + $fylld.typ }
+    return $true
+  }
+
   # ---- 3b. Svepets utkorg lämnas tillbaka, inte skickad ----------------
   #
   # Behandla-Svep skickade förut själv. Nu returnerar den utkorgen så att
@@ -3893,19 +4820,33 @@ groupIds: [
     'Polis star vid Erikslund',
     'Fartkontroll pa Sveavagen'
   )
+  # INGET .GetNewClosure() HÄR, och det är inte en förenkling.
+  #
+  # Fram till 2026-08-23 bar de två provblocken .GetNewClosure(). Den binder
+  # skriptblocket till en NY dynamisk modul, och inifrån en modul syns inte
+  # skriptets egna funktioner. Båda proven kastade därför "Test-
+  # Nykterhetskontroll is not recognized" i stället för att mäta någonting —
+  # och eftersom Provfall räknar ett undantag som FEL såg det ut som att
+  # produktregeln var trasig, varje gång, i stället för att den inte provades.
+  # Det är precis det fel filens egen kommentar vid Kravs varnar för: ett prov
+  # som inte kan bli grönt är lika värdelöst som ett som inte kan bli rött.
+  #
+  # Closuren behövdes aldrig: $g används bara i provets NAMN, som byggs innan
+  # blocket körs. Utan closure körs blocket i anroparens scope, och där syns
+  # både funktionen och $nykterFall/$polisFall.
   foreach ($g in @($gVast, $gSthlm)) {
     Provfall ('nykterhets- och drogkontroller vägras i "' + $g.namn + '"') {
       foreach ($t in $nykterFall) {
         if (-not (Test-Nykterhetskontroll $t)) { return 'släpptes igenom: ' + $t }
       }
       return $true
-    }.GetNewClosure()
+    }
     Provfall ('vanliga poliskontroller släpps igenom i "' + $g.namn + '"') {
       foreach ($t in $polisFall) {
         if (Test-Nykterhetskontroll $t) { return 'vägrades felaktigt: ' + $t }
       }
       return $true
-    }.GetNewClosure()
+    }
   }
 
   $gick = $script:ProvAntal - $script:ProvFel
@@ -3913,6 +4854,137 @@ groupIds: [
     $(if ($script:ProvFel -eq 0) { 'Green' } else { 'Red' })
   if ($script:ProvFel -gt 0) { exit 1 }
   Logga 'PROV' 'Alla fall gröna. En lista, en ruta per grupp, ingen varning i fel stad.' Green
+  exit 0
+}
+
+# =====================================================================
+#  -ProvaAlias — slår upp VARJE söksträng i aliasfilen
+# =====================================================================
+#
+# VARFÖR PROVET FINNS, och varför det är en driftkontroll och inte ett test.
+#
+# Aliasfilens egen kommentar påstod att varje söksträng var provad och gav en
+# träff på rätt ställe. Den 2026-08-23 mättes alla värden i ett svep, och sju
+# av dem var fel:
+#
+#   0 rader   'Hälla köpcentrum, Västerås', 'Hallstahammarsvägen, Västerås',
+#             'Djurgårdsvägen, Västerås', 'Lillåudden, Västerås',
+#             'Riksväg 66, Västmanland', 'Riksväg 56, Västmanland'
+#   staden    'E18, Västerås' -> place/city Västerås, alltså en nål på Stora
+#             torget med etiketten "Västerås" för varje E18-rapport
+#
+# Båda felen är TYSTA i drift. Ett nollsvar hoppas över och cachas, så inlägget
+# publiceras aldrig och ingen logg säger att det var aliaslistan som brast. Ett
+# ortssvar ser ut som en fullgod träff. Ingen automatisk kontroll kunde hitta
+# dem, för svaret finns bara hos uppslagstjänsten.
+#
+# Provet ställer FRÅGAN PRECIS SOM DRIFTEN GÖR: samma parametrar, samma ruta,
+# samma kö på ett anrop i sekunden. Det tar därför en dryg minut för ~120
+# värden. Kör det innan en ny rad läggs in i filen.
+
+if ($ProvaAlias) {
+  Logga 'PROV' 'Aliasfilen — varje söksträng mot uppslagstjänsten' Cyan
+
+  if ($script:Alias.Count -eq 0) {
+    Logga 'PROV' ('Aliaslistan är tom eller saknas (' + $script:AliasFil + ').') Red
+    exit 1
+  }
+
+  # Samma ruta som gruppen kör med. Grupplistan bor i bryggfilen; provet gäller
+  # Västeråstabellen, så Västeråsgruppens ruta är den rätta att fråga i.
+  $provRuta = @(15.10, 59.30, 17.30, 60.30)
+  foreach ($g in $script:Grupper) {
+    foreach ($o in @($g.orter)) {
+      if ($o -and $o.ToLowerInvariant() -eq 'västerås') { $provRuta = @($g.ruta); break }
+    }
+  }
+  $rutaStr = (@($provRuta | ForEach-Object { [double]$_ }) -join ',')
+
+  # Ett värde kan stå på flera nycklar. Slå upp det EN gång och räkna upp
+  # nycklarna i rapporten — annars bränns tio sekunder på 'Rv 66'.
+  $perVarde = @{}
+  foreach ($n in $script:Alias.Keys) {
+    $v = [string]$script:Alias[$n]
+    if (-not $perVarde.ContainsKey($v)) { $perVarde[$v] = @() }
+    $perVarde[$v] += $n
+  }
+
+  $tomma = @()
+  $orter = @()
+  $fel = @()
+  $ok = 0
+  $i = 0
+  $totalt = $perVarde.Keys.Count
+
+  foreach ($v in ($perVarde.Keys | Sort-Object)) {
+    $i++
+    $nycklar = ($perVarde[$v] | Sort-Object) -join ', '
+
+    $sedan = ((Get-Date) - $script:SenasteGeo).TotalMilliseconds
+    if ($sedan -lt 1200) { Start-Sleep -Milliseconds ([int](1200 - $sedan)) }
+    $script:SenasteGeo = Get-Date
+
+    $url = 'https://nominatim.openstreetmap.org/search' +
+      '?q=' + [uri]::EscapeDataString($v) +
+      '&format=jsonv2&limit=1&countrycodes=se&accept-language=sv&bounded=1' +
+      '&viewbox=' + [uri]::EscapeDataString($rutaStr)
+
+    $rader = @()
+    try {
+      $svar = Invoke-RestMethod -Uri $url -TimeoutSec 20 -Headers @{
+        'User-Agent' = 'Polisvakt-brygg-daemon/1.0 (polisvakt.pages.dev)'
+        'Accept'     = 'application/json'
+      }
+      $rader = @($svar)
+    } catch {
+      $fel += ($v + '  [' + $nycklar + ']  ' + $_.Exception.Message)
+      Logga 'PROV' ('  {0,3}/{1}  {2,-40} NÄTFEL' -f $i, $totalt, $v) Red
+      continue
+    }
+
+    if ($rader.Count -eq 0) {
+      $tomma += ($v + '  [' + $nycklar + ']')
+      Logga 'PROV' ('  {0,3}/{1}  {2,-40} 0 RADER' -f $i, $totalt, $v) Red
+      continue
+    }
+
+    $rad = $rader[0]
+    # Samma undantag som stadsspärren i Geokoda: bad söksträngen om en ort är
+    # ett ortssvar rätt svar.
+    $arOrt = (Ar-Ortssvar -Rad $rad) -and ((Normalisera-Text $v) -notmatch $script:OrtRe)
+    $typ = Typ-FranSvar -Rad $rad
+    $radie = Radie-FranSvar -Rad $rad -Typ $typ
+    $etikett = ''
+    if ($rad.PSObject.Properties['name']) { $etikett = [string]$rad.name }
+    $beskr = ('{0}/{1}  {2}  {3} m  {4},{5}' -f
+      [string]$rad.category, [string]$rad.type, $etikett, $radie, $rad.lat, $rad.lon)
+
+    if ($arOrt) {
+      $orter += ($v + '  [' + $nycklar + ']  -> ' + $beskr)
+      Logga 'PROV' ('  {0,3}/{1}  {2,-40} ORTSSVAR  {3}' -f $i, $totalt, $v, $beskr) Red
+    } else {
+      $ok++
+      Logga 'PROV' ('  {0,3}/{1}  {2,-40} {3}' -f $i, $totalt, $v, $beskr) DarkGray
+    }
+  }
+
+  Logga 'PROV' ('Aliasfilen: ' + $ok + '/' + $totalt + ' söksträngar gav ett användbart svar.') `
+    $(if ($tomma.Count -eq 0 -and $orter.Count -eq 0 -and $fel.Count -eq 0) { 'Green' } else { 'Red' })
+
+  foreach ($r in $tomma) { Logga 'PROV' ('  NOLL RADER: ' + $r) Red }
+  foreach ($r in $orter) { Logga 'PROV' ('  SVARADE MED EN ORT: ' + $r) Red }
+  foreach ($r in $fel)   { Logga 'PROV' ('  NÄTFEL: ' + $r) DarkYellow }
+
+  if ($tomma.Count -gt 0 -or $orter.Count -gt 0) {
+    Logga 'PROV' ('En söksträng som ger noll rader publicerar aldrig sitt inlägg, och en ' +
+                  'som ger en ort sätter nålen mitt i stan. Byt värdet i ' +
+                  'data\aliases.vasteras.json, generera om ALIAS_VASTERAS i ' +
+                  'tools\fb-bridge.user.js och kör provet igen.') Red
+    exit 1
+  }
+  # Nätfel är inte filens fel. De ska synas, men de får inte fälla provet —
+  # annars blir en skakig uppkoppling till "aliasfilen är trasig".
+  Logga 'PROV' 'Varje söksträng gav ett svar som pekar på något annat än en kommun.' Green
   exit 0
 }
 

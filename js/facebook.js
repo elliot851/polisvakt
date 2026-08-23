@@ -22,7 +22,10 @@
 
 import { parseReportText } from './parser.js';
 import { geocode } from './geocode.js';
-import { TTL_MINUTES } from './store.js';
+// Visningstiden, inte trovärdighetstiden: expires_at svarar bara på om
+// rapporten ska synas. Se store.js VISNING_MINUTER för varför de två är
+// skilda tal sedan varningarna ligger kvar i fyra timmar.
+import { visningMinuter } from './store.js';
 import { CONFIG, apiHeaders, hasBackend } from './config.js';
 import { normalize, uid, clamp } from './util.js';
 // Samma gissning som Telegram-bryggan gör. Lånad, inte kopierad: två
@@ -119,7 +122,7 @@ export function byggRapport(parsed, hit, val = {}) {
     text = '', deviceId = BRIDGE_DEVICE, externalId = null,
     createdAt = Date.now(), nu = Date.now(), id = uid(),
   } = val;
-  const ttlMs = (TTL_MINUTES[parsed.type] ?? 45) * 60000;
+  const ttlMs = visningMinuter(parsed.type) * 60000;
   const expiresAt = val.expiresAt ?? createdAt + ttlMs;
 
   const row = {
@@ -159,11 +162,15 @@ export function byggRapport(parsed, hit, val = {}) {
     geokod: hit.source || 'okand',
     geokod_typ: gissaGeokodTyp(parsed.place, hit),
 
-    // De tre nedan är null med flit. NULL betyder "vet inte" och ska aldrig
+    // Radien MÄTT ur OSM-svaret när svaret bar en mätning, annars null så att
+    // kvalitet.js får räkna fram den ur geokod_typ. Se radieFranSvar() i
+    // js/geocode.js för varför boundingboxen bara får BREDDA och aldrig smalna
+    // av — en nod får en påhittad ruta och en väg får bara sitt eget avsnitt.
+    geokod_radius_m: Number.isFinite(hit?.radieM) ? hit.radieM : null,
+
+    // De två nedan är null med flit. NULL betyder "vet inte" och ska aldrig
     // tolkas som noll: vi vet ingenting om skribentens GPS eller fart, och en
-    // nolla där hade sagt "perfekt noggrannhet, stillastående". Radien lämnas
-    // åt kvalitet.js att räkna fram ur geokod_typ.
-    geokod_radius_m: null,
+    // nolla där hade sagt "perfekt noggrannhet, stillastående".
     gps_accuracy_m: null,
     fart_kmh: null,
   };
@@ -317,7 +324,14 @@ export async function ingest(posts, options = {}) {
 
     // En varning som redan hunnit löpa ut ska aldrig läggas ut. Inlägget kan
     // ha legat i flödet i timmar innan bryggan såg det.
-    const ttlMs = (TTL_MINUTES[parsed.type] ?? 45) * 60000;
+    //
+    // Grinden är visningstiden, alltså fyra timmar. Ett tre timmar gammalt
+    // inlägg läggs numera ut — men det kommer in som det det är: blek nål,
+    // "Troligen inte kvar" i texten, ingen uppläsning och ingen notis
+    // (åldersgrinden i js/app.js räknar på trovärdighetstiden och släpper
+    // inte igenom det). Att i stället tysta det helt hade betytt att kartan
+    // saknade det som faktiskt hänt under dagen.
+    const ttlMs = visningMinuter(parsed.type) * 60000;
     const createdAt = Number.isFinite(post.postedAt) ? Math.min(post.postedAt, now) : now;
     const expiresAt = createdAt + ttlMs;
     if (expiresAt <= now + 60000) {
