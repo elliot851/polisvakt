@@ -2693,10 +2693,13 @@ function Test-NykterhetPaServern {
   param([string]$Text)
   if (-not $Text) { return $false }
   try {
+    # UTF-8-byte — texten är ett svenskt facebookinlägg och har alltid å/ä/ö.
+    # Som strängkropp blev anropet 400, catch:en nedan kastade raden, och
+    # reservvägen hade vägrat allt. Se Latin-1-historien i Skicka-Omgang.
     $r = Invoke-RestMethod -Uri ($script:SupabaseUrl + '/rest/v1/rpc/fbmejl_ar_nykterhetskontroll') `
-      -Method Post -TimeoutSec 15 -ContentType 'application/json' `
+      -Method Post -TimeoutSec 15 -ContentType 'application/json; charset=utf-8' `
       -Headers @{ apikey = $script:SupabaseKey; Authorization = 'Bearer ' + $script:SupabaseKey } `
-      -Body (@{ p_text = $Text } | ConvertTo-Json -Compress)
+      -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ p_text = $Text } | ConvertTo-Json -Compress)))
     return [bool]$r
   } catch {
     Logga 'NAT-FEL' ('kunde inte fraga servern om produktregeln — raden kastas: ' + $_.Exception.Message) Yellow
@@ -2726,12 +2729,42 @@ function Skicka-Omgang {
     $url = $script:SupabaseUrl + '/rest/v1/rpc/fbmejl_ta_emot'
     $kropp = @{ p_rader = @($Rader) } | ConvertTo-Json -Depth 8 -Compress
 
-    # service_role, inte anon-nyckeln. fbmejl_ta_emot är revokad från anon med
-    # flit: den skriver rapporter och utlöser notiser.
-    return Invoke-RestMethod -Uri $url -Method Post -TimeoutSec 30 -ContentType 'application/json' -Headers @{
-      'apikey'        = $script:ServiceRoleKey
-      'Authorization' = 'Bearer ' + $script:ServiceRoleKey
-    } -Body $kropp
+    <#
+      KROPPEN SKICKAS SOM UTF-8-BYTE, ALDRIG SOM STRÄNG. Det här är raden
+      som gjorde att RPC-vägen ALDRIG levererade en enda rapport, och felet
+      förtjänar sin historia:
+
+      PowerShell 5.1 kodar en strängkropp som Latin-1 när ContentType inte
+      bär en charset. Varje svenskt ortsnamn innehåller å, ä eller ö — så
+      varje RIKTIG rad blev ogiltig UTF-8 hos PostgREST, som svarade
+      400 PGRST102 "Empty or invalid json" på HELA anropet. Alla prov med
+      ASCII-text gick igenom, så vägen såg frisk ut ända tills första
+      skarpa svenska raden: "Trafikkontroll vid Rocklunda gård", 23 aug
+      10:50, tre försök, tre 400, varningen nådde aldrig någon.
+
+      Mätt åt båda hållen samma dag: identisk kropp som sträng = 400,
+      som UTF-8-byte = 200. Byt ALDRIG tillbaka till -Body $kropp.
+    #>
+    try {
+      # service_role, inte anon-nyckeln. fbmejl_ta_emot är revokad från anon
+      # med flit: den skriver rapporter och utlöser notiser.
+      return Invoke-RestMethod -Uri $url -Method Post -TimeoutSec 30 `
+        -ContentType 'application/json; charset=utf-8' -Headers @{
+          'apikey'        = $script:ServiceRoleKey
+          'Authorization' = 'Bearer ' + $script:ServiceRoleKey
+        } -Body ([System.Text.Encoding]::UTF8.GetBytes($kropp))
+    } catch {
+      # Serverns egen felkropp, inte bara "(400) Felaktig begäran" — utan
+      # den satt PGRST102-diagnosen dold i sex veckor av loggar.
+      $kroppSvar = ''
+      if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $kroppSvar = ' — ' + $_.ErrorDetails.Message }
+      Logga 'SKICK-FEL' ('notisvägen: ' + $_.Exception.Message + $kroppSvar) Red
+      Logga 'RESERVVÄG' 'notisvägen föll — raderna går till kartan via anon-vägen i stället.' Yellow
+      # Faller igenom till anon-vägen nedan. En varning på kartan utan notis
+      # är oändligt mycket bättre än ingen varning alls — det står redan i
+      # kommentaren där nere, och nu gäller det även när RPC:n fallerar,
+      # inte bara när nyckeln saknas.
+    }
   }
 
   # ---- Vägen utan nyckel: kartan ja, notisen nej ------------------------
@@ -2774,16 +2807,20 @@ function Skicka-Omgang {
       $utRad['device_id'] = 'fb-brygga'
     }
     try {
+      # UTF-8-byte, inte sträng — samma Latin-1-fälla som notisvägen ovan.
+      # "gård" i en strängkropp är 400 på hela raden.
       Invoke-RestMethod -Uri ($script:SupabaseUrl + '/rest/v1/reports?on_conflict=external_id') `
-        -Method Post -TimeoutSec 25 -ContentType 'application/json' `
+        -Method Post -TimeoutSec 25 -ContentType 'application/json; charset=utf-8' `
         -Headers @{
           apikey        = $script:SupabaseKey
           Authorization = 'Bearer ' + $script:SupabaseKey
           Prefer        = 'resolution=ignore-duplicates,return=minimal'
-        } -Body (ConvertTo-Json $utRad -Depth 6 -Compress) | Out-Null
+        } -Body ([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $utRad -Depth 6 -Compress))) | Out-Null
       $skapade++
     } catch {
-      Logga 'SKICK-FEL' ($_.Exception.Message) Red
+      $kroppSvar = ''
+      if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $kroppSvar = ' — ' + $_.ErrorDetails.Message }
+      Logga 'SKICK-FEL' ('kartvägen: ' + $_.Exception.Message + $kroppSvar) Red
     }
   }
   return [pscustomobject]@{
@@ -2893,8 +2930,10 @@ function Skicka-Driftnotis {
       tag   = 'polisvakt-brygga'
       url   = './'
     } | ConvertTo-Json -Compress
+    # UTF-8-byte — driftnotisernas titlar är svenska. Se Skicka-Omgang.
     $svar = Invoke-RestMethod -Uri $script:DriftUrl -Method Post -TimeoutSec 25 `
-      -ContentType 'application/json' -Body $kropp -Headers @{
+      -ContentType 'application/json; charset=utf-8' `
+      -Body ([System.Text.Encoding]::UTF8.GetBytes($kropp)) -Headers @{
         'Authorization' = 'Bearer ' + (Edge-Nyckel)
       }
     $ant = '?'
@@ -2957,8 +2996,11 @@ function Skicka-Puls {
       }
     } | ConvertTo-Json -Depth 5 -Compress
 
+    # UTF-8-byte för formens skull — pulsen är i dag ren ASCII, men nästa
+    # fält som läggs till ska inte återinföra Latin-1-fällan. Se Skicka-Omgang.
     Invoke-RestMethod -Uri ($script:SupabaseUrl + '/rest/v1/rpc/fbmejl_brygga_puls') `
-      -Method Post -TimeoutSec 15 -ContentType 'application/json' -Body $kropp -Headers @{
+      -Method Post -TimeoutSec 15 -ContentType 'application/json; charset=utf-8' `
+      -Body ([System.Text.Encoding]::UTF8.GetBytes($kropp)) -Headers @{
         'apikey'        = $script:ServiceRoleKey
         'Authorization' = 'Bearer ' + $script:ServiceRoleKey
       } | Out-Null
