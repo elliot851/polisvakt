@@ -70,8 +70,8 @@ const NADATID_MS = 350;
 const TICK_MS = 300;
 
 /** Rutor som är viktigare än en pekare. Syns någon av dem — stäng. */
-const VIKTIGARE = '.alert-banner, .fordonslarm, .morkt-lage, .modal, .auth-screen, ' +
-                  '.tour, .voice-overlay, .pv-ps-skarm, dialog[open]';
+const VIKTIGARE = '.alert-banner, .pv-varningsyta, .fordonslarm, .morkt-lage, ' +
+                  '.modal, .auth-screen, .tour, .voice-overlay, .pv-ps-skarm, dialog[open]';
 
 /* ------------------------------------------------------------------ */
 /* Stil                                                                */

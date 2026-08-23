@@ -231,9 +231,15 @@ function el(tag, klass, text) {
  * tar hela skärmen, larmet får aldrig täckas — och .pv-ps-skarm är
  * platsstart.js egen ruta. Den sista raden är halva samarbetet med den filen:
  * hinner den fram först väntar vi, precis som den väntar på oss.
+ *
+ * .pv-varningsyta är js/varningsyta.js remsa högst upp. Den äger samma yta
+ * som vår rad och ligger på z-index 905, alltså över oss. Att appen inte är
+ * färdiginställd är aldrig viktigare än en varning om något på vägen just nu,
+ * så vi viker undan helt i stället för att ligga kvar dold under den.
  */
 function annanRutaUppe() {
-  const val = '.modal, .auth-screen, .tour, .voice-overlay, .fordonslarm, .pv-ps-skarm, dialog[open]';
+  const val = '.modal, .auth-screen, .tour, .voice-overlay, .fordonslarm, ' +
+              '.pv-ps-skarm, .pv-varningsyta, dialog[open]';
   const egen = $('uppstart');
   for (const n of document.querySelectorAll(val)) {
     if (n === egen) continue;

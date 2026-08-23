@@ -577,6 +577,30 @@
       </div>
       <button class="btn-ghost small" id="btnUpdate" type="button">Sök</button>
     </div>
+
+    <!-- Nödutgången när "Sök" säger att allt är bra men appen ändå är gammal.
+
+         "Sök" frågar service workern om det finns något nyare. Svarar den nej
+         är knappen slut — och det är precis det svaret man får i det fall som
+         gör mest skada: HTTP-cachen serverar en gammal sw.js, eller den
+         installerade service workern sitter fast. Då står det "du har senaste
+         versionen" på en telefon som kör kod från förra veckan.
+
+         Den här knappen frågar inte. Den river appens cache, avregistrerar
+         service workern och hämtar om allt från servern. Det är samma sak som
+         att svepa bort appen och tömma webbläsardata, fast utan att lämna
+         appen — och det är hela poängen: föraren ska inte behöva veta hur man
+         gör det på en iPhone.
+
+         Två tryck krävs. Ett oavsiktligt tryck i en bil ska inte kunna slänga
+         offlinecachen mitt i en körning. Ingen modal: en dialog till hade
+         varit ett tredje tryck och en ruta som täcker svaret man just läst. -->
+    <button class="btn-ghost small" id="btnTvingaOm" type="button"
+            style="width:100%; margin-top:12px;">Tvinga om appen från servern</button>
+    <p class="hint" id="tvingaNot" style="margin-top:6px;">
+      Hämtar allt på nytt om appen känns gammal trots att sökningen säger nej.
+      Kräver nät. Dina rapporter, klipp och inställningar rörs inte.
+    </p>
   </section>
 
   <!-- Plats och notiser ligger först, före allt annat man kan ställa in.
@@ -1134,6 +1158,47 @@
   <button data-view="settings" class="tab" type="button">
     <svg viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Inställningar</span>
   </button>
+
+  <!-- Byggstämpeln.
+
+       VARFÖR DEN SITTER HÄR OCH INGEN ANNANSTANS.
+       Versionen fanns bara på översta kortet i Inställningar. Det räckte inte:
+       frågan "kör telefonen gammal kod?" ställs mitt i en felsökning, av
+       någon som redan tittar på appen, och ett svar man måste navigera till
+       är ett svar man i praktiken gissar sig till i stället. Det har redan
+       kostat en hel felsökning.
+
+       Tabbaren är den enda ytan i appen som ALDRIG är dold — den ligger
+       utanför alla fyra vyer och överlever varje showView().
+
+       VARFÖR HÖRNET OCH INTE MITTEN. Första försöket centrerade hela
+       versionssträngen längs tabbarens överkant. Uppmätt i 375 px: texten låg
+       på x 152–223 och Chatt-ikonen på x 201–224 — alltså tvärs över ikonen.
+       Etiketterna under ikonerna är dessutom oväntat höga (.tab span sätter
+       20 px), så tabbaren har ingen tom rad att låna. Det enda som är tomt
+       vid överkanten är vänstra hörnet: första ikonen börjar aldrig före
+       x ≈ 23 ens på en 280 px-skärm. Stämpeln får därför 24 px och klipps
+       hellre än att växa in i ikonen.
+
+       DÄRFÖR BARA BYGGNUMRET. "2026-08-23-88" ryms inte i 24 px. Numret sist
+       är ändå det som skiljer två versioner åt — 58, 70, 71, 88 — och hela
+       strängen står kvar på kortet i Inställningar för den som ska läsa upp
+       den för någon annan.
+
+       pointer-events: none är inte en detalj. Stämpeln ligger i samma
+       rektangel som Karta-knappen, och en förare som siktar på Karta i en bil
+       ska aldrig kunna träffa en diagnostiketikett i stället. Den går alltså
+       inte att trycka på — handlingen ("Tvinga om appen") bor i Inställningar,
+       där man har tid att läsa vad den gör.
+
+       aria-hidden: en skärmläsare ska inte läsa upp ett byggnummer varje
+       gång fokus passerar bottenraden. -->
+  <span id="versionMarke" aria-hidden="true"
+        style="position:absolute; top:3px; left:4px; max-width:24px;
+               overflow:hidden; white-space:nowrap;
+               font-size:9px; line-height:9px; letter-spacing:.02em;
+               font-variant-numeric:tabular-nums; color:var(--fg-dim);
+               opacity:.45; pointer-events:none; user-select:none;"></span>
 </nav>
 
 <!-- ============ MODALER ============ -->

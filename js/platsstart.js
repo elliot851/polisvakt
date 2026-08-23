@@ -155,9 +155,24 @@ function injiceraCss() {
  * skärmen när de går, och larmet får aldrig täckas. Vi väntar hellre en stund
  * än lägger en andra ruta ovanpå en användare som redan har en fråga framför
  * sig — två rutor på första starten är samma sak som ingen läst ruta alls.
+ *
+ * .pv-varningsyta är js/varningsyta.js remsa. Den låg inte här, till skillnad
+ * från i uppstart.js och peka.js som båda lärde sig om den — och det var inte
+ * ett teoretiskt hål: remsan nedanför visas BARA när appen saknar position,
+ * och det är precis samma läge som ger rapporter utan geokod. De två ytorna
+ * är alltså uppe samtidigt per konstruktion, inte av olyckshändelse. Uppmätt
+ * följd: remsan (z890) helt begravd under ytan (z905), och trycket på dess
+ * "Slå på"-knapp landade på ytans kryss. Föraren som försökte laga sin
+ * platsdelning stängde i stället varningen.
+ *
+ * Själva remsan göms dessutom av en CSS-regel i varningsyta.js
+ * (body.pv-vy-uppe .pv-ps-remsa), eftersom ritaRemsa() inte går genom den här
+ * grinden — den ritar när tillståndet ändras, inte när skärmen är ledig. Den
+ * här raden hindrar KORTET från att poppa upp mitt i en varning.
  */
 function annanRutaUppe() {
-  const val = '.modal, .auth-screen, .tour, .voice-overlay, .fordonslarm, dialog[open]';
+  const val = '.modal, .auth-screen, .tour, .voice-overlay, .fordonslarm, ' +
+              '.pv-varningsyta, dialog[open]';
   for (const el of document.querySelectorAll(val)) {
     if (el.closest('.pv-ps-skarm')) continue;          // våra egna räknas inte
     if (el.hasAttribute('hidden')) continue;
