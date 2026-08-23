@@ -14,6 +14,7 @@
 import { distance, bearing, angleDiff, spokenDistance, spokenAge, clockDirection } from './util.js';
 import { TYPE_SPOKEN } from './parser.js';
 import { byggMening } from './kvalitet.js';
+import { pausEfterPling } from './voice.js';
 
 const DEFAULTS = {
   cameraLeadSeconds: 25,      // så många sekunder före kameran
@@ -425,7 +426,16 @@ export class AlertEngine extends EventTarget {
         this.speaker.say(`Ytterligare ${fired.length - 1} varning${fired.length > 2 ? 'ar' : ''} i närheten.`,
           { priority: 0 });
       }
-    }, 380);
+      /*
+       * Pausen räknas ur plinget som faktiskt spelas, inte ur ett tal här.
+       *
+       * Här stod 380 hårdkodat, avstämt mot ett pling på 350 ms. När plinget
+       * byttes till 840 ms rördes talet inte, och rösten började mitt i
+       * plinget. På en dator lät det grötigt; på en iPhone tystnade talet
+       * HELT — Web Audio och speechSynthesis slåss om samma ljudväg. Ägaren
+       * hörde plinget och ingen röst i flera dygn.
+       */
+    }, pausEfterPling('alert'));
     for (const a of fired) this.dispatchEvent(new CustomEvent('alert', { detail: a }));
   }
 }

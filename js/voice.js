@@ -54,19 +54,139 @@ export const voiceOutputSupported = 'speechSynthesis' in window;
 // yttrandet är det enda som måste ligga i en gest. Är det avklarat får alla
 // senare yttranden komma från en timer, en GPS-händelse eller vad som helst.
 // Ett tyst yttrande i första trycket köper alltså resten av resan.
+//
+//
+// ------------------------------------------------------------------------
+// VAD SOM VAR FEL MED RESONEMANGET OVANFÖR, OCH VARFÖR IPHONEN VAR TYST
+// ------------------------------------------------------------------------
+//
+// "Ett tyst yttrande i första trycket köper resten av resan" stämmer bara om
+// två saker är sanna: att yttrandet faktiskt SPELADES, och att resan aldrig
+// tar en paus. Ingen av dem höll.
+//
+//   1. UPPLÅSNINGEN BOKFÖRDES SOM LYCKAD UTAN ATT VARA DET. Den gamla
+//      primaRosten() satte rostPrimad = true på raden EFTER
+//      speechSynthesis.speak(), utan att lyssna på om yttrandet accepterades.
+//      speak() kastar inte när webbläsaren vägrar — den svarar, lägger
+//      yttrandet i en kö och skickar 'error' med error='not-allowed' en
+//      bråkdel senare. Uppmätt på live-appen: efter ett anrop utan gest stod
+//      ljudlas.rost på true medan speechSynthesis.speaking och .pending båda
+//      var false. Yttrandet hade alltså aldrig ens kommit in i kön, och
+//      gränssnittet sa "Ljudet är upplåst."
+//      Och eftersom `if (rostPrimad) return true` var en spärr som ingenting
+//      nollställde, primades rösten exakt EN gång per sidladdning. Gick den
+//      gången fel var rösten död resten av körningen.
+//
+//   2. RESAN TAR PAUSER. Telefonen låses, föraren tittar i kartan, ett samtal
+//      kommer in. iOS river då ljudsessionen: AudioContext går till
+//      'interrupted' (ett Safari-eget tillstånd som inte är 'suspended', och
+//      som den gamla koden därför aldrig resumade) eller ända till 'closed'
+//      (som inte gick att bygga om alls — variabeln nollställdes aldrig).
+//      Talsyntesen kan dessutom lämnas i ett läge där speak() svarar utan att
+//      något hörs. Ingenting i appen tog reda på det, och ingenting sa till.
+//
+//   3. INGEN VISSTE ATT DET VAR TYST. Bara u.onend var kopplad. Ett yttrande
+//      som tyst inte gör någonting anropar varken onend eller onerror, så
+//      bokföringen stod kvar på gammalt värde och tystnaden gick inte att se
+//      i efterhand — vilket är hela skälet till att felet kunde ligga kvar i
+//      flera dygn.
+//
+// Därför gäller nu tre regler i den här filen:
+//
+//   • RÖSTEN ÄR UPPLÅST FÖRST NÄR DEN HAR TALAT. Ingenting annat räknas.
+//     Beviset är u.onstart. Uteblir onstart är rösten inte upplåst, hur
+//     villigt speak() än svarade.
+//   • VARJE ÅTERKOMST TILL FÖRGRUNDEN ÄR EN NY RESA. visibilitychange och
+//     pageshow river upp beviset, bygger om ljudkontexten om den dog, städar
+//     bort en hängande kö och armerar om gest-vägen.
+//   • EN TYSTNAD SOM INTE GÅR ATT SE FINNS INTE. Varje yttrande vaktas, varje
+//     misslyckande bokförs, och ett fel som inte är förarens eget val syns på
+//     skärmen med en knapp som lagar det.
+
+/** Hur länge ett yttrande får dröja innan vi kallar det icke-startat. */
+const ROST_START_FRIST_MS = 1500;
+
+/** Extra frist efter speechSynthesis.resume() innan vi ger upp yttrandet. */
+const ROST_RADDNING_MS = 700;
+
+/** Hur länge upplåsningsprovet får hänga innan det räknas som nekat. */
+const PRIM_FRIST_MS = 1400;
+
+/**
+ * Hur länge ett varningspling får stå ensamt innan tystnaden efter det
+ * räknas som ett fel. Plinget kommer på t, uppläsningen läggs i en timer på
+ * 380 ms, och talsyntesen behöver några hundra millisekunder på sig att
+ * starta. 3 sekunder är alltså gott om marginal utan att bli ett dygn.
+ */
+const PLING_ROST_FRIST_MS = 3000;
+
+/** Så många upplåsningsförsök per förgrundsomgång innan vi slutar tjata. */
+const ROST_MAX_FORSOK = 6;
 
 /** Vad vi vet om upplåsningen. Läses av gränssnitt och provbänk. */
 const ljudlas = {
   ctx: false,          // AudioContext är 'running'
-  rost: false,         // speechSynthesis har fått sitt första yttrande
+  rost: false,         // speechSynthesis har BEVISLIGEN talat (onstart kom)
   forsokt: 0,
   tid: 0,
   orsak: 'inte-forsokt',
 };
 
+/**
+ * Röstens läge, separat från ljudlas därför att det är en annan sorts fakta.
+ *
+ * ljudlas.rost är ett ja/nej för gränssnittet. Det här är historiken bakom
+ * svaret: hur många gånger vi provat i den här förgrundsomgången, vad
+ * webbläsaren svarade sist, och när rösten senast bevisligen lät. Utan den
+ * går det inte att skilja "har inte provat än" från "provade och blev nekad",
+ * och det är precis den skillnaden felsökningen stod och föll med.
+ */
+const rost = {
+  lage: 'inte-forsokt',   // inte-forsokt | provar | klar | nekad
+  orsak: 'inte-forsokt',
+  forsok: 0,              // nollställs vid varje återkomst till förgrunden
+  provStart: 0,
+  senastKlar: 0,          // när rösten senast bevisligen talade
+  senasteFel: 0,
+};
+
 let ljudCtx = null;
-let rostPrimad = false;
+// Deklareras här uppe och inte vid haLjudkedja() längre ner: haLjudkontext()
+// måste kunna nollställa den när en död context byts ut, och `let` i
+// temporal dead zone hade kastat ReferenceError om första gesten kom innan
+// modulen laddat färdigt.
+let ljudkedja = null;
 let taltIGang = 0;     // riktiga yttranden i luften just nu
+
+/** Alla levande Speaker-instanser, så återhämtningen når dem utan app.js. */
+const levandeTalare = new Set();
+
+/**
+ * Sant om appen själv har något på gång i talsyntesen just nu.
+ *
+ * RÄKNAREN ENSAM DUGER INTE SOM BEVIS, och det är hela poängen med den här
+ * funktionen efter felet nedan.
+ *
+ * Tidigare räckte `taltIGang > 0`. Räknaren ökas i #drain() och minskas bara
+ * i done(), och både stop() och interrupt-grenen i say() kallade
+ * speechSynthesis.cancel() utan att någonsin nå done(). WebKit levererar inte
+ * tillförlitligt 'canceled' för ett avbrutet yttrande, så uteblev onerror stod
+ * räknaren kvar på 1 för alltid. Följden var förödande och helt osynlig:
+ * appenTalarSjalv() svarade true i evighet, primaRosten() kortslöts,
+ * gränssnittet intygade "Ljudet är upplåst", stadaZombiekO() vägrade städa en
+ * hängd kö och atervandTillForgrunden() slutade prova rösten. Alla
+ * återhämtningsvägar avstängda av en räknare som ingen kunde se.
+ *
+ * Läckan är tätad (se #avslutaAvbrutet), men golvet ligger kvar ändå: svaret
+ * kräver att en LEVANDE Speaker faktiskt äger ett yttrande eller en kö. Den
+ * bokföringen nollställs av done() på varje väg och kan därför inte fastna på
+ * samma sätt. taltIGang finns kvar som mätvärde i ljudlasStatus(), så en ny
+ * läcka går att se i stället för att gissa.
+ */
+function appenTalarSjalv() {
+  for (const t of levandeTalare) if (t.speaking || t.queue.length) return true;
+  return false;
+}
 
 /**
  * Den delade contexten för pling — EN för hela sidan.
@@ -76,6 +196,22 @@ let taltIGang = 0;     // riktiga yttranden i luften just nu
  * context som ingen resumar är en context som aldrig låter.
  */
 export function haLjudkontext({ skapa = true } = {}) {
+  /*
+   * En stängd context går inte att väcka — resume() på en 'closed' context
+   * gör ingenting alls. iOS stänger den när appen legat i bakgrunden en
+   * längre stund eller när ett samtal tagit över ljudet, och tidigare
+   * returnerade den här funktionen samma döda objekt för alltid: variabeln
+   * nollställdes ingenstans. Följden var att `upplast` i spelaVarningsljud()
+   * blev permanent false och varje pling svarade tyst
+   * 'ljudet-inte-upplast' resten av körningen.
+   *
+   * Ljudkedjan måste nollställas i samma andetag. Dess noder tillhör den
+   * döda contexten, och haLjudkedja() jämför på just ctx-identitet.
+   */
+  if (ljudCtx && ljudCtx.state === 'closed') {
+    ljudCtx = null;
+    ljudkedja = null;
+  }
   if (!ljudCtx) {
     if (!skapa) return null;
     const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
@@ -84,12 +220,23 @@ export function haLjudkontext({ skapa = true } = {}) {
     // Contexten säger själv till när den börjat köra. Utan den här skulle
     // ljudlas.ctx stå kvar på false, eftersom resume() svarar först efter att
     // gesten är avklarad.
-    try { ljudCtx.onstatechange = () => { ljudlas.ctx = ljudCtx.state === 'running'; }; } catch {}
+    try { ljudCtx.onstatechange = () => { ljudlas.ctx = ljudCtx?.state === 'running'; }; } catch {}
   }
-  if (ljudCtx.state === 'suspended') {
-    // resume() lämnar ett LÖFTE. Utan användaraktivering avvisas det, och ett
-    // avvisat löfte fångas inte av try/catch — det blev tidigare ett ohanterat
-    // fel i konsolen varje gång appen försökte plinga för tidigt.
+  /*
+   * Allt som inte är 'running' ska väckas — inte bara 'suspended'.
+   *
+   * Safari på iOS har ett eget, icke-standardiserat tillstånd: 'interrupted'.
+   * Dit hamnar contexten vid inkommande samtal, skärmlås och när en annan app
+   * tar ljudet. Den gamla koden testade `state === 'suspended'` och missade
+   * alltså exakt det tillstånd som uppstår i en bil. Ett resume() på en
+   * context som redan kör är gratis, så det finns ingen anledning att vara
+   * kräsen här.
+   *
+   * resume() lämnar ett LÖFTE. Utan användaraktivering avvisas det, och ett
+   * avvisat löfte fångas inte av try/catch — det blev tidigare ett ohanterat
+   * fel i konsolen varje gång appen försökte plinga för tidigt.
+   */
+  if (ljudCtx.state !== 'running') {
     try { ljudCtx.resume()?.catch?.(() => {}); } catch {}
   }
   ljudlas.ctx = ljudCtx.state === 'running';
@@ -97,40 +244,149 @@ export function haLjudkontext({ skapa = true } = {}) {
 }
 
 /**
- * Ett tyst yttrande, bara för att låsa upp talsyntesen.
+ * Rösten har bevisligen talat. Det här är det ENDA som får sätta ljudlas.rost.
+ *
+ * Anropas från upplåsningsprovets onstart och från varje riktigt yttrandes
+ * onstart. Att låta ett skarpt yttrande räknas som bevis är poängen: kommer
+ * en varning fram behöver ingen prima om något, och strimman nere på skärmen
+ * ska försvinna av sig själv i samma sekund som rösten fungerar igen.
+ */
+function markeraRostKlar(orsak) {
+  const varTyst = rost.lage !== 'klar';
+  rost.lage = 'klar';
+  rost.orsak = orsak;
+  rost.senastKlar = Date.now();
+  ljudlas.rost = true;
+  if (varTyst) {
+    doljRostFel();
+    meddelaRostlage();
+  }
+}
+
+/**
+ * Rösten kom inte fram.
+ *
+ * Bokförs alltid. Syns när det inte är förarens eget val och när föraren
+ * faktiskt hunnit röra skärmen — före första trycket är en låst röst det
+ * normala tillståndet, inte ett fel, och en röd ruta vid varje appstart hade
+ * lärt föraren att ignorera den. Strimman dröjer dessutom några sekunder, så
+ * ett fel som löser sig vid nästa tryck aldrig hinner blinka förbi.
+ */
+function markeraRostNekad(orsak) {
+  rost.lage = 'nekad';
+  rost.orsak = orsak;
+  rost.senasteFel = Date.now();
+  ljudlas.rost = false;
+  meddelaRostlage();
+  if (anvandarenHarInteragerat()) {
+    visaRostFel('Rösten kommer inte fram. Varningar hörs bara som pling.');
+  }
+}
+
+/**
+ * Städa bort ett upplåsningsprov som blivit hängande.
+ *
+ * Bara om ingen RIKTIG uppläsning är i luften. Annars vore en cancel() här
+ * exakt det fel filen finns för att undvika: en varning som klipps.
+ */
+function stadaHangandeProv() {
+  setTimeout(() => {
+    if (appenTalarSjalv()) return;
+    try {
+      if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    } catch {}
+  }, PRIM_FRIST_MS);
+}
+
+/**
+ * Ett tyst yttrande, bara för att låsa upp talsyntesen — och för att TA REDA
+ * PÅ om upplåsningen gick igenom.
  *
  * Volym 0 så ingen hör det, och en punkt istället för tom sträng: Chrome
  * svarar 'synthesis-failed' på tom text, och en misslyckad upplåsning är inte
- * en upplåsning. Skyddsnätet nedanför städar bort yttrandet om det mot
- * förmodan skulle bli hängande och stå i vägen för en riktig varning.
+ * en upplåsning.
+ *
+ * Skillnaden mot den gamla versionen ligger i vad som räknas som svar.
+ * speak() är inte ett svar: den kastar inte, den returnerar ingenting, och
+ * webbläsaren kan neka yttrandet efteråt utan att någon märker det. Därför
+ * kopplas alla tre utgångarna, och rösten räknas som upplåst först när en av
+ * dem säger att den faktiskt lät:
+ *
+ *   onstart  → rösten talade. Bevis.
+ *   onend    → yttrandet gick igenom hela vägen. Vissa motorer hoppar över
+ *              onstart på mycket korta yttranden, så det räknas också.
+ *   onerror  → nekad. 'not-allowed' betyder att gesten inte höll.
+ *   inget    → tystnad. Motorn svarade men gjorde ingenting. Det är det värsta
+ *              utfallet, för det är det enda som inte syns någonstans, och det
+ *              är precis det som hände på iPhonen.
+ *
+ * @returns {boolean} true bara när rösten är BEVISAT upplåst. Ett pågående
+ *          prov ger false, så anroparen provar igen vid nästa tryck.
  */
 function primaRosten() {
-  if (!voiceOutputSupported) { ljudlas.rost = true; return true; }   // inget att låsa upp
-  if (rostPrimad) return true;
+  if (!voiceOutputSupported) { ljudlas.rost = true; rost.lage = 'klar'; return true; }
+  if (rost.lage === 'klar') return true;
+
+  /*
+   * Appen har redan något på gång. Ett extra yttrande skulle bara ställa sig
+   * i kön framför en varning, så vi hoppar över provet — men vi INTYGAR
+   * ingenting.
+   *
+   * Raden hette förut markeraRostKlar('appen-talar-redan'), och det bröt mot
+   * filens egen hårda regel: rösten är upplåst först när den har TALAT. Att
+   * ett yttrande ligger i kön säger bara att vi har skickat det, inte att
+   * någon hört det — och just den kortslutningen gjorde att en hängd kö
+   * kunde få appen att svara "Ljudet är upplåst" medan talsyntesen var
+   * stendöd. Beviset kommer från u.onstart i #drain(), som markerar klart
+   * när yttrandet faktiskt börjar låta.
+   *
+   * Notera att vi frågar VÅR EGEN bokföring och inte speechSynthesis.speaking:
+   * en kö som fastnat efter bakgrundsläge står också på speaking, och den
+   * gamla koden läste det som ett friskhetstecken.
+   */
+  if (appenTalarSjalv()) return true;
+
+  // Ett prov är redan i luften. Att skicka ett till hade bara gjort kön
+  // längre och svaret otydligare.
+  if (rost.lage === 'provar' && Date.now() - rost.provStart < PRIM_FRIST_MS) return false;
+
+  if (rost.forsok >= ROST_MAX_FORSOK) return false;
+
   try {
-    if (speechSynthesis.speaking || speechSynthesis.pending) {
-      // Appen pratar redan, alltså är rösten uppenbart upplåst. Ett extra
-      // yttrande skulle bara ställa sig i kön framför en varning.
-      rostPrimad = true;
-      ljudlas.rost = true;
-      return true;
-    }
     const u = new SpeechSynthesisUtterance('.');
     u.lang = 'sv-SE';
     u.volume = 0;
     u.rate = 2;
+
+    rost.lage = 'provar';
+    rost.orsak = 'provar';
+    rost.provStart = Date.now();
+    rost.forsok++;
+
+    let avgjort = false;
+    const avgor = (fn) => (...a) => { if (avgjort) return; avgjort = true; clearTimeout(vakt); fn(...a); };
+    const vakt = setTimeout(() => {
+      if (avgjort) return;
+      avgjort = true;
+      // Varken start, slut eller fel. Motorn svarade och gjorde ingenting.
+      markeraRostNekad('provet-startade-aldrig');
+      stadaHangandeProv();
+    }, PRIM_FRIST_MS);
+
+    u.onstart = avgor(() => { markeraRostKlar('provet-startade'); stadaHangandeProv(); });
+    u.onend = avgor(() => markeraRostKlar('provet-avslutades'));
+    u.onerror = avgor(e => {
+      const fel = e?.error || 'okant';
+      // 'canceled'/'interrupted' är vi själva som städat. Det säger ingenting
+      // om huruvida rösten får låta, så det får inte bokföras som ett nej.
+      if (fel === 'canceled' || fel === 'interrupted') { rost.lage = 'inte-forsokt'; return; }
+      markeraRostNekad('provet-nekades:' + fel);
+    });
+
     speechSynthesis.speak(u);
-    rostPrimad = true;
-    ljudlas.rost = true;
-    setTimeout(() => {
-      // Bara om ingen RIKTIG uppläsning är i luften. Annars vore en cancel()
-      // här exakt det fel filen finns för att undvika: en varning som klipps.
-      if (taltIGang === 0 && (speechSynthesis.speaking || speechSynthesis.pending)) {
-        try { speechSynthesis.cancel(); } catch {}
-      }
-    }, 1500);
-    return true;
+    return false;   // ännu inte bevisat — svaret kommer i en av handlarna
   } catch {
+    markeraRostNekad('speak-kastade');
     return false;
   }
 }
@@ -149,15 +405,17 @@ export function lasUppLjud() {
 
   ljudlas.orsak =
     !ctx ? 'ingen-ljudmotor'
-    : !rostKlar ? 'rosten-slapptes-inte-fram'
+    : rost.lage === 'nekad' ? 'rosten-slapptes-inte-fram'
+    : !rostKlar ? 'provar-rosten'
     : ljudlas.ctx ? 'upplast'
     : 'vantar-pa-ljudmotorn';
 
   if ((!ctx || ljudlas.ctx) && rostKlar) return true;
-  // Fem tryck utan att det lossnar: webbläsaren tänker inte släppa fram
-  // ljudet, och att köra funktionen vid varje tryck resten av resan hjälper
-  // inte. chime() ber om resume ändå varje gång den spelar.
-  return ljudlas.forsokt >= 5;
+  // Sex försök utan att rösten lossnar: webbläsaren tänker inte släppa fram
+  // den vid ett sjunde tryck heller. Vi slutar tjata i gest-registret, men
+  // ger INTE upp — strimman nere på skärmen har en knapp som nollställer
+  // räknaren, och varje återkomst till förgrunden är en ny omgång.
+  return ljudlas.forsokt >= 5 && rost.forsok >= ROST_MAX_FORSOK;
 }
 
 /** Läsbart läge för gränssnitt och felsökning. */
@@ -166,21 +424,442 @@ export function ljudlasStatus() {
   return {
     ...ljudlas,
     klart,
+    rostLage: rost.lage,
+    rostOrsak: rost.orsak,
+    rostForsok: rost.forsok,
+    ctxLage: ljudCtx ? ljudCtx.state : 'ingen',
+    // Yttranden appen tror sig ha i luften. Står den kvar över noll när allt
+    // är tyst har balanseringen i done() missat en väg ut — se
+    // appenTalarSjalv(). Med i diagnosen just för att en sådan läcka annars
+    // inte syns någonstans.
+    iLuften: taltIGang,
     text: klart ? 'Ljudet är upplåst.'
       : !anvandarenHarInteragerat() ? 'Ljudet väntar på första trycket på skärmen.'
       : ljudlas.orsak === 'ingen-ljudmotor' ? 'Enheten har ingen ljudmotor för webbsidor.'
+      : rost.lage === 'nekad' ? 'Rösten kom inte fram. Tryck på skärmen en gång.'
+      : rost.lage === 'provar' ? 'Provar rösten…'
       : 'Webbläsaren har inte släppt fram ljudet än.',
   };
 }
 
-if (typeof window !== 'undefined') narGest(lasUppLjud);
+/** Allt om röstens hälsa, för gränssnitt och provbänk. */
+export function rostHalsa() {
+  return {
+    ...rost,
+    stods: voiceOutputSupported,
+    ljudlas: ljudlasStatus(),
+    // Rösten anses frisk om den talat sedan sidan senast kom i förgrunden.
+    frisk: rost.lage === 'klar',
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Gest-vägen — och varför voice.js har en egen                        */
+/* ------------------------------------------------------------------ */
+//
+// ljud.js äger frågan "har föraren rört sidan?" och lyssnar på pointerdown,
+// keydown och touchstart. Det är rätt för AudioContext.resume(), som släpps
+// fram på ett påbörjat tryck.
+//
+// speechSynthesis på WebKit är kinkigare. Aktiveringen sitter säkrast på det
+// AVSLUTADE trycket — click, pointerup, touchend — och appen lade hela sin
+// enda upplåsningschans på den tidigaste och minst pålitliga punkten. Den här
+// lyssnaren kompletterar alltså ljud.js snarare än att ersätta den: kommer
+// pointerdown först får det försöket gälla, och lossnar det inte finns
+// touchend en bråkdels sekund senare.
+//
+// Lyssnarna sitter i capture och passive, precis som ljud.js, och plockas bort
+// så fort rösten är bevisat upplåst — men armeras om vid varje återkomst till
+// förgrunden, eftersom beviset då är förbrukat.
+
+const AVSLUTADE_GESTER = ['click', 'pointerup', 'touchend'];
+let gestlyssnareArmerade = false;
+
+function vidAvslutadGest() {
+  if (rost.lage === 'klar' && ljudlas.ctx) { slutaLyssnaEfterGest(); return; }
+  lasUppLjud();
+}
+
+function lyssnaEfterGest() {
+  if (typeof window === 'undefined' || gestlyssnareArmerade) return;
+  gestlyssnareArmerade = true;
+  for (const namn of AVSLUTADE_GESTER) {
+    window.addEventListener(namn, vidAvslutadGest, { capture: true, passive: true });
+  }
+}
+
+function slutaLyssnaEfterGest() {
+  if (typeof window === 'undefined' || !gestlyssnareArmerade) return;
+  gestlyssnareArmerade = false;
+  for (const namn of AVSLUTADE_GESTER) {
+    window.removeEventListener(namn, vidAvslutadGest, true);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Återkomst till förgrunden                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Städa bort en kö som fastnat.
+ *
+ * Det klassiska iOS-läget: appen låg i bakgrunden mitt i ett yttrande, och
+ * när den kommer tillbaka står speechSynthesis kvar på speaking eller pending
+ * utan att någonsin skicka 'end'. Varje nytt speak() hamnar då bakom ett
+ * yttrande som aldrig tar slut, och appen är tyst för alltid.
+ *
+ * Vi rör bara kön när APPEN själv inte har något på gång — annars vore det
+ * här en cancel() rakt in i en pågående varning.
+ *
+ * @returns {boolean} true om något faktiskt städades bort
+ */
+function stadaZombiekO() {
+  if (!voiceOutputSupported) return false;
+  if (appenTalarSjalv()) return false;
+  let hangande = false;
+  try { hangande = speechSynthesis.speaking || speechSynthesis.pending || speechSynthesis.paused; } catch {}
+  if (!hangande) return false;
+  // resume() först: en kö som bara är pausad ska få tala färdigt av sig själv
+  // hellre än att slängas. Hjälper det inte tar cancel() bort proppen.
+  try { speechSynthesis.resume(); } catch {}
+  try { speechSynthesis.cancel(); } catch {}
+  return true;
+}
+
+/**
+ * Appen är framme igen. Allt som iOS river i bakgrunden byggs upp på nytt.
+ *
+ * Ordningen spelar roll: ljudmotorn först (den kan behöva byggas om från
+ * grunden), sedan kön (en propp måste bort innan något nytt kan tala), sedan
+ * röstlistan (SpeechSynthesisVoice-objekt från före bakgrundsläget är en känd
+ * väg till ett speak() som svarar utan att låta), och sist själva
+ * upplåsningen.
+ */
+function atervandTillForgrunden(anledning) {
+  // 1. Ljudmotorn. haLjudkontext bygger om en 'closed' context och resumar
+  //    'interrupted' likaväl som 'suspended'. skapa:false så vi inte skapar
+  //    en context innan föraren rört skärmen — det gör ljud.js poäng av.
+  haLjudkontext({ skapa: anvandarenHarInteragerat() });
+
+  // 2. Beviset är förbrukat. Att rösten lät före pausen säger ingenting om
+  //    huruvida den låter nu, och det var precis det antagandet som gjorde
+  //    appen tyst utan att någon kunde se det.
+  if (rost.lage !== 'provar') {
+    rost.lage = 'inte-forsokt';
+    rost.orsak = 'aterkom-till-forgrunden:' + anledning;
+    ljudlas.rost = false;
+  }
+  rost.forsok = 0;
+  ljudlas.forsokt = 0;
+
+  // 3. Proppen.
+  stadaZombiekO();
+
+  // 4. Röstlistan.
+  for (const t of levandeTalare) t.uppdateraRost();
+
+  // 5. Prova direkt. iOS behåller ofta aktiveringen över ett kort
+  //    bakgrundsläge, och lyckas det här behöver föraren inte röra skärmen
+  //    alls. Misslyckas det får vi svaret inom PRIM_FRIST_MS och kan säga
+  //    till — vilket är oändligt mycket bättre än att gissa.
+  if (!appenTalarSjalv()) primaRosten();
+
+  // 6. Och armera gest-vägen, båda sorterna, som skyddsnät.
+  lyssnaEfterGest();
+  narGest(lasUppLjud);
+}
+
+if (typeof window !== 'undefined') {
+  narGest(lasUppLjud);
+  lyssnaEfterGest();
+}
 
 if (typeof document !== 'undefined') {
   // Telefonen suspenderar contexten när appen legat i bakgrunden. Utan det här
   // är appen tyst efter varje gång föraren tittat på en karta i en annan app.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') haLjudkontext({ skapa: false });
+    if (document.visibilityState === 'visible') atervandTillForgrunden('synlig');
   });
+}
+
+if (typeof window !== 'undefined') {
+  /*
+   * pageshow och inte bara visibilitychange.
+   *
+   * En installerad PWA från hemskärmen suspenderas helt när man byter app.
+   * Kommer den tillbaka laddas sidan INTE om — det är samma session som
+   * fortsätter — och beroende på iOS-version kommer ibland pageshow
+   * (persisted=true, bfcache) i stället för eller före visibilitychange.
+   * Båda vägarna leder till samma återhämtning, och funktionen är idempotent
+   * så det gör ingenting att de ibland kommer efter varandra.
+   */
+  window.addEventListener('pageshow', e => atervandTillForgrunden(e?.persisted ? 'bfcache' : 'pageshow'));
+  // focus fångar skrivbordsfallet där fliken aldrig var 'hidden' men
+  // webbläsaren ändå släppt ljudet, till exempel efter viloläge.
+  window.addEventListener('focus', () => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      haLjudkontext({ skapa: false });
+      if (rost.lage === 'nekad') { rost.forsok = 0; lyssnaEfterGest(); }
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* En tystnad som syns                                                 */
+/* ------------------------------------------------------------------ */
+//
+// VARFÖR DET HÄR LIGGER I VOICE.JS OCH INTE I APP.JS
+//
+// Felet som fick appen att vara tyst på en iPhone i flera dygn var inte att
+// rösten gick sönder. Det var att ingenting sa till. Föraren såg en app med
+// varenda reglage påslaget, gränssnittet sa "Ljudet är upplåst", och den enda
+// funktion som kunde ha svarat på frågan — ljudDiagnos() — refererades inte
+// från någon yta i hela appen.
+//
+// En felyta som bor i en annan fil än felet glider isär från det. Den här
+// strimman är därför en del av ljudkedjan, inte en del av gränssnittet: den
+// väcks av samma bokföring som räknar tystnaderna, och den försvinner i
+// samma sekund som ett yttrande faktiskt startar.
+//
+//
+// PLACERING — VAD SOM INTE FICK HÄNDA
+//
+// Nere, och aldrig över kartans mitt. Vägen framför bilen är det viktigaste
+// på skärmen och en diagnosruta får inte skymma den.
+//
+// z-index 895, alltså UNDER varningsbannern och det mörka körläget (900),
+// under modalerna (1000) och långt under fordonslarmet (1500), som aldrig får
+// skymmas. Över tabbaren (800) — men bara i lagerordning: strimman ligger
+// ovanför baren i höjdled, inte över den, så tabbarna förblir träffbara.
+//
+// Toppen av skärmen var utesluten. Där trängs redan fem ytor om samma
+// remsa — varningsytan (905), varningsbannern (900), platsremsan (890),
+// uppstartsraden (889) och "N nya rapporter" (875).
+//
+//
+// HÖJDEN: OVANFÖR RAPPORTKNAPPARNA, INTE OVANPÅ DEM
+//
+// Första placeringen var --bar-total + 10px, med motiveringen att "enda
+// överlappet är toasten". Det var fel, och felet var av samma sort som det
+// den här filen finns för att beskriva: en yta som ser ofarlig ut och äter
+// ett tryck som betydde något annat.
+//
+// FRAMKALLAT SKARPT på 375×812 i kartvyn, med speechSynthesis.speak gjord
+// till en tyst no-op och en färsk rapport inmatad:
+//
+//   strimman            x 10–365,  y 673,5–748
+//   .actions (z700)     Polis 12–84 · Kontroll 92–164 · Civil 172–244 ·
+//                       Tala 252–363, alla y 662–738
+//   elementFromPoint(207, 700)  — mitt i "Civil" — gav
+//                       .pv-rost-fel-fix "Slå på rösten"
+//
+// Strimman täckte 64,5 av knapparnas 76 px höjd. Föraren som ser en civil
+// polisbil och trycker på Civil-knappen fick ett rösttest i stället.
+//
+// Därför ligger strimman nu OVANFÖR knapparna: --bar-total + 108px, alltså
+// över y 662. Talet är .actions egen höjd (10 px överkant + 76 px knapp +
+// 12 px underkant = 98) plus 10 px luft.
+//
+// pointer-events är samtidigt ändrad från none till auto på hela strimman.
+// none lät trycket passera igenom till det som låg under, och att träffa en
+// knapp man inte kan se är värre än att inte träffa någon knapp alls. Priset
+// är att strimman täcker de nedersta ~60 px av farulistan (#sheet, z600,
+// börjar vid --bar-total + 88px) så länge den ligger uppe. Det är rätt
+// avvägning: rapportknapparna är en handling, listan är en uppslagsbok, och
+// strimman går att stänga med sitt eget kryss.
+//
+// Toasten (--bar-total + 18px, z1200) överlappar inte längre alls.
+
+const ROST_FEL_ID = 'pv-rost-fel';
+const ROST_FEL_DROJ_MS = 4000;   // så ett startfel som löser sig aldrig hinner synas
+
+let rostFelTimer = null;
+let rostFelNod = null;
+
+/** Skickar röstens läge vidare så andra filer kan visa det utan att importera. */
+function meddelaRostlage() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent('pv-rost', { detail: rostHalsa() }));
+  } catch {}
+}
+
+function byggRostFelNod() {
+  if (rostFelNod || typeof document === 'undefined' || !document.body) return rostFelNod;
+
+  const stil = document.createElement('style');
+  stil.id = ROST_FEL_ID + '-stil';
+  // Egna variabler med fallback: filen ska fungera även i provbänkarna, som
+  // laddar voice.js utan css/app.css.
+  stil.textContent = `
+.pv-rost-fel {
+  position: fixed;
+  left: 10px; right: 10px;
+  /* 108px = .actions hela höjd (98) plus 10px luft. Se den uppmätta
+     motiveringen i blocket ovanför: på +10px låg strimman ovanpå kartans
+     fyra rapportknappar och åt deras tryck. */
+  bottom: calc(var(--bar-total, 64px) + 108px);
+  z-index: 895;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #7a2626, #5c1b1b);
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  color: #fff;
+  font: 600 14px/1.25 system-ui, -apple-system, sans-serif;
+  /* Hela strimman tar emot tryck, inte bara knapparna.
+     pointer-events:none lät trycket gå igenom till det som låg under, och
+     det som låg under var osynligt bakom strimman. En knapp man inte kan se
+     men kan träffa är sämre än ingen knapp alls. */
+  pointer-events: auto;
+}
+.pv-rost-fel[hidden] { display: none; }
+.pv-rost-fel-ikon { font-size: 18px; line-height: 1; }
+.pv-rost-fel-text { flex: 1; min-width: 0; }
+.pv-rost-fel-fix, .pv-rost-fel-stang {
+  pointer-events: auto;
+  flex: none;
+  border: 0; border-radius: 10px;
+  background: rgba(255,255,255,.94); color: #5c1b1b;
+  font: 700 13px/1 system-ui, -apple-system, sans-serif;
+  /* 44px är minsta träffyta som går att träffa i en bil i rörelse. */
+  min-height: 40px; padding: 0 12px;
+}
+.pv-rost-fel-stang {
+  background: rgba(255,255,255,.16); color: #fff;
+  min-width: 40px; padding: 0 10px; font-size: 18px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .pv-rost-fel { animation: pvRostIn .22s ease-out; }
+  @keyframes pvRostIn { from { transform: translateY(8px); opacity: 0; } }
+}`;
+  document.head.appendChild(stil);
+
+  const nod = document.createElement('div');
+  nod.id = ROST_FEL_ID;
+  nod.className = 'pv-rost-fel';
+  nod.hidden = true;
+  // role=status och inte alert: den ska läsas upp av skärmläsaren utan att
+  // avbryta något, precis som den inte får avbryta körningen.
+  nod.setAttribute('role', 'status');
+  nod.setAttribute('aria-live', 'polite');
+
+  const ikon = document.createElement('span');
+  ikon.className = 'pv-rost-fel-ikon';
+  ikon.setAttribute('aria-hidden', 'true');
+  ikon.textContent = '🔇';
+
+  const text = document.createElement('span');
+  text.className = 'pv-rost-fel-text';
+
+  const fix = document.createElement('button');
+  fix.type = 'button';
+  fix.className = 'pv-rost-fel-fix';
+  fix.textContent = 'Slå på rösten';
+  // Trycket ÄR gesten. Därför ligger allt arbete synkront i hanteraren och
+  // inte i en timer — en gest som hunnit dö låser inte upp någonting.
+  fix.addEventListener('click', slappFramRosten);
+
+  const stang = document.createElement('button');
+  stang.type = 'button';
+  stang.className = 'pv-rost-fel-stang';
+  stang.setAttribute('aria-label', 'Dölj');
+  stang.textContent = '×';
+  stang.addEventListener('click', () => {
+    // Ett tryck på × är också en gest, så vi passar på. Föraren som stänger
+    // rutan kan mycket väl ha löst problemet i samma rörelse.
+    lasUppLjud();
+    doljRostFel();
+  });
+
+  nod.append(ikon, text, fix, stang);
+  document.body.appendChild(nod);
+  rostFelNod = nod;
+  return nod;
+}
+
+/**
+ * Visa att rösten inte kommer fram.
+ *
+ * @param {string} text
+ * @param {{genast?:boolean}} opts genast = en varning har REDAN missats, vänta
+ *        inte. Utan flaggan dröjer strimman några sekunder, så ett startfel
+ *        som löser sig vid nästa tryck aldrig hinner blinka förbi.
+ */
+function visaRostFel(text, { genast = false } = {}) {
+  if (typeof document === 'undefined') return;
+  clearTimeout(rostFelTimer);
+  const visa = () => {
+    if (rost.lage === 'klar') return;      // löste sig under tiden
+    const nod = byggRostFelNod();
+    if (!nod) return;
+    nod.querySelector('.pv-rost-fel-text').textContent = text;
+    nod.hidden = false;
+  };
+  if (genast) visa();
+  else rostFelTimer = setTimeout(visa, ROST_FEL_DROJ_MS);
+}
+
+function doljRostFel() {
+  clearTimeout(rostFelTimer);
+  if (rostFelNod) rostFelNod.hidden = true;
+}
+
+/**
+ * Ett HÖRBART prov, direkt i förarens tryck.
+ *
+ * Går medvetet förbi Speaker-kön. Är kön det som fastnat hjälper det inte att
+ * ställa sig sist i den — och det här yttrandet ska bevisa en enda sak: att
+ * talsyntesen kan låta just nu. Hör föraren meningen är frågan besvarad utan
+ * att någon behöver läsa en diagnosrad.
+ */
+function provaRostHogt(text) {
+  if (!voiceOutputSupported) {
+    visaRostFel('Den här webbläsaren kan inte läsa upp text.', { genast: true });
+    return;
+  }
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'sv-SE';
+    u.rate = 1.05;
+    u.volume = 1;
+    let avgjort = false;
+    const vakt = setTimeout(() => {
+      if (avgjort) return;
+      avgjort = true;
+      markeraRostNekad('provrost-startade-aldrig');
+      visaRostFel('Rösten svarar men hörs inte. Stäng appen helt och öppna den igen.', { genast: true });
+    }, ROST_START_FRIST_MS + ROST_RADDNING_MS);
+    u.onstart = () => {
+      if (avgjort) return;
+      avgjort = true;
+      clearTimeout(vakt);
+      markeraRostKlar('provrost-startade');
+    };
+    u.onerror = e => {
+      if (avgjort) return;
+      avgjort = true;
+      clearTimeout(vakt);
+      markeraRostNekad('provrost-nekades:' + (e?.error || 'okant'));
+      visaRostFel('Webbläsaren släpper inte fram rösten. Tryck igen.', { genast: true });
+    };
+    speechSynthesis.speak(u);
+  } catch {
+    markeraRostNekad('provrost-kastade');
+  }
+}
+
+/** Knappen i strimman: nollställ allt som gett upp och prova på riktigt. */
+function slappFramRosten() {
+  rost.forsok = 0;
+  ljudlas.forsokt = 0;
+  rost.lage = 'inte-forsokt';
+  haLjudkontext();
+  stadaZombiekO();
+  for (const t of levandeTalare) t.uppdateraRost();
+  provaRostHogt('Rösten är på.');
+  lyssnaEfterGest();
 }
 
 /* ------------------------------------------------------------------ */
@@ -573,7 +1252,8 @@ const LOOKAHEAD_S = 0.006;    // så första samplet inte kapas av schemaläggar
  * En kedja per AudioContext, inte en per ljud: telefoner har tak på antalet
  * noder och contexten är delad med resten av appen.
  */
-let ljudkedja = null;
+// ljudkedja deklareras högst upp i filen tillsammans med ljudCtx: den måste
+// kunna nollställas när en död AudioContext byts ut, och det sker där.
 function haLjudkedja(ctx) {
   if (ljudkedja && ljudkedja.ctx === ctx) return ljudkedja;
   const master = ctx.createGain();
@@ -616,6 +1296,36 @@ function haLjudkedja(ctx) {
  * ingen känner igen — gammal app, halvskriven localStorage, framtida variant
  * som tagits bort — får göra ljudet till förvalet, aldrig till tystnad.
  */
+/**
+ * Hur länge man måste vänta efter plinget innan rösten får börja.
+ *
+ * DEN HÄR FUNKTIONEN FINNS FÖR ATT ETT MAGISKT TAL REDAN HAR KOSTAT EN NATT.
+ *
+ * Fram till 23 aug 2026 låg pausen som 380 hårdkodat i js/alerts.js och
+ * js/app.js, avstämt mot ett pling som var 350 ms långt. Kommentaren i det
+ * här filens LJUDRECEPT varnade uttryckligen: "Ändras 380 i alerts.js måste
+ * det här talet följa med." Sedan byttes plinget mot ett på 840 ms — och
+ * talet 380 rördes inte.
+ *
+ * Följden var att rösten började mitt i plinget. På en dator hörs det som en
+ * grötig början; på en iPhone tystnar talet HELT, eftersom Web Audio och
+ * speechSynthesis slåss om samma ljudväg. Ägaren hörde plinget och ingen
+ * röst, i flera dygn, medan varje mätning på skrivbordet sa att allt
+ * fungerade.
+ *
+ * Nu räknas pausen ur receptet som faktiskt spelas. Byter någon ljud igen
+ * följer pausen med av sig själv, och det finns inget tal kvar att glömma.
+ *
+ * 120 ms marginal ovanpå: tillräckligt för att svansen ska dö ut helt, kort
+ * nog att inte kännas som en paus i bilen.
+ */
+export function pausEfterPling(sort = 'alert', valt = null) {
+  const r = valjRecept(sort, valt);
+  const sist = r.pulser[r.pulser.length - 1];
+  const langd = (sist.vid + sist.langd + r.slapp) * 1000;
+  return Math.round(langd + 120);
+}
+
 export function valjRecept(sort = 'alert', valt = null) {
   if (sort !== 'alert') return LJUDRECEPT[sort] || LJUDRECEPT.alert;
   const namn = valt ?? ljudInstallningar().varningsljud;
@@ -745,6 +1455,14 @@ export class Speaker {
     this.speaking = false;
     this.voice = null;
     this.current = null;      // det som lases upp just nu
+    /*
+     * Avslutaren för yttrandet som är i luften just nu, satt av #drain().
+     *
+     * Finns för att en cancel() ska kunna stänga ned yttrandet ordentligt i
+     * stället för att lita på ett onerror som WebKit ofta inte skickar. Se
+     * #avslutaAvbrutet().
+     */
+    this.avslutaPagaende = null;
     this.muteUntil = 0;
     this.onSpeakingChange = () => {};
     // Bokföring av tystnad. ljud.js har haft det här länge för
@@ -752,11 +1470,39 @@ export class Speaker {
     // gick ett fältfel inte att felsöka i efterhand.
     this.senasteLjud = null;
     this.tystnader = 0;
+    /*
+     * De sista bokförda ljudhändelserna, nyast först.
+     *
+     * senasteLjud ensam räckte inte: den skrivs över av nästa händelse, och
+     * det som behövde besvaras var "vad hände de senaste minuterna" — plingade
+     * det utan att rösten följde, startade yttrandet, hur länge dröjde det.
+     * Fem poster är nog för att se ett mönster och lite nog att aldrig växa.
+     */
+    this.rostHistorik = [];
+    /** När talsyntesen senast bevisligen BÖRJADE tala (onstart). */
+    this.senasteTalStart = 0;
+    /** När det senaste varningsplinget spelades — se #vaktaAttRostenFoljer. */
+    this.senasteAlertPling = 0;
+    this.plingVakt = null;
+    this.startVakt = null;
+    this.langdVakt = null;
+    this.duckVakt = null;
+    /*
+     * Vilket yttrande som är det aktuella.
+     *
+     * Räknaren finns för att en avbruten uppläsning har handlare och
+     * vakthundar kvar i luften. cancel() gör inte onerror synkron: den kommer
+     * en bit senare, och då kan nästa yttrande redan ha startat. Utan
+     * räknaren skulle den gamla handlaren nollställa this.speaking mitt i den
+     * nya uppläsningen och driva kön ett steg för långt — alltså hoppa över
+     * en varning, vilket är exakt det done() en gång skrevs för att undvika.
+     */
+    this.talGeneration = 0;
+    levandeTalare.add(this);
     audioSession.background();
     if (voiceOutputSupported) {
-      const pick = () => { this.voice = this.#pickVoice(); };
-      pick();
-      speechSynthesis.addEventListener?.('voiceschanged', pick);
+      this.uppdateraRost();
+      speechSynthesis.addEventListener?.('voiceschanged', () => this.uppdateraRost());
     }
   }
 
@@ -766,6 +1512,20 @@ export class Speaker {
         || all.find(v => v.lang?.startsWith('sv'))
         || all.find(v => v.default)
         || null;
+  }
+
+  /**
+   * Hämta röstlistan på nytt och välj om.
+   *
+   * Körs vid varje återkomst till förgrunden, inte bara vid 'voiceschanged'.
+   * Ett SpeechSynthesisVoice-objekt som hämtades före ett bakgrundsläge kan på
+   * Safari peka på en röst som inte längre finns — och då svarar speak() utan
+   * att något hörs. Det är en av de få kända vägarna till exakt den tystnad
+   * den här filen finns för att fånga.
+   */
+  uppdateraRost() {
+    if (!voiceOutputSupported) return;
+    try { this.voice = this.#pickVoice(); } catch { this.voice = null; }
   }
 
   get muted() { return Date.now() < this.muteUntil; }
@@ -778,8 +1538,21 @@ export class Speaker {
    *        priority 2 = akut (nära fara), 1 = normal, 0 = bekräftelse
    */
   say(text, opts = {}) {
-    if (!voiceOutputSupported || !this.enabled || !text) return;
-    if (this.muted && (opts.priority ?? 1) < 2) return;
+    /*
+     * Fyra vägar ut ur den här funktionen utan att ett ord sägs, och alla
+     * fyra var tysta i dubbel bemärkelse: de lämnade inget spår. Två av dem
+     * är förarens egna val och helt i sin ordning; två är fel. Skillnaden
+     * gick inte att se i efterhand, och det var det som gjorde att en app som
+     * plingade men aldrig talade inte gick att felsöka på distans.
+     *
+     * Nu bokförs alla fyra, med olika orsaker, och #vaktaAttRostenFoljer()
+     * läser bokföringen för att avgöra om en tystnad efter ett pling är
+     * förklarad eller ett fel.
+     */
+    if (!text) return;
+    if (!voiceOutputSupported) { this.#bokforLjud('tal', false, 'ingen-talsyntes'); return; }
+    if (!this.enabled) { this.#bokforLjud('tal', false, 'upplasning-avslagen'); return; }
+    if (this.muted && (opts.priority ?? 1) < 2) { this.#bokforLjud('tal', false, 'tyst-lage'); return; }
 
     /*
      * Upprepning: en varning sägs två gånger som förval.
@@ -813,6 +1586,10 @@ export class Speaker {
      */
     const pagaende = this.current?.priority ?? -1;
     if (opts.interrupt && item.priority > pagaende) {
+      // Avsluta det pågående yttrandet ORDENTLIGT först. En naken cancel()
+      // lämnade förut räknaren och vakthundarna hängande — se
+      // #avslutaAvbrutet().
+      this.#avslutaAvbrutet();
       speechSynthesis.cancel();
       this.queue = [];
       this.speaking = false;
@@ -822,6 +1599,35 @@ export class Speaker {
     this.queue.sort((a, b) => b.priority - a.priority);
     if (this.queue.length > 4) this.queue.length = 4;
     this.#drain();
+  }
+
+  /**
+   * Hur länge ett yttrande rimligen kan hålla på.
+   *
+   * Behövs för att skilja "talar fortfarande" från "har hängt sig". En
+   * svensk mening ligger kring 400–500 ms per ord vid rate 1,05; vi tar
+   * rejält i, plus ett påslag för motorns egen starttid. Taket finns för att
+   * en absurt lång sträng inte ska kunna låsa kön i en minut.
+   */
+  #rimligLangdMs(text) {
+    const ord = String(text || '').trim().split(/\s+/).filter(Boolean).length;
+    return Math.min(45000, 5000 + ord * 900);
+  }
+
+  /**
+   * Kortaste tid ett yttrande rimligen KAN ha låtit.
+   *
+   * Motsatsen till #rimligLangdMs: den satte ett tak för när något hängt sig,
+   * den här sätter ett golv för när något aldrig lät. Används i u.onend för
+   * att skilja en motor som hoppar över onstart men talar, från en motor som
+   * tyst driver kön vidare utan ljud.
+   *
+   * 120 ms per ord är långt under verkligt uttal (400–500 ms per ord vid rate
+   * 1,05). Golvet ska bara utesluta det omöjliga, inte det snabba.
+   */
+  #minimiLangdMs(text) {
+    const ord = String(text || '').trim().split(/\s+/).filter(Boolean).length;
+    return Math.max(250, ord * 120);
   }
 
   #drain() {
@@ -842,13 +1648,49 @@ export class Speaker {
     audioSession.duck();   // sänk musiken, operativsystemet höjer tillbaka
     notifySpeaking(true, item.text);  // och stäng mikrofonen så vi inte hör oss själva
     this.onSpeakingChange(true);
+
+    const skickadVid = Date.now();
+    const gen = ++this.talGeneration;
     let avslutad = false;
-    const done = () => {
+    let startade = false;
+
+    /*
+     * Vakthundarnas timer-id hålls LOKALT och inte bara på this.
+     *
+     * En avbruten uppläsnings onerror kommer efter att nästa redan startat.
+     * Läste städningen då this.startVakt hade den släckt efterföljarens
+     * vakthund — och då hade den enda mekanism som upptäcker en hängd
+     * talsyntes varit avstängd i just det yttrande som mest sannolikt hänger
+     * sig. Kopian på this finns bara för att stop() ska nå dem; att rensa ett
+     * id som redan gått ut är gratis.
+     */
+    let startVakt = null;
+    let langdVakt = null;
+    const rensaVakter = () => {
+      clearTimeout(startVakt); startVakt = null;
+      clearTimeout(langdVakt); langdVakt = null;
+    };
+
+    /**
+     * @param {{dott?:boolean}} [lage] dott = motorn svarar inte, upprepa inte
+     */
+    const done = (lage = {}) => {
       // onend OCH onerror kan båda komma. Utan spärren skulle kön drivas två
       // steg framåt och en varning hoppas över.
       if (avslutad) return;
       avslutad = true;
+      // Yttrandet är avgjort: ingen annan får avsluta det en gång till.
+      if (this.avslutaPagaende === done) this.avslutaPagaende = null;
+      rensaVakter();
+      // Räknaren för yttranden i luften måste balanseras oavsett vad, annars
+      // tror primaRosten() för alltid att appen talar.
       taltIGang = Math.max(0, taltIGang - 1);
+      /*
+       * Är det här en eftersläntrare från ett yttrande som redan avbrutits
+       * slutar vi här. Talaren äger inte längre den pågående uppläsningen och
+       * får inte röra vare sig speaking, kön eller mikrofonen.
+       */
+      if (gen !== this.talGeneration) return;
       this.speaking = false;
       this.current = null;
       notifySpeaking(false, item.text);
@@ -859,16 +1701,96 @@ export class Speaker {
        * de två gångerna ska det få gå före, och andra gången kommer efter.
        * En andra uppläsning är värdefull, men inte viktigare än en ny
        * varning.
+       *
+       * Utom när motorn är död. Då hade upprepningen bara betytt ett nytt
+       * varv i vakthunden varannan sekund, resten av körningen, och varje
+       * varv hade bokfört en ny tystnad. En dörr som inte går att öppna ska
+       * man inte fortsätta dra i.
        */
-      if (item.kvar > 1) {
+      const upprepa = item.kvar > 1 && !lage.dott;
+      if (upprepa) {
         this.queue.unshift({ ...item, kvar: item.kvar - 1 });
         this.queue.sort((a, b) => b.priority - a.priority);
       }
       // Paus mellan gångerna. 120 ms räcker mellan olika meningar, men två
       // likadana i rad flyter ihop till en enda obegriplig ramsa.
-      setTimeout(() => this.#drain(), item.kvar > 1 ? 700 : 120);
+      setTimeout(() => this.#drain(), upprepa ? 700 : 120);
     };
-    u.onend = () => { this.#bokforLjud('tal', true, 'ok'); done(); };
+
+    /*
+     * Handtaget som gör en cancel() ärlig.
+     *
+     * speechSynthesis.cancel() är inte en väg ut ur done(): WebKit levererar
+     * inte tillförlitligt 'canceled' till det avbrutna yttrandet, och utan
+     * onerror körs done() aldrig. Då läcker taltIGang, vakthundarna ligger
+     * kvar och this.speaking kan stå på true för alltid. Både stop() och
+     * interrupt-grenen i say() måste därför avsluta yttrandet SJÄLVA innan de
+     * kallar cancel — det gör de genom det här handtaget.
+     */
+    this.avslutaPagaende = done;
+
+    u.onstart = () => {
+      /*
+       * DET HÄR ÄR RADEN SOM SAKNADES.
+       *
+       * Bara onend var kopplad, och ett yttrande som tyst inte gör någonting
+       * anropar varken onend eller onerror. Det gick alltså inte att skilja
+       * "talade" från "gjorde ingenting" — vilket är hela skillnaden mellan
+       * en app som varnar och en app som låtsas varna.
+       *
+       * onstart är dessutom det bästa beviset appen kan få på att rösten är
+       * upplåst, bättre än något upplåsningsprov: det är en riktig varning
+       * som faktiskt lät.
+       */
+      startade = true;
+      clearTimeout(startVakt); startVakt = null;
+      this.senasteTalStart = Date.now();
+      markeraRostKlar('yttrande-startade');
+      this.#bokforLjud('tal', true, 'startade', { drojdeMs: Date.now() - skickadVid });
+    };
+
+    u.onend = () => {
+      const langdMs = Date.now() - skickadVid;
+
+      /*
+       * ETT YTTRANDE SOM TAR SLUT UTAN ATT HA BÖRJAT ÄR INTE 'ok'.
+       *
+       * Raden bokförde förut alltid hordes=true och orsak 'ok', även när
+       * startade var false. Det är precis den tysta utgången filen finns för
+       * att fånga: motorn svarade, kön drevs vidare, ingenting lät — och
+       * ledgern kallade det ett lyckat ljud. Flaggan startade:false låg med i
+       * posten men lästes av ingen, tystnaden räknades inte, och rost.lage
+       * kunde stå kvar på 'klar' från ett tidigare yttrande, vilket i sin tur
+       * blockerade plingvakthundens strimma.
+       *
+       * MÄTT: en talsyntes-stubb som skickar onend utan onstart gav
+       * {"vad":"tal","hordes":true,"orsak":"ok","langdMs":13,"startade":false}.
+       *
+       * MEN: onstart är inte helt pålitligt heller. Vissa motorer hoppar över
+       * det på mycket korta yttranden — primaRosten() räknar därför onend som
+       * bevis för sitt punkt-yttrande. Att döma ut varje onend utan onstart
+       * hade alltså kunnat sätta en fullt fungerande röst i 'nekad' för
+       * evigt på en sådan motor, och då hade strimman legat uppe permanent.
+       *
+       * Tiden skiljer de två fallen åt. En mening som faktiskt SAGTS tar
+       * minst ett par hundra millisekunder; de 13 ms ovan är inte en mening,
+       * det är en kö som drevs vidare. Golvet är därför ordantal × 120 ms,
+       * lägst 250 — rejält under vad ett riktigt uttal tar (400–500 ms per
+       * ord vid rate 1,05) så en snabb men äkta röst aldrig döms ut.
+       */
+      const hordes = startade || langdMs >= this.#minimiLangdMs(item.text);
+      this.#bokforLjud('tal', hordes, hordes ? 'ok' : 'slutade-utan-att-borja',
+        { langdMs, startade });
+      if (!hordes) {
+        // Sätt rätt utgångsläge för vakthundarna och felstrimman: rösten är
+        // INTE bevisat upplåst, hur gärna motorn än vill påstå det.
+        markeraRostNekad('yttrande-slutade-utan-att-borja');
+      }
+      // dott när ingenting lät: en andra uppläsning av en mening motorn
+      // sväljer ger bara ett varv till i tystnad.
+      done({ dott: !hordes });
+    };
+
     u.onerror = e => {
       /*
        * Hit kommer vi när talsyntesen vägrade. Det är den tystnad som gjorde
@@ -879,13 +1801,60 @@ export class Speaker {
       const fel = e?.error || 'okant';
       const vart = fel === 'canceled' || fel === 'interrupted';
       this.#bokforLjud('tal', vart, vart ? 'avbruten' : 'rosten-nekades:' + fel);
-      done();
+      if (!vart) markeraRostNekad('yttrande-nekades:' + fel);
+      done({ dott: !vart });
     };
+
+    /*
+     * VAKTHUND ETT: startade yttrandet över huvud taget?
+     *
+     * Det klassiska iOS-läget efter ett bakgrundsläge är att speak() svarar
+     * utan att något händer. Varken onstart, onend eller onerror kommer, och
+     * this.speaking står kvar på true — då faller #drain() ur på första raden
+     * för alltid, och varje senare say() fyller bara en kö som kapas till
+     * fyra poster. Permanent tystnad, utan återhämtningsväg. Listener har
+     * haft en vakthund för exakt det här sedan länge (se speakWatchdog); den
+     * här sidan av filen hade ingen.
+     *
+     * Räddningsförsöket är speechSynthesis.resume(). En kö som bara är pausad
+     * — vilket händer när iOS avbrutit ljudsessionen — vaknar av den. Hjälper
+     * det inte inom ytterligare en knapp sekund ger vi upp yttrandet, städar
+     * bort proppen och SÄGER TILL. Att tiga här vore att göra om samma fel
+     * en gång till.
+     */
+    startVakt = this.startVakt = setTimeout(() => {
+      if (avslutad || startade || gen !== this.talGeneration) return;
+      try { speechSynthesis.resume(); } catch {}
+      startVakt = this.startVakt = setTimeout(() => {
+        if (avslutad || startade || gen !== this.talGeneration) return;
+        this.#bokforLjud('tal', false, 'startade-aldrig', { drojdeMs: Date.now() - skickadVid });
+        markeraRostNekad('yttrande-startade-aldrig');
+        visaRostFel('Varningen lästes inte upp. Tryck för att slå på rösten.', { genast: true });
+        try { speechSynthesis.cancel(); } catch {}
+        done({ dott: true });
+      }, ROST_RADDNING_MS);
+    }, ROST_START_FRIST_MS);
+
+    /*
+     * VAKTHUND TVÅ: yttrandet startade, men tog aldrig slut.
+     *
+     * Samma propp, ett steg senare i förloppet, och lika förödande: kön
+     * öppnar sig aldrig igen. Vi avbryter först när det gått längre än
+     * meningen rimligen kan ta att säga, så en långsam röst aldrig klipps.
+     */
+    langdVakt = this.langdVakt = setTimeout(() => {
+      if (avslutad || gen !== this.talGeneration) return;
+      this.#bokforLjud('tal', false, 'slutade-aldrig', { langdMs: Date.now() - skickadVid });
+      try { speechSynthesis.cancel(); } catch {}
+      done({ dott: true });
+    }, this.#rimligLangdMs(item.text));
+
     try {
       speechSynthesis.speak(u);
     } catch {
       this.#bokforLjud('tal', false, 'speak-kastade');
-      done();
+      markeraRostNekad('speak-kastade');
+      done({ dott: true });
     }
   }
 
@@ -895,15 +1864,91 @@ export class Speaker {
    * Samma tanke som #beslut() i ljud.js: en app som är tyst ska kunna svara på
    * frågan varför, i efterhand, utan att någon sitter med en telefon i handen.
    */
-  #bokforLjud(vad, hordes, orsak) {
+  #bokforLjud(vad, hordes, orsak, extra = null) {
     if (!hordes) this.tystnader++;
-    this.senasteLjud = { vad, hordes: !!hordes, orsak, tid: Date.now() };
+    this.senasteLjud = { vad, hordes: !!hordes, orsak, tid: Date.now(), ...(extra || {}) };
+    // Nyast först, aldrig mer än fem. Historiken finns för att kunna svara på
+    // "plingade det utan att rösten följde?" i efterhand, utan att någon
+    // sitter med telefonen i handen i rätt sekund.
+    this.rostHistorik.unshift(this.senasteLjud);
+    if (this.rostHistorik.length > 5) this.rostHistorik.length = 5;
     return this.senasteLjud;
   }
 
   /** Varför hördes (eller hördes inte) det senaste ljudet? */
   ljudDiagnos() {
-    return { ...ljudlasStatus(), senaste: this.senasteLjud, tystnader: this.tystnader };
+    return {
+      ...ljudlasStatus(),
+      senaste: this.senasteLjud,
+      tystnader: this.tystnader,
+      historik: [...this.rostHistorik],
+      rost: rostHalsa(),
+      senasteTalStart: this.senasteTalStart,
+      senasteAlertPling: this.senasteAlertPling,
+    };
+  }
+
+  /**
+   * Plinget spelades. Följde rösten efter?
+   *
+   * Det här är ägarens fall, ordagrant: "den här rösten måste ju också komma
+   * med, inte bara pipande ljudet". Plinget och uppläsningen är två helt
+   * skilda kedjor — Web Audio respektive speechSynthesis — och den ena kan
+   * fungera perfekt medan den andra är död. Ingenting kopplade ihop dem, så
+   * ett pling utan röst såg ut som ett lyckat pling.
+   *
+   * Nu startar varje varningspling en klocka. Har inget yttrande STARTAT
+   * innan den går ut är tystnaden ett faktum, och den bokförs — och syns, om
+   * den inte har en förklaring föraren själv valt.
+   */
+  #vaktaAttRostenFoljer() {
+    clearTimeout(this.plingVakt);
+    const plingVid = this.senasteAlertPling;
+    this.plingVakt = setTimeout(() => {
+      if (this.senasteTalStart >= plingVid) return;   // rösten kom, allt väl
+
+      /*
+       * Tre tystnader är förklarade och ska INTE larma:
+       * uppläsningen avslagen, "Tyst i 15 minuter", och en webbläsare utan
+       * talsyntes. Alla tre är förarens eget val eller enhetens gräns, och en
+       * röd ruta vid varje varning för något föraren själv ställt in lär bara
+       * ut att rutan är skräp. De bokförs ändå — en förklarad tystnad är
+       * fortfarande en tystnad, och den ska gå att läsa av i efterhand.
+       */
+      const forklarad =
+        !voiceOutputSupported ? 'ingen-talsyntes'
+        : !this.enabled ? 'upplasning-avslagen'
+        : this.muted ? 'tyst-lage'
+        : '';
+
+      this.#bokforLjud('pling-utan-rost', false, forklarad || ('rosten-kom-inte:' + rost.lage));
+      if (forklarad) return;
+
+      /*
+       * markeraRostNekad FÖRE visaRostFel, och det är inte kosmetik.
+       *
+       * visaRostFel() börjar med `if (rost.lage === 'klar') return;`. Den
+       * spärren är rätt för den fördröjda vägen — ett startfel som hann lösa
+       * sig ska inte blinka förbi — men den är fel här: vi har just KONSTATERAT
+       * tystnaden. rost.lage sätts till 'klar' av första yttrande som startar
+       * och nollställs bara av markeraRostNekad() eller av en återkomst till
+       * förgrunden, så efter att rösten fungerat en enda gång var strimman
+       * permanent bortfiltrerad i exakt det fall den byggdes för.
+       *
+       * MÄTT: rösten läser en mening (lage=klar), sedan chime('alert') utan
+       * att say() följer — alltså ruttvaktsgrenen i js/app.js, där plinget
+       * redan spelats och say() aldrig anropas. Efter 3,3 s fanns
+       * 'pling-utan-rost' i historiken, men felstrimmans nod hade aldrig ens
+       * byggts. Föraren hörde plinget, fick ingen röst, och såg ingenting.
+       *
+       * markeraRostNekad rättar dessutom rost.lage och ljudlas.rost, så
+       * ljudlasStatus() slutar påstå "Ljudet är upplåst" om en röst som inte
+       * kom. Den kan visa sin egen, allmänna text först; raden under skriver
+       * över den med den precisa och tar bort dess fördröjning.
+       */
+      markeraRostNekad('pling-utan-rost');
+      visaRostFel('Plinget hördes men varningen lästes inte upp.', { genast: true });
+    }, PLING_ROST_FRIST_MS);
   }
 
   /**
@@ -951,11 +1996,11 @@ export class Speaker {
     // tvinga: ett prov ska alltid höras, även med "Tyst i 15 minuter" på och
     // även med klickljuden avslagna. Samma skäl som i say-fallet nedan.
     if (!this.enabled) {
-      this.chime(kind === 'report' ? 'ack' : 'alert', { tvinga: true });
+      this.chime(kind === 'report' ? 'ack' : 'alert', { tvinga: true, utanRost: true });
       return 'Läs upp varningar är avslaget, så det här är bara plinget. Slå på uppläsning för att höra hela varningen.';
     }
     if (!voiceOutputSupported) {
-      this.chime(kind === 'report' ? 'ack' : 'alert', { tvinga: true });
+      this.chime(kind === 'report' ? 'ack' : 'alert', { tvinga: true, utanRost: true });
       return 'Den här webbläsaren kan inte läsa upp text, så varningar kommer bara som pling och text.';
     }
 
@@ -969,10 +2014,45 @@ export class Speaker {
     return text;
   }
 
+  /**
+   * Avsluta yttrandet som är i luften, för den som tänker kalla cancel().
+   *
+   * MÄTT LÄCKA (scratchpad-provbänk, riktig voice.js i node): rösten talar en
+   * gång, talsyntesen börjar hänga, föraren trycker "Tyst i 15 minuter" →
+   * speaker.stop() → speechSynthesis.cancel() svarar tyst, inget onerror
+   * kommer, done() körs aldrig. taltIGang stod kvar på 1 genom pageshow,
+   * bfcache och varje senare tryck, och appen svarade "Ljudet är upplåst"
+   * resten av körningen medan talsyntesen var död.
+   *
+   * dott:true så det avbrutna yttrandet inte läggs tillbaka i kön för en
+   * andra uppläsning — den som tystar appen vill inte höra meningen igen.
+   */
+  #avslutaAvbrutet() {
+    const avsluta = this.avslutaPagaende;
+    this.avslutaPagaende = null;
+    if (avsluta) avsluta({ dott: true });
+  }
+
   stop() {
+    // Kön töms FÖRE avslutaren. done() lägger tillbaka en upprepning i kön
+    // när item.kvar > 1, och även om dott:true redan hindrar det ska ordningen
+    // inte vara det enda som håller.
     this.queue = [];
+    // Balansera räknaren och släck vakthundarna innan cancel() nedan — se
+    // #avslutaAvbrutet().
+    this.#avslutaAvbrutet();
+    this.queue = [];   // done() kan ha hunnit lägga tillbaka något
+    // Generationen bumpas så att handlare och vakthundar från det avbrutna
+    // yttrandet inte kan komma tillbaka och röra en ny uppläsning.
+    this.talGeneration++;
+    clearTimeout(this.startVakt); this.startVakt = null;
+    clearTimeout(this.langdVakt); this.langdVakt = null;
+    clearTimeout(this.plingVakt); this.plingVakt = null;
+    clearTimeout(this.duckVakt); this.duckVakt = null;
+    audioSession.background();   // stop() betyder tyst, alltså tillbaka musiken
     try { speechSynthesis.cancel(); } catch {}
     this.speaking = false;
+    this.current = null;
     notifySpeaking(false);
     this.onSpeakingChange(false);
   }
@@ -986,10 +2066,41 @@ export class Speaker {
    * är två recept som glider isär.
    *
    * @param {'alert'|'ack'|'listen'} kind
-   * @param {{tvinga?:boolean}} opts  tvinga = prov, gå förbi tystnad
+   * @param {{tvinga?:boolean, utanRost?:boolean}} opts
+   *        tvinga   = prov, gå förbi tystnad
+   *        utanRost = det här plinget står med flit ensamt, vakta inte rösten
    */
   chime(kind = 'alert', opts = {}) {
     const sort = kind === 'ack' ? 'ack' : kind === 'listen' ? 'listen' : 'alert';
+
+    /*
+     * Ljudsessionen höjs FÖRE plinget, inte 380 ms efter det.
+     *
+     * duck() satt tidigare först i #drain(), alltså efter uppläsningens
+     * timer. Plinget spelades därmed alltid med sessionen kvar i 'ambient' —
+     * kategorin som blandar sig i musiken och som iPhonens tystlägesreglage
+     * dämpar. Varningens första och viktigaste ljud var alltså det enda som
+     * inte fick företräde.
+     *
+     * Plinget och rösten är ETT meddelande. De ska ha samma ljudsession, och
+     * den ska börja med plinget. Bekräftelser och mikrofonpip är däremot inga
+     * meddelanden om verkligheten och får inte lägga sig över musiken.
+     */
+    if (sort === 'alert') {
+      audioSession.duck();
+      /*
+       * Och ett skyddsnät: kommer ingen röst efter plinget skulle sessionen
+       * annars ligga kvar i 'transient' och musiken stå nersänkt resten av
+       * körningen. Samma resonemang som i kommentaren om 'transient-solo'
+       * ovan — appen får aldrig lämna bilen i ett konstigt ljudläge för att
+       * något gick fel hos oss.
+       */
+      clearTimeout(this.duckVakt);
+      this.duckVakt = setTimeout(() => {
+        if (!this.speaking && !this.queue.length) audioSession.background();
+      }, PLING_ROST_FRIST_MS);
+    }
+
     const svar = spelaVarningsljud(sort, {
       volym: this.volume,
       tystad: this.muted,
@@ -997,6 +2108,16 @@ export class Speaker {
     });
     // Kvar under sitt gamla namn: provbänkarna läser speaker._ctx.
     this._ctx = haLjudkontext({ skapa: false }) || this._ctx;
+
+    /*
+     * Ett varningspling som hördes är ett löfte om en mening. Klockan startar
+     * här och kontrolleras i #vaktaAttRostenFoljer(): kommer ingen röst är
+     * det ett fel som ska synas, inte en tystnad som ska sväljas.
+     */
+    if (sort === 'alert' && svar.hordes && !opts.utanRost) {
+      this.senasteAlertPling = Date.now();
+      this.#vaktaAttRostenFoljer();
+    }
     return this.#bokforLjud('pling', svar.hordes, svar.orsak);
   }
 }

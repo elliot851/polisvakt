@@ -5,7 +5,7 @@ import { parseReportText, TYPE_LABEL, TYPE_ICON } from './parser.js';
 import { GeoTracker, currentPosition } from './geo.js';
 import { initGeocoder, geocode, reverseGeocode, learnPlace, listLearned, forgetPlace } from './geocode.js';
 import { ReportStore, deviceId, setIdentity, isMine, TTL_MINUTES } from './store.js';
-import { Speaker, Listener, voiceInputSupported } from './voice.js';
+import { Speaker, Listener, voiceInputSupported, pausEfterPling } from './voice.js';
 import { AlertEngine } from './alerts.js';
 import { HazardMap } from './map.js';
 import { Dashcam, dashcamSupported, fmtBytes, fmtDuration } from './dashcam.js';
@@ -42,6 +42,20 @@ import * as Notiser from './notiser.js';
 import * as Korvanor from './korvanor.js';
 import { Navigering, tolkaOsrmRutt } from './navigering.js';
 import { beskrivning, sammanfattaKort, sammanfattaTal, farBeskrivas } from './sammanfattning.js';
+/*
+ * Varningsytan importeras statiskt, inte med import().
+ *
+ * En dynamisk import hade överlevt att filen saknas, men den hade också
+ * betytt att FÖRSTA varningen — den enda som spelar roll för den som just
+ * installerat appen — får vänta på en nätverkshämtning mitt i det ögonblick
+ * då rösten talar. Statiskt är modulen laddad innan appen ens säger hej.
+ *
+ * Priset är att ett fel i varningsyta.js tar hela app.js med sig. Det är
+ * accepterat: räddningsnätet längst ned i index.html fångar exakt det fallet
+ * och tvingar fram en ny hämtning, och en app som varnar utan att synas är
+ * inte mindre trasig än en app som inte startar.
+ */
+import { visa as visaYtan, stang as stangYtan } from './varningsyta.js';
 
 const $ = id => document.getElementById(id);
 const SETTINGS_KEY = 'pv.settings.v1';
@@ -2919,6 +2933,207 @@ function focusHazard(h) {
   map.centerOn(h.lat, h.lon, 16);
 }
 
+/* ================= Varningsytan — den som syns i HELA appen ================= */
+
+/*
+ * VARFÖR DET HÄR LAGRET FINNS, OCH VARFÖR BANNERN INTE RÄCKTE.
+ *
+ * #alertBanner är barn till #view-map. showView() sätter hidden på vyn, och
+ * en display:none-förfader tar bort hela grenen — z-index 900 och
+ * position:fixed på barnet spelar ingen roll alls. Byter föraren till Chatt
+ * eller Inställningar ritas varningen alltså in i ett osynligt subträd.
+ *
+ * MÄTBART UTAN TELEFON: tryck på en demoknapp i Inställningar. Ljudet kommer,
+ * rösten kommer, rutan syns aldrig. Det är exakt samma fel som på iPhonen.
+ *
+ * varningsyta.js äger en yta som ligger utanför alla vyer. Här bor bara
+ * kopplingen: vem som väcker den, i vilken ordning, och när den släcks.
+ *
+ * ORDNINGEN ÄR LJUD → RÖST → YTA, och den är medveten. Örat är den enda
+ * kanal som är ledig när man kör. Plinget säger "något har hänt", rösten
+ * säger "vad", och ytan finns där för blicken när föraren har tid att titta
+ * — vid rödljuset, inte i kurvan. Att rita först hade inte gjort någon
+ * skillnad för den som har ögonen på vägen, och hade tagit huvudtråden i
+ * anspråk precis i det ögonblick talsyntesen ska startas.
+ */
+
+/*
+ * INGEN TIMER HÄR. Ytan äger sin egen livslängd.
+ *
+ * Första utkastet hade en fjortonsekunderstimer i den här filen, kopierad
+ * från bannern. Den var fel på två sätt, och båda syns bara när det är
+ * livligt: varningsyta.js håller en KÖ och startar om sin egen klocka vid
+ * varje ny rapport (VISA_MS 15 s, med ett tak på MAX_TOTAL_MS 60 s), så en
+ * timer härifrån hade dels släckt en sekund för tidigt, dels tagit med sig
+ * rapporter som kommit in efteråt och som ingen ännu sett.
+ *
+ * Regeln som gäller: den som äger noden äger också när den försvinner. Här
+ * bor bara frågan om vem som väcker ytan och i vilken ordning.
+ */
+
+/**
+ * Väck den globala varningsytan.
+ *
+ * @param {object} rapport  faran, samma objekt som listan och nålen använder
+ * @param {object} [opts]   { avstand, egen } — se visa() i varningsyta.js
+ *
+ * Nykterhets- och drogkontroller filtreras INTE här, och det är medvetet.
+ * varningsyta.js frågar farBeskrivas() själv innan den ritar en enda pixel,
+ * och behandlar dessutom en tom beskrivning() som ett nej. En kopia av samma
+ * spärr på den här raden hade blivit ytterligare en kopia att hålla i takt
+ * med de sex som redan finns — och det är just så de driver isär. Spärren
+ * sitter hos den kod som skulle kunna bryta mot den, alltså i modulen som
+ * ritar.
+ */
+function visaYtanOverallt(rapport, opts = {}) {
+  if (!rapport) return;
+  try {
+    visaYtan(rapport, opts);
+  } catch (e) {
+    // En trasig yta får aldrig svälja varningen. Ljudet och rösten har redan
+    // gått ut när vi kommer hit, och de är det som når föraren.
+    console.warn('[varningsyta] kunde inte visas', e);
+  }
+}
+
+/** Släck ytan direkt. Bara för förarens egna avfärdanden — aldrig på timer. */
+function stangYtanOverallt() {
+  try { stangYtan(); } catch {}
+}
+
+/*
+ * Trycket på ytans kryss stänger också bannern.
+ *
+ * MÄTT: med båda uppe låg #alertClose (x324,y64 → x345,y99) under ytan
+ * (0,0 → 375,95), så bannerns eget kryss tog inte emot något tryck alls.
+ * Ytans kryss släckte bara ytan — och eftersom css-regeln i varningsyta.js
+ * gömmer bannern så länge ytan lyser POPPADE bannern fram i samma sekund som
+ * föraren tryckte bort varningen. Ett tryck som betyder "bort" får inte göra
+ * något synligt.
+ *
+ * hideAlertBanner({avForaren:true}) anropar i sin tur stangYtanOverallt().
+ * Det är ofarligt: stang() är idempotent, och den dispatchar ingenting — bara
+ * knappen i varningsyta.js gör det, så slingan går ett varv och tar slut.
+ */
+if (typeof window !== 'undefined') {
+  window.addEventListener('pv-varningsyta-stangd', () => {
+    try { hideAlertBanner({ avForaren: true }); } catch {}
+  });
+}
+
+/* ================= Notisen ================= */
+
+/**
+ * Samma varning en gång till, som en riktig systemnotis.
+ *
+ * VARFÖR DEN BEHÖVS, TROTS ATT LJUD, RÖST OCH YTA REDAN FINNS.
+ *
+ * Alla tre kräver att appen är i förgrunden med JS igång. Det är exakt det
+ * tillstånd en iPhone INTE är i när skärmen släckts eller föraren bytt app —
+ * alltså det tillstånd ägaren beskriver. Notisen är det enda av de fyra som
+ * kan nå fram med släckt skärm, och det var det enda som saknades helt: en
+ * genomsökning av js/ och sw.js hittade bara fyra showNotification-anrop, och
+ * inget av dem låg i varningskedjan.
+ *
+ * BEGRÄNSNINGEN, UTSKRIVEN SÅ INGEN TROR MER OM DEN ÄN DEN KAN:
+ * det här täcker "skärmen släckt, appen fortfarande igång". Är appen helt
+ * stängd av systemet finns ingen JS som kan anropa oss, och då krävs
+ * serverpush (js/push.js och lyssnaren i sw.js).
+ *
+ * TEXTEN ÄR ALDRIG EN EGEN FORMULERING. Rubrik och brödtext kommer ur
+ * beskrivning() i sammanfattning.js, samma källa som ytan och rösten. Fyra
+ * kanaler som säger fyra olika saker om samma polisbil är fyra chanser att
+ * säga fel.
+ *
+ * NYKTERHETSREGELN följer med genom farBeskrivas(), som frågas här på samma
+ * sätt som varningsyta.js frågar den — en ny väg fram till en människa ska
+ * själv bära spärren, inte lita på att någon uppströms gjorde det.
+ */
+const NOTIS_TAGG = 'polisvakt-varning';
+
+/** Samma rapport ska inte kunna banka fram fyra notiser i rad. */
+const notisSkickad = new Map();
+const NOTIS_OM_IGEN_MS = 120000;
+
+function notisOverallt(rapport, opts = {}) {
+  if (!rapport || typeof Notification === 'undefined') return false;
+  if (Notification.permission !== 'granted') return false;
+
+  // Spärren, igen. Se doc-kommentaren ovanför.
+  if (!farBeskrivas(rapport)) return false;
+
+  const b = beskrivning(rapport, { egen: opts.egen });
+  if (!b || !b.kort || !b.delar) return false;   // tomt = får inte beskrivas
+
+  const nyckel = rapport.id != null
+    ? `id:${rapport.id}`
+    : `x:${rapport.type || ''}|${rapport.label || ''}|${rapport.createdAt || ''}`;
+  const nu = Date.now();
+  const forra = notisSkickad.get(nyckel);
+  if (forra && nu - forra < NOTIS_OM_IGEN_MS) return false;
+  notisSkickad.set(nyckel, nu);
+  // Kartan får inte växa hela körningen. Äldre än fönstret är ändå glömda.
+  if (notisSkickad.size > 60) {
+    for (const [k, t] of notisSkickad) if (nu - t > NOTIS_OM_IGEN_MS) notisSkickad.delete(k);
+  }
+
+  const d = b.delar;
+  const titel = `${d.typ || ''}${d.plats || ''}`.trim() || 'Varning';
+
+  /*
+   * Tyst när appen syns, med ljud när den inte gör det.
+   *
+   * Plinget och rösten har redan gått ut när vi kommer hit. Ett systemljud
+   * ovanpå dem hade blivit en andra varning om samma sak en halv sekund
+   * senare, alltså brus. Ligger appen i bakgrunden är notisen tvärtom det
+   * ENDA som hörs, och då ska den låta.
+   */
+  const iForgrunden = typeof document !== 'undefined' && document.visibilityState === 'visible';
+
+  const val = {
+    body: b.kort,
+    icon: './icon.svg',
+    badge: './icon.svg',
+    tag: NOTIS_TAGG,
+    // Samma tagg för alla varningar: en skur ska ersätta sig själv i
+    // notislistan, inte stapla tolv rader. renotify tvingar fram ljud och
+    // vibration ändå när en ny ersätter en gammal — utan den är rapport
+    // nummer två helt tyst.
+    renotify: !iForgrunden,
+    silent: iForgrunden,
+    requireInteraction: false,
+    vibrate: iForgrunden ? undefined : [220, 90, 120, 90, 220],
+    data: { url: './' },
+  };
+
+  /*
+   * Via service workern i första hand. En vanlig `new Notification()` visas
+   * inte alls när sidan inte är i förgrunden på Android, och finns inte alls
+   * i en installerad PWA på iOS — alltså precis i de två fall notisen finns
+   * för. Den direkta vägen står kvar som reserv för skrivbordet.
+   */
+  (async () => {
+    try {
+      /*
+       * getRegistration() och inte .ready.
+       *
+       * .ready är ett löfte som ALDRIG avvisas — registreras ingen service
+       * worker väntar det i evighet. Det hade betytt en notis som tyst aldrig
+       * blir av, alltså exakt samma sorts fel som resten av den här
+       * genomgången handlar om. getRegistration() svarar direkt, med
+       * undefined när ingen finns, och då tar reservvägen vid.
+       */
+      const reg = swRegistration || await navigator.serviceWorker?.getRegistration?.();
+      if (reg?.showNotification) { await reg.showNotification(titel, val); return; }
+      new Notification(titel, val);
+    } catch (e) {
+      console.warn('[notis] kunde inte visas', e);
+    }
+  })();
+
+  return true;
+}
+
 /* ================= Varningsbanner ================= */
 
 function showAlertBanner(alert) {
@@ -2959,12 +3174,57 @@ function showAlertBanner(alert) {
    * sparläge, det är ett fel.
    */
   renderMorkt();
+
+  /*
+   * Och samma varning en gång till, på ytan som syns utanför kartan.
+   *
+   * Ljudet och rösten har redan gått ut när vi kommer hit: alerts.js
+   * #announce() gör chime + say och dispatchar 'alert' efteråt, så ordningen
+   * ljud → röst → yta håller även på den här vägen utan att något behöver
+   * ändras i alerts.js.
+   *
+   * Bannern står kvar. Den är inte överflödig: den är källan renderMorkt()
+   * läser ($('alertTitle').textContent), och tas den bort blir mörka
+   * körläget tyst igen — ett fel som redan gjorts en gång och som
+   * kommentaren ovanför beskriver.
+   *
+   * Avståndet skickas med: det är det enda motorn vet och listan inte, och
+   * det är också det första föraren vill veta. `egen` avgör om ytan får säga
+   * "du rapporterade" i stället för "någon varnade".
+   */
+  visaYtanOverallt(h, { avstand: alert.distance, egen: arMin(h) });
+
+  /*
+   * Och den fjärde kanalen: notisen. Se notisOverallt() ovanför.
+   *
+   * Sist i ordningen med flit — pling, röst, yta, notis. De tre första når
+   * en förare som tittar på appen; notisen är den enda som når en telefon
+   * med släckt skärm, och den ska inte kunna försena någon av de andra.
+   */
+  notisOverallt(h, { egen: arMin(h) });
 }
 
-function hideAlertBanner() {
+/*
+ * Bannerns fjortonsekunderstimer släcker BARA bannern.
+ *
+ * Frestelsen var att låta den ta ytan med sig — de visar ju samma varning.
+ * Men ytan har en kö och en egen klocka som startar om vid varje ny rapport.
+ * En timer härifrån hade släckt rapport nummer två efter att den legat uppe i
+ * en sekund. Ytan går bort av sig själv, eller när föraren trycker på dess
+ * egen kryssknapp.
+ */
+function hideAlertBanner({ avForaren = false } = {}) {
   $('alertBanner').hidden = true;
   currentAlert = null;
   renderMorkt();
+  /*
+   * Tryckte föraren själv bort varningen ska den vara borta överallt.
+   *
+   * Att stänga en varning på kartan och sedan hitta samma varning kvar när
+   * man byter till Chatt är inte två ytor, det är en app som inte lyssnar.
+   * Bara vid det uttryckliga trycket — se kommentaren ovanför om timern.
+   */
+  if (avForaren) stangYtanOverallt();
 }
 
 /* ================= Rapportering ================= */
@@ -3472,7 +3732,11 @@ function wireUI() {
   document.querySelectorAll('[data-report]').forEach(btn => setupHoldToReport(btn));
 
   $('btnFollow').onclick = () => map.setFollow(true);
-  $('alertClose').onclick = hideAlertBanner;
+  // Pilen och inte funktionsreferensen: onclick skickar med händelseobjektet
+  // som första argument, och då hade { avForaren } lästs ur en MouseEvent och
+  // alltid blivit false. Ett tryck på krysset ska stänga varningen överallt,
+  // inte bara på kartan.
+  $('alertClose').onclick = () => hideAlertBanner({ avForaren: true });
 
   $('btnMute').onclick = () => {
     if (speaker.muted) {
@@ -6190,6 +6454,9 @@ function registerSW() {
       swVersion = e.data.version;
       const el = $('versionInfo');
       if (el) el.textContent = `Version ${swVersion}`;
+      // Och märket i tabbaren, som syns i alla vyer. Det är den enda plats
+      // svaret finns när man står någon annanstans än i Inställningar.
+      renderVersionsmarke();
     }
     if (e.data?.type === 'updated') {
       pendingUpdate = true;
@@ -7343,16 +7610,79 @@ function inkommandeSag() {
       sparaInkommande(forst.h, 'tyst', 'ruttvakten',
         'Ruttvakten claimade den under de 380 millisekunderna mellan plinget ' +
         'och rösten. Den säger den i stället, med avstånd längs vägen.');
+      /*
+       * Tyst här, men INTE osynlig.
+       *
+       * Ruttvakten tar över rösten — den kan säga avståndet längs vägen, det
+       * kan inte vi. Men ruttvakten ritar ingenting någonstans. Returnerade
+       * vi rakt av vore resultatet en fara som hörs en gång och sedan inte
+       * går att hitta i appen, vilket är samma hål vi håller på att täppa
+       * till. Ytan visas alltså av oss, rösten kommer från vakten.
+       */
+      visaYtanOverallt(forst.h, { avstand: forst.avstand });
+      notisOverallt(forst.h);
       return;
     }
     speaker.say(forst.talat, { priority: 1, ganger: 1 });
+
+    /*
+     * TREDJE STEGET: ytan, från exakt samma ställe som uppläsningen.
+     *
+     * Det här är raden som saknades. Den här vägen — inkommande rapport utan
+     * geokod, den som ägaren mätte på version 88 — gjorde chime() och say()
+     * och ritade INGENTING. Sexton oscillatorer och en yttring, och på
+     * skärmen ingenting alls oavsett vy. Nu är ordningen komplett:
+     * plinget ovanför, rösten på raden före, ytan här.
+     *
+     * Kopplad till say() och inte till kön eller till chime: det som sägs och
+     * det som visas måste vara SAMMA rapport. Ritade vi vid plinget kunde
+     * ruttvaktskontrollen ovanför hinna emellan och skärmen hade visat en
+     * fara som rösten aldrig nämnde.
+     *
+     * Den närmaste först, så att den blir raden man läser överst — ytan
+     * sorterar själv, men den som lades in först är också den som vibrerade.
+     */
+    visaYtanOverallt(forst.h, { avstand: forst.avstand });
+
+    /*
+     * FJÄRDE STEGET: notisen, från exakt samma ställe som rösten och ytan.
+     *
+     * Ägarens tredje önskemål ordagrant: "Och sen ska det komma en sägande
+     * notis också." Det var det enda av de tre som inte fanns alls — varken
+     * den här vägen eller showAlertBanner rörde Notification-API:t, så alla
+     * kanaler krävde en app i förgrunden.
+     *
+     * Bara den upplästa rapporten får en notis, inte hela skuren: notisen
+     * bär samma tagg och hade annars ersatt sig själv fyra gånger på en
+     * sekund. Resten hittar föraren i ytan och i listan.
+     */
+    notisOverallt(forst.h);
+
     if (poster.length > 1) {
       const kvar = poster.length - 1;
       speaker.say(kvar === 1
         ? 'Ytterligare en rapport kom in.'
         : `Ytterligare ${kvar} rapporter kom in.`, { priority: 0 });
+
+      /*
+       * Hela bursten går in i ytan, inte bara den som lästes upp.
+       *
+       * Rösten kan bara säga "ytterligare tre rapporter" — tre uppläsningar i
+       * rad är brus. Men en siffra utan något att titta på är en återvändsgränd:
+       * föraren hör att det finns tre till och hittar dem ingenstans. Ytan är
+       * byggd för precis det, den har en egen kö som namnger de närmaste och
+       * räknar resten, och den vibrerar bara när den TÄNDS — alltså en gång för
+       * hela skuren, inte en gång per rapport.
+       */
+      for (const p of poster.slice(1)) visaYtanOverallt(p.h, { avstand: p.avstand });
     }
-  }, 380);
+    /*
+     * Pausen räknas ur plinget, inte ur ett tal här. Se pausEfterPling() i
+     * js/voice.js: talet 380 var avstämt mot ett pling på 350 ms, plinget
+     * blev 840 ms, och rösten hamnade mitt i det. På iPhone tystnade talet
+     * helt av överlappningen.
+     */
+  }, pausEfterPling('alert'));
 }
 
 /** Nollställ hela kedjan. Bara för prov — se inkommande-test.html. */
@@ -7409,7 +7739,34 @@ function wireUpdateBanner() {
  * om telefonen sitter kvar på en cachad gammal version — och då blir varje
  * test värdelöst, för man vet inte vad man testar.
  */
+/**
+ * Byggstämpeln i tabbarens vänstra hörn — den som syns i alla fyra vyer.
+ *
+ * Egen funktion och inte en rad inne i renderVersion(): renderVersion() ger
+ * upp direkt om kortet i Inställningar saknas, och stämpeln ska skrivas ändå.
+ * Det är hela dess uppgift — att svara på "vad kör telefonen?" utan att man
+ * först måste ta sig till den vy där svaret annars står.
+ *
+ * Samma källa som kortet: service workerns VERSION i första hand, eftersom
+ * den ÄR cachenyckeln och därför inte kan glida isär från vad som körs.
+ * CONFIG.version är en handskriven sträng som glömts i tolv utrullningar i
+ * rad, så när den är allt vi har sätts ett frågetecken efter numret. Ett
+ * nummer som kanske ljuger ska inte se ut som ett svar.
+ *
+ * Bara sista ledet ryms i hörnet, se motiveringen vid #versionMarke i
+ * index.html. Saknar strängen ett ledande datum — någon har satt en egen
+ * version — visas de sista tecknen i stället, klippta av max-width.
+ */
+function renderVersionsmarke() {
+  const el = $('versionMarke');
+  if (!el) return;
+  const full = String(swVersion || CONFIG.version || '');
+  const bygge = full.split('-').pop() || '?';
+  el.textContent = 'v' + bygge + (swVersion ? '' : '?');
+}
+
 function renderVersion(state = 'ok', note = '') {
+  renderVersionsmarke();
   const mark = $('updateMark'), card = $('updateCard');
   if (!mark) return;
 
@@ -7463,7 +7820,74 @@ async function lasVersionUrFil() {
   } catch { return null; }
 }
 
+/**
+ * Riv allt och hämta om från servern.
+ *
+ * Sista utvägen, och den enda som fungerar i det fall som gör mest skada:
+ * service workern svarar "inget nytt" fast servern har en nyare version.
+ * Det händer när HTTP-cachen serverar en gammal sw.js, eller när den
+ * installerade workern fastnat i 'waiting'. update() frågar den som har fel,
+ * och får därför fel svar.
+ *
+ * Ordningen är vald med omsorg:
+ *
+ *   1. Cacherna först. Går avregistreringen sedan fel har vi i alla fall
+ *      tvingat bort det gamla skalet — nästa hämtning måste gå till nätet.
+ *   2. Avregistrera service workern. Utan det kan en fastnad worker svara på
+ *      nästa navigering med precis samma gamla filer.
+ *   3. Ladda om med en frågesträng. UTAN den kan webbläsarens egen HTTP-cache
+ *      servera samma index.html en gång till, och då var hela övningen
+ *      meningslös. Frågesträngen är också varför location.replace används:
+ *      adressen ska inte bli kvar i historiken.
+ *
+ * Bara appens egen cache (poliswakt-skalet) ligger i Cache Storage.
+ * Rapporter, inställningar och dashcamklipp bor i localStorage och IndexedDB
+ * och rörs inte av det här. Det är därför texten i kortet får lova det.
+ */
+async function tvingaOmAppen() {
+  try {
+    if ('caches' in window) {
+      const nycklar = await caches.keys();
+      await Promise.all(nycklar.map(n => caches.delete(n)));
+    }
+  } catch (e) {
+    console.warn('[uppdatering] kunde inte tömma cachen', e);
+  }
+
+  try {
+    const regs = await navigator.serviceWorker?.getRegistrations?.() || [];
+    await Promise.all(regs.map(r => r.unregister()));
+  } catch (e) {
+    console.warn('[uppdatering] kunde inte avregistrera service workern', e);
+  }
+
+  const rent = location.pathname + '?pv=' + Date.now();
+  location.replace(rent);
+}
+
 function wireUpdates() {
+  // Före allt annat, och utanför guarden nedan: märket i tabbaren är det enda
+  // som syns när man inte står i Inställningar, och det ska fyllas i även om
+  // kortet av någon anledning inte finns i dokumentet.
+  renderVersionsmarke();
+
+  /*
+   * Städa bort ?pv=… som tvingaOmAppen() lade dit.
+   *
+   * Den behövdes för EN hämtning, för att komma förbi HTTP-cachen. Blir den
+   * kvar cachar service workern index.html under en adress som aldrig kommer
+   * tillbaka, och varje delad länk ur appen bär med sig ett tidsstämplat
+   * skräpargument. replaceState och inte pushState: tillbakaknappen ska inte
+   * kunna leda in i omladdningen igen.
+   */
+  if (new URLSearchParams(location.search).has('pv')) {
+    const p = new URLSearchParams(location.search);
+    p.delete('pv');
+    const fraga = p.toString();
+    history.replaceState(null, '',
+      location.pathname + (fraga ? '?' + fraga : '') + location.hash);
+  }
+
   const btn = $('btnUpdate');
   if (!btn) return;
   renderVersion('ok');
@@ -7486,6 +7910,26 @@ function wireUpdates() {
         setTimeout(() => location.reload(), 1200);
         return;
       }
+
+      /*
+       * Fråga servern också, inte bara service workern.
+       *
+       * "Inget nytt" från update() betyder bara att workern inte HITTADE
+       * något — och det är exakt det svar man får när HTTP-cachen matar den
+       * med den gamla sw.js. Filhämtningen går med cache:'reload' och förbi
+       * den cachen, så den vet vad som faktiskt ligger uppe. Skiljer de två
+       * åt är telefonen bevisligen gammal, och då ska rutan säga det rakt ut
+       * i stället för att intyga motsatsen.
+       */
+      const paServern = await lasVersionUrFil();
+      if (paServern && swVersion && paServern !== swVersion) {
+        renderVersion('offline',
+          `Servern har ${paServern}, du kör ${swVersion}. ` +
+          'Sökningen hittade den inte — tryck "Tvinga om appen från servern".');
+        toast('Din telefon kör en gammal version. Tvinga om appen.', 7000);
+        return;
+      }
+
       renderVersion('ok', `Kontrollerad nyss — du har senaste versionen. Byggd ${buildDate()}.`);
       toast('Du kör redan senaste versionen.');
     } catch {
@@ -7493,5 +7937,41 @@ function wireUpdates() {
     } finally {
       btn.disabled = false;
     }
+  };
+
+  /*
+   * Tvinga om: två tryck, ingen dialog.
+   *
+   * Knappen river offlinecachen. Ett oavsiktligt tryck i en bilhållare ska
+   * inte kunna göra det, och en modal hade varit ett tredje tryck ovanpå en
+   * ruta som täcker svaret man just läst. Knappen blir sin egen bekräftelse.
+   *
+   * Ångerfristen på åtta sekunder finns för den som tryckte fel och lägger
+   * ifrån sig telefonen: efter den är knappen tillbaka i sitt vanliga läge,
+   * så nästa tryck börjar om från början i stället för att verkställa.
+   */
+  const tvinga = $('btnTvingaOm');
+  if (!tvinga) return;
+  const tvingaText = tvinga.textContent;
+  let angerfrist = null;
+
+  tvinga.onclick = () => {
+    if (!angerfrist) {
+      tvinga.textContent = 'Säker? Tryck en gång till';
+      tvinga.classList.add('danger');
+      angerfrist = setTimeout(() => {
+        angerfrist = null;
+        tvinga.textContent = tvingaText;
+        tvinga.classList.remove('danger');
+      }, 8000);
+      return;
+    }
+    clearTimeout(angerfrist);
+    angerfrist = null;
+    tvinga.disabled = true;
+    tvinga.textContent = 'Hämtar om allt…';
+    $('tvingaNot').textContent =
+      'Appen startas om med allt hämtat på nytt. Det tar några sekunder.';
+    tvingaOmAppen();
   };
 }

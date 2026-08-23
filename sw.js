@@ -9,7 +9,19 @@
 // lugnt. Föraren behöver aldrig göra något — och blir aldrig avbruten mitt i
 // en körning, eftersom omladdningen väntar tills bilen står still.
 
-const VERSION = '2026-08-23-88';
+// VERSION MÅSTE BUMPAS I SAMMA COMMIT SOM VARJE KODÄNDRING.
+//
+// Inte som en formalitet. Bytet av den här strängen är det ENDA som får
+// webbläsaren att installera en ny service worker: är filen byte-identisk med
+// den som redan ligger på telefonen händer ingenting alls — activate körs
+// aldrig, gamla cachen rensas aldrig, och postMessage {type:'updated'} som
+// uppdateringsbannern hänger på skickas aldrig.
+//
+// Konsekvensen är värre än en utebliven fix: byggmärket i tabbarens vänstra
+// hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
+// bump gör att appen intygar att telefonen kör det senaste medan den kör det
+// gamla. Två mätinstrument som ljuger likadant är sämre än inga.
+const VERSION = '2026-08-23-89';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -58,6 +70,13 @@ const SHELL = [
   './js/plans.js',
   './js/roadmap.js',
   './js/facebook.js',
+  // js/facebook.js importerar gissaGeokodTyp härifrån, statiskt. Filen stod
+  // inte i listan, och kedjan app.js → facebook.js → telegram.js hade därför
+  // exakt samma kalla-start-fälla som varningsyta.js beskrivs ha nedan:
+  // index.html tillbaka på en modulbegäran, importen kastar, ingen app.
+  // Hittad när listan jämfördes mot vad som faktiskt importeras — gör om den
+  // jämförelsen vid varje ny fil.
+  './js/telegram.js',
   './js/rutt.js',
   './js/kartrotation.js',
   './js/vinter.js',
@@ -73,6 +92,17 @@ const SHELL = [
   // för att upptäcka.
   './js/uppstart.js',
   './js/peka.js',
+  // Varningsytan. Samma skäl som de två ovanför, fast värre utfall.
+  //
+  // js/app.js importerar den STATISKT, alltså innan en enda rad app-kod
+  // körs. Saknas den i cachen och appen startas utan nät — tunnel,
+  // källargarage, dålig 4G, alltså precis det tillstånd cachen finns för —
+  // faller fetch mot nätet, och reservgrenen längst ned i den här filen
+  // svarar caches.match('./index.html') på allt den inte har. Modulbegäran
+  // får då text/html tillbaka på en text/javascript-import, importen kastar,
+  // och app.js evalueras aldrig. Det blir alltså inte en app utan varningsyta
+  // — det blir ingen app alls.
+  './js/varningsyta.js',
   './js/platsstart.js',
   './js/push.js',
   './js/groups.js',
