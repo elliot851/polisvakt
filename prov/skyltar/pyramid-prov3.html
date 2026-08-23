@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Prov 3: hela låsvägen vid olika arbetsbredd</title>
+<style>body{margin:0;padding:16px;background:#0b0f14;color:#eef4fa;font:13px system-ui}
+pre{background:#101820;border:1px solid #1e2a36;padding:10px;overflow:auto;font-size:11px}</style>
+<div id="status">kör…</div><div id="ut"></div>
+<script type="module">
+import { sokKandidater, Malsokare } from '../../js/plate.js';
+
+const FACIT = [
+ { fil:'YBK70UD.jpg', skyltar:[{x:0.3831,y:0.5773,b:0.2887,h:0.0918}] },
+ { fil:'polestar-4-madrid-gold.jpg', skyltar:[{x:0.1606,y:0.5908,b:0.1455,h:0.0947}] },
+ { fil:'polestar-4-bak.webp', skyltar:[{x:0.4408,y:0.7225,b:0.165,h:0.062}] },
+ { fil:'enlarged.jpg', skyltar:[{x:0.3887,y:0.503,b:0.2206,h:0.0838}] },
+ { fil:'2039174f.avif', skyltar:[{x:0.4692,y:0.5171,b:0.1144,h:0.0357}] },
+ { fil:'7751f94d.avif', skyltar:[{x:0.4303,y:0.566,b:0.1442,h:0.0415}] },
+ { fil:'721ab0d6.avif', skyltar:[{x:0.3851,y:0.5152,b:0.173,h:0.0274}] },
+ { fil:'0c4d9b68.jpg', skyltar:[{x:0.2451,y:0.4801,b:0.1729,h:0.0363}] },
+ { fil:'9487480d.avif', skyltar:[{x:0.3595,y:0.5695,b:0.26,h:0.0425}] },
+ { fil:'3b979c11.avif', skyltar:[{x:0.4065,y:0.56,b:0.1975,h:0.0558},{x:0.0127,y:0.5745,b:0.0738,h:0.0535}] },
+ { fil:'images.jpg', skyltar:[{x:0.384,y:0.3355,b:0.294,h:0.1085}] },
+ { fil:'1728543597268.jpg', skyltar:[{x:0.1707,y:0.6481,b:0.1155,h:0.0563}] },
+ { fil:'521e24d0.avif', skyltar:[{x:0.2906,y:0.6844,b:0.0969,h:0.0479}] },
+ { fil:'Regpl-Heden.jpg', skyltar:[{x:0.0624,y:0.5187,b:0.1035,h:0.0592},{x:0.6247,y:0.5779,b:0.1482,h:0.0651}] },
+ { fil:'Regplat-URK.jpg', skyltar:[{x:0.2265,y:0.4222,b:0.552,h:0.3245}] },
+ { fil:'2560.webp', skyltar:[{x:0.1775,y:0.4595,b:0.6417,h:0.2342}] },
+ { fil:'renummer-131122.jpg', skyltar:[{x:0.098,y:0.254,b:0.722,h:0.515}] },
+ { fil:'nya-regnummer-sverige.webp', skyltar:[{x:0.1984,y:0.4291,b:0.5641,h:0.1712}] },
+ { fil:'Reg-nr-fram-flaggor.jpg', skyltar:[{x:0.2417,y:0.4217,b:0.5767,h:0.125}] },
+ { fil:'nya-skyltar-transportstyrelsen.png', skyltar:[{x:0.3658,y:0.117,b:0.6342,h:0.5244}] },
+ { fil:'d54eac78.png', skyltar:[{x:0.4115,y:0.5807,b:0.191,h:0.0507}] },
+ { fil:'image.png', skyltar:[{x:0.2633,y:0.3342,b:0.159,h:0.1233}] },
+];
+
+const SKALOR = [208, 256, 288, 320, 352, 400];
+const MAXB = 12, SOK_MS = 120, REP = 5;
+
+function iou(a,b){const x1=Math.max(a.x,b.x),y1=Math.max(a.y,b.y),
+ x2=Math.min(a.x+a.w,b.x+b.w),y2=Math.min(a.y+a.h,b.y+b.h);
+ if(x2<=x1||y2<=y1)return 0;const s=(x2-x1)*(y2-y1);return s/(a.w*a.h+b.w*b.h-s);}
+const median=a=>{const s=[...a].sort((x,y)=>x-y);const m=s.length>>1;
+ return s.length%2?s[m]:(s[m-1]+s[m])/2;};
+const laddaBild=f=>new Promise((ok,nej)=>{const i=new Image();
+ i.onload=()=>ok(i);i.onerror=()=>nej(new Error(f));i.src='./'+encodeURIComponent(f);});
+function tillCanvas(img){const c=document.createElement('canvas');
+ c.width=img.naturalWidth;c.height=img.naturalHeight;
+ c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0);return c;}
+
+const rader=[];
+async function kor(){
+  for(const f of FACIT){
+    document.getElementById('status').textContent='kör '+f.fil;
+    const img=await laddaBild(f.fil), kalla=tillCanvas(img);
+    const B=kalla.width,H=kalla.height,yta={x:0,y:0,w:B,h:H};
+    const facitrutor=f.skyltar.map(s=>({x:s.x*B,y:s.y*H,w:s.b*B,h:s.h*H}));
+    const basta=k=>Math.max(0,...facitrutor.map(r=>iou(k,r)));
+    const rad={fil:f.fil,px:B+'x'+H,ab:{}};
+
+    for(const AB of SKALOR){
+      // tid
+      const t=[];
+      for(let i=0;i<REP;i++){const t0=performance.now();
+        sokKandidater(kalla,yta,{arbetsbredd:AB}); t.push(performance.now()-t0);}
+      // hela låsvägen, precis som matning.html steg 1
+      const ms=new Malsokare();
+      let bildrutor=0,last=null,forsta=null;
+      for(let i=0;i<MAXB;i++){
+        const kand=sokKandidater(kalla,yta,{arbetsbredd:AB});
+        if(i===0) forsta=kand;
+        bildrutor=i+1;
+        const r=ms.mata(kand, Date.now()+i*SOK_MS);
+        if(r.last){last=r.last;break;}
+      }
+      rad.ab[AB]={
+        ms:+median(t).toFixed(2),
+        last:!!last,
+        bildrutor:last?bildrutor:null,
+        iou:last?+basta(last).toFixed(2):0,
+        ankrad:!!last?.ankrad,
+        kandidater:forsta.length,
+        iLista:+Math.max(0,...forsta.map(basta)).toFixed(2),
+      };
+    }
+    rader.push(rad);
+  }
+  window.__l=rader;
+  const sum={};
+  for(const AB of SKALOR){
+    const rows=rader.map(r=>r.ab[AB]);
+    const ratt=rows.filter(x=>x.iou>=0.5);
+    sum[AB]={
+      rattLas:ratt.length,
+      falskLas:rows.filter(x=>x.last&&x.iou<0.5).length,
+      iLista:rows.filter(x=>x.iLista>=0.5).length,
+      medianBildrutor:median(rows.filter(x=>x.last).map(x=>x.bildrutor)),
+      medianBildrutorRatt:median(ratt.map(x=>x.bildrutor)),
+      ankradeRatt:ratt.filter(x=>x.ankrad).length,
+      medianMs:+median(rows.map(x=>x.ms)).toFixed(2),
+      maxMs:Math.max(...rows.map(x=>x.ms)),
+      // total söktid till lås = bildrutor * ms
+      medianSokMsTillLas:median(ratt.map(x=>+(x.bildrutor*x.ms).toFixed(1))),
+      medianVantanMs:median(ratt.map(x=>x.bildrutor*120)),
+    };
+  }
+  window.__sum=sum;
+  document.getElementById('status').textContent='KLAR';
+  document.getElementById('ut').innerHTML='<pre>'+JSON.stringify(sum,null,1)+'</pre>';
+}
+kor().catch(e=>{document.getElementById('status').textContent='FEL '+e.message;window.__fel=String(e.stack||e);});
+</script>

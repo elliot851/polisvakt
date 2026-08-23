@@ -1,0 +1,290 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reserven — hur många platser, och vem får åka</title>
+<style>body{background:#0b0f14;color:#eef4fa;font:12px/1.45 monospace;padding:12px}
+pre{white-space:pre-wrap}.s{color:#2fd07a}.f{color:#ff7070}</style>
+<pre id="ut">Kör…</pre>
+<script type="module">
+/*
+ * VARFÖR DEN HÄR SIDAN FINNS.
+ *
+ * Reserverade platser i `sokKandidater` bär två tal som inte får vara valda på
+ * känsla: HUR MÅNGA platser (`PLATTGRIND.horisontReserv`) och VEM som får åka
+ * ut när en reserv kommer in. Båda mäts här, på exakt samma 174 bildrutor som
+ * granskning.html kör — samma 22 foton, samma 8 förvrängningar, samma
+ * skärmvinkel 90, alltså horisontregeln i sitt hårdaste läge.
+ *
+ * FRÅGA 1 — HUR MÅNGA PLATSER. Nämnaren är inte 174 utan de bildrutor där
+ * sökningen ALLS hittar den sanna skylten (max 50). I resten finns det
+ * ingenting för en reserv att rädda, och att räkna med dem hade bara spätt ut
+ * skillnaden. Måttet är: finns den sanna skylten kvar i APPENS lista, den på
+ * max 6?
+ *
+ * FRÅGA 2 — VEM FÅR ÅKA. Villkor 2 skyddar den som kommer IN (poäng över
+ * låsgränsen). Ingenting skyddade den som kastades UT: B valdes på RÅ poäng
+ * ensam, och rå poäng är inte det som avgör lås — `poang` är. Sidan räknar hur
+ * många bildrutor som vräker en kandidat som kunde ha låst, med den gamla
+ * regeln och med den nya.
+ *
+ * FRÅGA 3 — TAKET. `POANG_TAK` sägs vara ett räknat tak med luft. Sidan mäter
+ * den största poäng som faktiskt förekommer i svepet, så att påståendet i
+ * kommentaren har ett tal bakom sig.
+ */
+import { sokKandidater, PLATTGRIND, MALSOK, POANG_TAK, horisontstraff } from '../../js/plate.js';
+
+const FACIT = {
+ 'YBK70UD.jpg':[0.3831,0.5773,0.2887,0.0918],
+ 'polestar-4-madrid-gold.jpg':[0.1606,0.5908,0.1455,0.0947],
+ 'polestar-4-bak.webp':[0.4408,0.7225,0.165,0.062],
+ 'enlarged.jpg':[0.3887,0.503,0.2206,0.0838],
+ '2039174f.avif':[0.4692,0.5171,0.1144,0.0357],
+ '7751f94d.avif':[0.4303,0.566,0.1442,0.0415],
+ '721ab0d6.avif':[0.3851,0.5152,0.173,0.0274],
+ '0c4d9b68.jpg':[0.2451,0.4801,0.1729,0.0363],
+ '9487480d.avif':[0.3595,0.5695,0.26,0.0425],
+ '3b979c11.avif':[0.4065,0.56,0.1975,0.0558],
+ 'images.jpg':[0.384,0.3355,0.294,0.1085],
+ '1728543597268.jpg':[0.1707,0.6481,0.1155,0.0563],
+ '521e24d0.avif':[0.2906,0.6844,0.0969,0.0479],
+ 'Regpl-Heden.jpg':[0.6247,0.5779,0.1482,0.0651],
+ 'Regplat-URK.jpg':[0.2265,0.4222,0.552,0.3245],
+ '2560.webp':[0.1775,0.4595,0.6417,0.2342],
+ 'renummer-131122.jpg':[0.098,0.254,0.722,0.515],
+ 'nya-regnummer-sverige.webp':[0.1984,0.4291,0.5641,0.1712],
+ 'Reg-nr-fram-flaggor.jpg':[0.2417,0.4217,0.5767,0.125],
+ 'nya-skyltar-transportstyrelsen.png':[0.3658,0.117,0.6342,0.5244],
+ 'd54eac78.png':[0.4115,0.5807,0.191,0.0507],
+ 'image.png':[0.2633,0.3342,0.159,0.1233],
+};
+
+const iou=(a,b)=>{const x1=Math.max(a.x,b.x),y1=Math.max(a.y,b.y),
+ x2=Math.min(a.x+a.w,b.x+b.w),y2=Math.min(a.y+a.h,b.y+b.h);
+ if(x2<=x1||y2<=y1)return 0;const s=(x2-x1)*(y2-y1);
+ return s/(a.w*a.h+b.w*b.h-s);};
+const ladda=f=>new Promise((ok,nej)=>{const i=new Image();i.onload=()=>ok(i);
+ i.onerror=()=>nej(new Error(f));i.src='./'+encodeURIComponent(f);});
+const cv=(w,h)=>{const c=document.createElement('canvas');c.width=Math.round(w);c.height=Math.round(h);return c;};
+const n=(v,d=3)=>v==null?' – ':(+v).toFixed(d);
+
+/* Förvrängningarna är ordagrant granskning.html:s. Ändras de där ska de ändras
+ * här — de två sidorna ska mäta samma 174 bildrutor. */
+const VRID = {
+  original(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0);return {c,f};},
+  natt(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    const g=c.getContext('2d',{willReadFrequently:true});
+    g.drawImage(img,0,0);
+    const d=g.getImageData(0,0,c.width,c.height),p=d.data;
+    const x0=f.x,y0=f.y,x1=f.x+f.w,y1=f.y+f.h;
+    for(let y=0;y<c.height;y++)for(let x=0;x<c.width;x++){
+      const i=(y*c.width+x)*4;
+      const inne=(x>=x0&&x<x1&&y>=y0&&y<y1);
+      const k=inne?1.05:0.18;
+      p[i]=Math.min(255,p[i]*k);p[i+1]=Math.min(255,p[i+1]*k);p[i+2]=Math.min(255,p[i+2]*k);
+    }
+    g.putImageData(d,0,0);return {c,f};},
+  regn(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    const g=c.getContext('2d',{willReadFrequently:true});
+    g.filter='blur(2px)';g.drawImage(img,0,0);g.filter='none';
+    const d=g.getImageData(0,0,c.width,c.height),p=d.data;
+    for(let i=0;i<p.length;i+=4){
+      p[i]=p[i]*0.5+110;p[i+1]=p[i+1]*0.5+110;p[i+2]=p[i+2]*0.5+112;}
+    g.putImageData(d,0,0);return {c,f};},
+  smuts(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    const g=c.getContext('2d',{willReadFrequently:true});
+    g.drawImage(img,0,0);
+    g.fillStyle='rgba(232,232,228,0.92)';
+    g.beginPath();
+    g.ellipse(f.x+f.w*0.20,f.y+f.h*0.5,f.w*0.26,f.h*0.62,0,0,7);
+    g.fill();return {c,f};},
+  hogt(img,f){const H=img.naturalHeight,W=img.naturalWidth;
+    const mitt=f.y+f.h/2, nyH=mitt/0.28;
+    if(nyH<=H*1.02) return null;
+    const c=cv(W,nyH);const g=c.getContext('2d',{willReadFrequently:true});
+    g.drawImage(img,0,0);
+    g.drawImage(img,0,Math.round(H*0.88),W,Math.round(H*0.12),0,H,W,Math.round(nyH-H)+1);
+    return {c,f};},
+  vriden90(img,f){const W=img.naturalWidth,H=img.naturalHeight;
+    const c=cv(H,W);const g=c.getContext('2d',{willReadFrequently:true});
+    g.translate(H,0);g.rotate(Math.PI/2);g.drawImage(img,0,0);
+    return {c,f:{x:H-(f.y+f.h),y:f.x,w:f.h,h:f.w}};},
+  avstand(img,f){const W=img.naturalWidth,H=img.naturalHeight;
+    const k=(W*0.04)/f.w; if(k>=0.9) return null;
+    const c=cv(W,H);const g=c.getContext('2d',{willReadFrequently:true});
+    g.fillStyle='#6b6f74';g.fillRect(0,0,W,H);
+    const mx=f.x+f.w/2, my=f.y+f.h/2;
+    const dx=W*0.5-mx*k, dy=my-my*k;
+    g.imageSmoothingQuality='high';
+    g.drawImage(img,0,0,W,H,dx,dy,W*k,H*k);
+    return {c,f:{x:dx+f.x*k,y:dy+f.y*k,w:f.w*k,h:f.h*k}};},
+  stotfangare(img,f){const y0=Math.max(0,f.y-f.h*0.35);
+    const h=img.naturalHeight-y0; if(h<f.h*2) return null;
+    const c=cv(img.naturalWidth,h);
+    c.getContext('2d',{willReadFrequently:true})
+     .drawImage(img,0,y0,img.naturalWidth,h,0,0,img.naturalWidth,h);
+    return {c,f:{x:f.x,y:f.y-y0,w:f.w,h:f.h}};},
+};
+
+const SKARMVINKEL = 90;      // samma hårdaste läge som granskning.html
+const MAX = 6;               // appens lista
+const RESERVER = [0,1,2,3];
+
+const ut=document.getElementById('ut');
+let txt='';const skriv=s=>{txt+=s+'\n';ut.textContent=txt;};
+
+const bilder={};
+for(const fil of Object.keys(FACIT)) bilder[fil]=await ladda(fil);
+
+const raden=[];
+const spar0=PLATTGRIND.horisontReserv;
+let storstaPoang=0, storstaPoangVar='', storstaRa=0, storstaRaVar='';
+const storstaPerVrid={};
+
+for(const [namn,fn] of Object.entries(VRID)){
+  for(const [fil,fr] of Object.entries(FACIT)){
+    const img=bilder[fil];
+    const f0={x:fr[0]*img.naturalWidth,y:fr[1]*img.naturalHeight,
+              w:fr[2]*img.naturalWidth,h:fr[3]*img.naturalHeight};
+    const v=fn(img,f0); if(!v) continue;
+
+    // Hela fältet, utan snitt: finns skylten alls, och vad är den värd?
+    const alla=sokKandidater(v.c,null,{arbetsbredd:400,max:50,skarmvinkel:SKARMVINKEL});
+    for(const k of alla){
+      if(k.poang>storstaPoang){storstaPoang=k.poang;storstaPoangVar=namn+'/'+fil;}
+      if(k.poangRa>storstaRa){storstaRa=k.poangRa;storstaRaVar=namn+'/'+fil;}
+      const v=storstaPerVrid[namn];
+      if(!v||k.poangRa>v.p) storstaPerVrid[namn]={p:k.poangRa,fil};
+    }
+    const sann=alla.some(k=>iou(k,v.f)>=0.5);
+
+    const kvar={};
+    for(const r of RESERVER){
+      PLATTGRIND.horisontReserv=r;
+      const app=sokKandidater(v.c,null,{arbetsbredd:400,max:MAX,skarmvinkel:SKARMVINKEL});
+      kvar[r]=app.some(k=>iou(k,v.f)>=0.5);
+    }
+    PLATTGRIND.horisontReserv=spar0;
+    const app=sokKandidater(v.c,null,{arbetsbredd:400,max:MAX,skarmvinkel:SKARMVINKEL});
+
+    /* VEM ÅKTE UT. Rakt snitt = de sex första i poängordning. Allt som ligger
+     * i det snittet men inte i appens lista är vräkt av en reserv. */
+    const rakt=alla.slice().sort((a,b)=>b.poang-a.poang).slice(0,MAX);
+    // De två listorna kommer ur skilda anrop, så objekten är inte samma —
+    // jämför på lådan i stället.
+    const nyckel=k=>[k.x,k.y,k.w,k.h].map(v=>v.toFixed(2)).join(',');
+    const iApp=new Set(app.map(nyckel));
+    const vrakta=rakt.filter(k=>!iApp.has(nyckel(k)));
+    const vraktaLasbara=vrakta.filter(k=>k.poang>=MALSOK.minPoang);
+
+    /* GAMLA REGELN, återskapad ur samma fält: ETT byte, B = sämst RÅ poäng i
+     * snittet, oavsett om B kunde låsa. */
+    const gamla=rakt.slice();
+    if(alla.length>MAX){
+      let b=0;
+      for(let i=1;i<gamla.length;i++) if(gamla[i].poangRa<gamla[b].poangRa) b=i;
+      let inn=null;
+      for(const k of alla.slice().sort((a,b2)=>b2.poang-a.poang).slice(MAX)){
+        if(!k.horisontStraffad) continue;
+        if(k.poang<MALSOK.minPoang) continue;
+        if(!inn||k.poangRa>inn.poangRa) inn=k;
+      }
+      if(inn&&inn.poangRa>gamla[b].poangRa){
+        if(gamla[b].poang>=MALSOK.minPoang) gamla.gammalVrakteLasbar=true;
+        gamla[b]=inn;
+      }
+    }
+
+    /* FÖRETRÄDET: ändrar "den som inte kan låsa åker först" alls vem som åker?
+     * Bara om snittet innehåller BÅDE någon som kan låsa och någon som inte
+     * kan, och den som inte kan inte redan är den sämst bevisade. */
+    let foretradeGorSkillnad=false;
+    if(vrakta.length){
+      let raBotten=0;
+      for(let i=1;i<rakt.length;i++) if(rakt[i].poangRa<rakt[raBotten].poangRa) raBotten=i;
+      const finnsOlasbar=rakt.some(k=>k.poang<MALSOK.minPoang);
+      foretradeGorSkillnad=finnsOlasbar&&rakt[raBotten].poang>=MALSOK.minPoang;
+    }
+
+    raden.push({namn,fil,sann,kvar,
+      vrakta:vrakta.length,vraktaLasbara:vraktaLasbara.length,
+      gammalVrakteLasbar:!!gamla.gammalVrakteLasbar,
+      foretradeGorSkillnad,
+      sannKvarNu:app.some(k=>iou(k,v.f)>=0.5)});
+  }
+}
+PLATTGRIND.horisontReserv=spar0;
+
+const medSann=raden.filter(r=>r.sann);
+skriv('174-svepet: '+raden.length+' bildrutor, '+medSann.length+
+      ' där sökningen alls hittar den sanna skylten (max 50).');
+skriv('skärmvinkel '+SKARMVINKEL+'   horisontTak '+PLATTGRIND.horisontTak+
+      '   minPoang '+MALSOK.minPoang+'   maxSpar '+MALSOK.maxSpar+'\n');
+
+skriv('== FRÅGA 1 · sann skylt kvar i appens lista (max '+MAX+')');
+for(const r of RESERVER){
+  const k=medSann.filter(x=>x.kvar[r]).length;
+  skriv('   '+r+' reserverade platser   '+k+'/'+medSann.length+
+        (r===spar0?'   <- koden som den står':''));
+}
+skriv('   bildrutor som EN plats inte räddar men TVÅ gör:');
+for(const x of medSann) if(!x.kvar[1]&&x.kvar[2]) skriv('      '+x.namn+'/'+x.fil);
+skriv('   bildrutor som TRE räddar men TVÅ inte:');
+{const l=medSann.filter(x=>!x.kvar[2]&&x.kvar[3]);
+ skriv(l.length?l.map(x=>'      '+x.namn+'/'+x.fil).join('\n'):'      inga');}
+skriv('   bildrutor som TRE tappar men TVÅ behåller:');
+{const l=medSann.filter(x=>x.kvar[2]&&!x.kvar[3]);
+ skriv(l.length?l.map(x=>'      '+x.namn+'/'+x.fil).join('\n'):'      inga');}
+skriv('   bildrutor som ingen mängd reserv räddar:');
+{const l=medSann.filter(x=>!x.kvar[0]&&!x.kvar[1]&&!x.kvar[2]&&!x.kvar[3]);
+ skriv(l.length?l.map(x=>'      '+x.namn+'/'+x.fil).join('\n'):'      inga');}
+skriv('');
+
+skriv('== FRÅGA 2 · vräkta kandidater');
+skriv('   bildrutor där NYA regeln vräker någon alls:      '+
+      raden.filter(r=>r.vrakta>0).length+'/'+raden.length);
+skriv('   ...varav någon som kunde ha låst (poäng >= '+MALSOK.minPoang+'): '+
+      raden.filter(r=>r.vraktaLasbara>0).length+'/'+raden.length);
+for(const r of raden) if(r.vraktaLasbara>0) skriv('      '+r.namn+'/'+r.fil+
+      '   vräkta '+r.vrakta+', varav låsbara '+r.vraktaLasbara);
+skriv('   bildrutor där GAMLA regeln vräkte någon som kunde ha låst: '+
+      raden.filter(r=>r.gammalVrakteLasbar).length+'/'+raden.length);
+for(const r of raden) if(r.gammalVrakteLasbar) skriv('      '+r.namn+'/'+r.fil);
+skriv('   bildrutor där företrädet "olåsbar åker först" ändrar vem som åker: '+
+      raden.filter(r=>r.foretradeGorSkillnad).length+'/'+raden.length);
+skriv('');
+
+skriv('== FRÅGA 3 · taket');
+skriv('   POANG_TAK (räknat)                 '+POANG_TAK);
+skriv('   största poang i svepet             '+n(storstaPoang,4)+'   '+storstaPoangVar);
+skriv('   största poangRa i svepet           '+n(storstaRa,4)+'   '+storstaRaVar);
+for(const [k,v] of Object.entries(storstaPerVrid))
+  skriv('     största poangRa i '+k.padEnd(12)+' '+n(v.p,4)+'   '+v.fil);
+skriv('   horisontstraff(POANG_TAK, hårt)    '+n(horisontstraff(POANG_TAK,true),4)+
+      '   (ska vara horisontTak '+PLATTGRIND.horisontTak+')');
+skriv('');
+
+/* == FRÅGA 4 · de två bildrutor talen i kommentarerna kommer ifrån ======= */
+skriv('== FRÅGA 4 · sökande utanför snittet, bildruta för bildruta');
+for(const [vridNamn,filNamn] of [['hogt','Regpl-Heden.jpg'],['stotfangare','Regpl-Heden.jpg']]){
+  const img=bilder[filNamn], fr=FACIT[filNamn];
+  const f0={x:fr[0]*img.naturalWidth,y:fr[1]*img.naturalHeight,
+            w:fr[2]*img.naturalWidth,h:fr[3]*img.naturalHeight};
+  const v=VRID[vridNamn](img,f0); if(!v){skriv('   '+vridNamn+'/'+filNamn+': går ej att skapa');continue;}
+  const alla=sokKandidater(v.c,null,{arbetsbredd:400,max:50,skarmvinkel:SKARMVINKEL})
+    .slice().sort((a,b)=>b.poang-a.poang);
+  skriv('   '+vridNamn+'/'+filNamn+'   kandidater '+alla.length+
+        '   skyltmitt '+n((v.f.y+v.f.h/2)/v.c.height));
+  skriv('      i snittet (plats · poang · poangRa · straffad · sann):');
+  alla.slice(0,MAX).forEach((k,i)=>skriv('        '+i+'  '+n(k.poang)+'  '+n(k.poangRa)+
+    '  '+(k.horisontStraffad?'straffad':'   -    ')+'  '+(iou(k,v.f)>=0.5?'SANN':'')));
+  skriv('      sökande utanför snittet (straffad + kan låsa), bäst rå först:');
+  const sok=alla.slice(MAX).filter(k=>k.horisontStraffad&&k.poang>=MALSOK.minPoang)
+    .sort((a,b)=>b.poangRa-a.poangRa);
+  sok.forEach((k,i)=>skriv('        '+i+'  poang '+n(k.poang)+'  rå '+n(k.poangRa,4)+
+    (iou(k,v.f)>=0.5?'   SANN':'')));
+  if(!sok.length) skriv('        inga');
+}
+skriv('');
+window.__reserv={raden,medSann:medSann.length,storstaPoang,storstaRa};
+skriv('KLAR');
+</script>

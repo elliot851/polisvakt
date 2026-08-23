@@ -36,9 +36,10 @@
 
 <script type="module">
 import { sokKandidater, sokAnkare, hittaPlat, forbehandla, lasRuta,
+         provaPlattgrind,
          Malsokare, MALSOK, Rostrakning, ROST, rostvikt,
          normaliseraPlat, haMotor, visaPlat,
-         SKYLT_KVOT, SKYLT_KVOT_MIN, SKYLT_KVOT_MAX, BAND, BLAGRIND }
+         SKYLT_KVOT, SKYLT_KVOT_MIN, SKYLT_KVOT_MAX, BAND, BLAGRIND, PLATTGRIND }
   from './js/plate.js';
 
 const ut = document.getElementById('ut');
@@ -315,6 +316,91 @@ for (const f of fall) {
 }
 
 /* ======================================================================= */
+/* 1b. SKYLTAR OVANFÖR HORISONTEN                                           */
+/* ======================================================================= */
+/*
+ * VARFÖR DEN HÄR TABELLEN FINNS.
+ *
+ * Varenda syntetisk skylt i det här provet låg tidigare på fy 0,50 eller 0,62
+ * — aldrig ovanför horisontgränsen 0,32. Provet kunde alltså inte se när
+ * horisontregeln började stryka kandidater i stället för att rangordna dem,
+ * och gjorde det inte heller: sviten stod på 51/1 både före och efter att
+ * regeln byggdes. Samtidigt låg lockbetena på fy 0,30 och 0,22 och började
+ * avvisas på POSITION i stället för på det de skrevs för att pröva, vilket är
+ * en tyst förlust av två prov.
+ *
+ * Här ligger riktiga skyltar där en kamera som lutar uppåt, en uppförsbacke
+ * eller en bildruta där bara stötfångaren syns faktiskt lägger dem. Alla körs
+ * med skärmvinkel 90 — regeln i sitt HÅRDASTE läge (se `horisontlage`). Går
+ * skylten att hitta här går den inte att tappa på position någon annanstans.
+ */
+const t1b = avsnitt('1b. Skyltar OVANFÖR horisonten — de som aldrig får missas',
+  `Horisontgränsen är ${en(PLATTGRIND.horisont * 100)} % ned i bildrutan. Ovanför ` +
+  'den sitter vägmärken och handlarlistar — men också varenda skylt en kamera ' +
+  'som lutar uppåt ser. Kravet: skylten ska finnas bland kandidaterna OCH ' +
+  `ligga över låsgränsen ${en(MALSOK.minPoang * 100)}, annars är den struken i ` +
+  'praktiken även om den står kvar i listan. "Straffad" betyder att det ' +
+  'relativa hårda straffet lades på, alltså att det fanns en kandidat under ' +
+  'horisonten att förlora mot.');
+rad(t1b, ['fall', { t: 'skyltmitt', kl: 'n' }, 'hittad & låsbar', 'överst',
+          { t: 'poäng', kl: 'n' }, 'straffad', 'bild']);
+
+for (const f of [
+  { namn: 'skylt på 0,30 av bildhöjden (kameran lutar uppåt)', fy: 0.30 },
+  { namn: 'skylt på 0,25 av bildhöjden (brant uppförsbacke)', fy: 0.25 },
+  { namn: 'skylt på 0,20 av bildhöjden (hållaren sitter för lågt)', fy: 0.20 },
+  { namn: 'skylt på 0,28 MED handlarlist under — straffet är aktivt',
+    fy: 0.28, list: true },
+  { namn: 'bara stötfångaren syns (bildrutan kapad till 200 px)',
+    fy: 0.28, hojd: 200 },
+  /*
+   * RÄTTVÄND BILDRUTA ÄR ETT ANTAGANDE, och det här är raden som provar det.
+   * Samma bildruta som ovan, men lutningsgivaren säger 90° — bildrutan ligger
+   * på sidan, och `cyBild` mäter då en position i SIDLED i världen. Då ska
+   * `horisontlage` svara 'av' och straffet aldrig läggas på: hellre ingen
+   * regel än en regel på fel axel.
+   */
+  { namn: 'samma bildruta men telefonen på sidan (lutning 90°) — regeln av',
+    fy: 0.28, list: true, forvantadVinkel: 90, kravOstraffad: true },
+]) {
+  const H = f.hojd || 540;
+  const saker = [bil(0.5, f.hojd ? 0.95 : 0.62, 620, 300)];
+  if (f.list) saker.push({ typ: 'panel', fx: 0.5, fy: 0.62, bredd: 420, kvot: 4.6 });
+  saker.push({ typ: 'skylt', text: 'ABC123', fx: 0.5, fy: f.fy, bredd: 300 });
+  const s = scen(saker, { h: H });
+  const yta = s.ytor[s.ytor.length - 1];
+
+  // Skärmvinkel 90 = liggande telefon i hållare, alltså regeln i läge 'full'.
+  // Skickas en `forvantadVinkel` slår den över skärmvinkeln — den är en
+  // mätning och inte ett antagande.
+  const kand = sokKandidater(s.canvas, null,
+    { arbetsbredd: 400, skarmvinkel: 90, forvantadVinkel: f.forvantadVinkel ?? null });
+  const b = kand.find(k => traff(k, yta)) || null;
+  const lasbar = !!b && b.poang >= MALSOK.minPoang &&
+                 (!f.kravOstraffad || !b.horisontStraffad);
+
+  const mini = document.createElement('canvas');
+  mini.width = 240; mini.height = Math.round(240 * H / s.canvas.width);
+  const mg = mini.getContext('2d');
+  mg.drawImage(s.canvas, 0, 0, mini.width, mini.height);
+  if (b) {
+    const sx = mini.width / s.canvas.width, sy = mini.height / s.canvas.height;
+    mg.strokeStyle = '#2fd07a'; mg.lineWidth = 2;
+    mg.strokeRect(b.x * sx, b.y * sy, b.w * sx, b.h * sy);
+  }
+
+  rad(t1b, [
+    f.namn,
+    { t: (yta.cy / H).toFixed(3).replace('.', ','), kl: 'n' },
+    dom(lasbar),
+    b && b === kand[0] ? { t: 'ja', kl: 'ok' } : { t: 'nej', kl: 'halv' },
+    { t: b ? en(b.poang * 100) : '–', kl: 'n' },
+    b && b.horisontStraffad ? { t: 'ja', kl: 'halv' } : { t: 'nej', kl: 'noll' },
+    { nod: mini, kl: 'bild' },
+  ]);
+}
+
+/* ======================================================================= */
 /* 2. RESERVEN                                                              */
 /* ======================================================================= */
 
@@ -356,23 +442,63 @@ const t3 = avsnitt('3. Det som INTE får ge träff',
   'ANKRAD kandidat får uppstå i de här bildrutorna. Ljusa kandidater får ' +
   'finnas, precis som förut; de dör längre fram på formatvalideringen, och ' +
   'låset brinner upp av sig självt när de aldrig ger en giltig skylt.');
-rad(t3, ['bildruta', 'ankrade', 'ingen ankring', 'högsta poäng']);
+ut.appendChild(el('p', 'sub',
+  'TVÅ RÄTTELSER I DET HÄR AVSNITTET, OCH BÅDA HANDLAR OM ATT KOLUMNEN SKA ' +
+  'KUNNA GÅ SÖNDER. Här stod förut kolumnen "utan horisontregeln" med ' +
+  'påståendet att de två höga lockbetena skulle falla på MÖRKANDELEN och inte ' +
+  'på var de sitter. Den kunde inte falsifiera någonting. (1) Horisontregeln ' +
+  'STRYKER ingenting — den ändrar bara poäng — så antalet ANKRADE kandidater ' +
+  'är per konstruktion identiskt med och utan regeln, och kolumnen visade ' +
+  '"ja" oavsett vad regeln gjorde. (2) Himmelsblobben var 960 × 240 px = ' +
+  `44,4 % av bildrutan mot BAND.maxAreaAndel = ${BAND.maxAreaAndel}, alltså avvisad ` +
+  'redan i blaAnkare: granskaSkyltruta kördes aldrig på den, och då kan ' +
+  'mörkandelen omöjligt vara det som fäller den.'));
+ut.appendChild(el('p', 'sub',
+  'Nu ligger varje lockbete under areagränsen, och två kolumner kan gå ' +
+  'sönder. "nådde grinden" räknar hur många kandidater granskaSkyltruta ' +
+  'faktiskt fick döma om — är den noll är raden tom och provet mäter ' +
+  'ingenting. "under låsgränsen UTAN regeln" kör samma bildruta med ' +
+  'skärmvinkel 0, alltså horisontregeln HELT AV, och kräver att lockbetets ' +
+  'bästa kandidat ändå ligger under låsgränsen. Det är den kolumn som svarar ' +
+  'på den ursprungliga frågan: dör lockbetet på sina PIXLAR och sin FORM, ' +
+  'eller bara på var det råkar sitta i bildrutan?'));
+rad(t3, ['bildruta', { t: 'lockbetets area', kl: 'n' }, { t: 'nådde grinden', kl: 'n' },
+         'ankrade', 'ingen ankring', { t: 'högsta poäng', kl: 'n' },
+         { t: 'högsta utan regeln', kl: 'n' }, 'under låsgränsen utan regeln']);
 
+/*
+ * Varje lockbete pekar ut sin BLÅ kropp i `blatt`, så att provet kan leta rätt
+ * på just den kandidaten i provaPlattgrind i stället för att gissa. Areorna är
+ * räknade så att de ligger under BAND.maxAreaAndel: 0,20 · 960 · 540 = 103 680
+ * px i källan.
+ */
 const lockbeten = [
   { namn: 'vit skåpbilssida, inget annat',
     saker: [bil(0.5, 0.5, 700, 320), { typ: 'panel', fx: 0.5, fy: 0.6, bredd: 420, kvot: 4.6 }] },
   { namn: 'blå bilkaross intill vit panel',
+    blatt: { fx: 0.3, fy: 0.5, bredd: 70, kvot: 0.35 },
     saker: [{ typ: 'blarektangel', fx: 0.3, fy: 0.5, bredd: 70, kvot: 0.35, farg: '#2255dd' },
             { typ: 'panel', fx: 0.62, fy: 0.5, bredd: 380, kvot: 4.4 }] },
   { namn: 'smal blå stolpe intill vit vägg',
+    blatt: { fx: 0.28, fy: 0.5, bredd: 26, kvot: 0.16 },
     saker: [{ typ: 'blarektangel', fx: 0.28, fy: 0.5, bredd: 26, kvot: 0.16, farg: '#1a49c8' },
             { typ: 'panel', fx: 0.62, fy: 0.5, bredd: 420, kvot: 3.6 }] },
-  { namn: 'blått vägmärke med vit text',
+  /*
+   * HÖGT I BILDRUTAN, OCH DET ÄR HELA POÄNGEN MED DE TVÅ NEDAN. Vägmärket
+   * sitter på 0,30 och den blå listen på 0,22 — båda ovanför horisontgränsen
+   * 0,32 — och båda ska falla på sina PIXLAR. Vägmärket är 380 × 146 = 10,7 %
+   * av bildrutan och listen 600 × 150 = 17,4 %, alltså under areagränsen, så
+   * de når fram till grinden i stället för att avvisas innan.
+   */
+  { namn: 'blått vägmärke med vit text (fy 0,30)',
+    blatt: { fx: 0.5, fy: 0.3, bredd: 380, kvot: 2.6 },
     saker: [bil(0.5, 0.72, 620, 220),
             { typ: 'blarektangel', fx: 0.5, fy: 0.3, bredd: 380, kvot: 2.6,
               farg: '#0a4fa0', text: 'VÄSTERÅS' }] },
-  { namn: 'blå himmel över ljus husfasad',
-    saker: [{ typ: 'blarektangel', fx: 0.5, fy: 0.22, bredd: 960, kvot: 4.0, farg: '#4a90d9' },
+  { namn: 'blå list med vit text över ljus husfasad (fy 0,22)',
+    blatt: { fx: 0.36, fy: 0.22, bredd: 600, kvot: 4.0 },
+    saker: [{ typ: 'blarektangel', fx: 0.36, fy: 0.22, bredd: 600, kvot: 4.0,
+              farg: '#4a90d9', text: 'BILCENTER VÄSTERÅS' },
             { typ: 'panel', fx: 0.5, fy: 0.68, bredd: 700, kvot: 3.0 }] },
   { namn: 'tom väg',
     saker: [] },
@@ -380,11 +506,33 @@ const lockbeten = [
 
 for (const l of lockbeten) {
   const s = scen(l.saker);
-  const kand = sokKandidater(s.canvas, null, { arbetsbredd: 400 });
+  // Skärmvinkel 90 = regeln i läge 'full'. Skärmvinkel 0 = stående telefon,
+  // alltså regeln HELT AV — det är kontrollen på att lockbetet faller på sina
+  // pixlar och sin form, inte på sin position.
+  const kand = sokKandidater(s.canvas, null, { arbetsbredd: 400, skarmvinkel: 90 });
+  const utan = sokKandidater(s.canvas, null, { arbetsbredd: 400, skarmvinkel: 0 });
   const ankrade = kand.filter(k => k.ankrad).length;
   const hogst = kand[0] ? kand[0].poang * 100 : 0;
-  rad(t3, [l.namn, { t: String(ankrade), kl: 'n' }, dom(ankrade === 0),
-           { t: en(hogst), kl: 'n' }]);
+  const hogstUtan = utan[0] ? utan[0].poang * 100 : 0;
+
+  // Hur många kandidater granskaSkyltruta faktiskt fick döma om i den här
+  // bildrutan. Noll betyder att raden inte prövar någonting alls.
+  const nadde = provaPlattgrind(s.canvas).rader.length;
+
+  let area = '—';
+  if (l.blatt) {
+    const bh = l.blatt.bredd / (l.blatt.kvot || 1);
+    area = en(100 * l.blatt.bredd * bh / (s.canvas.width * s.canvas.height), 1) + ' %';
+  }
+  rad(t3, [l.namn, { t: area, kl: 'n' },
+           { t: String(nadde), kl: nadde || !l.blatt ? 'n' : 'n fel' },
+           { t: String(ankrade), kl: 'n' },
+           dom(ankrade === 0),
+           { t: en(hogst), kl: 'n' }, { t: en(hogstUtan), kl: 'n' },
+           dom(hogstUtan < MALSOK.minPoang * 100)]);
+  // Att raden inte är tom är ett eget krav — annars kan ett lockbete som
+  // aldrig når fram till grinden passera som "godkänt" utan att pröva något.
+  if (l.blatt) { if (nadde > 0) godkant++; else underkant++; }
 }
 
 /* ======================================================================= */

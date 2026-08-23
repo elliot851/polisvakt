@@ -1,0 +1,341 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mätning: bakvagnsankare (lyktparet) mot 22 riktiga foton</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { margin:0; padding:18px 16px 60px; background:#0b0f14; color:#eef4fa;
+         font:14px/1.5 -apple-system,system-ui,sans-serif; }
+  table { border-collapse:collapse; width:100%; font-size:12px; margin-top:8px; }
+  th,td { text-align:right; padding:4px 6px; border-bottom:1px solid #1a232d; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:#93a4b6; font-size:11px; text-transform:uppercase; }
+  .ok{color:#2fd07a}.fel{color:#ff4d4f}.halv{color:#ffb020}
+  pre { background:#101820; border:1px solid #1e2a36; padding:10px; overflow:auto;
+        font-size:11px; color:#bcd; max-height:70vh; }
+</style>
+<h1 style="font-size:18px;margin:0 0 8px">Bakvagnsankare: hittar lyktparet, och var sitter skylten i förhållande till det?</h1>
+<div id="summa">Startar…</div>
+<div id="ut"></div>
+
+<script type="module">
+import { sokKandidater } from '../../js/plate.js';
+
+/* Facit: x,y = övre vänstra hörnet, b,h = bredd/höjd, andel av bilden. */
+const FACIT = [
+ { fil:'YBK70UD.jpg', vinkel:'bak', skyltar:[{t:'YBK 70U',x:0.3831,y:0.5773,b:0.2887,h:0.0918}] },
+ { fil:'polestar-4-madrid-gold.jpg', vinkel:'snett-bak', skyltar:[{t:'FAP 18M',x:0.1606,y:0.5908,b:0.1455,h:0.0947}] },
+ { fil:'polestar-4-bak.webp', vinkel:'bak', skyltar:[{t:'FAP 18M',x:0.4408,y:0.7225,b:0.165,h:0.062}] },
+ { fil:'enlarged.jpg', vinkel:'bak', skyltar:[{t:'UTX 153',x:0.3887,y:0.503,b:0.2206,h:0.0838}] },
+ { fil:'2039174f.avif', vinkel:'bak', skyltar:[{t:'CHK 49S',x:0.4692,y:0.5171,b:0.1144,h:0.0357}] },
+ { fil:'7751f94d.avif', vinkel:'bak', skyltar:[{t:'ZPD 710',x:0.4303,y:0.566,b:0.1442,h:0.0415}] },
+ { fil:'721ab0d6.avif', vinkel:'bak', skyltar:[{t:'XTU 097',x:0.3851,y:0.5152,b:0.173,h:0.0274}] },
+ { fil:'0c4d9b68.jpg', vinkel:'snett-bak', skyltar:[{t:'XWE 623',x:0.2451,y:0.4801,b:0.1729,h:0.0363}] },
+ { fil:'9487480d.avif', vinkel:'bak', skyltar:[{t:'ABU 773',x:0.3595,y:0.5695,b:0.26,h:0.0425}] },
+ { fil:'3b979c11.avif', vinkel:'bak', skyltar:[{t:'GRE 101',x:0.4065,y:0.56,b:0.1975,h:0.0558}] },
+ { fil:'images.jpg', vinkel:'bak', skyltar:[{t:'HNL 210',x:0.384,y:0.3355,b:0.294,h:0.1085}] },
+ { fil:'1728543597268.jpg', vinkel:'snett-fram', skyltar:[{t:'EEL 62J',x:0.1707,y:0.6481,b:0.1155,h:0.0563}] },
+ { fil:'521e24d0.avif', vinkel:'snett-fram', skyltar:[{t:'RUR 017',x:0.2906,y:0.6844,b:0.0969,h:0.0479}] },
+ { fil:'Regpl-Heden.jpg', vinkel:'fram', skyltar:[{t:'YDR 167',x:0.0624,y:0.5187,b:0.1035,h:0.0592},{t:'YDR 168',x:0.6247,y:0.5779,b:0.1482,h:0.0651}] },
+ { fil:'Regplat-URK.jpg', vinkel:'fram', skyltar:[{t:'URK 924',x:0.2265,y:0.4222,b:0.552,h:0.3245}] },
+ { fil:'2560.webp', vinkel:'bak', skyltar:[{t:'NWA 780',x:0.1775,y:0.4595,b:0.6417,h:0.2342}] },
+ { fil:'renummer-131122.jpg', vinkel:'fram', skyltar:[{t:'NJK 447',x:0.098,y:0.254,b:0.722,h:0.515}] },
+ { fil:'nya-regnummer-sverige.webp', vinkel:'snett-fram', skyltar:[{t:'HET 69A',x:0.1984,y:0.4291,b:0.5641,h:0.1712}] },
+ { fil:'Reg-nr-fram-flaggor.jpg', vinkel:'fram', skyltar:[{t:'ABC 123',x:0.2417,y:0.4217,b:0.5767,h:0.125}] },
+ { fil:'nya-skyltar-transportstyrelsen.png', vinkel:'bak', skyltar:[{t:'MLB 84A',x:0.3658,y:0.117,b:0.6342,h:0.5244}] },
+ { fil:'d54eac78.png', vinkel:'bak', skyltar:[{t:'YAA 120',x:0.4115,y:0.5807,b:0.191,h:0.0507}] },
+ { fil:'image.png', vinkel:'snett-bak', skyltar:[{t:'MLB 84A',x:0.2633,y:0.3342,b:0.159,h:0.1233}] },
+];
+
+const AB = 400;                       // samma arbetsbredd som sokKandidater
+const median = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y);
+  const m=s.length>>1; return s.length%2?s[m]:(s[m-1]+s[m])/2; };
+const kv = (a,t)=>{ const s=[...a].sort((x,y)=>x-y);
+  return s[Math.min(s.length-1,Math.max(0,Math.round(t*(s.length-1))))]; };
+const en=(v,d=1)=>v==null?'–':Number(v).toFixed(d);
+
+function laddaBild(fil){ return new Promise((ok,fel)=>{ const i=new Image();
+  i.onload=()=>ok(i); i.onerror=()=>fel(new Error('kunde inte ladda '+fil));
+  i.src=encodeURIComponent(fil); }); }
+function tillCanvas(img){ const c=document.createElement('canvas');
+  c.width=img.naturalWidth; c.height=img.naturalHeight;
+  c.getContext('2d').drawImage(img,0,0); return c; }
+
+/* ---------------------------------------------------------------------------
+ * RÖDGRINDEN. Byggd exakt som blågrinden i plate.js, spegelvänd: röd måste
+ * vara största kanalen, sedan mättnadsgolv, sedan renhet ELLER kroma, sedan
+ * kulörsektorn kring 0°. Baklyktor är röda, mättade och lyser ofta — men
+ * mitten är ofta utbränd till vitt, därför är kulörfönstret brett åt
+ * orangehållet (bromsljus + blinkers i samma armatur).
+ */
+const ROD = { mattnadMin:0.30, mattnadRen:0.68, kromaMin:38,
+              nyansMin:-42, nyansMax:34, vMin:0.20, vMax:1.0 };
+
+/** Ett enda svep: gråskala + rödmask. Returnerar också tiden för svepet. */
+function svep(kalla, arbetsbredd, medRod){
+  const B=kalla.width, H=kalla.height;
+  const skala=Math.min(1, arbetsbredd/B);
+  const b=Math.max(8,Math.round(B*skala)), h=Math.max(4,Math.round(H*skala));
+  const c=document.createElement('canvas'); c.width=b; c.height=h;
+  const g=c.getContext('2d',{willReadFrequently:true});
+  g.drawImage(kalla,0,0,B,H,0,0,b,h);
+  const px=g.getImageData(0,0,b,h).data;
+  const n=b*h;
+  const gra=new Uint8ClampedArray(n);
+  const rodMask=medRod?new Uint8Array(n):null;
+  const t0=performance.now();
+  for(let i=0,p=0;i<n;i++,p+=4){
+    const r=px[p], g2=px[p+1], b2=px[p+2];
+    gra[i]=(r*0.299+g2*0.587+b2*0.114)|0;
+    if(!medRod) continue;
+    if(r<=g2 || r<=b2) continue;                       // billigaste avvisningen
+    const mn=g2<b2?g2:b2;
+    const delta=r-mn;
+    if(delta<=0) continue;
+    if(r<ROD.vMin*255) continue;
+    const mattnad=delta/r;
+    if(mattnad<ROD.mattnadMin) continue;
+    if(mattnad<ROD.mattnadRen && delta<ROD.kromaMin) continue;
+    const nyans=60*(g2-b2)/delta;                      // −60..60 när röd är störst
+    if(nyans<ROD.nyansMin || nyans>ROD.nyansMax) continue;
+    rodMask[i]=1;
+  }
+  const ms=performance.now()-t0;
+  return {b,h,skala,gra,rodMask,ms};
+}
+
+/** Flödesfyllning över en mask. Samma teknik som blaBand. */
+function maskBlobbar(mask,b,h){
+  const n=b*h, besokt=new Uint8Array(n), stack=new Int32Array(n), ut=[];
+  for(let start=0;start<n;start++){
+    if(besokt[start]||!mask[start]) continue;
+    let sp=0; stack[sp++]=start; besokt[start]=1;
+    let minX=b,maxX=-1,minY=h,maxY=-1,area=0,sx=0,sy=0;
+    while(sp){
+      const i=stack[--sp], x=i%b, y=(i/b)|0;
+      area++; sx+=x; sy+=y;
+      if(x<minX)minX=x; if(x>maxX)maxX=x;
+      if(y<minY)minY=y; if(y>maxY)maxY=y;
+      if(x>0&&!besokt[i-1]&&mask[i-1]){besokt[i-1]=1;stack[sp++]=i-1;}
+      if(x<b-1&&!besokt[i+1]&&mask[i+1]){besokt[i+1]=1;stack[sp++]=i+1;}
+      if(y>0&&!besokt[i-b]&&mask[i-b]){besokt[i-b]=1;stack[sp++]=i-b;}
+      if(y<h-1&&!besokt[i+b]&&mask[i+b]){besokt[i+b]=1;stack[sp++]=i+b;}
+    }
+    const bw=maxX-minX+1, bh=maxY-minY+1;
+    ut.push({minX,minY,bw,bh,area,cx:sx/area,cy:sy/area,fyllnad:area/(bw*bh)});
+  }
+  return ut;
+}
+
+const LYKTA = { minArea:5, minSida:2, maxAndelB:0.34, minFyllnad:0.26, maxKvot:6, tak:24 };
+const PAR   = { dyAvSep:0.28, areaKvot:4.0, hojdKvot:3.0, minSepAvLykta:1.4,
+                minSepAndel:0.06 };
+
+/** Lyktparet. Returnerar bästa paret eller null. */
+function hittaLyktpar(rodMask,b,h,tider){
+  let t=performance.now();
+  const alla=maskBlobbar(rodMask,b,h);
+  if(tider) tider.fyllMs=performance.now()-t;
+  t=performance.now();
+  let lyktor=alla.filter(l =>
+    l.area>=LYKTA.minArea && l.bw>=LYKTA.minSida && l.bh>=LYKTA.minSida &&
+    l.bw<=LYKTA.maxAndelB*b && l.bh<=LYKTA.maxAndelB*b &&
+    l.fyllnad>=LYKTA.minFyllnad &&
+    Math.max(l.bw/l.bh,l.bh/l.bw)<=LYKTA.maxKvot);
+  // Tak på parningen: bara de 24 största lyktkandidaterna. En baklykta är en av
+  // de största röda fläckarna i bildrutan, och taket gör kostnaden konstant
+  // även i en kö med hundra bromsljus.
+  if(lyktor.length>LYKTA.tak) lyktor=[...lyktor].sort((a,c)=>c.area-a.area).slice(0,LYKTA.tak);
+  if(tider) tider.antalLyktor=lyktor.length;
+  let bast=null;
+  for(let i=0;i<lyktor.length;i++) for(let j=i+1;j<lyktor.length;j++){
+    let a=lyktor[i], c=lyktor[j];
+    if(a.cx>c.cx){ const t=a; a=c; c=t; }
+    const sep=c.cx-a.cx;
+    if(sep < PAR.minSepAndel*b) continue;
+    const medelW=(a.bw+c.bw)/2;
+    if(sep < PAR.minSepAvLykta*medelW) continue;
+    if(Math.abs(a.cy-c.cy) > PAR.dyAvSep*sep) continue;
+    const ak=Math.max(a.area/c.area,c.area/a.area);
+    if(ak>PAR.areaKvot) continue;
+    const hk=Math.max(a.bh/c.bh,c.bh/a.bh);
+    if(hk>PAR.hojdKvot) continue;
+    // Poäng: stora, lika stora och lika höga lyktor först.
+    const poang=(a.area+c.area)/(ak*hk)*(1-Math.abs(a.cy-c.cy)/(PAR.dyAvSep*sep)*0.5);
+    if(!bast||poang>bast.poang) bast={a,c,sep,poang,
+      midx:(a.cx+c.cx)/2, lampy:(a.cy+c.cy)/2, antalLyktor:lyktor.length};
+  }
+  if(bast) bast.antalRoda=alla.length;
+  return bast;
+}
+
+async function matEn(f){
+  const rad={fil:f.fil, vinkel:f.vinkel};
+  const img=await laddaBild(f.fil);
+  const kalla=tillCanvas(img);
+  const B=kalla.width,H=kalla.height;
+  rad.px=`${B}×${H}`;
+
+  // Kostnad: samma svep utan och med rödmask, 9 körningar, median.
+  const utan=[],med=[];
+  for(let i=0;i<9;i++){ utan.push(svep(kalla,AB,false).ms); med.push(svep(kalla,AB,true).ms); }
+  rad.svepUtanMs=median(utan); rad.svepMedMs=median(med);
+
+  const s=svep(kalla,AB,true);
+  const t0=performance.now();
+  const tider={}; const par=hittaLyktpar(s.rodMask,s.b,s.h,tider);
+  rad.parMs=performance.now()-t0; rad.fyllMs=tider.fyllMs; rad.antalLyktor=tider.antalLyktor;
+  rad.antalRoda=par?par.antalRoda:maskBlobbar(s.rodMask,s.b,s.h).length;
+
+  rad.par=!!par;
+  if(par){
+    rad.sepPx=par.sep/s.skala;
+    rad.sepAndel=par.sep/s.b;
+    // Var sitter facitskylten i lyktparets koordinater?
+    rad.skyltar=f.skyltar.map(sk=>{
+      const pcx=(sk.x+sk.b/2)*B*s.skala, pcy=(sk.y+sk.h/2)*H*s.skala;
+      return { t:sk.t,
+        u:(pcx-par.midx)/par.sep,
+        v:(pcy-par.lampy)/par.sep,
+        wAvSep:(sk.b*B*s.skala)/par.sep,
+        hAvSep:(sk.h*H*s.skala)/par.sep };
+    });
+  } else rad.skyltar=f.skyltar.map(sk=>({t:sk.t,u:null,v:null,wAvSep:null}));
+
+  // Vad hittar dagens sökning, och skulle fönstret sålla bort skräpet?
+  const kand=sokKandidater(kalla,{x:0,y:0,w:B,h:H},{arbetsbredd:AB});
+  const facitrutor=f.skyltar.map(sk=>({x:sk.x*B,y:sk.y*H,w:sk.b*B,h:sk.h*H}));
+  const iou=(a,c)=>{ const x=Math.max(0,Math.min(a.x+a.w,c.x+c.w)-Math.max(a.x,c.x));
+    const y=Math.max(0,Math.min(a.y+a.h,c.y+c.h)-Math.max(a.y,c.y));
+    const i=x*y; return i/(a.w*a.h+c.w*c.h-i); };
+  const basta=r=>Math.max(0,...facitrutor.map(fr=>iou(r,fr)));
+  rad.kandidater=kand.length;
+  rad.toppIoU=kand.length?basta(kand[0]):0;
+  rad.bastaIoU=kand.length?Math.max(...kand.map(basta)):0;
+  /* --- Omrangordning med bakvagnsfönstret ------------------------------ */
+  const F={uMax:0.45, vMin:-0.30, vMax:0.65, wMin:0.24, wMax:0.58,
+           lyft:1.5, sank:0.55};
+  const lage=k=>{
+    if(!par) return null;
+    const kx=(k.x+k.w/2)*s.skala, ky=(k.y+k.h/2)*s.skala;
+    const kw=(k.rw!=null?k.rw:k.w)*s.skala;
+    return { u:(kx-par.midx)/par.sep, v:(ky-par.lampy)/par.sep, w:kw/par.sep };
+  };
+  const inne=k=>{ const l=lage(k); return !!l &&
+    Math.abs(l.u)<=F.uMax && l.v>=F.vMin && l.v<=F.vMax &&
+    l.w>=F.wMin && l.w<=F.wMax; };
+  // Paret litas bara på om NÅGON kandidat bekräftar det. Ett lyktpar utan en
+  // skyltformad kandidat på rätt plats är inget lyktpar.
+  const litarPa = !!par && kand.some(inne);
+  rad.litarPaPar=litarPa;
+  const rangordna=(sank)=>{
+    if(!litarPa) return kand;
+    return [...kand].sort((a,c)=>{
+      const fa=inne(a)?F.lyft:(sank?F.sank:1), fc=inne(c)?F.lyft:(sank?F.sank:1);
+      return c.poang*fc - a.poang*fa;
+    });
+  };
+  const A=rangordna(false), Bx=rangordna(true);
+  rad.toppIoU_A=A.length?basta(A[0]):0;
+  rad.toppIoU_B=Bx.length?basta(Bx[0]):0;
+  /* --- Steg D: lyktparet sätter skalan, skalan kapar rutan -------------- */
+  if(par && litarPa && Bx.length){
+    const k=Bx[0];
+    const sepSrc=par.sep/s.skala;
+    for(const [namn,tak] of [['D_1_10',1.10],['D_1_25',1.25],['D_1_40',1.40]]){
+      const hMax=tak*0.098*sepSrc;
+      if(k.h>hMax){
+        rad['iou_'+namn+'_topp'] = basta({x:k.x,y:k.y,w:k.w,h:hMax});
+        rad['iou_'+namn+'_mitt'] = basta({x:k.x,y:k.y+(k.h-hMax)/2,w:k.w,h:hMax});
+      } else { rad['iou_'+namn+'_topp']=basta(k); rad['iou_'+namn+'_mitt']=basta(k); }
+    }
+  }
+
+  /* --- Steg C: sök BARA i bakvagnsfönstret ------------------------------ */
+  if(par){
+    const inv=1/s.skala;
+    const fx=(par.midx-0.75*par.sep)*inv, fy=(par.lampy-0.40*par.sep)*inv;
+    const fw=1.50*par.sep*inv, fh=1.15*par.sep*inv;
+    const fonster={ x:Math.max(0,fx), y:Math.max(0,fy),
+                    w:Math.min(B-Math.max(0,fx), fw), h:Math.min(H-Math.max(0,fy), fh) };
+    rad.fonsterAndel=(fonster.w*fonster.h)/(B*H);
+    const tHel=[],tFon=[];
+    for(let i=0;i<5;i++){
+      let t=performance.now(); sokKandidater(kalla,{x:0,y:0,w:B,h:H},{arbetsbredd:AB}); tHel.push(performance.now()-t);
+      t=performance.now(); sokKandidater(kalla,fonster,{arbetsbredd:AB}); tFon.push(performance.now()-t);
+    }
+    rad.sokHelMs=median(tHel); rad.sokFonsterMs=median(tFon);
+    const kf=sokKandidater(kalla,fonster,{arbetsbredd:AB});
+    rad.fonsterKand=kf.length;
+    rad.fonsterToppIoU=kf.length?basta(kf[0]):0;
+    rad.fonsterBastaIoU=kf.length?Math.max(...kf.map(basta)):0;
+  }
+  rad.kandLista=kand.map(k=>({
+    ioU:+basta(k).toFixed(2), poang:+k.poang.toFixed(3), ankrad:!!k.ankrad,
+    cx:+((k.x+k.w/2)/B).toFixed(3), cy:+((k.y+k.h/2)/H).toFixed(3),
+    // i lyktparets koordinater
+    u:par?+(((k.x+k.w/2)*s.skala-par.midx)/par.sep).toFixed(3):null,
+    v:par?+(((k.y+k.h/2)*s.skala-par.lampy)/par.sep).toFixed(3):null,
+  }));
+  return rad;
+}
+
+(async()=>{
+  const rader=[];
+  for(const f of FACIT){
+    summa.textContent=`Kör ${rader.length+1}/${FACIT.length}: ${f.fil}…`;
+    try { rader.push(await matEn(f)); }
+    catch(e){ rader.push({fil:f.fil,vinkel:f.vinkel,fel:e.message,par:false,skyltar:[]}); }
+  }
+  const med=rader.filter(r=>r.par);
+  const uAlla=[],vAlla=[],wAlla=[];
+  for(const r of med) for(const s of r.skyltar||[])
+    if(s.u!=null){uAlla.push(s.u);vAlla.push(s.v);wAlla.push(s.wAvSep);}
+  const res={
+    korddes:new Date().toISOString(),
+    totalt:rader.length,
+    parHittat:med.length,
+    parHittatBak:rader.filter(r=>r.par&&/bak/.test(r.vinkel)).length,
+    bakBilder:rader.filter(r=>/bak/.test(r.vinkel)).length,
+    framBilder:rader.filter(r=>/fram/.test(r.vinkel)).length,
+    parHittatFram:rader.filter(r=>r.par&&/fram/.test(r.vinkel)).length,
+    kostnadSvepUtanMs:median(rader.map(r=>r.svepUtanMs).filter(x=>x!=null)),
+    kostnadSvepMedMs:median(rader.map(r=>r.svepMedMs).filter(x=>x!=null)),
+    kostnadParMs:median(rader.map(r=>r.parMs).filter(x=>x!=null)),
+    maxParMs:Math.max(...rader.map(r=>r.parMs||0)),
+    hAvSep:(()=>{const a=[];for(const r of med)for(const s of r.skyltar||[])if(s.hAvSep!=null)a.push(s.hAvSep);
+      return {min:Math.min(...a),p10:kv(a,0.1),median:median(a),p90:kv(a,0.9),max:Math.max(...a)};})(),
+    kapning:['D_1_10','D_1_25','D_1_40'].map(n=>({variant:n,
+      topp:rader.filter(r=>(r['iou_'+n+'_topp']??r.toppIoU_B??0)>=0.5).length,
+      mitt:rader.filter(r=>(r['iou_'+n+'_mitt']??r.toppIoU_B??0)>=0.5).length})),
+    kapDetalj:rader.filter(r=>r['iou_D_1_25_topp']!=null)
+      .map(r=>`${r.fil}: B ${en(r.toppIoU_B,2)} → kap-topp ${en(r.iou_D_1_25_topp,2)} / kap-mitt ${en(r.iou_D_1_25_mitt,2)}`),
+    fonsterAndelMedian:median(rader.map(r=>r.fonsterAndel).filter(x=>x!=null)),
+    sokHelMsMedian:median(rader.map(r=>r.sokHelMs).filter(x=>x!=null)),
+    sokFonsterMsMedian:median(rader.map(r=>r.sokFonsterMs).filter(x=>x!=null)),
+    fonsterVinster:rader.filter(r=>r.par&&(r.fonsterToppIoU??0)>=0.5&&(r.toppIoU??0)<0.5)
+                        .map(r=>`${r.fil}: hel ${en(r.toppIoU,2)} → fönster ${en(r.fonsterToppIoU,2)}`),
+    fonsterForluster:rader.filter(r=>r.par&&(r.fonsterToppIoU??0)<0.5&&(r.toppIoU??0)>=0.5)
+                        .map(r=>`${r.fil}: hel ${en(r.toppIoU,2)} → fönster ${en(r.fonsterToppIoU,2)}`),
+    toppRatt_fore:rader.filter(r=>r.toppIoU>=0.5).length,
+    toppRatt_A_baraLyft:rader.filter(r=>(r.toppIoU_A??r.toppIoU)>=0.5).length,
+    toppRatt_B_lyftOchSank:rader.filter(r=>(r.toppIoU_B??r.toppIoU)>=0.5).length,
+    litarPaPar:rader.filter(r=>r.litarPaPar).length,
+    andrade:rader.filter(r=>Math.abs((r.toppIoU_B??0)-(r.toppIoU??0))>0.05)
+                 .map(r=>`${r.fil}: ${en(r.toppIoU,2)} → A ${en(r.toppIoU_A,2)} → B ${en(r.toppIoU_B,2)}`),
+    u:{min:Math.min(...uAlla),p10:kv(uAlla,0.1),median:median(uAlla),p90:kv(uAlla,0.9),max:Math.max(...uAlla)},
+    v:{min:Math.min(...vAlla),p10:kv(vAlla,0.1),median:median(vAlla),p90:kv(vAlla,0.9),max:Math.max(...vAlla)},
+    wAvSep:{min:Math.min(...wAlla),median:median(wAlla),max:Math.max(...wAlla)},
+    rader,
+  };
+  window.__resultat=res;
+  summa.innerHTML=`Lyktpar hittat på ${med.length}/${rader.length} bilder `+
+    `(bak: ${res.parHittatBak}/${res.bakBilder}, fram: ${res.parHittatFram}/${res.framBilder}) · `+
+    `svep utan röd ${en(res.kostnadSvepUtanMs,2)} ms → med röd ${en(res.kostnadSvepMedMs,2)} ms · `+
+    `parning ${en(res.kostnadParMs,2)} ms (max ${en(res.maxParMs,2)})`;
+  const p=document.createElement('pre');
+  p.textContent=JSON.stringify(res,null,1);
+  ut.appendChild(p);
+  document.title='KLAR par '+med.length+'/'+rader.length;
+  window.__klar=true;
+})();
+</script>

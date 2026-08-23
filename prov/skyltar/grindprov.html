@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grindprov — plattgrindens tal mot facit</title>
+<style>body{background:#0b0f14;color:#eef4fa;font:12px/1.4 monospace;padding:12px}
+pre{white-space:pre-wrap}.s{color:#2fd07a}.f{color:#ff7070}</style>
+<pre id="ut">Kör…</pre>
+<script type="module">
+import { provaPlattgrind, PLATTGRIND } from '../../js/plate.js';
+
+/* Facit: målbilens läsbara skylt, andel av bild. x,y,b,h. */
+const FACIT = {
+ 'YBK70UD.jpg':[0.3831,0.5773,0.2887,0.0918],
+ 'polestar-4-madrid-gold.jpg':[0.1606,0.5908,0.1455,0.0947],
+ 'polestar-4-bak.webp':[0.4408,0.7225,0.165,0.062],
+ 'enlarged.jpg':[0.3887,0.503,0.2206,0.0838],
+ '2039174f.avif':[0.4692,0.5171,0.1144,0.0357],
+ '7751f94d.avif':[0.4303,0.566,0.1442,0.0415],
+ '721ab0d6.avif':[0.3851,0.5152,0.173,0.0274],
+ '0c4d9b68.jpg':[0.2451,0.4801,0.1729,0.0363],
+ '9487480d.avif':[0.3595,0.5695,0.26,0.0425],
+ '3b979c11.avif':[0.4065,0.56,0.1975,0.0558],
+ 'images.jpg':[0.384,0.3355,0.294,0.1085],
+ '1728543597268.jpg':[0.1707,0.6481,0.1155,0.0563],
+ '521e24d0.avif':[0.2906,0.6844,0.0969,0.0479],
+ 'Regpl-Heden.jpg':[0.6247,0.5779,0.1482,0.0651],
+ 'Regplat-URK.jpg':[0.2265,0.4222,0.552,0.3245],
+ '2560.webp':[0.1775,0.4595,0.6417,0.2342],
+ 'renummer-131122.jpg':[0.098,0.254,0.722,0.515],
+ 'nya-regnummer-sverige.webp':[0.1984,0.4291,0.5641,0.1712],
+ 'Reg-nr-fram-flaggor.jpg':[0.2417,0.4217,0.5767,0.125],
+ 'nya-skyltar-transportstyrelsen.png':[0.3658,0.117,0.6342,0.5244],
+ 'd54eac78.png':[0.4115,0.5807,0.191,0.0507],
+ 'image.png':[0.2633,0.3342,0.159,0.1233],
+};
+
+const iou=(a,b)=>{const x1=Math.max(a.x,b.x),y1=Math.max(a.y,b.y),
+ x2=Math.min(a.x+a.w,b.x+b.w),y2=Math.min(a.y+a.h,b.y+b.h);
+ if(x2<=x1||y2<=y1)return 0;const s=(x2-x1)*(y2-y1);
+ return s/(a.w*a.h+b.w*b.h-s);};
+const ladda=f=>new Promise((ok,nej)=>{const i=new Image();i.onload=()=>ok(i);
+ i.onerror=()=>nej(new Error(f));i.src='./'+encodeURIComponent(f);});
+const n=(v,d=2)=>v==null?' – ':v.toFixed(d);
+const rid=k=>(k.matt?'mork'+n(k.matt.morkandel)+' kon'+k.matt.kontrast:'omätt')+
+  ' cyB'+n(k.cyBild)+' eu'+n(k.bandAndel)+' L'+Math.round(k.L)+' W'+Math.round(k.W)+
+  ' tb'+k.teckenbyten+(k.dom.overHorisont?' ÖVER-HORISONT':'')+
+  ' => '+(k.dom.ok?'OK f'+n(k.dom.faktor):'NEJ '+k.dom.skal);
+
+const ut=document.getElementById('ut');
+let txt='PLATTGRIND mork '+PLATTGRIND.morkandelMin+'–'+PLATTGRIND.morkandelMax+
+ '  kontrast>='+PLATTGRIND.kontrastMin+'  horisont '+PLATTGRIND.horisont+'/'+PLATTGRIND.horisontMjuk+
+ ' mjuk lutning '+PLATTGRIND.horisontStraff+'  hårt tak '+PLATTGRIND.horisontTak+' (stryker aldrig)'+
+ '  eu '+PLATTGRIND.euMin+'–'+PLATTGRIND.euMax+'\n\n';
+const sanna=[], falska=[];
+for(const [fil,fr] of Object.entries(FACIT)){
+  const img=await ladda(fil);
+  const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+  c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0);
+  const facit={x:fr[0]*c.width,y:fr[1]*c.height,w:fr[2]*c.width,h:fr[3]*c.height};
+  const r=provaPlattgrind(c);
+  let bast=null,bi=0;
+  for(const k of r.rader){const v=iou(k.lada,facit);if(v>bi){bi=v;bast=k;}}
+  txt+=fil+'  ('+r.rader.length+' kand, sann IoU '+n(bi)+')\n';
+  if(bast&&bi>=0.5){
+    sanna.push(bast);
+    txt+='  SANN  '+bast.typ+' '+rid(bast)+'\n';
+  } else txt+='  (sanna skylten finns inte i listan)\n';
+  // de tre falska som skulle överleva grinden — de farliga
+  const f=r.rader.filter(k=>k!==bast&&iou(k.lada,facit)<0.10&&k.dom.ok).slice(0,3);
+  for(const k of f){falska.push(k);txt+='  falsk '+k.typ+' '+rid(k)+'\n';}
+  ut.textContent=txt;
+}
+const st=a=>{const v=a.map(k=>k.matt?k.matt.morkandel:null).filter(x=>x!=null).sort((x,y)=>x-y);
+ return v.length?'n='+v.length+' min'+n(v[0])+' p50'+n(v[v.length>>1])+' max'+n(v[v.length-1]):'n=0';};
+txt+='\nSANNA morkandel: '+st(sanna)+'\nFALSKA som slapp igenom morkandel: '+st(falska)+
+ '\nsanna som föll: '+sanna.filter(k=>!k.dom.ok).length+' av '+sanna.length+'\nKLAR';
+ut.textContent=txt;window.__klar=1;
+</script>

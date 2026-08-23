@@ -1,0 +1,24 @@
+# Referensbilderna följer INTE med i repot, och det är ett medvetet val.
+#
+# De 22 fotona är pressbilder, bilhandlarfoton och myndighetsbilder som ägaren
+# samlade ihop från olika håll. Repot ligger öppet på GitHub, och att lägga upp
+# andras bilder där är att publicera dem vidare — oavsett hur nyttiga de är som
+# facit. Bänkarna i den här mappen är koden; bilderna är underlaget, och
+# underlaget bor hos ägaren.
+#
+# HÄMTA HEM DEM SÅ HÄR (mappen i ägarens Drive, delad länk):
+#   https://drive.google.com/drive/folders/1HKuAVGwB-rYlpBx9_Y_AMJ2v7hfFCaFh
+#   curl -sL -o <filnamn> "https://drive.google.com/uc?export=download&id=<id>"
+# Filnamn och id ligger i lista.txt, som inte heller följer med.
+#
+# Utan bilderna kör matning.html, granskning.html, horisont.html och reserv.html
+# på tomma händer och säger det rakt ut i stället för att rapportera noll fel.
+# domarprov.html och sparlista.html är syntetiska och kräver inga bilder alls.
+
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.avif
+lista.txt
+_ut/

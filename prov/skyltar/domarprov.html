@@ -1,0 +1,421 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Domarprov — horisontstraffet i de lägen bänken inte har</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { margin:0; padding:20px 18px 80px; background:#0b0f14; color:#eef4fa;
+         font:15px/1.5 -apple-system,system-ui,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  h2 { font-size:15px; margin:26px 0 4px; color:#cfe0f0;
+       border-top:1px solid #26323f; padding-top:14px; }
+  .sub { color:#93a4b6; font-size:13px; margin:0 0 10px; max-width:64em; }
+  table { border-collapse:collapse; width:100%; margin-top:8px; font-size:12.5px; }
+  th,td { text-align:left; padding:5px 7px; border-bottom:1px solid #1a232d; }
+  th { color:#93a4b6; font-weight:600; font-size:11px; text-transform:uppercase; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .ok { color:#2fd07a; } .fel { color:#ff4d4f; } .halv { color:#ffb020; }
+  #summa { font-weight:700; padding:10px 0; }
+</style>
+<h1>Domarprov</h1>
+<p class="sub">Fyra lägen provmappens 22 handlarnärbilder inte innehåller:
+en riktig skylt ovanför horisonten som delar bildruta med en riktig skylt under
+den (bil bakom bil), en riktig skylt vars råa poäng ligger strax över
+låsgränsen, avbildningen <code>horisontstraff</code> själv, och utträngning ur
+urvalet i <code>sokKandidater</code>.</p>
+<p class="sub">Kraven som prövas, ett per avsnitt:
+<b>1</b> båda skyltarna i en bil-bakom-bil-ruta ska överleva, vara låsbara och
+behålla sin inbördes ordning — inte klistras fast vid ett gemensamt tal.
+<b>2</b> ingen bildruta där den råa poängen räcker för lås får sluta under
+låsgränsen. <b>3</b> avbildningen ska vara strängt växande, utan hopp och utan
+platt zon. <b>4</b> ingen kandidat över låsgränsen får trängas ut ur listan.</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+import { sokKandidater, horisontstraff, MALSOK, PLATTGRIND, POANG_TAK }
+  from '../../js/plate.js';
+
+/* --- scenbyggaren, ordagrant samma som sok-test.html --- */
+function skyltbild(text, bredd, { smuts = 0, band = '#12379c' } = {}) {
+  const h = Math.round(bredd / 4.73);
+  const c = document.createElement('canvas');
+  c.width = bredd; c.height = h;
+  const x = c.getContext('2d');
+  x.fillStyle = '#0d0d0d'; x.fillRect(0, 0, bredd, h);
+  const r = Math.max(1, Math.round(h * 0.03));
+  x.fillStyle = '#f4f4f0'; x.fillRect(r, r, bredd - r * 2, h - r * 2);
+  const bw = Math.round(bredd * 0.105);
+  x.fillStyle = band; x.fillRect(r, r, bw - r, h - r * 2);
+  x.fillStyle = '#ffcc00';
+  const scx = r + (bw - r) / 2, scy = h * 0.36, sr = h * 0.19;
+  for (let i = 0; i < 12; i++) {
+    const a = i * Math.PI / 6;
+    x.beginPath();
+    x.arc(scx + Math.cos(a) * sr, scy + Math.sin(a) * sr, Math.max(0.5, h * 0.035), 0, 7);
+    x.fill();
+  }
+  x.font = `700 ${Math.round(h * 0.26)}px Arial`;
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('S', scx, h * 0.78);
+  x.fillStyle = '#101010';
+  x.font = `700 ${Math.round(h * 0.62)}px "Arial Narrow", Arial, sans-serif`;
+  x.textAlign = 'left';
+  x.fillText(text, bredd * 0.155, h * 0.54);
+  if (smuts) {
+    x.fillStyle = `rgba(58,48,38,${smuts})`;
+    for (let i = 0; i < 60; i++) {
+      x.beginPath(); x.arc((i * 37) % bredd, (i * 53) % h, 0.7 + (i % 4) * 0.6, 0, 7); x.fill();
+    }
+  }
+  return c;
+}
+function scen(saker, { w = 960, h = 540 } = {}) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#6a7078'); g.addColorStop(1, '#2c3035');
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  const ytor = [];
+  for (const s of saker) {
+    if (s.typ === 'bil') {
+      x.fillStyle = s.farg || '#1d2733';
+      x.fillRect(s.fx * w - s.bredd / 2, s.fy * h - s.hojd / 2, s.bredd, s.hojd);
+      x.fillStyle = '#0f151d';
+      x.fillRect(s.fx * w - s.bredd * 0.4, s.fy * h - s.hojd * 0.42, s.bredd * 0.8, s.hojd * 0.3);
+      continue;
+    }
+    if (s.typ === 'panel') {
+      const ph = Math.round(s.bredd / (s.kvot || 4.4));
+      const px = Math.round(s.fx * w - s.bredd / 2), py = Math.round(s.fy * h - ph / 2);
+      const g2 = x.createLinearGradient(0, py, 0, py + ph);
+      g2.addColorStop(0, '#ffffff'); g2.addColorStop(1, '#e9edf0');
+      x.fillStyle = g2; x.fillRect(px, py, s.bredd, ph);
+      x.strokeStyle = '#c9d1d7'; x.lineWidth = 1;
+      x.beginPath(); x.moveTo(px, py + ph * 0.5); x.lineTo(px + s.bredd, py + ph * 0.5); x.stroke();
+      x.fillStyle = '#b9c2c9';
+      for (let i = 1; i < 5; i++) { x.beginPath(); x.arc(px + s.bredd * i / 5, py + ph * 0.2, 2, 0, 7); x.fill(); }
+      continue;
+    }
+    const bild = skyltbild(s.text, s.bredd, s);
+    const px = Math.round(s.fx * w - s.bredd / 2);
+    const py = Math.round(s.fy * h - bild.height / 2);
+    if (s.blur) { x.save(); x.filter = `blur(${s.blur}px)`; x.drawImage(bild, px, py); x.restore(); }
+    else x.drawImage(bild, px, py);
+    ytor.push({ text: s.text, cx: px + s.bredd / 2, cy: py + bild.height / 2,
+                bredd: s.bredd, hojd: bild.height });
+  }
+  return { canvas: c, ytor };
+}
+const bil = (fx, fy, bredd, hojd, farg) => ({ typ: 'bil', fx, fy, bredd, hojd, farg });
+const traff = (k, yta) => {
+  if (!k) return false;
+  const kcx = k.x + k.w / 2, kcy = k.y + k.h / 2;
+  return Math.abs(kcx - yta.cx) < yta.bredd * 0.5 &&
+         Math.abs(kcy - yta.cy) < Math.max(yta.hojd, 10) * 0.9;
+};
+const ut = document.getElementById('ut');
+function avsnitt(t, s) {
+  const d = document.createElement('div');
+  d.innerHTML = `<h2>${t}</h2><p class="sub">${s}</p>`;
+  const tab = document.createElement('table'); d.appendChild(tab);
+  ut.appendChild(d); return tab;
+}
+function rad(tab, celler, huvud = false) {
+  const tr = document.createElement('tr');
+  for (const c of celler) {
+    const e = document.createElement(huvud ? 'th' : 'td');
+    const o = typeof c === 'object' ? c : { t: c };
+    e.textContent = o.t; if (o.kl) e.className = o.kl;
+    tr.appendChild(e);
+  }
+  tab.appendChild(tr); return tr;
+}
+const f2 = v => (v == null ? '—' : v.toFixed(3));
+
+/* Vad appen faktiskt kör: max 6, skärmvinkel 90 (PlateReader#sok). */
+const APP = { arbetsbredd: 400, skarmvinkel: 90 };
+
+/* ================================================================== */
+/* 1. BIL BAKOM BIL — två RIKTIGA skyltar, den bortre ovanför horisonten */
+/* ================================================================== */
+const t1 = avsnitt('1. Bil bakom bil — två riktiga skyltar i samma bildruta',
+ 'Den närmaste bilens skylt ligger under horisonten. Den bortre bilen står ' +
+ 'längre fram i vägbanan och hamnar därför HÖGRE i bildrutan. Det är precis ' +
+ 'det läge som utlöser det hårda straffet, och det finns inte i provmappens ' +
+ '22 närbilder. Kolumnen "app" är det appen kör: max 6, skärmvinkel 90. ' +
+ 'Kolumnen <b>ordning bevarad</b> är kravet som förut inte gick att uppfylla: ' +
+ 'med ett golv fick fyra olika råa poäng (0,90 · 0,81 · 0,82 · 0,57) EXAKT ' +
+ 'samma slutpoäng 0,160, och då finns ingen inbördes ordning kvar att bevara. ' +
+ 'Den jämför straffordningen med den råa ordningen, par för par.');
+rad(t1, ['bortre skyltens fy', 'bortre hittad (max 50)', { t: 'rå poäng', kl: 'n' },
+         { t: 'poäng med regel', kl: 'n' }, 'straffad', { t: 'plats i listan', kl: 'n' },
+         'kvar i app (max 6)', 'över låsgräns 0,16', 'ordning bevarad'], true);
+
+let f1 = 0, n1 = 0;
+const bortreRader = [];
+for (const fy of [0.22, 0.26, 0.30, 0.31, 0.34, 0.40]) {
+  const saker = [
+    bil(0.5, 0.62, 620, 300),
+    { typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.72, bredd: 300 },
+    bil(0.20, 0.24, 260, 150, '#2a3440'),
+    { typ: 'skylt', text: 'XKF42B', fx: 0.20, fy, bredd: 130 },
+  ];
+  const s = scen(saker);
+  const bortre = s.ytor[1];
+  const alla = sokKandidater(s.canvas, null, { ...APP, max: 50 });
+  const app = sokKandidater(s.canvas, null, APP);
+  const k = alla.find(x => traff(x, bortre)) || null;
+  const plats = k ? alla.indexOf(k) : -1;
+  const iApp = !!app.find(x => traff(x, bortre));
+  const overGrans = !!(k && k.poang >= MALSOK.minPoang);
+  n1++; if (iApp && overGrans) f1++;
+  if (k) bortreRader.push({ fy, ra: k.poangRa, slut: k.poang });
+  rad(t1, [fy.toFixed(2),
+    { t: k ? 'ja' : 'NEJ', kl: k ? 'ok' : 'fel' },
+    { t: f2(k && k.poangRa), kl: 'n' },
+    { t: f2(k && k.poang), kl: 'n' },
+    k && k.horisontStraffad ? 'ja' : 'nej',
+    { t: plats < 0 ? '—' : String(plats), kl: 'n' },
+    { t: iApp ? 'ja' : 'NEJ', kl: iApp ? 'ok' : 'fel' },
+    { t: overGrans ? 'ja' : 'NEJ', kl: overGrans ? 'ok' : 'fel' },
+    (() => {
+      // Jämför den här raden mot alla tidigare STRAFFADE rader: samma tecken
+      // på skillnaden i rå poäng och i slutpoäng, annars är ordningen bruten.
+      if (!k || !k.horisontStraffad) return { t: '—' };
+      const fel = bortreRader.some(r => r !== bortreRader[bortreRader.length - 1] &&
+        Math.sign(k.poangRa - r.ra) !== Math.sign(k.poang - r.slut));
+      return { t: fel ? 'NEJ' : 'ja', kl: fel ? 'fel' : 'ok' };
+    })()]);
+}
+/* Klistrades de straffade ihop till ett enda tal? Det var felet med golvet. */
+const straffadeSlut = bortreRader.map(r => +r.slut.toFixed(6));
+const unikaSlut = new Set(straffadeSlut).size;
+
+/* ================================================================== */
+/* 2. GOLVET — mäter det mjuka straffet in i golvet, eller inte?        */
+/* ================================================================== */
+const t2 = avsnitt('2. Sänkningen får aldrig passera låsgränsen',
+ 'En ensam riktig skylt högt i bildrutan, med en kandidat under horisonten ' +
+ 'att förlora mot — alltså hårda bandet påslaget. Svepet är 12 skyltbredder ' +
+ '× 3 smutsnivåer × 3 oskärpor = 108 bildrutor. Kravet: en bildruta vars RÅ ' +
+ 'poäng (kolumnen <code>poangRa</code>, mätt i samma körning) räcker för lås ' +
+ 'ska också vara låsbar efter straffet. Förut föll 4 av 104: det mjuka ' +
+ 'straffet 0,7 låg redan i det tal golvet jämförde mot, så rå poäng i ' +
+ '[0,16; 0,229) gav 0,028–0,040 med golvet påslaget. Nu är sänkningen ETT ' +
+ 'steg och avbildningen har låsgränsen som fixpunkt.');
+rad(t2, ['bildruta', { t: 'rå poäng', kl: 'n' },
+         { t: 'slutpoäng', kl: 'n' }, { t: 'marginal till 0,16', kl: 'n' },
+         'låsbar'], true);
+
+let f2fel = 0, n2 = 0;
+const doda = [];
+let knappast = null;   // den bildruta som klarar sig med minst marginal
+for (const bredd of [90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 200, 240])
+ for (const smuts of [0, 0.35, 0.55])
+  for (const blur of [0, 1.2, 2.2]) {
+  const saker = [
+    bil(0.5, 0.66, 620, 300),
+    { typ: 'skylt', text: 'ABC123', fx: 0.5, fy: 0.74, bredd: 300 },
+    bil(0.22, 0.22, bredd * 2.0, bredd * 1.1, '#2a3440'),
+    { typ: 'skylt', text: 'XKF42B', fx: 0.22, fy: 0.26, bredd, smuts, blur },
+  ];
+  const s = scen(saker);
+  const y = s.ytor[1];
+  const med = sokKandidater(s.canvas, null, { ...APP, max: 50 });
+  const km = med.find(x => traff(x, y)) || null;
+  if (!km) continue;
+  const ra = km.poangRa;
+  const lasbar = km.poang >= MALSOK.minPoang;
+  // Röd bara när RÅ poängen räckte men slutpoängen inte gör det.
+  const brott = ra >= MALSOK.minPoang && !lasbar;
+  n2++;
+  if (brott) { f2fel++; doda.push({ bredd, smuts, blur, ra, slut: km.poang }); }
+  else if (ra >= MALSOK.minPoang &&
+           (!knappast || km.poang - MALSOK.minPoang < knappast.slut - MALSOK.minPoang)) {
+    knappast = { bredd, smuts, blur, ra, slut: km.poang };
+  }
+}
+for (const d of doda) {
+  rad(t2, [`${d.bredd} px, smuts ${d.smuts}, oskärpa ${d.blur}`,
+    { t: f2(d.ra), kl: 'n' }, { t: f2(d.slut), kl: 'n' },
+    { t: (d.slut - MALSOK.minPoang).toFixed(4), kl: 'n' },
+    { t: 'NEJ — rå räckte', kl: 'fel' }]);
+}
+if (!doda.length) rad(t2, [{ t: 'inga döda bildrutor i svepet', kl: 'ok' }, '', '', '', '']);
+if (knappast) {
+  rad(t2, [`minsta marginalen: ${knappast.bredd} px, smuts ${knappast.smuts}, ` +
+           `oskärpa ${knappast.blur}`,
+    { t: f2(knappast.ra), kl: 'n' }, { t: knappast.slut.toFixed(4), kl: 'n' },
+    { t: (knappast.slut - MALSOK.minPoang).toFixed(4), kl: 'n' },
+    { t: 'ja', kl: 'ok' }]);
+}
+
+/* Avbildningen själv, räknad rakt ur koden — inte uppmätt, utan aritmetik. */
+const HART_LUTNING = (PLATTGRIND.horisontTak - MALSOK.minPoang) / (POANG_TAK - MALSOK.minPoang);
+const t2b = avsnitt('3. Avbildningen R → slutpoäng',
+ 'R är den råa poängen. <code>horisontstraff</code> är den gamla ' +
+ 'multiplikationen plus ett lyft som bara gäller den som kunde ha låst: ' +
+ '<code>T(R) = k·R</code> under låsgränsen och <code>T(R) = k·R + g·(1−k)</code> ' +
+ `på och över den, med g = ${MALSOK.minPoang} och k = ${HART_LUTNING.toFixed(4)} för ` +
+ `hårda bandet (taket ${PLATTGRIND.horisontTak} nås i R = ${POANG_TAK}) respektive ` +
+ `k = ${PLATTGRIND.horisontStraff} för mjuka. Kraven: strängt växande överallt, ` +
+ 'ingen platt zon, och aldrig under låsgränsen för ett R som räckte. Den gamla ' +
+ 'trappan gav 0,040 på R = 0,2285 och 0,160 på R = 0,2286 — ett fyrfaldigt hopp ' +
+ 'på en tusendel — och därefter EXAKT 0,160 över ett fyra gånger brett band.');
+ut.appendChild(Object.assign(document.createElement('p'), { className: 'sub',
+  innerHTML: 'HOPPET VID LÅSGRÄNSEN ÄR AVSIKTLIGT OCH OUNDVIKLIGT, och avsnitt ' +
+  '3b räknar det. Kravet "lyft aldrig en kandidat" ger T(g) = g, och vore T ' +
+  'dessutom kontinuerlig i g måste T(R) = R strax under g — alltså inget ' +
+  'straff alls just under låsgränsen. Det mättes: då slutar fasadbitar med rå ' +
+  'poäng 0,12–0,15 att sänkas, de fyller kandidatlistan, och smuts faller från ' +
+  '9 lås till 8. Kontinuiteten är alltså det krav som släpps, och hoppet läggs ' +
+  'exakt på låsgränsen — under den finns inget lås att missa. Provet nedan ' +
+  'kräver PRECIS ETT hopp per band och att det ligger just där.' }));
+rad(t2b, [{ t: 'R (rå poäng)', kl: 'n' }, { t: 'hårt band', kl: 'n' },
+          { t: 'mjuk lutning', kl: 'n' }, 'hårt: låsbar (≥ 0,16)',
+          { t: 'gamla trappan', kl: 'n' }], true);
+const gamla = R => {           // exakt som koden såg ut före den här ändringen
+  const fore = R * 0.7;
+  return fore >= MALSOK.minPoang ? Math.max(fore * 0.25, MALSOK.minPoang) : fore * 0.25;
+};
+for (const R of [0.10, 0.16, 0.20, 0.2285, 0.2286, 0.30, 0.50, 0.90, 0.9143, 1.20, 1.80]) {
+  const v = horisontstraff(R, true);
+  rad(t2b, [{ t: R.toFixed(4), kl: 'n' }, { t: v.toFixed(4), kl: 'n' },
+    { t: horisontstraff(R, false).toFixed(4), kl: 'n' },
+    { t: v >= MALSOK.minPoang ? 'ja' : (R < MALSOK.minPoang ? 'nej (rå räckte ej)' : 'NEJ'),
+      kl: v >= MALSOK.minPoang ? 'ok' : (R < MALSOK.minPoang ? 'halv' : 'fel') },
+    { t: gamla(R).toFixed(4), kl: 'n' }]);
+}
+
+/* Svep hela definitionsmängden och leta trappsteg, platta zoner och brott. */
+const t2c = avsnitt('3b. Svep över hela definitionsmängden',
+ `10 000 steg från 0 till ${POANG_TAK}. En platt zon är två steg i rad med ` +
+ 'exakt samma utfall. Ett hopp är ett steg större än tio gånger den jämna ' +
+ 'stigningen. Kraven: noll platta steg, noll fallande steg, PRECIS ETT hopp, ' +
+ 'och det hoppet ska ligga där R passerar låsgränsen. Den gamla trappan ' +
+ 'nedan ska falla på alla tre — annars biter inte provet.');
+rad(t2c, ['band', { t: 'platta steg', kl: 'n' }, { t: 'fallande steg', kl: 'n' },
+          { t: 'hopp', kl: 'n' }, 'hoppet ligger på låsgränsen',
+          { t: 'under 0,16 trots R ≥ 0,16', kl: 'n' }, 'utfall'], true);
+const svep = (f) => {
+  const N = 10000, dR = POANG_TAK / N;
+  let platt = 0, fallande = 0, hopp = 0, under = 0, forra = null, hoppVid = [];
+  const jamn = (f(POANG_TAK) - f(0)) / N;
+  for (let i = 0; i <= N; i++) {
+    const R = i * dR, v = f(R);
+    if (forra != null) {
+      const d = v - forra;
+      if (d === 0) platt++;
+      else if (d < 0) fallande++;
+      if (d > jamn * 10) { hopp++; hoppVid.push(R); }
+    }
+    if (R >= MALSOK.minPoang && v < MALSOK.minPoang - 1e-12) under++;
+    forra = v;
+  }
+  return { platt, fallande, hopp, under, hoppVid, dR };
+};
+let svepFel = 0;
+for (const [namn, hart] of [['hårt', true], ['mjukt', false]]) {
+  const r = svep(R => horisontstraff(R, hart));
+  // Hoppet ska ligga i det steg där R passerar låsgränsen — inte någon
+  // annanstans i spannet, som den gamla trappans hopp gjorde.
+  const paGransen = r.hopp === 1 &&
+    Math.abs(r.hoppVid[0] - MALSOK.minPoang) <= r.dR;
+  const bra = r.platt === 0 && r.fallande === 0 && paGransen && r.under === 0;
+  if (!bra) svepFel++;
+  rad(t2c, [namn, { t: String(r.platt), kl: 'n' }, { t: String(r.fallande), kl: 'n' },
+    { t: String(r.hopp), kl: 'n' },
+    { t: r.hoppVid.length ? r.hoppVid.map(v => v.toFixed(4)).join(' ') : '—',
+      kl: paGransen ? 'ok' : 'fel' },
+    { t: String(r.under), kl: 'n' },
+    { t: bra ? 'ja' : 'NEJ', kl: bra ? 'ok' : 'fel' }]);
+}
+{ /* Samma svep genom den gamla trappan, som kontroll på att provet biter. */
+  const r = svep(gamla);
+  const paGransen = r.hopp === 1 && Math.abs(r.hoppVid[0] - MALSOK.minPoang) <= r.dR;
+  const bra = r.platt === 0 && r.fallande === 0 && paGransen && r.under === 0;
+  rad(t2c, ['gamla trappan (kontroll — SKA vara röd)',
+    { t: String(r.platt), kl: 'n' }, { t: String(r.fallande), kl: 'n' },
+    { t: String(r.hopp), kl: 'n' },
+    { t: r.hoppVid.length ? r.hoppVid.map(v => v.toFixed(4)).join(' ') : '—', kl: 'fel' },
+    { t: String(r.under), kl: 'n' },
+    { t: bra ? 'ja — PROVET BITER INTE' : 'NEJ — provet biter',
+      kl: bra ? 'fel' : 'ok' }]);
+}
+
+/* ================================================================== */
+/* 3. UTTRÄNGNING UR slice(0, max)                                     */
+/* ================================================================== */
+const t3 = avsnitt('4. Utträngning ur urvalet',
+ 'Poängen kan inte laga det här — det är ett listproblem. Ett golv vaktar ' +
+ 'låsGRÄNSEN, inte PLATSEN i listan: en bildruta med gott om ostraffade ' +
+ 'kandidater under horisonten trycker ned den straffade riktiga skylten förbi ' +
+ 'max = 6, och då upphör den att finnas, precis som med den klippkant som ' +
+ 'skulle bort. Mätt före ändringen: Regpl-Heden.jpg beskuren till stötfångaren ' +
+ 'gav den sanna skylten 0,169 — över låsgränsen — men plats 13 av 6, och IoU ' +
+ 'föll 0,75 → 0,00. Kolumnen <b>plats rått</b> visar varför de reserverade ' +
+ 'platserna räddar den: på rå evidens är skylten bildrutans starkaste ' +
+ 'kandidat. (Här stod "flätningen" — den mättes och förkastades, det som ' +
+ 'sitter i koden är PLATTGRIND.horisontReserv platser med tre villkor.)');
+rad(t3, ['bildruta', { t: 'skyltmitt', kl: 'n' }, { t: 'rå poäng', kl: 'n' },
+         { t: 'poäng efter straff', kl: 'n' },
+         'över låsgräns', { t: 'plats straffad', kl: 'n' }, { t: 'plats rått', kl: 'n' },
+         'kvar i app (max 6)'], true);
+
+const ladda = f => new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = f; });
+const iou = (k, f) => {
+  const x1 = Math.max(k.x, f.x), y1 = Math.max(k.y, f.y);
+  const x2 = Math.min(k.x + k.w, f.x + f.w), y2 = Math.min(k.y + k.h, f.y + f.h);
+  if (x2 <= x1 || y2 <= y1) return 0;
+  const i = (x2 - x1) * (y2 - y1);
+  return i / (k.w * k.h + f.w * f.h - i);
+};
+/* Facit ordagrant ur matning.html. Bildrutan kapas strax ovanför skylten —
+   samma "bara stötfångaren syns" som granskning.html kör. */
+const riktiga = [
+  { fil: 'Regpl-Heden.jpg', f: [0.6247, 0.5779, 0.1482, 0.0651] },
+  { fil: '0c4d9b68.jpg',    f: [0.2451, 0.4801, 0.1729, 0.0363] },
+  { fil: '3b979c11.avif',   f: [0.4065, 0.56,   0.1975, 0.0558] },
+];
+let f3fel = 0, n3 = 0;
+for (const r of riktiga) {
+  const img = await ladda(r.fil);
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const f0 = { x: r.f[0] * W, y: r.f[1] * H, w: r.f[2] * W, h: r.f[3] * H };
+  const y0 = Math.max(0, f0.y - f0.h * 0.35), hh = H - y0;
+  const c = document.createElement('canvas'); c.width = W; c.height = hh;
+  c.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, y0, W, hh, 0, 0, W, hh);
+  const f = { x: f0.x, y: f0.y - y0, w: f0.w, h: f0.h };
+  const alla = sokKandidater(c, null, { ...APP, max: 50 });
+  const app = sokKandidater(c, null, APP);
+  let bi = 0, br = -1;
+  alla.forEach((k, i) => { const v = iou(k, f); if (v > bi) { bi = v; br = i; } });
+  const k = br >= 0 ? alla[br] : null;
+  const raOrdning = alla.slice().sort((a, b) => b.poangRa - a.poangRa);
+  const raPlats = k ? raOrdning.indexOf(k) : -1;
+  const iApp = app.some(x => iou(x, f) >= 0.5);
+  const over = !!(k && k.poang >= MALSOK.minPoang);
+  n3++; if (over && !iApp) f3fel++;
+  rad(t3, [r.fil, { t: ((f.y + f.h / 2) / hh).toFixed(3), kl: 'n' },
+    { t: f2(k && k.poangRa), kl: 'n' },
+    { t: f2(k && k.poang), kl: 'n' },
+    { t: over ? 'ja' : 'nej', kl: over ? 'ok' : 'halv' },
+    { t: br < 0 ? '—' : String(br), kl: 'n' },
+    { t: raPlats < 0 ? '—' : String(raPlats), kl: 'n' },
+    { t: iApp ? 'ja' : 'NEJ — utträngd', kl: iApp ? 'ok' : 'fel' }]);
+}
+
+const allaKrav = f1 === n1 && unikaSlut === straffadeSlut.length &&
+                 f2fel === 0 && svepFel === 0 && f3fel === 0;
+document.getElementById('summa').textContent =
+  (allaKrav ? 'ALLA KRAV UPPFYLLDA · ' : 'BROTT — läs raderna märkta NEJ · ') +
+  `1. bil bakom bil: ${f1}/${n1} bortre skyltar kvar och låsbara i appens läge, ` +
+  `${unikaSlut}/${straffadeSlut.length} olika slutpoäng · ` +
+  `2. bildrutor där rå poäng räckte men slutpoängen inte gör det: ${f2fel} av ${n2} · ` +
+  `3. avbildningen: ${svepFel} band med trappsteg, platt zon eller brott · ` +
+  `4. utträngda trots poäng över låsgränsen: ${f3fel}/${n3} · ` +
+  `minPoang ${MALSOK.minPoang} · horisontTak ${PLATTGRIND.horisontTak} · ` +
+  `hård lutning ${HART_LUTNING.toFixed(4)} · horisontStraff ${PLATTGRIND.horisontStraff}`;
+window.__klar = true;
+</script>

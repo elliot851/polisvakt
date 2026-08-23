@@ -640,7 +640,8 @@ export const BLAGRIND = {
  *
  * @returns {{b:number,h:number,skala:number,gra:Uint8ClampedArray,trosk:number,blobbar:Array}}
  */
-function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8, bla = false } = {}) {
+function skannaLjusa(kalla, omrade, arbetsbredd,
+                     { minAndel = 0.12, minPx = 8, bla = false } = {}) {
   const skala = Math.min(1, arbetsbredd / omrade.w);
   const b = Math.max(8, Math.round(omrade.w * skala));
   const h = Math.max(4, Math.round(omrade.h * skala));
@@ -668,6 +669,8 @@ function skannaLjusa(kalla, omrade, arbetsbredd, { minAndel = 0.12, minPx = 8, b
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     const r = px[p], g2 = px[p + 1], b2 = px[p + 2];
     gra[i] = (r * 0.299 + g2 * 0.587 + b2 * 0.114) | 0;
+
+
     if (!bla) continue;
 
     // Blå måste vara den största kanalen. Är den inte det är pixeln inte blå,
@@ -861,6 +864,736 @@ function raknaTeckenbytenVriden(gra, b, h, box) {
     else if (imork && andel < 0.2) { imork = false; byten++; }
   }
   return byten;
+}
+
+/* ---- Plattgrinden --------------------------------------------------------
+ *
+ * HÅLET SOM DEN TÄPPER TILL: ingenstans i modulen frågades det om fältet var
+ * VITT. `skannaLjusa` frågar efter ljust och avlångt, `raknaTeckenbyten`
+ * frågar efter kontrast, `poangsattKandidat` frågar efter form och storlek.
+ * Ingen av dem skiljer en skylt från en handlarlist med vit text på svart
+ * botten — den är också avlång, den har också kontrast, och den ligger en halv
+ * skylthöjd under den riktiga skylten. Uppmätt på de 22 provbilderna låste
+ * läsaren på en handlarlist, en kromlist eller en blå dekal i 9 av 22 fall.
+ *
+ * TRE GRINDAR. TVÅ AV DEM KOSTAR INTE EN ENDA PIXELLÄSNING.
+ *
+ *   1. MÖRKANDELEN — polariteten, tvåsidig.
+ *
+ *      En svensk skylt är svart text på vitt. Tecknen täcker 28–35 % av ytan
+ *      innanför teckenraden, raden är 70 av 110 mm, och den tryckta svarta
+ *      ramen tar ett par procent till: 0,64 · 0,32 + 0,05 ≈ 0,25 mörkt.
+ *
+ *      UPPMÄTT på de 18 av 22 provbilder där sökningen alls hittar den sanna
+ *      skylten (grindprov.html, arbetsbredd 400): mörkandelen ligger mellan
+ *      0,29 och 0,44, median 0,37. Att den ligger över de teoretiska 0,25 är
+ *      väntat — samplingsrutan spänner 1,16 skylthöjder och skrapar därför
+ *      alltid lite av hållarramen.
+ *
+ *      ÖVRE gränsen dödar allt som är LJUST PÅ MÖRKT — handlarlisten, den blå
+ *      dekaltexten, den vita skrivstilen på en röd motorhuv. Där ligger
+ *      mörkandelen på 0,6–0,9. Det är den gränsen som gör hela nyttan.
+ *      NEDRE gränsen dödar det som är NÄSTAN HELVITT och sätts löst; se
+ *      PLATTGRIND nedan för varför den inte får dras åt.
+ *
+ *   2. HORISONTEN — gratis, och det är den som svarar på ägarens "börja inte
+ *      läsa vägskyltar". Den STRYKER INGENTING. Den rangordnar.
+ *
+ *      Ett vägmärke sitter på en stolpe. En skylt sitter på en stötfångare. I
+ *      en telefon som står i en hållare hamnar vägmärket i övre halvan av
+ *      bildrutan och skylten i den nedre.
+ *
+ *      LÄGSTA SANNA SKYLTMITT I PROVMAPPEN ÄR 0,3792, INTE 0,390.
+ *      Det tidigare talet 0,390 (images.jpg) räknade tyst bort
+ *      nya-skyltar-transportstyrelsen.png, som ligger på 0,3792
+ *      (facit y 0,117 + h 0,5244/2), med formuleringen "de 21 läsbara".
+ *      Den bilden är en skylt och den syns i bildrutan; att OCR-steget inte
+ *      får ut text ur den gör inte dess POSITION ogiltig. Med den räknad är
+ *      marginalen ned till gränsen 0,32 alltså 0,059 — inte 0,07.
+ *      Näst lägsta är images.jpg 0,390 och image.png 0,396.
+ *
+ *      UNDERLAGET ÄR TUNT OCH DET SKA SÄGAS RAKT UT. 0,059 är marginalen på
+ *      ETT stickprov om 22 handlarfoton, alltså närbilder tagna av en
+ *      bilhandlare som ville visa bilen — inte bildrutor ur en dashcam som
+ *      filmar trafik. En kamera som sitter någon centimeter för högt i
+ *      vindrutan, en uppförsbacke eller en hållare som lutar uppåt flyttar
+ *      hela bildrutan mer än 0,059. Talet 0,32 går därför inte att lita på
+ *      som en gräns — bara som en LUTNING i rangordningen.
+ *      Vad som skulle behövas för att lita på det: några hundra bildrutor ur
+ *      en riktig dashcam, i den kamerahöjd och den hållarvinkel appen faktiskt
+ *      körs i, med skyltmitten uppmätt per bildruta. Då går fördelningen att
+ *      rita, och först då går en gräns att sätta. Tills dess: straff, aldrig
+ *      strykning.
+ *
+ *      VAD DEN GÖR I STÄLLET, OCH VARFÖR DET ÄR RELATIVT.
+ *      Nyttan sitter inte i "det där uppe är falskt" utan i "det där nere är
+ *      bättre". Finns det minst en kandidat UNDER horisonten avbildas
+ *      kandidaterna ovanför in i det HÅRDA bandet [0,16; `horisontTak`] — då
+ *      rankas HEDIN CERTIFIED (0,065), FORDONSGRUPPEN (0,23), HALLSTEN BIL
+ *      (0,245/0,305), VBYBIL (0,25), BILFÖRSÄLJNING (0,30), banderollerna i
+ *      3b979c11 (0,29), vägmärket på stolpe i 721ab0d6 (0,335) och
+ *      parkeringsförbudet i 0c4d9b68 (0,185) under den riktiga skylten, utan
+ *      att en enda pixel lästes. Finns det INGEN kandidat under horisonten är
+ *      den där uppe den enda vi har, och då bär den bara den mjuka lutningen
+ *      0,7. En bildruta där bara stötfångaren syns, eller där kameran lutar
+ *      uppåt, tappar alltså inte sin enda kandidat.
+ *      Mellan 0,32 och 0,45 gäller bara den mjuka lutningen 0,7: där uppe
+ *      FINNS skyltar, de är bara ovanligare än falska napp.
+ *
+ *      BÅDA STRAFFEN ÄR AVBILDNINGAR OCH INGET AV DEM ÄR EN MULTIPLIKATION
+ *      MED ETT GOLV. En multiplikation kan ta en äkta skylt under låsgränsen,
+ *      och ett golv utplånar rangordningen under sig — de två felen mättes och
+ *      båda är lagade. Se `horisontstraff` för härledningen av linjen, och
+ *      `sokKandidater` för att URVALET är en egen fråga som poängen inte kan
+ *      svara på.
+ *
+ *      DEN ANTAR EN RÄTTVÄND BILDRUTA, OCH DET ANTAGANDET SKRIVS UT.
+ *      cyBild är en position längs bildrutans y-axel. Är bildrutan vriden ett
+ *      kvarts varv mäter den en position i SIDLED i världen, och regeln mäter
+ *      då fel axel. Modulen vet något om detta utan att fråga efter något
+ *      nytt: `forvantadVinkel` är lutningsgivarens vinkel, alltså världens
+ *      vågräta riktning uttryckt i bildrutans koordinater (se
+ *      `Lutningsgivare#matning`, där skärmvinkeln redan räknats bort). Ligger
+ *      den nära 0 är bildrutan rättvänd och regeln körs fullt ut; ligger den
+ *      nära ±90° står telefonen på högkant i förhållande till världen och
+ *      regeln STÄNGS AV hellre än att mäta fel axel; är givaren av eller inte
+ *      framme ännu är orienteringen okänd och då är regeln MJUK — bara 0,7,
+ *      aldrig det hårda straffet. Se `horisontlage`.
+ *
+ *   3. BANDETS ANDEL — också gratis, talet är redan uppmätt av ankarvägen.
+ *      EU-bandet är 45 mm av 520, alltså 0,087. Är den uppmätta andelen över
+ *      0,22 har "bandet" svällt ut i en blå kaross eller en blå dekal och
+ *      kroppen bredvid är inte en skylt. Grinden hoppas över under 40 px
+ *      skyltlängd i arbetsupplösning — där är bandet 3 px brett och talet är
+ *      brus. Utan det undantaget dör image.png, vars band är 6–7 px och
+ *      dessutom utblåst av en reflex.
+ *
+ * VAD SOM BYGGDES, MÄTTES OCH REVS IGEN — sägs ut, döljs inte:
+ *
+ *   RADPROFILEN, alltså "hitta teckenradens sammanhängande löpa av mörka
+ *   rader och kräv att den är 0,45–0,88 av höjden, med högst 0,18 mörkt i
+ *   marginalerna ovanför och under". Den var byggd och den mättes, och den
+ *   höll inte. På de 19 sanna skyltarna gav den:
+ *      höjdandel   0,61 – 1,16   (gränsen skulle ha varit 0,45–0,88)
+ *      marginalen  0,00 – 0,72   (gränsen skulle ha varit högst 0,18)
+ *   Alltså: den fällde 19 av 19 SANNA skyltar. Hela bänken gick från 8/21
+ *   rätt till 0/21. Skälet är fysiskt och inte en justeringsfråga: en svensk
+ *   skylt sitter nästan alltid i en MÖRK hållarram, och bakom skylten sitter
+ *   en mörk kaross. Marginalen ovanför och under teckenraden är därför inte
+ *   vit — den är svart. Och vid de upplösningar det gäller (skylthöjd 10–26 px
+ *   i arbetsbilden) flyter ram, tecken och kaross ihop till en enda löpa som
+ *   täcker hela rutan.
+ *
+ *   Marginalkorrigeringen — att kapa rutans höjd till löpans höjd delat med
+ *   0,64 — föll med den, eftersom den byggde på samma löpa. Den skulle ha
+ *   räddat handlarlisten under plåten i 2039174f, 0c4d9b68 och YBK70UD, och
+ *   det problemet står alltså kvar olöst. Låt det stå olöst hellre än att
+ *   lösa det med ett mått som mätningen underkände.
+ *
+ *   RUNDHET OCH RÖD RING, alltså den direkta vägmärkesdetektorn. Den kräver
+ *   en ny färgmask i pixelsvepet och räddar NOLL av de 22 bilderna — ingen av
+ *   dem innehåller ett vägmärke med röd ring. Ett tal går inte att fylla i
+ *   utan att mäta det, och det går inte att mäta här. Horisontregeln tar
+ *   vägmärkena gratis under tiden. Bygg rundheten när det finns dashcam-
+ *   material med riktiga vägmärken att mäta emot.
+ */
+
+/** Grindens tal samlade, så provet kan skriva ut dem i stället för att upprepa dem. */
+export const PLATTGRIND = {
+  /*
+   * DE TVÅ GRÄNSERNA GÖR OLIKA JOBB OCH ÄR SATTA PÅ OLIKA GRUNDER.
+   *
+   * ÖVRE, 0,56 — den som gör nyttan. Uppmätt mörkandel på de 18 sanna
+   * skyltar sökningen hittar i provmappen: 0,29–0,44, median 0,37. Allt som
+   * är LJUST PÅ MÖRKT ligger på 0,6–0,9: handlarlisten, den blå dekaltexten,
+   * den vita skrivstiften på en röd motorhuv. 0,56 ligger tolv
+   * procentenheter över den ljusaste sanna skylten och en bra bit under den
+   * mörkaste falska. Det är den här raden som gav +2 rätt lås och +2 rätt
+   * text i bänken.
+   *
+   * NEDRE, 0,12 — den som nästan inget gör, och som därför sätts LÖST.
+   * Frestelsen är att sätta den strax under det uppmätta 0,29. Det gjordes,
+   * på 0,20, och det gick sönder: sok-test.html-fallet "blått band avklippt
+   * i bildkanten" mäter 0,19 och slutade hittas (51 godkända → 50). Den
+   * syntetiska provskylten har tunnare tecken än en verklig plåt, och det är
+   * inte fel på provet — en urblekt, smutsig eller långt bort sedd skylt har
+   * också tunna tecken.
+   *
+   * Räkna på det i stället för att mäta på arton foton: sex tecken med tunna
+   * streck täcker omkring 28 % av teckenradens yta, och raden är 70 av 110
+   * mm. 0,64 · 0,28 ≈ 0,18 är alltså den fysiska botten för en skylt utan
+   * tryckt ram. 0,12 ligger under den. Vad kostar det? Ingenting mätbart: på
+   * provmappens 22 foton är utfallet bit för bit identiskt vid 0,12 och 0,20
+   * (10/21 rätt, 15/22 lås, 0 falska läsningar i båda). Det som ska filtreras
+   * bort i den änden — släta vita ytor utan tecken — fastnar redan på
+   * kontrastMin och på `tecken`-faktorn i poangsattKandidat.
+   *
+   * OCKSÅ PRÖVAT OCH FÖRKASTAT: 0,24. Tanken var att stänga ute det falska
+   * ankaret i polestar-4-madrid-gold, som mäter exakt 0,20. Utfall: bit för
+   * bit samma bänk. Kandidaten vann inte på den marginalen ändå.
+   */
+  morkandelMin: 0.12,
+  morkandelMax: 0.56,
+  kontrastMin: 30,      // under det är ytan slät och andelen är brus
+
+  /*
+   * HORISONTEN. Fyra tal, och INGET av dem stryker en kandidat.
+   *
+   * `horisont` 0,32 — över den här höjden i bildrutan (räknat uppifrån, alltså
+   * mindre tal = högre upp) ligger vägmärken, handlarlistar och banderoller.
+   * Lägsta SANNA skyltmitt i provmappens 22 foton är 0,3792; marginalen är
+   * alltså 0,059 och underlaget är ett stickprov handlarnärbilder. Se det
+   * långa stycket ovan för varför det talet inte duger som klippkant.
+   *
+   * `horisontMjuk` 0,45 — var mellanzonen börjar. Allt ovanför 0,45 bär det
+   * mjuka straffet, oavsett vad resten av bildrutan innehåller.
+   *
+   * DE TVÅ STRAFFEN ÄR AVBILDNINGAR, INTE MULTIPLIKATIONER MED ETT GOLV.
+   * Se `horisontstraff` för härledningen; det som ska stå här är vad de två
+   * talen BETYDER, och de betyder inte samma sak längre.
+   *
+   * `horisontStraff` 0,7 — MJUKA bandets LUTNING. Samma 0,7 som förut och
+   * samma rangordning som förut: kvoten mellan två straffade kandidaters
+   * avstånd till låsgränsen är oförändrad. Det enda som ändrats är att linjen
+   * går genom punkten (låsgränsen, låsgränsen) i stället för genom origo, så
+   * att en kandidat som låg över låsgränsen aldrig kan hamna under den.
+   *
+   * `horisontTak` 0,228 — HÅRDA bandets TAK, alltså den högsta poäng en
+   * kandidat ovanför horisonten kan ha kvar när det finns en kandidat under
+   * horisonten att förlora mot. Golvet är låsgränsen MALSOK.minPoang 0,16, så
+   * bandet är [0,16; 0,228] och lutningen faller ut ur de två ändarna —
+   * den sätts inte för hand.
+   *
+   * HÄRLETT UR BÄNKENS EGNA POÄNG, inte valt på känsla. Mätt i
+   * prov/skyltar/horisont.html: 22 foton, arbetsbredd 400, horisontläge
+   * 'full'. Poängen nedan är · 100 och är RÅA, alltså före varje straff.
+   *
+   *   Tolv av de 22 bildrutorna innehåller BÅDE en sann skylt under
+   *   horisonten och minst en kandidat ovanför den. I dem:
+   *     starkaste kandidat ovanför:  7,6 · 21,1 · 18,6 · 3,9 · 11,4 · 118,8
+   *                                  49,0 · 46,3 · 2,1 · 10,0 · 16,2 · 18,5
+   *     bästa sanna skylten under:  29,6 · 37,0 · 53,1 · 89,6 · 131,1 · 132,2
+   *                                 43,0 · 44,2 · 94,0 · 101,8 · 54,5 · 55,3
+   *
+   *   TAKET ÄR MITTPUNKTEN MELLAN LÅSGRÄNSEN OCH DEN SVAGASTE SANNA SKYLTEN.
+   *   Svagaste sanna skylt som alls går att låsa på i en bildruta med en
+   *   straffad kandidat i: 29,6 (YBK70UD). Låsgränsen är 16. Mitt emellan:
+   *   16 + (29,6 − 16)/2 = 22,8. Under taket ligger alltså varje straffad
+   *   kandidat under varje sann skylt i bänken, med en halv bänkbredd över.
+   *
+   *   VARFÖR INTE HÖGRE: vid 29,6 tar den starkaste straffade kandidaten
+   *   ikapp den svagaste sanna skylten och rangordningen slutar betyda något.
+   *   VARFÖR INTE LÄGRE: golvet är låsgränsen och den kan inte flyttas — en
+   *   sänkning under den är en strykning med ett annat namn. Ett lägre tak
+   *   köper därför bara en bråkdel av en procent i marginal och betalar med
+   *   ett smalare band att rangordna i. Uppmätt på bänken: sämsta marginalen i
+   *   en enskild bildruta är 2,285 gånger med taket 22,8
+   *   (polestar-4-madrid-gold: 37,0 mot 16,2) och 2,313 gånger med ett tak som
+   *   ligger på själva låsgränsen. Det är GOLVET som binder, inte taket, och
+   *   skillnaden mellan dem är 1,2 %.
+   *
+   *   VAD OMSKRIVNINGEN GAV, MÄTT PÅ prov/skyltar/granskning.html (8
+   *   förvrängningar × 22 foton = 174 bildrutor, arbetsbredd 400,
+   *   skärmvinkel 90). Tre kolumner: före avbildningen → efter avbildningen
+   *   med EN reserverad plats → efter `horisontReserv` 2. Lås ≥ 0,50 IoU och
+   *   topp1:
+   *     oförvrängd 16/15 → 16/15 → 16/15 · natt 21/20 → 21/20 → 21/20 ·
+   *     regn 18/18 → 18/18 → 18/18 · smuts 9/7 → 9/7 → 9/7 ·
+   *     högt 16/12 → 16/13 → 17/13 · vriden 90° 17/13 → 16/14 → 16/14 ·
+   *     avstånd 3/3 → 3/3 → 3/3 · stötfångare 14/12 → 15/13 → 15/13
+   *     SUMMA lås 114 → 114 → 115, topp1 100 → 103 → 103.
+   *   Ett lås byttes alltså mot ett annat och tre bildrutor fick rätt
+   *   toppkandidat. DET FÖRLORADE SKA NAMNGES: vriden 90°, 2039174f.avif. Där
+   *   ligger en kandidat ovanför horisonten med rå poäng 0,168 — precis över
+   *   låsgränsen — och den får därför inte längre tryckas ned till 0,030 utan
+   *   landar på 0,160. Den tar sjätte platsen i listan från den äkta skylten,
+   *   som i den bildrutan har 0,154 och alltså inte kunde ha låst ändå. Att
+   *   den bildrutan är just den vridna är ingen slump: där matar bänken med
+   *   flit regeln med fel axel (se `horisontlage`), och kostnaden för det
+   *   antagandet är dokumenterad sedan tidigare.
+   *
+   *   OCH STRAFFET ÄR INTE BARA MARGINAL, DET ÄR RÄTTAT. Här stod förut att
+   *   den sanna skylten låg överst redan utan straff i alla tolv bildrutorna,
+   *   sämsta kvot 1,26. Det talet var mätt med det MJUKA straffet 0,7 kvar i
+   *   poängen, alltså inte utan straff utan med halva. Mätt på verkligt råa
+   *   poäng vinner den sanna skylten i TIO av tolv: i 521e24d0.avif ligger
+   *   den falska dekaltexten på 49,0 mot skyltens 43,0, och i Regpl-Heden.jpg
+   *   den vita skrivstilen på 46,3 mot 44,2. I de två bildrutorna är straffet
+   *   det som gör låset rätt, inte bara det som gör det säkrare.
+   *
+   * `horisontReserv` 2 — hur många RESERVERADE PLATSER en straffad kandidat
+   * får ta i den korta listan, och hur många ett straffat SPÅR får ta i
+   * `Malsokare`. Talet är mätt, inte valt.
+   *
+   *   Mätningen: prov/skyltar/reserv.html, samma 22 foton × 8 förvrängningar
+   *   och samma skärmvinkel 90 som granskning.html, alltså 174 bildrutor. I
+   *   116 av dem hittar sökningen alls den sanna skylten (max 50). Frågan är i
+   *   hur många av de 116 den finns kvar i APPENS lista, den på max 6:
+   *
+   *     0 reserverade platser (rakt `slice`)   113/116
+   *     1 reserverad plats                     114/116
+   *     2 reserverade platser                  115/116
+   *     3 reserverade platser                  115/116
+   *
+   *   VARFÖR INTE EN: den enda bildruta där EN plats inte räcker är
+   *   hogt/Regpl-Heden.jpg. Där klarar fyra straffade kandidater båda
+   *   villkoren utanför snittet, och den enda platsen går till fel av dem: den
+   *   sanna skylten ligger på rå 0,4288 och lockbetet på 0,4352 — 1,5 % isär.
+   *   Med två platser kommer båda in och skylten är räddad.
+   *
+   *   VARFÖR INTE TRE: mätt, och den tredje platsen räddar ingen bildruta alls
+   *   (115 → 115). Den räddar ingen och kostar ingen i det här svepet — men en
+   *   plats som aldrig gör nytta ska inte finnas, för varje reserverad plats
+   *   är en ostraffad kandidat mindre i en lista på sex. Två straffade av sex
+   *   är en tredjedel av listan; tre är hälften, och det är att låta
+   *   horisontregeln bestämma vad appen tittar på i stället för att bara
+   *   rangordna det.
+   *
+   *   DEN SISTA BILDRUTAN GÅR INTE ATT RÄDDA MED FLER PLATSER: i
+   *   vriden90/2039174f.avif finns den sanna skylten inte bland de straffade
+   *   sökandena alls, så ingen mängd reserv når den. (Den bildrutan matar
+   *   bänken med flit regeln med fel axel — se `horisontlage`.)
+   *
+   * `horisontLutningMax` — hur mycket bildrutan får luta innan regeln stängs
+   * av. `forvantadVinkel` viker till (-90, 90]; 30° är den punkt där en
+   * position i höjdled fortfarande till 87 % (cos 30°) är en position i
+   * höjdled i världen. Över det mäter regeln alltmer fel axel, och då är den
+   * hellre av. Är vinkeln okänd (givaren av, eller inte framme ännu) är regeln
+   * mjuk: bara `horisontStraff`, aldrig det hårda bandet.
+   */
+  horisont: 0.32,
+  horisontMjuk: 0.45,
+  horisontStraff: 0.7,
+  horisontTak: 0.228,
+  horisontReserv: 2,
+  horisontLutningMax: 30,
+  euMin: 0.03,          // 45/520 = 0,087
+  euMax: 0.22,
+  euMinLangd: 40,       // under det är bandet 3 px och andelen är brus
+  minLangd: 24,         // samma golv som `tecken`-faktorn i poangsattKandidat
+  osakerFaktor: 0.85,   // för liten för att mätas: varken ja eller nej
+};
+
+/**
+ * Den högsta poäng `poangsattKandidat` kan ge, räknad ur funktionen och inte
+ * uppmätt: form ≤ 1, storlekstermen ≤ 1, centrum ≤ 1, tecken ≤ 1, rakhet ≤ 1
+ * och prior ≤ 1. Det enda som får gå över 1 är `ankarfaktor`, vars största
+ * gren är 1,8. Alltså 1,8.
+ *
+ * Talet används av `horisontstraff` som avbildningens övre ände. Ändras
+ * `ankarfaktor` måste det här talet ändras med, annars kan en straffad
+ * kandidat gå över sitt tak.
+ *
+ * DET UPPMÄTTA TALET, OMMÄTT. Här stod förut "bänkens största uppmätta poäng
+ * är 1,352 (d54eac78.png)". Det talet är inte den största poängen utan den
+ * största SANNA SKYLTENS poäng i horisont.html (135,2 · 100 i den tabellen) —
+ * två olika frågor, och den här kommentaren ställde fel. Ommätt över ALLA
+ * kandidater i prov/skyltar/reserv.html, samma 174 bildrutor som
+ * granskning.html kör, är den största poängen 1,5816 (natt/2560.webp) och
+ * bland de 22 oförvrängda fotona 1,4573 (nya-skyltar-transportstyrelsen.png).
+ * 1,8 är alltså fortfarande ett räknat tak med luft och inte ett mätt — men
+ * luften är 14 %, inte 33 %.
+ */
+export const POANG_TAK = 1.8;
+
+/**
+ * Horisontstraffet, som en AVBILDNING av poängen — ett enda steg, och det är
+ * hela poängen med funktionen.
+ *
+ * VARFÖR INTE EN MULTIPLIKATION MED ETT GOLV. Så såg det ut förut, och tre
+ * fel följde ur formen i sig och inte ur talen:
+ *
+ *   1. Det mjuka straffet låg i `granskaSkyltruta` och gick in i poängen via
+ *      `prior`. Golvet längre ner jämförde alltså mot ett REDAN SÄNKT tal och
+ *      såg inte hela sänkningen. Rå poäng i [0,16; 0,2286) hamnade på
+ *      0,028–0,040, alltså under låsgränsen, med golvet påslaget. Uppmätt: 4
+ *      av 104 syntetiska bildrutor med äkta svensk skylt, och på riktigt foto
+ *      521e24d0.avif flyttad till skyltmitt 0,28 (0,0283, plats 9).
+ *   2. Ett golv är inte monotont. Allt under golvet klistrades ihop till
+ *      EXAKT samma tal: över ett fyra gånger brett band av rå poäng
+ *      ([0,2286; 0,9143)) fick varje straffad kandidat 0,160, och
+ *      rangordningen — som var hela skälet att straffa i stället för att
+ *      stryka — var utraderad just där. 68 av 104 bildrutor i ett dashcam-likt
+ *      svep.
+ *   3. Vid golvkanten hoppade utfallet fyrfaldigt på en tusendel: 0,2285 gav
+ *      0,040 och 0,2286 gav 0,160.
+ *
+ * HÄRLEDNINGEN. Tre krav ska hållas samtidigt:
+ *
+ *   (a) SÄNK REJÄLT — en kandidat ovanför horisonten ska rankas under en sann
+ *       skylt under den.
+ *   (b) HAMNA ALDRIG UNDER LÅSGRÄNSEN — en sänkning som får passera
+ *       `MALSOK.minPoang` är en strykning med ett annat namn, och strykningen
+ *       är precis det som mättes bort (15/20 lås → 1/20, 17/22 → 0/22).
+ *   (c) BEVARA ORDNINGEN — är A starkare än B före straffet ska A vara
+ *       starkare än B efter.
+ *
+ * Sök en avbildning T på poängen. (c) säger att T är strängt växande. (b)
+ * säger att T(R) ≥ g för alla R ≥ g, där g = MALSOK.minPoang. Att straffet
+ * aldrig får LYFTA något säger T(R) ≤ R. Den enklaste funktionen som
+ * uppfyller alla tre är en RÄT LINJE genom fixpunkten (g, g):
+ *
+ *      T(R) = g + k · (R − g)          med 0 < k < 1,  för R ≥ g
+ *
+ * Skriv om den och den blir den gamla multiplikationen plus ett lyft:
+ *
+ *      T(R) = k · R + g · (1 − k)
+ *
+ * Alltså: SAMMA LUTNING som förut, men linjen är skjuten uppåt exakt så
+ * mycket att den skär genom låsgränsen i stället för genom origo. Det är
+ * skillnaden mellan ett golv och det här: golvet klipper linjen, lyftet
+ * lutar den. Bilden av [g; POANG_TAK] blir bandet [g; g + k(POANG_TAK − g)],
+ * och där inne är ordningen exakt den råa ordningen.
+ *
+ * UNDER LÅSGRÄNSEN GÄLLER DEN RENA MULTIPLIKATIONEN, T(R) = k · R, OCH
+ * SKARVEN DÄR ÄR ETT HOPP SOM INTE GÅR ATT UNDVIKA. Det ska sägas rakt ut,
+ * med beviset:
+ *
+ *   Krav (b) tvingar T(g) = g — T(g) ≥ g från (b) och T(g) ≤ g från "lyfter
+ *   aldrig". Vore T dessutom KONTINUERLIG i g måste T(R) → g underifrån, och
+ *   eftersom T(R) ≤ R < g där blir T(R) = R strax under g: alltså INGET
+ *   straff alls just under låsgränsen. De fyra kraven "T(g) = g",
+ *   "kontinuerlig", "lyfter aldrig" och "sänk även under låsgränsen" kan inte
+ *   hållas samtidigt. Ett av dem måste släppas.
+ *
+ *   Det mättes vilket. Med T(R) = R under låsgränsen slutade vägmärken och
+ *   husfasader med rå poäng 0,12–0,15 att sänkas alls, och de fyllde
+ *   kandidatlistan: på granskningsbänken föll smuts från 9 lås till 8 och
+ *   vriden 90° från 17 till 16, båda genom att en svag men ÄKTA skylt trängdes
+ *   ur `slice(0, 6)` av fyra ostraffade fasadbitar (uppmätt i 521e24d0.avif
+ *   med smuts: rå 0,123 · 0,133 · 0,138 · 0,147, förut 0,022–0,026).
+ *
+ *   Alltså släpps kontinuiteten, och hoppet läggs där det betyder något:
+ *   EXAKT PÅ LÅSGRÄNSEN. Under den kan ingen kandidat låsas hur som helst, så
+ *   där finns inget att missa; över den skyddar lyftet varje kandidat som
+ *   kunde ha låst. Hoppet är inte ett trappsteg i fel C:s mening — inget
+ *   klistras ihop, avbildningen är strängt växande genom hoppet
+ *   (k·g < g = T(g)) och det finns ingen platt zon i [0; POANG_TAK].
+ *   Skillnaden mot det golv som revs: golvet la sitt hopp mitt inne i det
+ *   låsbara spannet (0,2285 → 0,040 och 0,2286 → 0,160) och la en platt zon
+ *   ovanför det.
+ *
+ *   FÖRBEHÅLLET, OCH DET SKA STÅ HÄR OCH INTE BARA VID KLÄMMAN: "strängt
+ *   växande, ingen platt zon" gäller [0; POANG_TAK] och ingenting däröver.
+ *   `Math.min(poang, POANG_TAK)` gör T konstant för varje R > POANG_TAK, i
+ *   båda banden — en riktig platt zon, utan övre ände. Mätt i ett jämnt svep
+ *   över [0; 2,4] med 240 000 steg: 60 000 platta steg per band, alla ovanför
+ *   1,8 (första platta steget vid R = 1,80001 — steglängden är 1e−5 och 1,8
+ *   träffas exakt på steg 180 000, så steg 180 001…240 000 är platta). Det
+ *   stod 59 999 och 1,80002 här; den slingan började ett steg för sent.
+ *   Ingenting i sak ändras av det, men ett mätt tal i en kommentar som är fel
+ *   är samma sorts fel som en gång gav hela den här regeln fel gräns. Zonen
+ *   är onåbar i dag, och det
+ *   är därför klämman kostar noll: `poangsattKandidat` kan per konstruktion
+ *   inte ge mer än exakt POANG_TAK (se talets härledning) och bänkens största
+ *   uppmätta poäng är 1,5816 över hela 174-svepet, 1,4573 oförvrängt. Får
+ *   någon faktor en dag ett större tak flyttas den platta zonen in i det
+ *   nåbara spannet, och då är det POANG_TAK som ska ändras — inte klämman som
+ *   ska tas bort, för utan den kan en straffad kandidat gå över sitt band.
+ *
+ * DE TVÅ LUTNINGARNA — en enda konstant per band, samma över och under
+ * låsgränsen:
+ *
+ *   MJUKA, k = PLATTGRIND.horisontStraff = 0,7. Oförändrat tal, oförändrad
+ *   rangordning; bara formen är lagad.
+ *
+ *   HÅRDA, k = (horisontTak − g) / (POANG_TAK − g). Den sätts inte för hand.
+ *   Bandet är [g; horisontTak] = [0,16; 0,228] och definitionsmängden är
+ *   [g; POANG_TAK] = [0,16; 1,8], så lutningen faller ut ur ändarna:
+ *   (0,228 − 0,16)/(1,8 − 0,16) = 0,0415. Se `PLATTGRIND.horisontTak` för var
+ *   0,228 kommer ifrån.
+ *
+ * @param {number} poang   kandidatens poäng före straffet
+ * @param {boolean} hart   true = hårda bandet, false = mjuka lutningen
+ * @returns {number} poängen efter straffet
+ */
+export function horisontstraff(poang, hart) {
+  const g = MALSOK.minPoang;
+  const k = hart
+    ? (PLATTGRIND.horisontTak - g) / (POANG_TAK - g)
+    : PLATTGRIND.horisontStraff;
+  // Klämman mot POANG_TAK håller taket även om någon faktor en dag får ett
+  // större tak än det som räknats fram ovan. Priset är att avbildningen är
+  // PLATT för varje R > POANG_TAK — där, och bara där, gäller inte "strängt
+  // växande". Zonen är onåbar med dagens faktorer (`poangsattKandidat` kan
+  // inte ge mer än POANG_TAK), så klämman kostar ingenting i dag. Se
+  // förbehållet i rubriken.
+  const p = Math.min(poang, POANG_TAK);
+  return poang >= g ? k * p + g * (1 - k) : k * p;
+}
+
+/**
+ * Hur hårt horisontregeln får gälla i den här bildrutan.
+ *
+ * RÄTTVÄND BILDRUTA ÄR ETT ANTAGANDE, OCH DET SKA INTE GÖRAS TYST.
+ * `cyBild` är en position längs bildrutans y-axel. Regeln bygger på att den
+ * axeln pekar mot marken. Vrids bildrutan ett kvarts varv — telefonen på
+ * högkant i en hållare byggd för liggande, eller en bänk vriden 90° — mäter
+ * `cyBild` i stället en position i sidled, och regeln är då inte mjukt fel
+ * utan helt fel: den skulle straffa allt i ena halvan av vägbanan.
+ *
+ * Modulen behöver inget nytt för att veta det här. `forvantadVinkel` är
+ * lutningsgivarens vinkel, alltså världens vågräta riktning uttryckt i
+ * bildrutans koordinater, med skärmvinkeln redan borträknad (se
+ * `Lutningsgivare#matning`). Den viker till (-90, 90].
+ *
+ *   nära 0    bildrutan är rättvänd      → 'full', hårda straffet får läggas på
+ *   nära ±90  bildrutan ligger på sidan  → 'av', hellre ingen regel än fel axel
+ *
+ * ANDRAHANDSKÄLLAN, NÄR GIVAREN ÄR AV: `screen.orientation.angle`. Den kostar
+ * ingenting och kräver inget tillstånd, men den är ett ANTAGANDE och inte en
+ * mätning — den säger hur SKÄRMEN står, inte hur bildrutan levereras, och det
+ * går inte att avgöra härifrån vilket av de två webbläsaren väljer. Appen är
+ * byggd för en telefon som ligger i en hållare (liggande, skärmvinkel 90 eller
+ * 270); står telefonen på högkant är hållarläget inte det modulen räknar med
+ * och regeln stängs AV i stället för att gissa vilken axel `cyBild` mäter.
+ * Det kostar rangordningen i stående läge — vägmärken rankas då inte ned — men
+ * det kan aldrig kosta ett missat lås, och det är rätt håll att fela åt.
+ *
+ * OCH DEN SKÄRPER, DEN STÄNGER INTE BARA AV. Det ska stå rakt ut, för det
+ * stod länge fel på anropsstället: skärmvinkel 90 eller 270 ger 'full' när
+ * `forvantadVinkel` är null, alltså en SKÄRPNING från grundvärdet 'mjuk', och
+ * det är just den vägen det hårda bandet slås på i en telefon utan
+ * rörelsetillstånd. Antagandet bär den skärpningen med vett: en telefon i
+ * hållare rapporterar 90 eller 270, och det är det läget modulen är byggd för.
+ *
+ * VET VI INGET ALLS är regeln 'mjuk': bara lutningen 0,7 och aldrig det hårda
+ * bandet. Det är också vad varje anropare som inte skickar in något får, till
+ * exempel `hittaPlat` och provbänkarna. Den som inte vet får inte döma hårt.
+ * Den grenen är nåbar även från `PlateReader`: `Lutningsgivare#skarmvinkel`
+ * svarar null när `screen.orientation` saknas, inte 0. Förut svarade den 0,
+ * alltså "stående", och grenen var i praktiken död.
+ *
+ * @param {object} [opt]
+ *        forvantadVinkel  lutningsgivarens vinkel i grader, null = okänd
+ *        skarmvinkel      screen.orientation.angle, null = okänd
+ * @returns {'full'|'mjuk'|'av'}
+ */
+function horisontlage({ forvantadVinkel = null, skarmvinkel = null } = {}) {
+  if (Number.isFinite(forvantadVinkel)) {
+    return Math.abs(forvantadVinkel) <= PLATTGRIND.horisontLutningMax ? 'full' : 'av';
+  }
+  if (Number.isFinite(skarmvinkel)) {
+    const v = ((skarmvinkel % 360) + 360) % 360;
+    return (v === 90 || v === 270) ? 'full' : 'av';
+  }
+  return 'mjuk';
+}
+
+/**
+ * Samplar en kandidat längs dess EGNA axlar och mäter hur stor del av ytan
+ * som är mörk.
+ *
+ * Läser inte om bilden. Den samplar den gråskalebuffert `skannaLjusa` redan
+ * byggt, med samma roterade `prov(u,v)` som `raknaTeckenbytenVriden` och
+ * `matSkyltFranBand` använder. Rutnätet är högst 28 × 48 = 1 344 sampel, och
+ * varje sampel är två multiplikationer och en läsning ur en buffert som redan
+ * ligger i cache.
+ *
+ * Låg- och högnivån tas som 5:e och 95:e percentilen ur rutans EGNA sampel,
+ * inte som min och max och aldrig som den globala Otsu-tröskeln. Min/max hade
+ * gjort en enda solreflex till hela högnivån, och då hamnar tröskeln så högt
+ * att halva den vita plattan räknas som mörk — alltså en äkta skylt dödad av
+ * en glans. Den globala tröskeln hade dödat images.jpg, vars tecken är
+ * gråaktiga i motljus.
+ *
+ * @returns {object|null} mätningen, eller null om rutan mest ligger utanför bilden
+ */
+function matPlatta(gra, b, h, ruta, bandAndel = 0) {
+  const { cx, cy, L, W, vinkel } = ruta;
+  if (!(L > 0) || !(W > 0)) return null;
+  const rad = vinkel * Math.PI / 180;
+  const kos = Math.cos(rad), sin = Math.sin(rad);
+
+  // Rader: en per pixel i höjdled, men aldrig färre än 10 (annars är profilen
+  // för grov) och aldrig fler än 28 (över det tillför de ingenting utom tid).
+  const R = Math.max(10, Math.min(28, Math.round(W)));
+  // Kolumner: en varannan pixel i längdled. Tecknen är breda; att sampla
+  // tätare än så mäter samma pelare två gånger.
+  const K = Math.max(16, Math.min(48, Math.round(L / 2)));
+
+  // u-fönstret börjar där EU-bandet slutar plus två procent luft. Ankarvägen
+  // vet bandets uppmätta andel; ljusstapeln har inget band i sin blobb (det
+  // blå är inte ljust och kom aldrig med) och skickar 0. Slutar vid 0,48 för
+  // att inte skrapa mot ytterramen.
+  const u0 = (-0.5 + Math.min(0.25, bandAndel) + 0.02) * L;
+  const u1 = 0.48 * L;
+  if (u1 <= u0) return null;
+
+  const varden = new Int16Array(R * K);
+  const hist = new Uint16Array(64);          // 4 gråsteg per fack
+  let n = 0;
+  for (let j = 0; j < R; j++) {
+    // v spänner 1,16 · W, alltså 8 % utanför kanten åt vardera hållet. Det
+    // överskottet är med för att en skylt som mätts några procent för snävt
+    // inte ska få sin egen ytterkant räknad som bakgrund.
+    const v = (-0.58 + 1.16 * (j + 0.5) / R) * W;
+    const bx = cx - v * sin, by = cy + v * kos;
+    for (let i = 0; i < K; i++) {
+      const u = u0 + (u1 - u0) * (i + 0.5) / K;
+      const x = Math.round(bx + u * kos);
+      const y = Math.round(by + u * sin);
+      let g = -1;
+      if (x >= 0 && x < b && y >= 0 && y < h) { g = gra[y * b + x]; hist[g >> 2]++; n++; }
+      varden[j * K + i] = g;
+    }
+  }
+  if (n < R * K * 0.5) return null;          // rutan hänger mest utanför bilden
+
+  let ack = 0, lag = 0, hog = 255;
+  const p5 = n * 0.05, p95 = n * 0.95;
+  for (let k = 0; k < 64; k++) { ack += hist[k]; if (ack >= p5) { lag = k * 4 + 2; break; } }
+  ack = 0;
+  for (let k = 0; k < 64; k++) { ack += hist[k]; if (ack >= p95) { hog = k * 4 + 2; break; } }
+  const kontrast = hog - lag;
+  const trosk = lag + kontrast * 0.55;
+
+  let morka = 0;
+  for (let i = 0; i < R * K; i++) {
+    const g = varden[i];
+    if (g >= 0 && g < trosk) morka++;
+  }
+  return { morkandel: morka / n, kontrast, sampel: n };
+}
+
+/**
+ * Grinden, som den anropas från sökningen.
+ *
+ * @param {Uint8ClampedArray} gra   gråskalan från `skannaLjusa`
+ * @param {number} b @param {number} h   arbetsbildens mått
+ * @param {{cx,cy,L,W,vinkel}} ruta      kandidaten längs sina egna axlar
+ * @param {object} [opt]
+ *        bandAndel  uppmätt EU-band i andel av skyltlängden, 0 = okänt
+ *        cyBild     kandidatens mitt i andel av KÄLLBILDENS höjd, null = okänt
+ *        lage       'full' | 'mjuk' | 'av' — se `horisontlage`
+ * @returns {{ok:boolean, faktor:number, skal:string|null, matt:object|null,
+ *            mjukZon:boolean, overHorisont:boolean, cyBild:number|null}}
+ */
+function granskaSkyltruta(gra, b, h, ruta,
+                          { bandAndel = 0, cyBild = null, lage = 'mjuk' } = {}) {
+  const svar = { ok: true, faktor: 1, skal: null, matt: null,
+                 mjukZon: false, overHorisont: false, cyBild };
+
+  /*
+   * Horisonten först — den kostar inte en enda pixelläsning.
+   *
+   * HÄR STRYKS INGET, OCH DET ÄR EN ÄNDRING MOT FÖRSTA VERSIONEN.
+   * Förut satte `cyBild < horisont` svar.ok = false, och i `sokKandidater`
+   * blev det `continue`: kandidaten upphörde att finnas, utan spår, utan
+   * läsning och utan förklaring till användaren. Mätt på bänken kostade det
+   * allt precis utanför den bänkens egen ram — en bildruta kapad strax ovanför
+   * skylten gick från 15/20 lås till 1/20, och en bänk flyttad till skyltmitt
+   * 0,28 (kameran lutad uppåt) från 17/22 till 0/22.
+   *
+   * HÄR SÄNKS INGET HELLER, OCH DET ÄR ÄNDRINGEN MOT ANDRA VERSIONEN.
+   * Förut multiplicerades det mjuka straffet 0,7 in i `faktor` här, gick
+   * vidare via `prior` in i poängen, och det hårda straffet lades på längst
+   * ned i `sokKandidater`. Två steg alltså — och det andra steget kunde
+   * därmed aldrig se hur mycket det första redan hade tagit. Golvet i steg
+   * två jämförde mot ett halvsänkt tal och missade fyra av 104 bildrutor med
+   * äkta skylt. Se `horisontstraff`.
+   *
+   * Nu lämnas bara TVÅ FLAGGOR ut och hela sänkningen sker i ett enda steg
+   * hos anroparen, som är den ende som kan ställa frågan rätt: `overHorisont`
+   * ska bara bli det hårda bandet om det finns någon UNDER horisonten att
+   * förlora mot, och det vet först `sokKandidater` när alla kandidater är
+   * insamlade.
+   */
+  if (cyBild != null && lage !== 'av') {
+    if (cyBild < PLATTGRIND.horisontMjuk) svar.mjukZon = true;
+    if (cyBild < PLATTGRIND.horisont && lage === 'full') {
+      svar.overHorisont = true;
+    }
+  }
+
+  // Bandets andel, men bara när bandet är stort nog att mätas.
+  if (bandAndel && ruta.L >= PLATTGRIND.euMinLangd &&
+      (bandAndel < PLATTGRIND.euMin || bandAndel > PLATTGRIND.euMax)) {
+    svar.ok = false; svar.skal = 'bandet har fel andel'; return svar;
+  }
+
+  // Under 24 px svarar polariteten varken ja eller nej — annars hade varje
+  // skylt på håll dömts ut, och det är en tyst regression som bara syns i
+  // drift och aldrig i en bänk med närbilder.
+  if (ruta.L < PLATTGRIND.minLangd) {
+    svar.faktor *= PLATTGRIND.osakerFaktor; return svar;
+  }
+
+  const p = matPlatta(gra, b, h, ruta, bandAndel);
+  svar.matt = p;
+  /*
+   * GÅR DEN INTE ATT MÄTA SKA DEN INTE DÖMAS. `matPlatta` ger null när mer än
+   * halva rutan hänger utanför bildrutan, och det är inte ett tecken på att
+   * kandidaten är falsk — det är en skylt i bildkanten.
+   *
+   * Det här är ingen teoretisk risk. Första versionen avvisade i det läget,
+   * och sok-test.html gick från 51 godkända till 50: fallet "blått band
+   * avklippt i bildkanten" slutade hittas. En bil som just kör in i bild ska
+   * gå att låsa på, det är hela vitsen med att låsa tidigt.
+   *
+   * Samma svar som för en för liten kandidat: varken ja eller nej, utan
+   * faktorn 0,85 och vidare.
+   */
+  if (!p) { svar.faktor *= PLATTGRIND.osakerFaktor; svar.skal = 'kunde ej mätas'; return svar; }
+  /*
+   * Slät yta: kontrasten räcker inte för att mörkandelen ska betyda något. Här
+   * AVVISAS det ändå, till skillnad från fallet ovan — en yta helt utan
+   * kontrast har inga tecken, och en skylt utan tecken går inte att läsa.
+   */
+  if (p.kontrast < PLATTGRIND.kontrastMin) {
+    svar.ok = false; svar.skal = 'slät yta'; return svar;
+  }
+  if (p.morkandel > PLATTGRIND.morkandelMax) {
+    svar.ok = false; svar.skal = 'ljust på mörkt'; return svar;
+  }
+  if (p.morkandel < PLATTGRIND.morkandelMin) {
+    svar.ok = false; svar.skal = 'inga tecken på plattan'; return svar;
+  }
+  return svar;
+}
+
+/**
+ * Bara för provet: kör skanningen och lämnar ut varje kandidats geometri,
+ * hela plattmätningen och grindens dom.
+ *
+ * Finns för att gränserna i PLATTGRIND ska gå att härleda ur mätta tal i
+ * stället för ur gissningar. Utan den syns bara att en kandidat föll, aldrig
+ * VILKET av talen som fällde den — och då blir varje justering av en gräns en
+ * gissning till. Det var precis den funktionen som visade att radprofilen
+ * fällde 19 av 19 sanna skyltar, och som därmed sparade in att den byggdes
+ * färdigt.
+ */
+export function provaPlattgrind(kalla, omrade = null, { arbetsbredd = 400 } = {}) {
+  const m = kallMatt(kalla);
+  const yta = omrade || { x: 0, y: 0, w: m.b, h: m.h };
+  const s = skannaLjusa(kalla, yta, arbetsbredd, { minAndel: 0.025, minPx: 10, bla: true });
+  const inv = 1 / s.skala;
+  const rader = [];
+  const ta = (typ, ruta, bandAndel, extra) => {
+    const cyBild = (yta.y + ruta.cy * inv) / (m.h || 1);
+    rader.push({
+      typ, cyBild, bandAndel,
+      cx: ruta.cx, cy: ruta.cy, L: ruta.L, W: ruta.W, vinkel: ruta.vinkel,
+      matt: matPlatta(s.gra, s.b, s.h, ruta, bandAndel),
+      // 'full' här med flit: provet finns för att se vad regeln GÖR, och i
+      // 'mjuk' vore flaggan overHorisont alltid falsk och kolumnen tom.
+      dom: granskaSkyltruta(s.gra, s.b, s.h, ruta, { bandAndel, cyBild, lage: 'full' }),
+      ...extra,
+    });
+  };
+  for (const a of blaAnkare(s)) {
+    ta('ankare', { cx: a.cx, cy: a.cy, L: a.rw, W: a.rh, vinkel: a.vinkel }, a.euAndel,
+       { teckenbyten: a.teckenbyten,
+         lada: { x: yta.x + a.minX * inv, y: yta.y + a.minY * inv,
+                 w: a.bw * inv, h: a.bh * inv } });
+  }
+  for (const bl of s.blobbar) {
+    ta('blobb', { cx: bl.cx, cy: bl.cy, L: bl.L, W: bl.W, vinkel: bl.vinkel }, 0,
+       { teckenbyten: raknaTeckenbyten(s.gra, s.b, s.h, bl),
+         lada: { x: yta.x + bl.minX * inv, y: yta.y + bl.minY * inv,
+                 w: bl.bw * inv, h: bl.bh * inv } });
+  }
+  return { arbetsbredd: s.b, arbetshojd: s.h, skala: s.skala, rader };
 }
 
 /* ---- Skyltens proportion som grind --------------------------------------
@@ -1562,9 +2295,49 @@ export function hittaPlat(kalla, roi) {
   const AB = 320;                                   // arbetsbredd, håller det billigt
   const s = skannaLjusa(kalla, roi, AB, { minAndel: 0.12, minPx: 0, bla: true });
   const inv0 = 1 / s.skala;
+  const m = kallMatt(kalla);
+
+  /*
+   * PLATTGRINDEN KÖRS ÄVEN HÄR, OCH DET ÄR INTE EN DUBBLETT.
+   *
+   * `lasRuta` letar reda på skylten en gång till inuti den ruta den fått, och
+   * den andra sökningen kan välja en annan sak än den första gjorde — den ser
+   * bara ett litet utsnitt och har inte hela bildrutan att jämföra med. Utan
+   * grinden här kan alltså ett korrekt lås på skylten beskäras om till
+   * handlarlisten under den, och det syns bara som "rätt ruta, ingen text".
+   *
+   * MEN HÄR AVVISAS INGEN KANDIDAT. Skillnaden mot sökningen är att den här
+   * funktionen har ett ansvar att lämna ifrån sig NÅGOT — returnerar den null
+   * läser `lasRuta` hela den råa rutan och kapar EU-fältet på egen hand, och
+   * det är sämre än en tveksam beskärning. Underkänd kandidat får därför
+   * faktorn 0,05 i stället för att strykas: finns en bättre kandidat vinner
+   * den, finns ingen alls står den underkända kvar. Fail-open, inte
+   * fail-closed.
+   */
+  const GRIND_UNDERKAND = 0.05;
+  const grinda = (ruta, bandAndel) => {
+    // Inget `lage` skickas in: den här funktionen vet ingenting om hur
+    // telefonen sitter, och då är horisontregeln mjuk. Se `horisontlage`.
+    // Alla kandidater här ligger dessutom inne i EN redan låst ruta, så de
+    // sitter på i praktiken samma höjd — horisonten skiljer dem sällan åt.
+    const g = granskaSkyltruta(s.gra, s.b, s.h, ruta,
+      { bandAndel, cyBild: (roi.y + ruta.cy * inv0) / (m.h || 1) });
+    return { prior: g.ok ? g.faktor : GRIND_UNDERKAND, mjukZon: g.mjukZon };
+  };
+  /*
+   * Horisontstraffet läggs på FÄRDIG poäng, inte in i priorn, av exakt samma
+   * skäl som i `sokKandidater`: ett straff som gömmer sig i en faktor kan inte
+   * granskas av det som kommer efter. Här kommer visserligen ingenting efter —
+   * `hittaPlat` jämför bara kandidater med varandra och har ingen låsgräns att
+   * falla under — men samma avbildning används i båda vägarna så att det finns
+   * EN implementation att mäta och EN att ändra. Se `horisontstraff`.
+   */
+  const straffa = (poang, mjukZon) => (mjukZon ? horisontstraff(poang, false) : poang);
 
   let ankare = null, ankarePoang = -1;
   for (const a of blaAnkare(s)) {
+    const gr = grinda({ cx: a.cx, cy: a.cy, L: a.rw, W: a.rh, vinkel: a.vinkel },
+                      a.euAndel);
     const p = poangsattKandidat({
       forhallande: a.forhallande,
       fyllnad: null,
@@ -1574,8 +2347,10 @@ export function hittaPlat(kalla, roi) {
       ytaB: s.b,
       vinkel: a.vinkel,
       ankare: ankarfaktor(a),
+      prior: gr.prior,
     });
-    if (p.poang > ankarePoang) { ankare = a; ankarePoang = p.poang; }
+    const poang = straffa(p.poang, gr.mjukZon);
+    if (poang > ankarePoang) { ankare = a; ankarePoang = poang; }
   }
 
   // Ljusstapeln poängsätts likadant. Att välja den STÖRSTA blobben, som koden
@@ -1583,6 +2358,7 @@ export function hittaPlat(kalla, roi) {
   // nästan aldrig det största ljusa i bilden.
   let bast = null, bastPoang = -1;
   for (const bl of s.blobbar) {
+    const gr = grinda({ cx: bl.cx, cy: bl.cy, L: bl.L, W: bl.W, vinkel: bl.vinkel }, 0);
     const p = poangsattKandidat({
       forhallande: bl.forhallande,
       fyllnad: bl.fyllnad,
@@ -1592,8 +2368,10 @@ export function hittaPlat(kalla, roi) {
       cy: (bl.minY + bl.bh / 2) / s.h,
       ytaB: s.b,
       vinkel: bl.vinkel,
+      prior: gr.prior,
     });
-    if (p.poang > bastPoang) { bast = bl; bastPoang = p.poang; }
+    const poang = straffa(p.poang, gr.mjukZon);
+    if (poang > bastPoang) { bast = bl; bastPoang = poang; }
   }
 
   if (ankare && ankarePoang >= bastPoang) {
@@ -1656,6 +2434,79 @@ export function hittaPlat(kalla, roi) {
   };
 }
 
+/* ---- BAKVAGNSANKARET: BYGGT, MÄTT, BORTTAGET -----------------------------
+ *
+ * Idén var ägarens egen mening satt i kod: "när du har identifierat bilen, då
+ * låser du in på regskylten". En bil bakifrån behöver inte segmenteras — två
+ * röda, ungefär lika stora fläckar på samma höjd räcker. Avståndet mellan dem,
+ * `sep`, är bakvagnens måttstock, och skylten sitter alltid på ungefär samma
+ * plats i den måttstocken.
+ *
+ * DET BYGGDES FÄRDIGT OCH DET MÄTTES. Mekanismen FUNGERAR — den togs inte bort
+ * för att den inte hittar bakvagnar. Uppmätt med en provsida som lade
+ * facitrutan i lyktparets måttstock (den följde med koden ut; talen står kvar
+ * här, för det är talen som är värdefulla och inte harnesket):
+ *
+ *   Lyktpar hittat:            18 av 22 bilder, 14 av 15 bakifrån-bilder.
+ *   Skyltens läge i sep-enheter, mätt ur facitrutan på de 14 (två uteslutna,
+ *   se nedan):
+ *       u = (skyltmitt.x − parets mitt) / sep   −0,29 … +0,20, median 0,00
+ *       v = (skyltmitt.y − lyktlinjen)  / sep   −0,06 … +0,19, median 0,02
+ *       skyltlängd / sep                         0,24 … 0,48,  median 0,46
+ *   Uteslutna: 0c4d9b68 (u = −1,18, dess "par" är en röd bil långt bort, inte
+ *   målbilens bakvagn) och nya-skyltar-transportstyrelsen (L/sep = 0,87,
+ *   bilden är ett montage med en urklippt närbild inklistrad över vägfotot).
+ *
+ * Det är en STRAM prior: skylten ligger inom ±0,29 lyktavstånd i sidled och
+ * inom −0,06…+0,19 i höjdled. Informationen är verklig och stark.
+ *
+ * DEN TOGS BORT ÄNDÅ, PÅ SIFFROR:
+ *
+ *   VINST:  0 av 22 bilder ändrades. Rätt text 10/21 före och efter, lås på
+ *           rätt skylt 15/22 före och efter, varje enskild bilds IoU
+ *           oförändrad in på andra decimalen.
+ *   KOSTNAD (median söktick, samma maskin, samma bänk, arbetsbredd 400):
+ *           utan mekanismen            6,8 ms   (max 22,5)
+ *           + rödmasken i pixelsvepet  8,3 ms   (max 29,0)   +1,5 ms
+ *           + flödesfyllning och parning 10,8 ms (max 33,3)  +2,5 ms till
+ *           Alltså +4,0 ms per söktick, +59 %. Vid 8,3 sökningar i sekunden
+ *           är det +33 ms CPU per sekund, för alltid, på varje bildruta.
+ *
+ * VARFÖR VINSTEN BLEV NOLL, för det är den intressanta delen: mekanismen
+ * överlappar PLATTGRIND, och den billiga av de två hann först. De tre
+ * rangordningsfel bakvagnsankaret var tänkt att laga — 521e24d0 (blå dekaltext
+ * på en baklucka vann låset), Regpl-Heden (vit skrivstil på röd motorhuv) och
+ * polestar-4-bak (rätt kandidat fanns men låg tvåa) — är alla "ljust på mörkt",
+ * och plattgrindens mörkandel dödar dem för under en millisekund. När den väl
+ * gjort det finns det inget kvar för priorn att rangordna bort.
+ *
+ * Det enda som återstod var latens: YBK70UD har ett betrott par med skylten
+ * inne i fönstret och hade kunnat få `bildrutorForLasAnkrad` 3 i stället för
+ * 8, alltså 600 ms snabbare lås. EN bild av 22, betald med 33 ms CPU i
+ * sekunden på alla 22. Det är fel sida av regeln om att en förbättring inte
+ * får kosta mer än den vinner.
+ *
+ * NÄR DEN SKA BYGGAS TILLBAKA: när en bänk med riktigt dashcam-material visar
+ * rangordningsfel som INTE är "ljust på mörkt" — två vita, teckenförsedda,
+ * skyltformade ytor i samma bildruta, där bara den ena sitter på bilen man
+ * kör bakom. Då är lyktparet rätt verktyg, och fönstret ovan är redan mätt.
+ *
+ * Två saker som ska följa med om den byggs tillbaka, båda funna under bygget:
+ *   1. TILLITSGRINDEN är inte valfri. Fyra av sju framifrån-bilder ger ett
+ *      falskt "par" av röd kaross och röda dekaler. Paret får bara användas
+ *      om minst en kandidat redan ligger inne i fönstret. Fail-open.
+ *   2. SÄNKNINGEN FÅR INTE PASSERA LÅSGRÄNSEN. Hamnar alla kandidater utanför
+ *      fönstret sänks allihop, och då kan de falla under MALSOK.minPoang — och
+ *      då finns ingen kandidat kvar att låsa på alls. Samma fel som redan står
+ *      dokumenterat i `taxAvAnkare`, en nivå längre ut.
+ *      OCH DET SKA INTE LÖSAS MED ETT GOLV. Ett golv klistrar ihop allt under
+ *      sig till ett enda tal och utplånar den rangordning sänkningen fanns
+ *      till för — det mättes på horisontstraffet och revs. Använd
+ *      `horisontstraff`-formen i stället: samma multiplikation, men linjen
+ *      lyft så att den går genom (låsgränsen, låsgränsen). Härledningen står
+ *      i `horisontstraff`.
+ */
+
 /* ---- Målsökning ---------------------------------------------------------- */
 
 /**
@@ -1668,7 +2519,7 @@ export function hittaPlat(kalla, roi) {
  * ligger mitt i vägen.
  */
 function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, ytaB,
-                             vinkel = 0, forvantadVinkel = null, ankare = 1 }) {
+                             vinkel = 0, forvantadVinkel = null, ankare = 1, prior = 1 }) {
   // Form: svenska skyltar är 520 × 110 mm, alltså 4,7. Avvikelsen mäts i
   // logaritm så att 2,35 och 9,4 straffas lika mycket — en skylt sedd snett
   // trycks ihop i sidled, aldrig i höjdled.
@@ -1753,9 +2604,16 @@ function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, y
    * som råkar ha rätt form — den är en annan sorts bevis. Poängen används bara
    * till rangordning och mot `minPoang`, så ett tal över 1 gör ingen skada.
    */
+  /*
+   * `prior` är allt vi vet om kandidaten som INTE står att läsa ur dess egen
+   * form: hur högt i bildrutan den sitter (`granskaSkyltruta`) och om den
+   * ligger där en bakvagn säger att en skylt ska sitta. Den är skild från
+   * `ankare` med flit — ankaret är ett
+   * bevis kandidaten bär själv, priorn är omgivningens vittnesmål om den.
+   */
   return {
-    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken * rakhet * ankare,
-    form, storlek, centrum, tecken, rakhet, ankare,
+    poang: form * (0.35 + 0.65 * storlek) * centrum * tecken * rakhet * ankare * prior,
+    form, storlek, centrum, tecken, rakhet, ankare, prior,
   };
 }
 
@@ -1774,13 +2632,26 @@ function poangsattKandidat({ forhallande, fyllnad, teckenbyten, bredd, cx, cy, y
  * @param {CanvasImageSource} kalla
  * @param {object|null} omrade       {x,y,w,h} i källans pixlar, null = hela bilden
  * @param {object} [opt]             { arbetsbredd = 400, max = 6 }
- * @returns {Array<object>} {x,y,w,h,poang,form,storlek,centrum,tecken,teckenbyten,forhallande,fyllnad}
+ * @returns {Array<object>} {x,y,w,h,poang,poangRa,form,storlek,centrum,tecken,
+ *          teckenbyten,forhallande,fyllnad,mjukZon,overHorisont,horisontStraffad,cyBild}
+ *
+ *          `poangRa` är poängen INNAN horisontstraffet och `poang` är den
+ *          efter. Båda lämnas ut med flit: provbänkarna ska kunna mäta vad
+ *          straffet tog utan att mutera modulens tal, och urvalet längst ned
+ *          behöver den råa evidensen för att inte låta straffet tränga ut en
+ *          kandidat helt. `horisontStraffad` är sant bara för det HÅRDA
+ *          bandet — `Malsokare#krav` läser den.
  */
 export function sokKandidater(kalla, omrade = null,
-                              { arbetsbredd = 400, max = 6, forvantadVinkel = null } = {}) {
+                              { arbetsbredd = 400, max = 6, forvantadVinkel = null,
+                                skarmvinkel = null } = {}) {
   const m = kallMatt(kalla);
   const yta = omrade || { x: 0, y: 0, w: m.b, h: m.h };
   if (!(yta.w > 16 && yta.h > 16)) return [];
+
+  // Hur hårt horisontregeln får gälla i just den här bildrutan. Se
+  // `horisontlage` — och se att svaret aldrig är "stryk kandidaten".
+  const hLage = horisontlage({ forvantadVinkel, skarmvinkel });
 
   // Minsta kandidat: 2,5 % av bildens bredd. En skylt mindre än så är under
   // tjugo pixlar bred i en telefonbild och innehåller inte tillräckligt med
@@ -1789,6 +2660,7 @@ export function sokKandidater(kalla, omrade = null,
   const s = skannaLjusa(kalla, yta, arbetsbredd, { minAndel: 0.025, minPx: 10, bla: true });
   const inv = 1 / s.skala;
   const ut = [];
+
 
   /*
    * ANKARVÄGEN FÖRST — det blå bandet.
@@ -1799,6 +2671,27 @@ export function sokKandidater(kalla, omrade = null,
    * flödesfyllning över en mask som är tom i nästan hela bildrutan.
    */
   for (const a of blaAnkare(s)) {
+    /*
+     * PLATTGRINDEN, före allt annat. Ett uppmätt blått band bevisar att det
+     * finns något blått och avlångt — det bevisar inte att kroppen till höger
+     * om det är en vit platta med mörka tecken. Den blå dekaltexten på Caddyns
+     * baklucka i 521e24d0 och VOLVO-emblemets blå oval i Regplat-URK är båda
+     * ankare i dag, och båda vinner låset över den riktiga skylten.
+     *
+     * Här AVVISAS kandidaten på PIXELGRINDARNA, till skillnad från i
+     * `hittaPlat`. Sökningen har ingen skyldighet att lämna ifrån sig något:
+     * hittar den inget håller `Malsokare` bara på att leta i nästa bildruta,
+     * och det är precis rätt beteende. Ett falskt lås kostar däremot tre
+     * brända OCR-läsningar (MALSOK.brandForsok) innan spåret släpps.
+     *
+     * HORISONTEN AVVISAR INGET. Den lämnar bara flaggan `overHorisont`, och
+     * det hårda straffet läggs på längst ned, när alla kandidater är kända.
+     */
+    const g = granskaSkyltruta(s.gra, s.b, s.h,
+      { cx: a.cx, cy: a.cy, L: a.rw, W: a.rh, vinkel: a.vinkel },
+      { bandAndel: a.euAndel, cyBild: (yta.y + a.cy * inv) / m.h, lage: hLage });
+    if (!g.ok) continue;
+
     const p = poangsattKandidat({
       forhallande: a.forhallande,
       fyllnad: null,
@@ -1808,6 +2701,7 @@ export function sokKandidater(kalla, omrade = null,
       ytaB: s.b,
       vinkel: a.vinkel, forvantadVinkel,
       ankare: ankarfaktor(a),
+      prior: g.faktor,
     });
     ut.push({
       x: yta.x + a.minX * inv,
@@ -1828,6 +2722,9 @@ export function sokKandidater(kalla, omrade = null,
       kantstodd: a.kantstodd,
       omvand: !!a.omvand,
       ankrad: true,
+      mjukZon: g.mjukZon,
+      overHorisont: g.overHorisont,
+      cyBild: g.cyBild,
       ...p,
     });
   }
@@ -1852,18 +2749,46 @@ export function sokKandidater(kalla, omrade = null,
    *
    * Nu räknas blobbens poäng först, och ankaret får bara tysta den om det
    * faktiskt är det starkare beviset.
+   *
+   * POÄNGEN HÄR ÄR RÅ, alltså före horisontstraffet, och det är rätt sida att
+   * fela åt. Straffet läggs på längst ned när alla kandidater är kända, så vid
+   * det här laget FINNS det inte något straffat tal att jämföra med. Att
+   * jämföra rått är dessutom det tystandet handlar om: frågan är vilken av två
+   * beskrivningar av SAMMA fläck som är den bättre, och båda sitter per
+   * definition på samma höjd i bildrutan — horisonten skiljer dem inte åt. Den
+   * enda gång positionen spelar roll är raden nedan, och den är kvar.
    */
-  const taxAvAnkare = (bx, by, bw2, bh2, blobbPoang) => {
+  const taxAvAnkare = (bx, by, bw2, bh2, blobbPoang, blobbOverHorisont) => {
     const mx2 = bx + bw2 / 2, my2 = by + bh2 / 2;
     return ut.some(a => a.ankrad &&
       mx2 >= a.x && mx2 <= a.x + a.w && my2 >= a.y && my2 <= a.y + a.h &&
       // Antagen bredd eller en poäng under låsgränsen är inte starkare bevis
       // än en uppmätt ljus kant. Då får blobben stå kvar och tävla.
       !a.antagenBredd && a.poang >= MALSOK.minPoang &&
+      // Ett ankare OVANFÖR horisonten är aldrig det starkare beviset mot en
+      // blobb under den. Utan den raden hade det hårda straffet kunnat läggas
+      // på en vinnare som redan tystat sin egen ersättare — alltså en tyst
+      // strykning bakvägen, precis det som skulle bort.
+      (!a.overHorisont || blobbOverHorisont) &&
       a.poang >= blobbPoang);
   };
 
   for (const bl of s.blobbar) {
+    /*
+     * Samma grind på ljusstapeln. Här sitter de flesta av de nio falska
+     * låsningarna: kromlisten över skylten i 2560.webp har förhållande 4,6 och
+     * går rakt igenom dagens formgrind, Skoda-grillens ribbor i 1728543597268
+     * likaså, och prislapparna i vindrutorna i 3b979c11 är vita rektanglar med
+     * en enda stor mörk siffra. Ingen av dem har en skylts mörkandel.
+     *
+     * Blobben har ingen bandandel — det blå är per definition inte ljust och
+     * kom aldrig med i blobben — så bandgrinden hoppas över och u-fönstret
+     * börjar vid blobbens egen vänsterkant.
+     */
+    const g = granskaSkyltruta(s.gra, s.b, s.h,
+      { cx: bl.cx, cy: bl.cy, L: bl.L, W: bl.W, vinkel: bl.vinkel },
+      { cyBild: (yta.y + bl.cy * inv) / m.h, lage: hLage });
+    if (!g.ok) continue;
     const teckenbyten = raknaTeckenbyten(s.gra, s.b, s.h, bl);
     const p = poangsattKandidat({
       forhallande: bl.forhallande,
@@ -1877,6 +2802,7 @@ export function sokKandidater(kalla, omrade = null,
       cy: (bl.minY + bl.bh / 2) / s.h,
       ytaB: s.b,
       vinkel: bl.vinkel, forvantadVinkel,
+      prior: g.faktor,
     });
 
     // Samma marginal som `hittaPlat` ger, så att OCR-steget får en ruta med
@@ -1884,7 +2810,7 @@ export function sokKandidater(kalla, omrade = null,
     const mx = bl.bw * 0.03 * inv, my = bl.bh * 0.08 * inv;
     const lx = yta.x + bl.minX * inv - mx, ly = yta.y + bl.minY * inv - my;
     const lw = bl.bw * inv + mx * 2, lh = bl.bh * inv + my * 2;
-    if (taxAvAnkare(lx, ly, lw, lh, p.poang)) continue;
+    if (taxAvAnkare(lx, ly, lw, lh, p.poang, g.overHorisont)) continue;
     ut.push({
       x: lx, y: ly, w: lw, h: lh,
       vinkel: bl.vinkel,
@@ -1892,12 +2818,173 @@ export function sokKandidater(kalla, omrade = null,
       cy: yta.y + bl.cy * inv,
       rw: bl.L * 1.06 * inv,
       rh: bl.W * 1.16 * inv,
-      teckenbyten, forhallande: bl.forhallande, fyllnad: bl.fyllnad, ...p,
+      teckenbyten, forhallande: bl.forhallande, fyllnad: bl.fyllnad,
+      mjukZon: g.mjukZon, overHorisont: g.overHorisont, cyBild: g.cyBild, ...p,
     });
   }
 
-  ut.sort((a, b) => b.poang - a.poang);
-  return ut.slice(0, max);
+  /*
+   * HORISONTSTRAFFET — ETT STEG, OCH DET ÄR RELATIVT MED FLIT.
+   *
+   * Nu — och först nu — är alla kandidater kända, och frågan går att ställa
+   * rätt: finns det något UNDER horisonten att förlora mot?
+   *
+   *   Ja  → kandidaterna ovanför avbildas in i det HÅRDA bandet
+   *         [MALSOK.minPoang; PLATTGRIND.horisontTak]. Ett vägmärke eller en
+   *         handlarlist rankas då under den riktiga skylten i samma bildruta,
+   *         vilket är hela nyttan ägaren bad om.
+   *   Nej → de där uppe är allt vi har. Då bär de bara den MJUKA lutningen och
+   *         får tävla som vanligt. En bildruta där bara stötfångaren syns,
+   *         eller där kameran lutar uppåt, behåller sin enda kandidat.
+   *
+   * ETT STEG, INTE TVÅ, OCH DET ÄR ÄNDRINGEN. Förut multiplicerade
+   * `granskaSkyltruta` in det mjuka straffet 0,7 i `prior`, och det här stället
+   * lade på det hårda ovanpå och golvade resultatet vid `MALSOK.minPoang`.
+   * Golvet jämförde alltså mot ett tal som redan var sänkt en gång och såg
+   * aldrig hela sänkningen: fyra av 104 syntetiska bildrutor med äkta svensk
+   * skylt föll ändå under låsgränsen, och på riktigt foto gjorde
+   * 521e24d0.avif flyttad till skyltmitt 0,28 det samma. Nu bär
+   * `granskaSkyltruta` bara flaggorna och HELA sänkningen sker här, i en enda
+   * avbildning — då finns det inget halvsänkt tal kvar att jämföra mot.
+   *
+   * OCH DET ÄR EN AVBILDNING, INTE EN MULTIPLIKATION MED ETT GOLV. Ett golv
+   * bevarar inte ordningen: det klistrar ihop allt under sig till ETT tal, och
+   * över ett fyra gånger brett band av rå poäng fick varje straffad kandidat
+   * exakt 0,160. Rangordningen — hela skälet att straffa i stället för att
+   * stryka — var utraderad just där. `horisontstraff` är i stället samma
+   * multiplikation som förut, med linjen lyft så att den går genom punkten
+   * (låsgränsen, låsgränsen): den sänker precis lika hårt, den kan aldrig ta
+   * en kandidat som KUNDE ha låst under låsgränsen, och den bevarar ordningen
+   * — strängt växande, ingen platt zon, och den enda diskontinuiteten ligger
+   * på själva låsgränsen, där det inte finns något lås att missa. Se
+   * härledningen och beviset för att den diskontinuiteten är oundviklig i
+   * `horisontstraff`.
+   *
+   * `poangRa` sparas på varje kandidat — dels för att urvalet nedan behöver
+   * den, dels för att den som läser ut en kandidat ska kunna se exakt vad
+   * straffet tog. Straffet skrivs också in i `prior` av samma skäl.
+   */
+  for (const k of ut) k.poangRa = k.poang;
+  const finnsUnder = ut.some(k => !k.overHorisont);
+  for (const k of ut) {
+    if (!k.mjukZon) continue;
+    const hart = k.overHorisont && finnsUnder;
+    const fore = k.poang;
+    k.poang = horisontstraff(fore, hart);
+    k.prior *= (fore > 0 ? k.poang / fore : 1);
+    k.horisontStraffad = hart;
+  }
+
+  /*
+   * URVALET, OCH DET ÄR ETT LISTPROBLEM SOM INTE GÅR ATT LAGA I POÄNGEN.
+   *
+   * `slice(0, max)` skar förut rakt av i den straffade listan, och då kunde
+   * straffet tränga ut en kandidat helt. Mätt: Regpl-Heden.jpg beskuren så att
+   * bara stötfångaren syns lägger den sanna skylten ovanför horisonten. Elva
+   * OSTRAFFADE skräpkandidater under horisonten låg på 0,195–0,243 medan den
+   * sanna skylten efter straffet låg på 0,169 — över låsgränsen, alltså inte
+   * struken av poängen, men på plats 13 av 6 möjliga. IoU gick från 0,75 till
+   * 0,00. Kandidaten upphörde att finnas, utan spår, och det är precis det
+   * utfall hela omskrivningen fanns till för att bli av med. Ett golv kan
+   * aldrig laga det: golvet vaktar låsGRÄNSEN, inte PLATSEN i listan.
+   *
+   * LÖSNINGEN ÄR RESERVERADE PLATSER MED TRE VILLKOR, OCH VART OCH ETT AV DEM
+   * ÄR DÄR FÖR ATT ETT MÄTT FEL ANNARS KOMMER TILLBAKA. Efter snittet görs
+   * högst `PLATTGRIND.horisontReserv` byten: de bäst bevisade kandidaterna
+   * utanför snittet, A, tar plats av de sämst bevisade inne i snittet, B. Ett
+   * byte sker bara om
+   *
+   *   1. A ÄR STRAFFAD. Annars föll A ut på sina egna meriter, och då är det
+   *      inte straffet som trängde ut den — då finns inget att laga.
+   *   2. A KAN FORTFARANDE LÅSA, alltså A:s poäng EFTER straffet ligger på
+   *      eller över `MALSOK.minPoang`. En kandidat som ändå inte kan låsa
+   *      behöver ingen reserverad plats, och utan det här villkoret gör
+   *      reserven aktiv skada: en fasadbit ovanför horisonten med rå poäng
+   *      0,155 hamnar efter straffet på 0,006, alltså längst ned i listan, men
+   *      har fortfarande STARKARE rå poäng än en svag äkta skylt på 0,101 och
+   *      knuffar ut den. Uppmätt i 521e24d0.avif med smuts, och det kostade ett
+   *      lås (smuts 9 → 8) tills villkoret lades till.
+   *   3. A ÄR BÄTTRE BEVISAD ÄN B, mätt i rå poäng. Bytet ska gå åt rätt håll:
+   *      av två kandidater som BÅDA kan låsa får listan bara tappa den vars
+   *      egna pixlar talade svagast för den.
+   *
+   * OCH B VÄLJS INTE PÅ RÅ POÄNG ENSAM. Villkor 2 skyddar den som kommer IN,
+   * men ingenting skyddade den som kastades UT: B var helt enkelt den med
+   * lägst RÅ poäng i snittet, och rå poäng är inte det som avgör lås — `poang`
+   * är. Uppmätt över 174 bildrutor vräks en kandidat som kunde ha låst i två
+   * av dem: stötfångar-Regpl-Heden en på poäng 0,219 och hogt-Regpl-Heden två
+   * på 0,187 och 0,189. Därför står den som INTE kan låsa alltid först på tur
+   * att åka — att tappa en kandidat som ändå aldrig kunde bli ett lås kostar
+   * ingenting — och först när varje kandidat i snittet kan låsa faller valet
+   * tillbaka på "svagast bevisad", där villkor 3 bevakar riktningen.
+   *
+   * FÖRETRÄDET ÄNDRAR INGET I DAGENS BÄNK, och det ska stå rakt ut: 0 av 174
+   * bildrutor. I båda bildrutorna ovan ligger HELA snittet över låsgränsen
+   * (0,187–0,215 respektive 0,219–0,243), så det finns ingen olåsbar att offra
+   * i stället, och de bytena är dessutom rätt: den som kommer in är den sanna
+   * skylten. Regeln finns för bildrutan bänken inte har, och den kan per
+   * konstruktion inte kosta ett lås — den flyttar bara offret från någon som
+   * kunde låsa till någon som inte kunde.
+   *
+   * I Regpl-Heden beskuren till stötfångaren är A den sanna skylten — plats 10
+   * av 33 efter straffet, poäng 0,193 (över låsgränsen, villkor 2 håller), och
+   * bildrutans STARKASTE råa kandidat: rå 0,9669 mot skräpets rå 0,2187–0,2448,
+   * alltså fyrfaldig marginal.
+   *
+   * TVÅ RÄTTELSER, OCH BÅDA ÄR VÄRDA ATT LÄSA INNAN NÄSTA TAL SKRIVS HÄR:
+   *   Det stod "plats 11", och en tidigare rapport påstod sig ha verifierat
+   *   den siffran. Verifieringen kördes mot en duk på 225 px — `Math.trunc` i
+   *   stället för `Math.round`. Ingen bänk i repot bygger den duken; alla
+   *   använder `cv()` som avrundar till 226, och då är det plats 10. Ett tal
+   *   som stämmer i en bildruta som inte finns är inte verifierat.
+   *   Det stod också "0,9669 mot skräpets 0,219–0,243", vilket jämförde en RÅ
+   *   poäng mot fem STRAFFADE. Slutsatsen höll, men meningen läste som om
+   *   båda talen vore samma storhet. Rått mot rått är spannet 0,2187–0,2448.
+   *
+   * VARFÖR INTE "SKÄR TILL MAX INNAN STRAFFET": då bestämmer den råa evidensen
+   * ensam, och en bildruta med sex starka vägmärken ovanför horisonten och en
+   * svag men äkta skylt under den tappar skylten.
+   * VARFÖR INTE EN FLÄTNING: en flätning av de två ordningarna varannan plats
+   * mättes också. Den räddade ingenting utöver de här bytena och kostade två
+   * lås på granskningsbänken (smuts 9 → 8, vriden 17 → 16), därför att den
+   * kastade plats fyra och fem i straffordningen. Skillnaden mot reserven är
+   * att flätningen byter utan villkor; reserven byter bara den som straffet
+   * faktiskt trängde ut, och bara mot någon som är sämre bevisad.
+   * VARFÖR TVÅ PLATSER OCH INTE EN ELLER TRE: mätt, se
+   * `PLATTGRIND.horisontReserv`.
+   *
+   * KOSTNADEN ÄR NOLL I DEN VANLIGA BILDRUTAN: finns ingen straffad kandidat
+   * faller villkor 1 för alla, inget byte sker, och listan blir bit för bit
+   * den `slice` gav.
+   */
+  const efterStraff = ut.slice().sort((a, b) => b.poang - a.poang);
+  if (efterStraff.length <= max) return efterStraff;
+
+  const valda = efterStraff.slice(0, max);
+  // Villkor 1 och 2 sitter i filtret, den bäst bevisade söker först.
+  const sokande = efterStraff.slice(max)
+    .filter(k => k.horisontStraffad && k.poang >= MALSOK.minPoang)
+    .sort((a, b) => b.poangRa - a.poangRa);
+
+  let byten = 0;
+  for (const inn of sokande) {
+    if (byten >= PLATTGRIND.horisontReserv) break;
+    // Vem står på tur att åka? Den som inte kan låsa före den som kan, och
+    // inom samma grupp den sämst bevisade.
+    let b = 0;
+    for (let i = 1; i < valda.length; i++) {
+      const kanI = valda[i].poang >= MALSOK.minPoang;
+      const kanB = valda[b].poang >= MALSOK.minPoang;
+      if (kanI !== kanB) { if (!kanI) b = i; continue; }
+      if (valda[i].poangRa < valda[b].poangRa) b = i;
+    }
+    if (inn.poangRa <= valda[b].poangRa) continue;   // villkor 3
+    valda[b] = inn;
+    byten++;
+  }
+
+  valda.sort((a, b) => b.poang - a.poang);
+  return valda;
 }
 
 /**
@@ -2351,8 +3438,12 @@ export const MALSOK = {
    * återknyta det i stället för att mynta ett nytt id.
    *
    * Utan det tappade rösträkningen sin urna varje gång skylten blinkade bort.
-   * Ett låst spår släpps efter tre missade sökbildrutor, alltså efter 360 ms,
-   * och det räcker att bilen framför kör in i en solreflex eller under en bro.
+   * Ett låst spår släpps på den FJÄRDE missade sökbildrutan, alltså efter
+   * 480 ms — `tappForLas` 3 är hur många det får missa, inte när det släpps,
+   * och gränsen är `tappade > tak`. (Ett olåst spår har `tappForSpar` 2 och
+   * släpps på den tredje missen, 360 ms. Här stod förut 360 ms för det låsta
+   * också; ommätt mot klassen är det 480.) Det räcker ändå gott att bilen
+   * framför kör in i en solreflex eller under en bro.
    * Kandidaten dök upp igen som ett nytt spår med nytt id, urnan var därmed en
    * annan, och räkningen började om från noll fastän kameran hela tiden tittat
    * på samma skylt. 1500 ms täcker glimtar, skakningar och motljus utan att
@@ -2388,6 +3479,59 @@ export class Malsokare {
     this._nastaId = 1;
     // Nyss släppta spår, för återförening. Se MALSOK.aterforeningMs.
     this.slappta = [];
+  }
+
+  /**
+   * SPÅRLISTAN LIGGER BAKOM EN GRIND, OCH DET ÄR INTE PRYDNAD — DET ÄR DET SOM
+   * GÖR SPÖKLÅSET OMÖJLIGT ATT NÅ.
+   *
+   * FELET SOM VAR HÄR. `lastId` nollades bara i tappade-grenen. Skars det
+   * låsta spåret i stället bort av `maxSpar`-snittet stod `lastId` kvar och
+   * pekade på ett spår som inte längre fanns. `get last()` gav då null, och
+   * eftersom `if (this.lastId === null) this.#valjLas()` såg ett lastId som
+   * inte var null kördes valet ALDRIG igen. Låset var ett spöke: uppmätt låser
+   * en straffad äkta skylt på 8 bildrutor, tre bildrutor med fem nya
+   * skräpkandidater var trycker upp spårantalet till 12, skylten skärs bort —
+   * och därefter kan 20 lugna bildrutor med BARA skylten i bild inte laga det.
+   * `spar.length` 1, `traffar` 20, `poang` 0,171, `pahang` 1,00, och `last`
+   * fortfarande null. `#lagesText` säger "Låser på skylt…" i all evighet,
+   * `#las` läser aldrig eftersom `last` är null, och `rapporteraLasning` kan
+   * inte ens bränna spåret. Enda vägen ut var `nollstall()`, alltså stop/start
+   * på kameran.
+   *
+   * VARFÖR EN GRIND OCH INTE EN RAD TILL I `mata`. En rad till i `mata` lagar
+   * den väg som finns i dag. Den lagar inte den fjärde vägen någon lägger till
+   * om ett halvår. Invarianten är enkel och ska hållas av koden själv:
+   *
+   *      lastId pekar alltid på ett spår som FINNS i spar, eller är null.
+   *
+   * Varje sätt att TA BORT ett spår måste skriva om listan — `push` kan bara
+   * lägga till, och ett tillägg kan inte göra `lastId` föräldralöst. Därför
+   * fångar en sättare på `spar` varje borttagningsväg som finns och varje som
+   * kan tillkomma. En framtida `splice` rakt i listan går förbi sättaren, och
+   * därför kör `mata` dessutom `#sakraLas()` innan låset läses — då fångas
+   * även den, i samma bildruta som den skedde.
+   *
+   * BÄNKEN ÄR prov/skyltar/sparlista.html. Ingen annan bänk i repot kör
+   * `maxSpar`-snittet alls: matning.html matar samma stillbild om och om igen,
+   * så spårantalet passerar aldrig 6–7. Den sidan matar `Malsokare` direkt med
+   * växande skräp tills listan svämmar över, splicear dessutom bort det låsta
+   * spåret rakt ur listan för att pröva den fjärde vägen, och kräver att appen
+   * låser igen utan `nollstall()`.
+   */
+  get spar() { return this._spar; }
+  set spar(lista) { this._spar = lista; this.#sakraLas(); }
+
+  /**
+   * Nollar låset om det pekar på ett spår som inte finns i listan längre, så
+   * att `#valjLas()` får köra igen. Att sätta `sisteOrsak` är halva poängen:
+   * ett lås som försvinner utan orsak är ett lås ingen kan felsöka.
+   */
+  #sakraLas() {
+    if (this.lastId == null) return;               // täcker även undefined
+    if (this._spar.some(s => s.id === this.lastId)) return;
+    this.lastId = null;
+    this.sisteOrsak = 'borta';
   }
 
   get last() { return this.spar.find(s => s.id === this.lastId) || null; }
@@ -2459,18 +3603,20 @@ export class Malsokare {
         // Se `rapporteraLasning`: ett spår som spottar ur sig en NY skylt varje
         // varv hittar på, och det går bara att se genom att jämföra hasharna.
         sisteHash: null, upprepade: 0,
+        // Sätts av `#valjLas` och nollställs aldrig. `#slapp` vräker aldrig ett
+        // spår som en gång varit lås — dess röster är de enda i urnan som redan
+        // är värda något.
+        varLas: false,
       });
     }
+
 
     const kvar = [];
     for (const s of this.spar) {
       const tak = s.id === this.lastId ? this.k.tappForLas : this.k.tappForSpar;
       if (s.tappade > tak) {
         if (s.id === this.lastId) { this.lastId = null; this.sisteOrsak = 'tappad'; }
-        // Spara det som släpptes så att samma skylt kan få tillbaka sitt id
-        // om den dyker upp igen inom kort. Rösträkningens urna hänger på id:t.
-        this.slappta.push(s);
-        if (this.slappta.length > this.k.slapptaMax) this.slappta.shift();
+        this.#slapp(s);
         continue;
       }
       kvar.push(s);
@@ -2478,11 +3624,160 @@ export class Malsokare {
     // Sortera på poäng och håll listan kort. Ett spår som ingen tittar på
     // kostar ingenting, men tusen gör det.
     kvar.sort((a, b) => b.poang - a.poang);
-    this.spar = kvar.slice(0, this.k.maxSpar);
+    const { behall, bort } = this.#skarSparlista(kvar);
+    // ALLT SOM SKÄRS BORT SKA I URNAN. Förut la bara tappade-grenen sina spår
+    // i `slappta`, och det som snittet skar bort försvann utan spår: nästa
+    // bildruta myntade ett nytt id åt samma skylt, rösträkningens urna var
+    // borta och `#aterforena` hade ingenting att knyta ihop.
+    for (const s of bort) this.#slapp(s);
+    this.spar = behall;
 
+    // Fångar en borttagning som skett rakt i listan, förbi sättaren på `spar`.
+    // Se grinden vid `set spar`.
+    this.#sakraLas();
     if (this.lastId === null) this.#valjLas();
     for (const s of this.spar) s.last = s.id === this.lastId;
     return { spar: this.spar, last: this.last };
+  }
+
+  /**
+   * Lägger ett släppt spår i urnan. Ett spår som lämnar `spar` ska ALLTID gå
+   * genom den här, oavsett varför det lämnade — det är urnan `#aterforena`
+   * letar i, och rösträkningens röster hänger på spårets id.
+   *
+   * OCH URNAN FÅR INTE SPOLAS AV SKRÄP. Förut kom hit bara ett spår i taget,
+   * från tappade-grenen, och `shift()` — släng den äldsta — dög. Nu kommer
+   * även det som `maxSpar`-snittet skar bort, och det kan vara nio spår i en
+   * enda bildruta. Med `shift()` hade nio nyfödda fläckar spolat ut precis det
+   * urnan finns till för: den skylt som blinkade bort för tre bildrutor sedan
+   * och som `#aterforena` väntar på. Den har många `traffar`; skräpet har en.
+   * Därför slängs den med SVAGAST bevis, och vid lika den som setts för längst
+   * sedan — den ligger ändå närmast att falla ur `aterforeningMs`-fönstret.
+   *
+   * MEN "SVAGAST BEVIS" ÄR BARA RÄTT NÄR SKRÄPET ÄR NYFÖTT, och det stod inte
+   * här förut. Är skräpet i stället GAMMALT vänds regeln bakvänd och slänger
+   * exakt det urnan finns till för. Reproducerat mot klassen: tolv stabila
+   * reflexer matas i 60 bildrutor och når `traffar` 60–72; skylten kommer in,
+   * låser och hinner till `traffar` 8. Försvinner skylten samtidigt som
+   * snittet skär bort reflexerna väljer regeln ovan LÅSET som offer, eftersom
+   * 8 < 72. Urnan blir [72 ×8], låset är borta, och skylten som kommer
+   * tillbaka myntas som ett nytt id — precis den regression `#aterforena`
+   * finns till för att stoppa.
+   *
+   * Genom appen går det inte att nå i dag: `sokKandidater` lämnar aldrig mer
+   * än sex kandidater per bildruta, och med det taket har låset alltid fler
+   * `traffar` än det som skärs bort. Men `Malsokare` är en exporterad klass,
+   * repots egen bänk matar den med åtta till nio kandidater per bildruta, och
+   * ett tak som råkar hålla i dag är inget skydd. Därför är låset undantaget
+   * uttryckligen: det spår appen just läste text ur är det ENDA i urnan vars
+   * röster redan är värda något, och det ska aldrig vara offret.
+   *
+   * `sparlista.html` avsnitt 6 kunde inte se det här — provet matar bara
+   * NYFÖTT skräp (traffar 8 mot 1) och är därmed konstruerat så att den gamla
+   * regeln alltid vinner. Ett prov som bara kan bekräfta är inget prov.
+   */
+  #slapp(s) {
+    this.slappta.push(s);
+    if (this.slappta.length <= this.k.slapptaMax) return;
+
+    // Två svep. Först bland dem som ALDRIG varit lås — de får alltid åka
+    // först, hur mogna de än är. Hittas ingen sådan är hela urnan ex-lås, och
+    // då gäller samma svagast-bevis-regel inom den gruppen; listan får inte
+    // växa förbi sitt tak bara för att allt i den är skyddat.
+    const valj = (kravVarLas) => {
+      let sv = -1;
+      for (let i = 0; i < this.slappta.length; i++) {
+        const a = this.slappta[i];
+        if (!kravVarLas && a.varLas) continue;
+        if (sv < 0) { sv = i; continue; }
+        const b = this.slappta[sv];
+        if (a.traffar < b.traffar || (a.traffar === b.traffar && a.sistSedd < b.sistSedd)) sv = i;
+      }
+      return sv;
+    };
+
+    let sv = valj(false);
+    if (sv < 0) sv = valj(true);
+    this.slappta.splice(sv, 1);
+  }
+
+  /**
+   * Skär spårlistan till `maxSpar` — MED SAMMA TVÅ SKYDD SOM KANDIDATLISTAN
+   * HAR, och av samma skäl.
+   *
+   * Ett rakt `slice` på poäng skar bort vad som helst, och två saker som inte
+   * fick skäras bort låg längst ned per konstruktion:
+   *
+   *   LÅSET. Skars det låsta spåret bort blev låset ett spöke — se grinden vid
+   *   `set spar` för hela mätningen. Grinden lagar följden (låset nollas och
+   *   `#valjLas` får köra igen); den här raden lagar ORSAKEN. Ett spår som
+   *   appen just nu läser text ur ska inte kunna trängas undan av tolv nyfödda
+   *   fläckar som ingen ännu vet något om. Det är ingen reserv utan en
+   *   garanti, och den kostar inget: låset har redan visat sig i flera
+   *   bildrutor i rad.
+   *
+   *   DET STRAFFADE SPÅRET. Horisontstraffet parkerar en straffad kandidat i
+   *   [0,16; 0,228] per konstruktion, alltså längst ned i poängordningen. Utan
+   *   reserverad plats är det ALLTID den straffade som skärs bort först — och
+   *   en straffad kandidat är ofta den sanna skylten, precis det som gjorde
+   *   reserven nödvändig i kandidatlistan. Samma tre villkor gäller här: bara
+   *   straffade spår söker, bara de som fortfarande kan låsa, och bara mot
+   *   någon som är sämre bevisad. Och samma val av offer: den som inte kan
+   *   låsa åker före den som kan.
+   *
+   * RÅ EVIDENS FÖR ETT SPÅR är `matt.poangRa`, alltså den råa poängen i den
+   * bildruta spåret senast sågs. Spårets egen `poang` är ett glidande medel av
+   * den STRAFFADE poängen och duger inte som bevis om pixlarna — det är exakt
+   * den skillnaden reserven bygger på.
+   *
+   * @returns {{behall:Array, bort:Array}}
+   */
+  #skarSparlista(kvar) {
+    if (kvar.length <= this.k.maxSpar) return { behall: kvar, bort: [] };
+    const g = this.k.minPoang;
+    const ra = s => (s.matt && typeof s.matt.poangRa === 'number')
+      ? s.matt.poangRa : s.poang;
+
+    const behall = kvar.slice(0, this.k.maxSpar);
+    const bort = kvar.slice(this.k.maxSpar);
+
+    // Vem i snittet står på tur att åka? Aldrig låset. Den som inte kan låsa
+    // före den som kan. Inom samma grupp den sämst bevisade. -1 = ingen.
+    const paTur = () => {
+      let b = -1;
+      for (let i = 0; i < behall.length; i++) {
+        if (behall[i].id === this.lastId) continue;
+        if (b < 0) { b = i; continue; }
+        const kanI = behall[i].poang >= g, kanB = behall[b].poang >= g;
+        if (kanI !== kanB) { if (!kanI) b = i; continue; }
+        if (ra(behall[i]) < ra(behall[b])) b = i;
+      }
+      return b;
+    };
+
+    // Låset först, och utan villkor — det är en garanti, inte en reserv.
+    const iLas = bort.findIndex(s => s.id === this.lastId);
+    if (iLas >= 0) {
+      const b = paTur();
+      if (b >= 0) { const gammal = behall[b]; behall[b] = bort[iLas]; bort[iLas] = gammal; }
+    }
+
+    // Sedan de reserverade platserna åt straffade spår.
+    const sokande = bort
+      .map((s, i) => ({ s, i }))
+      .filter(x => x.s.matt && x.s.matt.horisontStraffad && x.s.poang >= g)
+      .sort((x, y) => ra(y.s) - ra(x.s));
+    let byten = 0;
+    for (const { s, i } of sokande) {
+      if (byten >= PLATTGRIND.horisontReserv) break;
+      const b = paTur();
+      if (b < 0) break;
+      if (ra(s) <= ra(behall[b])) continue;
+      bort[i] = behall[b];
+      behall[b] = s;
+      byten++;
+    }
+    return { behall, bort };
   }
 
   /**
@@ -2491,10 +3786,16 @@ export class Malsokare {
    * VARFÖR DET HÄR BEHÖVS: rösträkningens urna nycklas på spårets id. Mintas
    * ett nytt id ligger de röster som redan lagts kvar i sin gamla urna och
    * röstas aldrig mer i — de bleknar bort, och räkningen börjar om från noll
-   * fastän kameran hela tiden tittade på samma skylt. Ett låst spår släpps
-   * efter tre missade sökbildrutor, alltså 360 ms, vilket en solreflex eller
-   * en bro klarar av. Föraren fick sitt svar senare i exakt det scenario —
-   * glimtar, skakningar, motljus — som flerbildskonsensus finns för.
+   * fastän kameran hela tiden tittade på samma skylt. Ett låst spår släpps på
+   * den fjärde missade sökbildrutan, alltså 480 ms, och ett olåst på den
+   * tredje, 360 ms — båda klarar en solreflex eller en bro utan vidare.
+   * Föraren fick sitt svar senare i exakt det scenario — glimtar, skakningar,
+   * motljus — som flerbildskonsensus finns för.
+   *
+   * OCH URNAN LÄCKTE PÅ ETT ANDRA STÄLLE. Bara tappade-grenen la sina spår
+   * här; det som `maxSpar`-snittet skar bort försvann utan spår. Se
+   * `#slapp` och `#skarSparlista` — nu går varje spår som lämnar `spar` samma
+   * väg in i urnan.
    *
    * Matchningen är slappare än den mellan två bildrutor i följd, för mer tid
    * har gått, men den är fortfarande en matchning: ligger rutan på fel ställe
@@ -2526,9 +3827,30 @@ export class Malsokare {
     return s;
   }
 
-  /** Så många bildrutor det här spåret behöver innan det får låsas. */
+  /**
+   * Så många bildrutor det här spåret behöver innan det får låsas.
+   *
+   * SNABBLÅSET GES INTE TILL DEN SOM HORISONTEN STRAFFAT, och det är mätt och
+   * inte principryttande. Regpl-Heden.jpg: bildrutans enda ANKRADE kandidat är
+   * en gul husfasad högst upp (cy 0,238) som horisontstraffet trycker ner i det
+   * hårda bandet [16; 22,8], medan de två riktiga skyltarna ligger på 44 och 25
+   * men är OANKRADE. Med snabblåset låste den ankrade falska kandidaten på bildruta 3
+   * — långt innan de riktiga hann till sina 8 — och bänken tappade ett lås
+   * (15/22 → 14/22) trots att rangordningen var alldeles rätt.
+   *
+   * Skälet snabblåset finns är att ett ankare är fyra oberoende bevis i en och
+   * samma bildruta (se `bildrutorForLasAnkrad`). En kandidat som bildrutans
+   * egen geometri talar emot har ett bevis mindre, och ska då låsas på vanliga
+   * villkor. Det KOSTAR ALDRIG ETT LÅS — bara 5 bildrutor, 600 ms — och det
+   * gäller bara den som faktiskt fått straffet, alltså när det samtidigt finns
+   * en kandidat under horisonten. En ensam skylt högt i bildrutan bär inget
+   * straff och behåller sitt snabblås.
+   */
   krav(s) {
-    return s.ankrad ? this.k.bildrutorForLasAnkrad : this.k.bildrutorForLas;
+    const straffad = !!(s.matt && s.matt.horisontStraffad);
+    return (s.ankrad && !straffad)
+      ? this.k.bildrutorForLasAnkrad
+      : this.k.bildrutorForLas;
   }
 
   #valjLas() {
@@ -2538,7 +3860,17 @@ export class Malsokare {
       if (s.poang < this.k.minPoang) continue;
       if (!bast || s.poang > bast.poang) bast = s;
     }
-    if (bast) { this.lastId = bast.id; this.sisteOrsak = 'last'; }
+    if (bast) {
+      this.lastId = bast.id;
+      this.sisteOrsak = 'last';
+      // Märket sitter kvar för alltid på spåret, inte på klockan. Se `#slapp`:
+      // ett spår som appen någon gång har läst text ur är det enda vars röster
+      // redan är värda något, och det ska aldrig vräkas ur urnan. Att i stället
+      // fråga "är detta låset just nu" skyddar bara under den bildruta låset
+      // släpps — en bildruta senare ligger samma spår oskyddat i urnan, och det
+      // är precis då tolv mogna reflexer spolar ut det.
+      bast.varLas = true;
+    }
   }
 
   /** Hur långt den bäst placerade olåsta kandidaten har kommit mot ett lås, 0–1. */
@@ -2914,10 +4246,22 @@ export class Lutningsgivare extends EventTarget {
    * Skärmens egen vridning. Kostar ingenting och kräver inget tillstånd.
    * Sensorns axlar följer telefonens hölje, medan videobilden levereras i
    * skärmens läge — utan det här ligger de 90° fel så fort telefonen vänds.
+   *
+   * NULL BETYDER OKÄND, OCH DET ÄR EN RÄTTELSE. Getteren returnerade förut 0
+   * när `screen.orientation` saknades, alltså aldrig null. Talet 0 betyder
+   * "stående telefon", och `horisontlage` svarar då 'av' — regeln stängdes av
+   * i en webbläsare som helt enkelt inte kunde svara på frågan, medan
+   * dokumentationen intill påstod att den grenen gav 'mjuk'. Den grenen var
+   * alltså onåbar från `PlateReader`. Nu är den nåbar: okänt är null, och den
+   * som inte vet får den mjuka regeln — inte ingen regel och inte den hårda.
+   *
+   * `#matning` nedan vill ha ett TAL och inte en flagga: där betyder okänd
+   * skärmvinkel "dra bort ingenting", alltså 0, och den läser därför
+   * `this.skarmvinkel ?? 0`.
    */
   get skarmvinkel() {
     const v = Number(screen?.orientation?.angle);
-    return Number.isFinite(v) ? v : 0;
+    return Number.isFinite(v) ? v : null;
   }
 
   /** Sant först när det kommit några mätningar. En sensor som inte svarat
@@ -2929,7 +4273,7 @@ export class Lutningsgivare extends EventTarget {
     const a = e.accelerationIncludingGravity;
     if (!a || a.x == null) return;
     const rad = Math.atan2(a.x, a.y);
-    const ny = vikVinkel(rad * 180 / Math.PI - this.skarmvinkel);
+    const ny = vikVinkel(rad * 180 / Math.PI - (this.skarmvinkel ?? 0));
     this._prov++;
     // Lågpassfilter. Rå accelerometerdata i en bil hoppar flera grader per
     // avläsning, och en prior som darrar är sämre än ingen prior.
@@ -3044,6 +4388,41 @@ export class PlateReader extends EventTarget {
 
       // Målsökning
       sokMs: 120,             // hur ofta bilden genomsöks efter kandidater
+      /*
+       * Arbetsbredd för sökningen, i pixlar.
+       *
+       * 320 ÄR PRÖVAT, MÄTT OCH FÖRKASTAT. Det är inte en självklar dom och
+       * båda sidorna ska stå här, för nästa läsare kommer att få samma idé.
+       *
+       * Mätt i prov/skyltar/matning.html?bredd=320&sokms=90, två identiska
+       * körningar mot alla 22 foton, med plattgrinden på plats:
+       *
+       *                        400 (nu)     320
+       *   lås på rätt skylt    15/22        17/22    ← 320 är BÄTTRE
+       *   rätt text            10/21         7/21    ← 320 är sämre
+       *   uppfunna nummer       0            1       ← 320 är farligt
+       *   median söktick       7,7 ms       4,5 ms   ← 320 är billigare
+       *   dyraste söktick     22,0 ms      13,9 ms
+       *
+       * 320 hittar alltså skylten OFTARE och för 42 % av priset — och läser
+       * den ändå sämre. Mekanismen är rakt igenom: en grövre arbetsbild
+       * kvantiserar kandidatens uppmätta kanter grövre, och för en ANKRAD
+       * kandidat går den mätningen rakt in i beskärningen (se `lasKandidat`,
+       * som med flit hoppar över en ny sökning när kanterna redan är mätta).
+       * Sämre kanter ger en sämre beskärning ger en sämre läsning.
+       *
+       * Det som fäller det är den sista raden. Vid 320 svarar läsaren
+       * "YDR148" på Regpl-Heden.jpg, där skyltarna heter YDR167 och YDR168 —
+       * bänkens enda uppfunna registreringsnummer i någon körning, och det
+       * går att reproducera. En läsare som tiger när den är osäker är
+       * användbar. En som hittar på ett nummer är sämre än ingen läsare alls,
+       * och två extra lås är inte värda det.
+       *
+       * VÄGEN VIDARE, om någon vill ha både billigare sökning och behållen
+       * läsning: sök på 320 men låt `lasKandidat` mäta om en ankrad kandidats
+       * kanter i full upplösning i stället för att lita på den grova
+       * mätningen. Det är omätt och därför inte byggt.
+       */
       sokBredd: 400,          // arbetsbredd för sökningen, i pixlar
       bildrutorForLas: MALSOK.bildrutorForLas,
       bildrutorForLasAnkrad: MALSOK.bildrutorForLasAnkrad,
@@ -3474,6 +4853,21 @@ export class PlateReader extends EventTarget {
         // null när givaren är av eller inte hunnit svara. Sökningen fungerar
         // lika fullt — vinkeln mäts ur bilden, aldrig ur sensorn.
         forvantadVinkel: this.lutningsgivare.harVarde ? this.lutningsgivare.vinkel : null,
+        // Skärmens vridning kostar ingenting och kräver inget tillstånd. Den
+        // används BARA som andrahandskälla åt horisontregeln, när givaren är
+        // av — se `horisontlage` för varför den är ett antagande och inte en
+        // mätning.
+        //
+        // OCH DEN KAN BÅDE SKÄRPA OCH STÄNGA AV REGELN. Här stod förut att den
+        // "bara kan stänga av regeln, aldrig skärpa den", och det stämmer inte
+        // med koden: utan lutningsgivare är `forvantadVinkel` null, och då
+        // svarar `horisontlage` 'full' på skärmvinkel 90 eller 270 — en
+        // SKÄRPNING från grundvärdet 'mjuk', och det är just den som slår på
+        // det hårda bandet. Skärmvinkel 0 eller 180 ger 'av'. Ett antagande
+        // som får skärpa ska stå utskrivet som ett antagande som får skärpa:
+        // en telefon som ligger i en hållare rapporterar 90 eller 270, och
+        // hållarläget är det modulen är byggd för.
+        skarmvinkel: this.lutningsgivare.skarmvinkel,
       });
     } catch (e) {
       this.#fel(e); return;

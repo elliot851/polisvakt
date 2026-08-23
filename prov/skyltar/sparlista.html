@@ -1,0 +1,313 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Spårlistan — maxSpar-snittet, låset och urnan</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{background:#0b0f14;color:#eef4fa;font:13px/1.5 -apple-system,system-ui,sans-serif;
+       margin:0;padding:18px 16px 70px}
+  h1{font-size:19px;margin:0 0 6px}
+  h2{font-size:14px;margin:24px 0 4px;border-top:1px solid #26323f;padding-top:13px;color:#cfe0f0}
+  p{max-width:62em;color:#93a4b6;margin:0 0 10px}
+  #summa{position:sticky;top:0;background:#0b0f14;padding:10px 0;border-bottom:1px solid #26323f;
+         font-weight:700;z-index:5}
+  table{border-collapse:collapse;width:100%;margin-top:6px;font-size:12.5px}
+  th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #1a232d;vertical-align:top}
+  th{color:#93a4b6;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .ok{color:#2fd07a}.fel{color:#ff4d4f}
+  code{background:#131b24;padding:1px 5px;border-radius:3px}
+</style>
+
+<h1>Spårlistan: maxSpar-snittet, låset och urnan</h1>
+<p>
+  <b>Ingen annan bänk i repot kör den här koden.</b> matning.html matar samma
+  stillbild om och om igen, så spårantalet passerar aldrig 6–7 och
+  <code>slice(0, maxSpar)</code> i <code>Malsokare#mata</code> körs inte en enda
+  gång. Den här sidan matar i stället <code>Malsokare</code> direkt med växande
+  skräp tills listan svämmar över, och kräver att låset överlever, att appen
+  låser igen utan <code>nollstall()</code>, och att det som skärs bort hamnar i
+  urnan så att rösträkningen kan hitta tillbaka till det.
+</p>
+<p>
+  Felet som mättes innan: <code>lastId</code> nollades bara i tappade-grenen.
+  Skars det låsta spåret bort av snittet stod <code>lastId</code> kvar och pekade
+  på ett spår som inte fanns. <code>get last()</code> gav null, och
+  <code>if (this.lastId === null) this.#valjLas()</code> körde därför aldrig igen.
+  Uppmätt: 8 bildrutor till lås, tre bildrutor med växande skräp, sedan
+  20 lugna bildrutor med bara skylten i bild —
+  <code>spar.length</code> 1, <code>traffar</code> 20, <code>pahang</code> 1,00 och
+  <code>last</code> fortfarande null. Enda vägen ut var stop/start på kameran.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+import { Malsokare, MALSOK, PLATTGRIND } from '../../js/plate.js';
+
+const ut = document.getElementById('ut');
+const prov = [];
+const kolla = (namn, villkor, sett) => {
+  prov.push({ namn, ok: !!villkor, sett: String(sett) });
+};
+const tabell = (rubrik, rader) => {
+  const d = document.createElement('div');
+  d.innerHTML = '<table><tr><th>krav</th><th>uppmätt</th><th>utfall</th></tr>' +
+    rader.map(r => '<tr><td>' + r.namn + '</td><td>' + r.sett +
+      '</td><td class="' + (r.ok ? 'ok">OK' : 'fel">FEL') + '</td></tr>').join('') +
+    '</table>';
+  const h = document.createElement('h2'); h.textContent = rubrik;
+  ut.append(h, d);
+};
+const stycke = t => { const p = document.createElement('p'); p.textContent = t; ut.append(p); };
+
+/* En klocka som går 120 ms per bildruta, samma takt som PlateReader söker i. */
+let t = 0;
+const MS = 120;
+
+/* Den äkta skylten: straffad av horisontregeln, alltså parkerad i det hårda
+ * bandet [0,16; 0,228] — längst ned i poängordningen per konstruktion. Det är
+ * exakt den kandidat snittet skar bort först. */
+const skylt = () => ({ x: 100, y: 200, w: 60, h: 20, poang: 0.171,
+                       poangRa: 0.95, horisontStraffad: true });
+/* Skräp: ostraffat, starkare i poäng, nytt på varje plats. */
+const skrap = (j, f) => ({ x: 260 + j * 70, y: 40 + f * 2, w: 40, h: 14,
+                           poang: 0.50 + j * 0.001, poangRa: 0.50 + j * 0.001 });
+
+/* ===== 1. Spöklåset ==================================================== */
+{
+  const m = new Malsokare();
+  for (let i = 0; i < MALSOK.bildrutorForLas; i++) { t += MS; m.mata([skylt()], t); }
+  const lasId = m.lastId;
+  kolla('låset sitter efter ' + MALSOK.bildrutorForLas + ' bildrutor',
+        lasId !== null && m.last, 'lastId ' + lasId);
+
+  let toppSpar = m.spar.length;
+  for (let f = 0; f < 4; f++) {
+    const kand = [skylt()];
+    for (let j = 0; j < 6 * (f + 1); j++) kand.push(skrap(j, f));
+    t += MS; m.mata(kand, t);
+    toppSpar = Math.max(toppSpar, m.spar.length);
+  }
+  kolla('maxSpar-snittet kördes på riktigt (spårantalet nådde ' + MALSOK.maxSpar + ')',
+        toppSpar >= MALSOK.maxSpar, 'största spar.length ' + toppSpar);
+  kolla('det låsta spåret skars inte bort',
+        m.spar.some(s => s.id === lasId), 'lastId ' + m.lastId +
+        ', i listan: ' + m.spar.some(s => s.id === lasId));
+  kolla('last pekar fortfarande på ett spår som finns',
+        m.last && m.last.id === lasId, 'last ' + (m.last ? m.last.id : 'null'));
+
+  for (let i = 0; i < 20; i++) { t += MS; m.mata([skylt()], t); }
+  kolla('20 lugna bildrutor senare är låset kvar',
+        !!m.last, 'spar ' + m.spar.length + ', traffar ' +
+        (m.spar[0] ? m.spar[0].traffar : '–') + ', last ' + (m.last ? m.last.id : 'null'));
+  kolla('inget spöke: lastId satt utan att last finns',
+        !(m.lastId !== null && !m.last), 'lastId ' + m.lastId +
+        ', last ' + (m.last ? m.last.id : 'null'));
+  tabell('1. Låset överlever ett överfullt snitt', prov.splice(0));
+  stycke('Före ändringen: last null, pahang 1,00 och "Låser på skylt…" i all evighet.');
+}
+
+/* ===== 2. Invarianten — den fjärde vägen ================================ */
+{
+  const m = new Malsokare();
+  for (let i = 0; i < MALSOK.bildrutorForLas; i++) { t += MS; m.mata([skylt()], t); }
+  const lasId = m.lastId;
+
+  /* Någon lägger till en fjärde väg att ta bort ett spår, rakt i listan och
+   * förbi sättaren. Just efter spliceen ÄR tillståndet det gamla felet: lastId
+   * pekar på ett spår som inte finns. */
+  m.spar.splice(m.spar.findIndex(s => s.id === lasId), 1);
+  const spokeEfterSplice = m.lastId !== null && m.last === null;
+  kolla('en rå splice skapar spöktillståndet (kontroll — SKA vara sant)',
+        spokeEfterSplice, 'lastId ' + m.lastId + ', last ' + m.last);
+
+  t += MS; m.mata([skylt()], t);
+  kolla('nästa bildruta nollar låset i stället för att låta det spöka',
+        m.lastId === null || !!m.last, 'lastId ' + m.lastId +
+        ', orsak "' + m.sisteOrsak + '"');
+  kolla('orsaken skrivs ned så att felet går att felsöka',
+        m.sisteOrsak === 'borta' || m.sisteOrsak === 'last', 'sisteOrsak ' + m.sisteOrsak);
+
+  for (let i = 0; i < MALSOK.bildrutorForLas; i++) { t += MS; m.mata([skylt()], t); }
+  kolla('appen låser igen UTAN nollstall()', !!m.last,
+        'last ' + (m.last ? m.last.id : 'null') + ', traffar ' +
+        (m.last ? m.last.traffar : '–'));
+  tabell('2. Invarianten håller även för en väg som inte finns ännu', prov.splice(0));
+  stycke('Grinden sitter på `set spar` och fångar varje borttagning som skriver om ' +
+         'listan. En splice rakt i listan går förbi sättaren, och därför kör `mata` ' +
+         'dessutom `#sakraLas()` innan låset läses — då varar spöket en bildruta ' +
+         'i stället för för alltid.');
+}
+
+/* ===== 3. Reserverad plats åt ett straffat spår ========================= */
+{
+  const m = new Malsokare();
+  const kand = [skylt()];
+  for (let j = 0; j < 20; j++) kand.push(skrap(j, 0));
+  t += MS; m.mata(kand, t);
+  const straffade = m.spar.filter(s => s.matt && s.matt.horisontStraffad);
+  kolla('listan är skuren till maxSpar', m.spar.length === MALSOK.maxSpar,
+        'spar ' + m.spar.length);
+  kolla('det straffade spåret är kvar trots att det ligger sist i poäng',
+        straffade.length === 1, 'straffade spår i listan ' + straffade.length +
+        ', plats ' + m.spar.findIndex(s => s.matt && s.matt.horisontStraffad));
+  kolla('reserven tar högst PLATTGRIND.horisontReserv platser',
+        straffade.length <= PLATTGRIND.horisontReserv,
+        straffade.length + ' av ' + PLATTGRIND.horisontReserv);
+  tabell('3. Straffat spår får reserverad plats', prov.splice(0));
+  stycke('Samma tre villkor som i kandidatlistan: bara straffade söker, bara de som ' +
+         'fortfarande kan låsa, och bara mot någon som är sämre bevisad i rå poäng.');
+}
+
+/* ===== 4. Urnan överlever snittet ====================================== */
+{
+  const m = new Malsokare();
+  const svag = { x: 40, y: 430, w: 30, h: 10, poang: 0.02, poangRa: 0.02 };
+  t += MS; m.mata([svag], t);
+  const svagId = m.spar[0].id;
+
+  const kand = [svag];
+  for (let j = 0; j < 20; j++) kand.push(skrap(j, 0));
+  t += MS; m.mata(kand, t);
+  kolla('det bortskurna spåret ligger i urnan, inte i intet',
+        m.slappta.some(s => s.id === svagId),
+        'slappta ' + m.slappta.length + ', innehåller ' + svagId + ': ' +
+        m.slappta.some(s => s.id === svagId));
+
+  const foreId = m._nastaId;
+  t += MS; m.mata([svag], t);
+  const ater = [...m.spar, ...m.slappta].find(s => s.id === svagId);
+  kolla('samma skylt får tillbaka sitt gamla id — rösträkningens urna hänger på det',
+        !!ater && ater.traffar >= 2,
+        ater ? ('id ' + ater.id + ', traffar ' + ater.traffar) : 'inte återfunnet');
+  kolla('inget nytt id myntades åt den', m._nastaId === foreId,
+        'nästa id ' + foreId + ' -> ' + m._nastaId);
+  tabell('4. Allt som skärs bort går i urnan', prov.splice(0));
+  stycke('Förut la bara tappade-grenen sina spår i `slappta`. Det som snittet skar ' +
+         'bort försvann utan spår, ett nytt id myntades nästa bildruta, och ' +
+         'räkningen började om från noll.');
+}
+
+/* ===== 5. Låset är en garanti, inte en reserv =========================== */
+{
+  const m = new Malsokare();
+  /* Ett svagt men låst spår, och sedan tolv starkare skräpspår. */
+  const svagSkylt = () => ({ x: 100, y: 200, w: 60, h: 20, poang: 0.17, poangRa: 0.17 });
+  for (let i = 0; i < MALSOK.bildrutorForLas; i++) { t += MS; m.mata([svagSkylt()], t); }
+  const lasId = m.lastId;
+  const kand = [svagSkylt()];
+  for (let j = 0; j < 20; j++) kand.push(skrap(j, 0));
+  t += MS; m.mata(kand, t);
+  const plats = m.spar.findIndex(s => s.id === lasId);
+  kolla('låset överlever även utan straffflagga och sist i poäng',
+        plats >= 0, 'plats i listan ' + plats + ' av ' + m.spar.length);
+  kolla('låset ligger kvar som lås', m.last && m.last.id === lasId,
+        'last ' + (m.last ? m.last.id : 'null'));
+  tabell('5. Låset skärs aldrig bort', prov.splice(0));
+  stycke('Ett spår appen just nu läser text ur ska inte kunna trängas undan av tolv ' +
+         'nyfödda fläckar. Det är ingen reserv utan en garanti, och den kostar inget: ' +
+         'låset har redan visat sig i flera bildrutor i rad.');
+}
+
+/* ===== 6. Urnan spolas inte av skräp ==================================== */
+{
+  const m = new Malsokare();
+  for (let i = 0; i < MALSOK.bildrutorForLas; i++) { t += MS; m.mata([skylt()], t); }
+  const lasId = m.lastId;
+  /* Skylten blinkar bort — bilen kör in i en solreflex. Spåret släpps. */
+  let n = 0;
+  while (m.spar.some(s => s.id === lasId) && n < 8) { t += MS; n++; m.mata([], t); }
+  kolla('det tappade låset ligger i urnan', m.slappta.some(s => s.id === lasId),
+        'släpptes efter ' + n + ' missade bildrutor (' + n * MS + ' ms)');
+
+  /* Och nu svämmar listan över av nyfödda fläckar, som alla skärs bort. */
+  const kand = [];
+  for (let j = 0; j < 20; j++) kand.push(skrap(j, 0));
+  t += MS; m.mata(kand, t);
+  const urnan = m.slappta.find(s => s.id === lasId);
+  kolla('nio bortskurna skräpspår spolar INTE ut det tappade låset',
+        !!urnan, 'urnan ' + m.slappta.length + ' spår, traffar ' +
+        m.slappta.map(s => s.traffar).join('/'));
+
+  t += MS; m.mata([skylt()], t);
+  const ater = m.spar.find(s => s.id === lasId);
+  kolla('skylten kommer tillbaka med sitt gamla id', !!ater,
+        ater ? ('id ' + ater.id + ', traffar ' + ater.traffar) : 'nytt id myntat');
+  tabell('6. Urnan spolas inte av NYFÖTT skräp', prov.splice(0));
+  stycke('`slapptaMax` är 8. Kom nio bortskurna spår in i samma bildruta och urnan ' +
+         'töms först-in-först-ut, då hade nyfödda fläckar spolat ut precis det urnan ' +
+         'finns till för. Därför slängs den med svagast bevis, inte den äldsta. ' +
+         'MEN det provet kan bara bekräfta: skräpet här har traffar 1 mot låsets 8, ' +
+         'så svagast-bevis-regeln vinner oavsett. Se avsnitt 7.');
+}
+
+/* ===== 7. Urnan spolas inte av GAMMALT skräp heller ===================== */
+/*
+ * Avsnitt 6 ovan var konstruerat så att regeln alltid vann. Vänd på åldern
+ * och den gamla regeln blir bakvänd: är skräpet MOGNARE än låset pekar
+ * "svagast bevis" rakt på låset, alltså på det enda i urnan vars röster redan
+ * är värda något.
+ *
+ * Reflexerna här ligger UNDER låsgränsen, så de mognar utan att någonsin
+ * kunna låsa — det är så en verklig bildruta full av solreflexer ser ut, och
+ * det är också enda sättet att få ett moget skräp och ett ungt lås samtidigt.
+ * Allt försvinner i samma andetag, alltså inom `aterforeningMs`.
+ */
+{
+  const m = new Malsokare();
+  const reflex = (j) => ({ x: 300 + j * 70, y: 40, w: 40, h: 14,
+                           poang: 0.10, poangRa: 0.10 });
+  const alla = () => Array.from({ length: 12 }, (_, j) => reflex(j));
+
+  for (let b = 0; b < 60; b++) { t += MS; m.mata(alla(), t); }
+  const mogna = Math.max(...m.spar.map(s => s.traffar));
+  kolla('reflexerna mognar utan att låsa', m.lastId === null && mogna >= 60,
+        'traffar ' + mogna + ', lastId ' + m.lastId);
+
+  for (let b = 0; b < MALSOK.bildrutorForLas; b++) { t += MS; m.mata([skylt(), ...alla()], t); }
+  const lasId = m.lastId;
+  const las = m.spar.find(s => s.id === lasId);
+  kolla('skylten låser trots att den är yngst', lasId !== null && las.traffar < mogna,
+        'lås id ' + lasId + ', traffar ' + las?.traffar + ' mot skräpets ' + mogna);
+
+  for (let b = 0; b < 4; b++) { t += MS; m.mata([], t); }
+
+  const traffar = m.slappta.map(s => s.traffar);
+  const svagast = Math.min(...traffar);
+  const urnan = m.slappta.find(s => s.id === lasId);
+  kolla('låset ÄR urnans svagaste bevis — gamla regeln hade valt just det',
+        urnan && svagast === urnan.traffar,
+        'svagast ' + svagast + ', låsets ' + (urnan ? urnan.traffar : '—'));
+  kolla('låset ligger ändå kvar i urnan', !!urnan,
+        'urnan ' + m.slappta.length + '/' + MALSOK.slapptaMax +
+        ' spår, traffar ' + traffar.slice().sort((a, b) => b - a).join('/'));
+  kolla('urnan höll sitt tak', m.slappta.length <= MALSOK.slapptaMax,
+        m.slappta.length + ' av ' + MALSOK.slapptaMax);
+
+  t += MS; m.mata([skylt()], t);
+  const ater = m.spar.find(s => s.id === lasId);
+  kolla('skylten återförenas med sitt gamla id, rösterna räddade', !!ater,
+        ater ? ('id ' + ater.id) : 'nytt id myntat — räkningen börjar om');
+
+  tabell('7. Urnan spolas inte av GAMMALT skräp heller', prov.splice(0));
+  stycke('Märket `varLas` sitter på spåret och nollställs aldrig. `#slapp` letar ' +
+         'offer bland dem som ALDRIG varit lås; först när hela urnan är ex-lås ' +
+         'faller valet tillbaka på svagast bevis, så listan aldrig kan växa förbi ' +
+         'sitt tak. Att i stället fråga "är detta låset just nu" räcker inte — då ' +
+         'är skyddet borta redan bildrutan efter att låset släppts.');
+}
+
+/* ===== summering ======================================================= */
+{
+  const alla = [...ut.querySelectorAll('td.ok, td.fel')];
+  const fel = alla.filter(e => e.classList.contains('fel')).length;
+  const s = document.getElementById('summa');
+  s.textContent = (fel === 0 ? 'ALLA KRAV UPPFYLLDA' : fel + ' KRAV FALLER') +
+    ' · ' + (alla.length - fel) + '/' + alla.length +
+    ' · maxSpar ' + MALSOK.maxSpar + ' · tappForLas ' + MALSOK.tappForLas +
+    ' · slapptaMax ' + MALSOK.slapptaMax +
+    ' · horisontReserv ' + PLATTGRIND.horisontReserv;
+  s.className = fel === 0 ? 'ok' : 'fel';
+  window.__sparlista = { antal: alla.length, fel };
+  const k = document.createElement('p'); k.textContent = 'KLAR'; ut.append(k);
+}
+</script>

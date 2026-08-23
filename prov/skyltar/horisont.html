@@ -1,0 +1,348 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Horisonten — vad straffet måste vara för att räcka</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { margin:0; padding:20px 18px 80px; background:#0b0f14; color:#eef4fa;
+         font:15px/1.5 -apple-system,system-ui,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  h2 { font-size:15px; margin:26px 0 4px; color:#cfe0f0;
+       border-top:1px solid #26323f; padding-top:14px; }
+  .sub { color:#93a4b6; font-size:13px; margin:0 0 10px; max-width:60em; }
+  #summa { position:sticky; top:0; z-index:5; background:#0b0f14; padding:10px 0;
+           border-bottom:1px solid #26323f; font-weight:700; }
+  table { border-collapse:collapse; width:100%; margin-top:8px; font-size:12.5px; }
+  th,td { text-align:left; padding:5px 7px; border-bottom:1px solid #1a232d; vertical-align:top; }
+  th { color:#93a4b6; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .ok { color:#2fd07a; } .fel { color:#ff4d4f; } .halv { color:#ffb020; }
+  .noll { color:#6d7d8e; }
+  code { background:#131b24; padding:1px 5px; border-radius:3px; font-size:12px; }
+  pre { background:#101820; border:1px solid #1e2a36; border-radius:6px;
+        padding:12px; overflow:auto; font-size:11.5px; color:#bcd; max-height:50vh; }
+</style>
+
+<h1>Horisonten: hur hårt måste straffet vara?</h1>
+<p class="sub">
+  Den här sidan sätter inte ett tal, den <b>härleder</b> det. För var och en av
+  provmappens 22 bilder körs <code>sokKandidater</code> med horisontregeln i
+  läge <code>full</code>, och kandidaternas <code>poangRa</code> läses av —
+  poängen som den var <b>innan</b> straffet lades på. Ingen global ändras under
+  mätningen längre; sökningen lämnar själv ut både talet före och talet efter,
+  så det som mäts är exakt det appen räknar. Sedan jämförs, i varje bildruta
+  där båda finns, den <b>svagaste sanna skylten under horisonten</b> mot den
+  <b>starkaste kandidaten ovanför den</b>.
+</p>
+<p class="sub">
+  Straffet är inte längre en multiplikation utan en <b>avbildning in i bandet
+  [<code>MALSOK.minPoang</code>; <code>PLATTGRIND.horisontTak</code>]</b>. Den
+  frågan sidan svarar på är därför inte "vilken faktor räcker" utan
+  <b>"hur högt får taket ligga"</b>: taket måste hamna under den svagaste sanna
+  skylt som alls går att låsa på i en bildruta med en straffad kandidat i.
+  Golvet kan inte flyttas — det ÄR låsgränsen, och en sänkning under den är en
+  strykning med ett annat namn.
+</p>
+<p class="sub">
+  Sidan mäter också det som betyder mest: <b>hur många bildrutor som tappar
+  sin enda kandidat</b>. Med den gamla hårda klippkanten var det svaret som
+  aldrig räknades.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+import { sokKandidater, PLATTGRIND, MALSOK } from '../../js/plate.js';
+
+/* Facit, ordagrant samma tal som matning.html. Bara mitten används här. */
+const FACIT = [
+ { fil:'YBK70UD.jpg', skyltar:[{text:'YBK 70U',x:0.3831,y:0.5773,b:0.2887,h:0.0918}] },
+ { fil:'polestar-4-madrid-gold.jpg', skyltar:[{text:'FAP 18M',x:0.1606,y:0.5908,b:0.1455,h:0.0947}] },
+ { fil:'polestar-4-bak.webp', skyltar:[{text:'FAP 18M',x:0.4408,y:0.7225,b:0.165,h:0.062}] },
+ { fil:'enlarged.jpg', skyltar:[{text:'UTX 153',x:0.3887,y:0.503,b:0.2206,h:0.0838}] },
+ { fil:'2039174f.avif', skyltar:[{text:'CHK 49S',x:0.4692,y:0.5171,b:0.1144,h:0.0357}] },
+ { fil:'7751f94d.avif', skyltar:[{text:'ZPD 710',x:0.4303,y:0.566,b:0.1442,h:0.0415}] },
+ { fil:'721ab0d6.avif', skyltar:[{text:'XTU 097',x:0.3851,y:0.5152,b:0.173,h:0.0274}] },
+ { fil:'0c4d9b68.jpg', skyltar:[{text:'XWE 623',x:0.2451,y:0.4801,b:0.1729,h:0.0363}] },
+ { fil:'9487480d.avif', skyltar:[{text:'ABU 773',x:0.3595,y:0.5695,b:0.26,h:0.0425}] },
+ { fil:'3b979c11.avif', skyltar:[{text:'GRE 101',x:0.4065,y:0.56,b:0.1975,h:0.0558},
+                                 {text:'EZN 242',x:0.0127,y:0.5745,b:0.0738,h:0.0535},
+                                 {text:'PMD 578',x:0.1719,y:0.4819,b:0.044,h:0.0126}] },
+ { fil:'images.jpg', skyltar:[{text:'HNL 210',x:0.384,y:0.3355,b:0.294,h:0.1085}] },
+ { fil:'1728543597268.jpg', skyltar:[{text:'EEL 62J',x:0.1707,y:0.6481,b:0.1155,h:0.0563}] },
+ { fil:'521e24d0.avif', skyltar:[{text:'RUR 017',x:0.2906,y:0.6844,b:0.0969,h:0.0479},
+                                 {text:'OOT 63Z',x:0.9039,y:0.4538,b:0.0469,h:0.0121}] },
+ { fil:'Regpl-Heden.jpg', skyltar:[{text:'YDR 167',x:0.0624,y:0.5187,b:0.1035,h:0.0592},
+                                   {text:'YDR 168',x:0.6247,y:0.5779,b:0.1482,h:0.0651}] },
+ { fil:'Regplat-URK.jpg', skyltar:[{text:'URK 924',x:0.2265,y:0.4222,b:0.552,h:0.3245}] },
+ { fil:'2560.webp', skyltar:[{text:'NWA 780',x:0.1775,y:0.4595,b:0.6417,h:0.2342}] },
+ { fil:'renummer-131122.jpg', skyltar:[{text:'NJK 447',x:0.098,y:0.254,b:0.722,h:0.515}] },
+ { fil:'nya-regnummer-sverige.webp', skyltar:[{text:'HET 69A',x:0.1984,y:0.4291,b:0.5641,h:0.1712}] },
+ { fil:'Reg-nr-fram-flaggor.jpg', skyltar:[{text:'ABC 123',x:0.2417,y:0.4217,b:0.5767,h:0.125}] },
+ { fil:'nya-skyltar-transportstyrelsen.png', skyltar:[{text:'MLB 84A',x:0.3658,y:0.117,b:0.6342,h:0.5244}] },
+ { fil:'d54eac78.png', skyltar:[{text:'YAA 120',x:0.4115,y:0.5807,b:0.191,h:0.0507}] },
+ { fil:'image.png', skyltar:[{text:'MLB 84A',x:0.2633,y:0.3342,b:0.159,h:0.1233}] },
+];
+
+const ut = document.getElementById('ut');
+const summa = document.getElementById('summa');
+const en = (n, d = 1) => (n == null || !isFinite(n) ? '–'
+  : (Math.round(n * 10 ** d) / 10 ** d).toString().replace('.', ','));
+const tre = n => (n == null || !isFinite(n) ? '–' : n.toFixed(3).replace('.', ','));
+
+function iou(a, b) {
+  const x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.w, b.x + b.w), y2 = Math.min(a.y + a.h, b.y + b.h);
+  if (x2 <= x1 || y2 <= y1) return 0;
+  const snitt = (x2 - x1) * (y2 - y1);
+  return snitt / (a.w * a.h + b.w * b.h - snitt);
+}
+function laddaBild(fil) {
+  return new Promise((ok, nej) => {
+    const i = new Image();
+    i.onload = () => ok(i);
+    i.onerror = () => nej(new Error('kunde inte avkoda ' + fil));
+    i.src = './' + encodeURIComponent(fil);
+  });
+}
+function tillCanvas(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0);
+  return c;
+}
+function tabell(rubriker) {
+  const t = document.createElement('table');
+  const tr = document.createElement('tr');
+  for (const r of rubriker) {
+    const th = document.createElement('th');
+    if (typeof r === 'object') { th.textContent = r.t; th.className = r.kl || ''; }
+    else th.textContent = r;
+    tr.appendChild(th);
+  }
+  t.appendChild(tr);
+  ut.appendChild(t);
+  return t;
+}
+function rad(t, celler) {
+  const tr = document.createElement('tr');
+  for (const c of celler) {
+    const td = document.createElement('td');
+    if (c && typeof c === 'object') { td.textContent = c.t; td.className = c.kl || ''; }
+    else td.textContent = c == null ? '' : String(c);
+    tr.appendChild(td);
+  }
+  t.appendChild(tr);
+}
+
+/*
+ * INGEN GLOBAL RÖRS UNDER MÄTNINGEN LÄNGRE.
+ * Förut sattes `PLATTGRIND.horisontHart = 1` för att stänga av straffet, och
+ * det mätte fel på två sätt: det mjuka straffet 0,7 låg kvar inbakat i
+ * poängen, så "utan straff" var i själva verket "med halva straffet", och en
+ * mutation av modulens tal kan aldrig visa vad appen faktiskt räknar.
+ * `sokKandidater` lämnar nu ut `poangRa` — poängen före varje straff — på
+ * varje kandidat, så före och efter kommer ur samma körning.
+ */
+const TAK = PLATTGRIND.horisontTak;
+
+ut.appendChild(Object.assign(document.createElement('h2'),
+  { textContent: 'Per bild — vad står ovanför horisonten, och vad står under?' }));
+const t1 = tabell(['bild', { t:'sann cy', kl:'n' },
+                   { t:'bästa sann (rå)', kl:'n' }, { t:'svagaste sann (rå)', kl:'n' },
+                   { t:'kand ovanför', kl:'n' }, { t:'starkast ovanför (rå)', kl:'n' },
+                   { t:'starkast ovanför EFTER', kl:'n' },
+                   { t:'tillåtet tak', kl:'n' }, { t:'uppmätt marginal', kl:'n' },
+                   'topp1 utan straff']);
+
+const rader = [];
+for (const f of FACIT) {
+  summa.textContent = `Kör ${rader.length + 1}/${FACIT.length}: ${f.fil}…`;
+  let kalla, B, H;
+  try {
+    const img = await laddaBild(f.fil);
+    kalla = tillCanvas(img); B = kalla.width; H = kalla.height;
+  } catch (e) {
+    rad(t1, [f.fil, '–', '–', '–', '–', '–', { t: 'FEL: ' + e.message, kl: 'fel' }]);
+    continue;
+  }
+  const facitrutor = f.skyltar.map(s => ({ x: s.x*B, y: s.y*H, w: s.b*B, h: s.h*H,
+                                           cy: s.y + s.h/2 }));
+  const kand = sokKandidater(kalla, null, { arbetsbredd: 400, max: 50,
+                                            forvantadVinkel: 0 });
+  for (const k of kand) k.sann = facitrutor.some(r => iou(k, r) >= 0.5);
+
+  const sannaUnder = kand.filter(k => k.sann && !k.overHorisont);
+  const ovanfor = kand.filter(k => k.overHorisont);
+  const ovanforFalska = ovanfor.filter(k => !k.sann);
+
+  // RÅA poäng, alltså före varje straff — både det mjuka och det hårda.
+  const svagasteSann = sannaUnder.length
+    ? Math.min(...sannaUnder.map(k => k.poangRa)) : null;
+  const bastaSann = sannaUnder.length
+    ? Math.max(...sannaUnder.map(k => k.poangRa)) : null;
+  const starkasteOver = ovanforFalska.length
+    ? Math.max(...ovanforFalska.map(k => k.poangRa)) : null;
+  // Vad taket faktiskt gav den starkaste kandidaten ovanför, i samma körning.
+  const starkasteOverEfter = ovanforFalska.length
+    ? Math.max(...ovanforFalska.map(k => k.poang)) : null;
+  /*
+   * TVÅ FRÅGOR, OCH DE ÄR OLIKA STRÄNGA.
+   *
+   * "tak för lås" är det som avgör vad appen faktiskt gör: den BÄSTA sanna
+   * skylten under horisonten måste slå den starkaste kandidaten ovanför, för
+   * det är toppkandidaten `Malsokare` låser på. Eftersom varje straffad
+   * kandidat per konstruktion ligger i [minPoang; horisontTak] räcker det att
+   * TAKET ligger under den bästa sanna skyltens SLUTPOÄNG i bildrutan.
+   *
+   * "tak för alla" är den strängare varianten — även den svagaste sanna
+   * skylten i bildrutan (bilen längst bort, den halvt skymda) ska ligga över.
+   * Den är med för att visa hur långt ifrån varandra de två frågorna ligger,
+   * inte för att taket ska väljas efter den. Väljs talet efter den strängaste
+   * bildrutan hamnar taket under golvet, och golvet ÄR låsgränsen — då är en
+   * ensam kandidat ovanför horisonten död igen, och det är precis det som
+   * skulle bort.
+   */
+  const bastaSannSlut = sannaUnder.length
+    ? Math.max(...sannaUnder.map(k => k.poang)) : null;
+  const svagasteSannSlut = sannaUnder.length
+    ? Math.min(...sannaUnder.map(k => k.poang)) : null;
+  const takLas = (bastaSannSlut != null && starkasteOver) ? bastaSannSlut : null;
+  const takAlla = (svagasteSannSlut != null && starkasteOver) ? svagasteSannSlut : null;
+  const marginal = (bastaSannSlut != null && starkasteOverEfter)
+    ? bastaSannSlut / starkasteOverEfter : null;
+  const vinnerRedan = bastaSann != null && (starkasteOver == null || bastaSann > starkasteOver);
+
+  rader.push({ fil: f.fil, kand: kand.length, sannaUnder: sannaUnder.length,
+               ovanfor: ovanfor.length, svagasteSann, bastaSann, starkasteOver,
+               starkasteOverEfter, bastaSannSlut, takLas, takAlla, marginal,
+               lagstaSannCy: Math.min(...facitrutor.map(r => r.cy)) });
+
+  rad(t1, [
+    f.fil,
+    { t: tre(Math.min(...facitrutor.map(r => r.cy))), kl: 'n' },
+    { t: bastaSann == null ? '–' : en(bastaSann * 100, 1), kl: 'n' },
+    { t: svagasteSann == null ? '–' : en(svagasteSann * 100, 1), kl: 'n' },
+    { t: String(ovanfor.length), kl: 'n' },
+    { t: starkasteOver == null ? '–' : en(starkasteOver * 100, 1), kl: 'n' },
+    { t: starkasteOverEfter == null ? '–' : en(starkasteOverEfter * 100, 1), kl: 'n' },
+    { t: takLas == null ? '–' : en(takLas * 100, 1), kl: 'n' },
+    { t: marginal == null ? '–' : tre(marginal),
+      kl: marginal == null ? 'n' : (marginal > 1 ? 'n ok' : 'n fel') },
+    takLas == null ? { t: '–', kl: 'noll' }
+                   : (vinnerRedan ? { t: 'ja', kl: 'ok' } : { t: 'NEJ', kl: 'fel' }),
+  ]);
+}
+
+/* ---- Vad taket måste vara ------------------------------------------------ */
+const median = a => {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+const takLasAlla = rader.map(r => r.takLas).filter(x => x != null);
+const takAllaAlla = rader.map(r => r.takAlla).filter(x => x != null);
+const marginaler = rader.map(r => r.marginal).filter(x => x != null);
+const varsta = takLasAlla.length ? Math.min(...takLasAlla) : null;
+const varstaAlla = takAllaAlla.length ? Math.min(...takAllaAlla) : null;
+const varstaMarginal = marginaler.length ? Math.min(...marginaler) : null;
+
+ut.appendChild(Object.assign(document.createElement('h2'),
+  { textContent: 'Vad taket måste vara' }));
+const t2 = tabell(['fråga', { t:'svar', kl:'n' }]);
+rad(t2, ['bildrutor där både sann skylt under och kandidat ovanför finns',
+         { t: String(takLasAlla.length), kl: 'n' }]);
+rad(t2, ['HÖGSTA TILLÅTNA TAK för lås (svagaste sanna skylten, värsta bildrutan)',
+         { t: tre(varsta), kl: 'n' }]);
+rad(t2, ['median tillåtet tak', { t: tre(median(takLasAlla)), kl: 'n' }]);
+rad(t2, ['högsta tillåtna tak för att ALLA sanna ska ligga över',
+         { t: tre(varstaAlla), kl: 'n' }]);
+rad(t2, ['bildrutor där toppen redan är rätt UTAN straff',
+         { t: String(rader.filter(r => r.takLas != null &&
+                                       r.bastaSann > r.starkasteOver).length), kl: 'n' }]);
+rad(t2, ['golvet — MALSOK.minPoang, kan inte flyttas', { t: tre(MALSOK.minPoang), kl: 'n' }]);
+rad(t2, ['PLATTGRIND.horisontTak just nu', { t: tre(TAK), kl: 'n' }]);
+rad(t2, ['taket satt som mittpunkten golv↔svagaste sanna skylt',
+         { t: tre(varsta == null ? null : MALSOK.minPoang + (varsta - MALSOK.minPoang) / 2),
+           kl: 'n' }]);
+rad(t2, ['marginal: tillåtet tak / satt tak — över 1 = räcker',
+         { t: tre(varsta == null ? null : varsta / TAK),
+           kl: (varsta != null && varsta / TAK > 1) ? 'n ok' : 'n fel' }]);
+rad(t2, ['UPPMÄTT sämsta marginal i en enskild bildruta (sann / starkast straffad)',
+         { t: tre(varstaMarginal),
+           kl: (varstaMarginal != null && varstaMarginal > 1) ? 'n ok' : 'n fel' }]);
+
+/* ---- Det som väger tyngst: tappas någon kandidat helt? ------------------ */
+
+ut.appendChild(Object.assign(document.createElement('h2'),
+  { textContent: 'Missar regeln något? Antal kandidater per bildruta' }));
+ut.appendChild(Object.assign(document.createElement('p'),
+  { className: 'sub',
+    textContent: 'Straffet är påslaget igen. Kolumnen "kandidater" ska vara ' +
+      'exakt lika stor som utan regeln — straff får aldrig bli strykning. ' +
+      '"Bara stötfångaren" är samma bild beskuren så att allt ovanför skyltens ' +
+      'överkant + en tiondel är borta: då hamnar skylten högt i bildrutan och ' +
+      'den gamla klippkanten tog den.' }));
+const t3 = tabell(['bild', { t:'kandidater', kl:'n' }, { t:'därav ovanför', kl:'n' },
+                   { t:'sann i listan', kl:'n' },
+                   { t:'beskuren: kandidater', kl:'n' }, { t:'beskuren: sann i listan', kl:'n' },
+                   { t:'beskuren, GAMLA klippkanten', kl:'n' }]);
+
+let helaKvar = 0, beskurnaKvar = 0, beskurnaTotalt = 0, beskurnaGammal = 0;
+for (const f of FACIT) {
+  let kalla, B, H;
+  try {
+    const img = await laddaBild(f.fil);
+    kalla = tillCanvas(img); B = kalla.width; H = kalla.height;
+  } catch { continue; }
+  const facitrutor = f.skyltar.map(s => ({ x: s.x*B, y: s.y*H, w: s.b*B, h: s.h*H }));
+  const kand = sokKandidater(kalla, null, { arbetsbredd: 400, max: 50, forvantadVinkel: 0 });
+  const sann = kand.some(k => facitrutor.some(r => iou(k, r) >= 0.5));
+  if (sann) helaKvar++;
+
+  // Beskuren: klipp bort allt ovanför (skyltens överkant − 10 % av skylthöjden).
+  const overkant = Math.min(...f.skyltar.map(s => s.y * H));
+  const hojd = Math.max(...f.skyltar.map(s => s.h * H));
+  const y0 = Math.max(0, Math.round(overkant - hojd * 0.1));
+  let kand2 = [], sann2 = false, sann2Gammal = false;
+  if (H - y0 > 32) {
+    const c2 = document.createElement('canvas');
+    c2.width = B; c2.height = H - y0;
+    c2.getContext('2d', { willReadFrequently: true })
+      .drawImage(kalla, 0, y0, B, H - y0, 0, 0, B, H - y0);
+    const facit2 = facitrutor.map(r => ({ ...r, y: r.y - y0 }));
+    kand2 = sokKandidater(c2, null, { arbetsbredd: 400, max: 50, forvantadVinkel: 0 });
+    sann2 = kand2.some(k => facit2.some(r => iou(k, r) >= 0.5));
+    /* Gårdagens beteende, exakt: allt ovanför horisonten `continue`:ades bort
+     * innan det ens kom in i listan. Här återskapas det genom att stryka
+     * samma kandidater ur resultatet — så står före och efter bredvid
+     * varandra i samma tabell i stället för i två körningar. */
+    sann2Gammal = kand2.filter(k => !k.overHorisont)
+                       .some(k => facit2.some(r => iou(k, r) >= 0.5));
+    beskurnaTotalt++;
+    if (sann2) beskurnaKvar++;
+    if (sann2Gammal) beskurnaGammal++;
+  }
+
+  rad(t3, [f.fil,
+    { t: String(kand.length), kl: 'n' },
+    { t: String(kand.filter(k => k.overHorisont).length), kl: 'n' },
+    sann ? { t: 'ja', kl: 'ok' } : { t: 'nej', kl: 'fel' },
+    { t: String(kand2.length), kl: 'n' },
+    sann2 ? { t: 'ja', kl: 'ok' } : { t: 'nej', kl: 'fel' },
+    sann2Gammal ? { t: 'ja', kl: 'ok' } : { t: 'nej', kl: 'fel' }]);
+}
+
+window.__horisont = { rader, hogstaTillatnaTak: varsta, varstaAlla, satt: TAK,
+                      varstaMarginal, golv: MALSOK.minPoang,
+                      helaKvar, beskurnaKvar, beskurnaGammal, beskurnaTotalt,
+                      totalt: FACIT.length };
+summa.innerHTML =
+  `Högsta tillåtna tak: <b>${tre(varsta)}</b> · satt ` +
+  `<code>horisontTak</code> = ${tre(TAK)} · golv ${tre(MALSOK.minPoang)} · ` +
+  `sämsta uppmätta marginal <b>${tre(varstaMarginal)}×</b> · sann skylt i kandidatlistan: ` +
+  `${helaKvar}/${FACIT.length} hela bilder · beskurna (bara stötfångaren): ` +
+  `<b>${beskurnaKvar}/${beskurnaTotalt}</b> nu mot ` +
+  `<b>${beskurnaGammal}/${beskurnaTotalt}</b> med gårdagens klippkant`;
+window.__klar = true;
+</script>

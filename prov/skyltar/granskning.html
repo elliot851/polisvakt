@@ -1,0 +1,267 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Granskning — plattgrinden mot fall ingen mätte</title>
+<style>body{background:#0b0f14;color:#eef4fa;font:12px/1.45 monospace;padding:12px}
+pre{white-space:pre-wrap}.s{color:#2fd07a}.f{color:#ff7070}</style>
+<pre id="ut">Kör…</pre>
+<script type="module">
+/*
+ * ADVERSARIELL BÄNK. Samma 22 foton, men förvridna på de sätt som bänken
+ * aldrig innehöll: natt, regn, smuts på plåten, skylt högt i bildrutan och
+ * en bild där bara stötfångaren syns.
+ *
+ * A/B görs på SAMMA kod: PLATTGRIND är ett exporterat objekt, så grinden går
+ * att slå av genom att vidga varenda gräns. "AV" är då exakt baslinjen —
+ * prior blir 1 för varje kandidat.
+ */
+import { sokKandidater, PLATTGRIND } from '../../js/plate.js';
+
+const FACIT = {
+ 'YBK70UD.jpg':[0.3831,0.5773,0.2887,0.0918],
+ 'polestar-4-madrid-gold.jpg':[0.1606,0.5908,0.1455,0.0947],
+ 'polestar-4-bak.webp':[0.4408,0.7225,0.165,0.062],
+ 'enlarged.jpg':[0.3887,0.503,0.2206,0.0838],
+ '2039174f.avif':[0.4692,0.5171,0.1144,0.0357],
+ '7751f94d.avif':[0.4303,0.566,0.1442,0.0415],
+ '721ab0d6.avif':[0.3851,0.5152,0.173,0.0274],
+ '0c4d9b68.jpg':[0.2451,0.4801,0.1729,0.0363],
+ '9487480d.avif':[0.3595,0.5695,0.26,0.0425],
+ '3b979c11.avif':[0.4065,0.56,0.1975,0.0558],
+ 'images.jpg':[0.384,0.3355,0.294,0.1085],
+ '1728543597268.jpg':[0.1707,0.6481,0.1155,0.0563],
+ '521e24d0.avif':[0.2906,0.6844,0.0969,0.0479],
+ 'Regpl-Heden.jpg':[0.6247,0.5779,0.1482,0.0651],
+ 'Regplat-URK.jpg':[0.2265,0.4222,0.552,0.3245],
+ '2560.webp':[0.1775,0.4595,0.6417,0.2342],
+ 'renummer-131122.jpg':[0.098,0.254,0.722,0.515],
+ 'nya-regnummer-sverige.webp':[0.1984,0.4291,0.5641,0.1712],
+ 'Reg-nr-fram-flaggor.jpg':[0.2417,0.4217,0.5767,0.125],
+ 'nya-skyltar-transportstyrelsen.png':[0.3658,0.117,0.6342,0.5244],
+ 'd54eac78.png':[0.4115,0.5807,0.191,0.0507],
+ 'image.png':[0.2633,0.3342,0.159,0.1233],
+};
+
+const iou=(a,b)=>{const x1=Math.max(a.x,b.x),y1=Math.max(a.y,b.y),
+ x2=Math.min(a.x+a.w,b.x+b.w),y2=Math.min(a.y+a.h,b.y+b.h);
+ if(x2<=x1||y2<=y1)return 0;const s=(x2-x1)*(y2-y1);
+ return s/(a.w*a.h+b.w*b.h-s);};
+const ladda=f=>new Promise((ok,nej)=>{const i=new Image();i.onload=()=>ok(i);
+ i.onerror=()=>nej(new Error(f));i.src='./'+encodeURIComponent(f);});
+const cv=(w,h)=>{const c=document.createElement('canvas');c.width=Math.round(w);c.height=Math.round(h);return c;};
+const n=(v,d=2)=>v==null?' – ':(+v).toFixed(d);
+const med=a=>{const v=[...a].sort((x,y)=>x-y);return v.length?v[v.length>>1]:0;};
+
+/* ---- förvrängningarna ---------------------------------------------------
+ * Var och en lämnar {c, f} — canvas och facitrutan i den canvasens pixlar.
+ */
+const VRID = {
+  // 1. oförändrad, kontroll
+  original(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0);return {c,f};},
+
+  // 2. NATT. Omgivningen ned till 18 %, plåten kvar ljus — en svensk skylt är
+  //    retroreflekterande och lyser tillbaka i strålkastarskenet. Det är
+  //    precis det fall där rutan blir "ljust på mörkt".
+  natt(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    const g=c.getContext('2d',{willReadFrequently:true});
+    g.drawImage(img,0,0);
+    const d=g.getImageData(0,0,c.width,c.height),p=d.data;
+    const x0=f.x,y0=f.y,x1=f.x+f.w,y1=f.y+f.h;
+    for(let y=0;y<c.height;y++)for(let x=0;x<c.width;x++){
+      const i=(y*c.width+x)*4;
+      const inne=(x>=x0&&x<x1&&y>=y0&&y<y1);
+      const k=inne?1.05:0.18;
+      p[i]=Math.min(255,p[i]*k);p[i+1]=Math.min(255,p[i+1]*k);p[i+2]=Math.min(255,p[i+2]*k);
+    }
+    g.putImageData(d,0,0);return {c,f};},
+
+  // 3. REGN/DIMMA. Oskärpa plus kontrasten hoptryckt mot mellangrått.
+  regn(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    const g=c.getContext('2d',{willReadFrequently:true});
+    g.filter='blur(2px)';g.drawImage(img,0,0);g.filter='none';
+    const d=g.getImageData(0,0,c.width,c.height),p=d.data;
+    for(let i=0;i<p.length;i+=4){
+      p[i]=p[i]*0.5+110;p[i+1]=p[i+1]*0.5+110;p[i+2]=p[i+2]*0.5+112;}
+    g.putImageData(d,0,0);return {c,f};},
+
+  // 4. SNÖ/SMUTS på vänstra tredjedelen av plåten, EU-bandet inräknat.
+  smuts(img,f){const c=cv(img.naturalWidth,img.naturalHeight);
+    const g=c.getContext('2d',{willReadFrequently:true});
+    g.drawImage(img,0,0);
+    g.fillStyle='rgba(232,232,228,0.92)';
+    g.beginPath();
+    g.ellipse(f.x+f.w*0.20,f.y+f.h*0.5,f.w*0.26,f.h*0.62,0,0,7);
+    g.fill();return {c,f};},
+
+  // 5. SKYLTEN HÖGT I BILDRUTAN. Duken förlängs nedåt (vägbanan tänjs) tills
+  //    skyltmitten hamnar på 0,28 av bildhöjden — under horisontgrindens 0,32.
+  //    Det är kameran som lutar uppåt, eller en lastbilsskylt på håll.
+  hogt(img,f){const H=img.naturalHeight,W=img.naturalWidth;
+    const mitt=f.y+f.h/2, nyH=mitt/0.28;
+    if(nyH<=H*1.02) return null;
+    const c=cv(W,nyH);const g=c.getContext('2d',{willReadFrequently:true});
+    g.drawImage(img,0,0);
+    // fyll ut nedanför med bildens nedersta remsa, tänjd
+    g.drawImage(img,0,Math.round(H*0.88),W,Math.round(H*0.12),0,H,W,Math.round(nyH-H)+1);
+    return {c,f};},
+
+  // 6c. BILDRUTAN VRIDEN 90°. Modulen räknar uttryckligen med liggande
+  //     telefon (se `omvand` i blaAnkare och ankarfaktor, och det vridna
+  //     fallet i sok-test.html). Horisontgrinden gör det inte: den antar en
+  //     rättvänd bildruta där marken är nedåt.
+  vriden90(img,f){const W=img.naturalWidth,H=img.naturalHeight;
+    const c=cv(H,W);const g=c.getContext('2d',{willReadFrequently:true});
+    g.translate(H,0);g.rotate(Math.PI/2);g.drawImage(img,0,0);
+    // punkten (x,y) hamnar på (H-y, x)
+    return {c,f:{x:H-(f.y+f.h),y:f.x,w:f.h,h:f.w}};},
+
+  // 6b. PÅ AVSTÅND. Bänken är idel närbilder: skylten är 90–290 px bred i
+  //     arbetsbilden. En dashcam ser 10–25 px. Bilden krymps tills skylten är
+  //     4 % av bildbredden — en bil ett tiotal meter fram — men skyltmitten
+  //     hålls kvar på sin ursprungliga höjd, så bara storleken ändras.
+  avstand(img,f){const W=img.naturalWidth,H=img.naturalHeight;
+    const k=(W*0.04)/f.w; if(k>=0.9) return null;
+    const c=cv(W,H);const g=c.getContext('2d',{willReadFrequently:true});
+    g.fillStyle='#6b6f74';g.fillRect(0,0,W,H);
+    const mx=f.x+f.w/2, my=f.y+f.h/2;
+    const dx=W*0.5-mx*k, dy=my-my*k;      // samma höjdandel som förut
+    g.imageSmoothingQuality='high';
+    g.drawImage(img,0,0,W,H,dx,dy,W*k,H*k);
+    return {c,f:{x:dx+f.x*k,y:dy+f.y*k,w:f.w*k,h:f.h*k}};},
+
+  // 6. BARA STÖTFÅNGAREN. Bilen syns inte i helhet: bilden kapas strax ovanför
+  //    skylten. Skyltmitten hamnar då högt upp i den nya bildrutan.
+  stotfangare(img,f){const y0=Math.max(0,f.y-f.h*0.35);
+    const h=img.naturalHeight-y0; if(h<f.h*2) return null;
+    const c=cv(img.naturalWidth,h);
+    c.getContext('2d',{willReadFrequently:true})
+     .drawImage(img,0,y0,img.naturalWidth,h,0,0,img.naturalWidth,h);
+    return {c,f:{x:f.x,y:f.y-y0,w:f.w,h:f.h}};},
+};
+
+/*
+ * `?tak=0,18` sätter PLATTGRIND.horisontTak för hela körningen. Finns för att
+ * taket ska gå att SVEPA i stället för att motiveras i efterhand: hårda bandet
+ * är [MALSOK.minPoang; horisontTak], och varje tiondels enhet band är poäng
+ * som ges åt en kandidat bildrutans egen geometri talar emot. Sveptes 0,17 /
+ * 0,18 / 0,20 / 0,228 / 0,26 när talet valdes.
+ */
+const TAK_RA=new URLSearchParams(location.search).get('tak');
+if(TAK_RA!=null) PLATTGRIND.horisontTak=+TAK_RA.replace(',','.');
+
+const AV={morkandelMin:-1,morkandelMax:9,kontrastMin:-1,horisont:-1,horisontMjuk:-1,
+          euMin:-1,euMax:99,euMinLangd:1e9,minLangd:1e9,osakerFaktor:1};
+const PA={...PLATTGRIND};
+const satt=o=>Object.assign(PLATTGRIND,o);
+
+/*
+ * SKÄRMVINKELN MÅSTE SKICKAS MED, ANNARS MÄTS FEL LÄGE.
+ * `horisontlage` ger 'mjuk' åt den som inte skickar något, och i 'mjuk' läggs
+ * det hårda straffet aldrig på. Bänken hade då mätt en app som inte finns:
+ * PlateReader#sok skickar `screen.orientation.angle`, och i hållaren är den
+ * 90. Default här är alltså 90 = regeln i sitt HÅRDASTE läge, vilket är det
+ * enda som är värt något i en adversariell bänk. ?skarm=0 ger stående telefon
+ * (regeln av), ?skarm=-1 okänd (regeln mjuk).
+ */
+const SKARM_RA = new URLSearchParams(location.search).has('skarm')
+  ? +new URLSearchParams(location.search).get('skarm') : 90;
+const SKARMVINKEL = SKARM_RA < 0 ? null : SKARM_RA;
+
+/*
+ * GÅRDAGENS KLIPPKANT, ÅTERSKAPAD. Förut satte `cyBild < horisont`
+ * svar.ok = false och `sokKandidater` gjorde `continue` — kandidaten kom
+ * aldrig in i listan, och `max` fylldes på med de som låg under horisonten.
+ * Här körs samma sökning med max 50, kandidaterna med `overHorisont` stryks,
+ * och de sex första av resten behålls. Det är inte bit för bit samma sak:
+ * `taxAvAnkare` fick i samma omgång raden att ett ankare ovanför horisonten
+ * inte får tysta en blobb under den, och den fixen kan inte återskapas
+ * genom att filtrera i efterhand. Kolumnen GAMMAL är därför om något
+ * SNÄLLARE mot gårdagens kod än gårdagens kod var.
+ */
+function korEn(c,f,{gammal=false}={}){
+  const t=[];let k=null;
+  for(let i=0;i<3;i++){const t0=performance.now();
+    k=sokKandidater(c,null,{arbetsbredd:400,skarmvinkel:SKARMVINKEL});
+    t.push(performance.now()-t0);}
+  const matt=lista=>{let bi=0,brank=-1;
+    lista.forEach((x,i)=>{const v=iou(x,f);if(v>bi){bi=v;brank=i;}});
+    return {antal:lista.length,iou:bi,rank:brank,topp:lista.length?iou(lista[0],f):0};};
+  const svar={ms:med(t),...matt(k)};
+  if(gammal){
+    const bred=sokKandidater(c,null,{arbetsbredd:400,max:50,skarmvinkel:SKARMVINKEL});
+    svar.gammal=matt(bred.filter(x=>!x.overHorisont).slice(0,6));
+    svar.over=k.filter(x=>x.overHorisont).length;
+  }
+  return svar;
+}
+
+const ut=document.getElementById('ut');
+let txt='';const skriv=s=>{txt+=s+'\n';ut.textContent=txt;};
+const tabell={};
+const bilder={};
+for(const fil of Object.keys(FACIT)) bilder[fil]=await ladda(fil);
+
+skriv('skärmvinkel '+(SKARMVINKEL==null?'okänd (regeln mjuk)':SKARMVINKEL)+
+      '   horisont '+PLATTGRIND.horisont+'  mjuk '+PLATTGRIND.horisontMjuk+
+      '  mjuk lutning '+PLATTGRIND.horisontStraff+'  hårt tak '+PLATTGRIND.horisontTak);
+skriv('PÅ = koden som den står · AV = varje grind vidgad (baslinje) · '+
+      'GAMMAL = gårdagens klippkant återskapad\n');
+
+const bara=new URLSearchParams(location.search).get('bara');
+for(const [namn,fn] of Object.entries(VRID)){
+  if(bara && namn!==bara) continue;
+  const rader=[];
+  for(const [fil,fr] of Object.entries(FACIT)){
+    const img=bilder[fil];
+    const f0={x:fr[0]*img.naturalWidth,y:fr[1]*img.naturalHeight,
+              w:fr[2]*img.naturalWidth,h:fr[3]*img.naturalHeight};
+    const v=fn(img,f0); if(!v) continue;
+    satt(PA); const pa=korEn(v.c,v.f,{gammal:true});
+    satt(AV); const av=korEn(v.c,v.f);
+    satt(PA);
+    const cyB=(v.f.y+v.f.h/2)/v.c.height;
+    rader.push({fil,cyB,pa,av,ga:pa.gammal});
+  }
+  tabell[namn]=rader;
+  const t=(a,g)=>a.filter(r=>r[g].iou>=0.5).length;
+  const tt=(a,g)=>a.filter(r=>r[g].topp>=0.5).length;
+  skriv('== '+namn.toUpperCase()+'  n='+rader.length);
+  skriv('   lås>=0,50     PÅ '+t(rader,'pa')+'/'+rader.length+
+        '   AV '+t(rader,'av')+'/'+rader.length+
+        '   GAMMAL '+t(rader,'ga')+'/'+rader.length);
+  skriv('   topp1 rätt    PÅ '+tt(rader,'pa')+'/'+rader.length+
+        '   AV '+tt(rader,'av')+'/'+rader.length+
+        '   GAMMAL '+tt(rader,'ga')+'/'+rader.length);
+  skriv('   över horisont (kandidater, summa) '+rader.reduce((s,r)=>s+r.pa.over,0));
+  skriv('   median ms     PÅ '+n(med(rader.map(r=>r.pa.ms)),1)+'   AV '+n(med(rader.map(r=>r.av.ms)),1));
+  skriv('   median kand   PÅ '+med(rader.map(r=>r.pa.antal))+'   AV '+med(rader.map(r=>r.av.antal)));
+  for(const r of rader){
+    const forlorad=r.av.iou>=0.5&&r.pa.iou<0.5;
+    const vunnen=r.pa.iou>=0.5&&r.av.iou<0.5;
+    if(forlorad||vunnen)
+      skriv('   '+(forlorad?'TAPPAD ':'VUNNEN ')+r.fil+'  cyB'+n(r.cyB)+
+            '  IoU AV '+n(r.av.iou)+' -> PÅ '+n(r.pa.iou)+
+            '  kand '+r.av.antal+'->'+r.pa.antal);
+    if(r.ga.iou<0.5&&r.pa.iou>=0.5)
+      skriv('   RÄDDAD  '+r.fil+'  cyB'+n(r.cyB)+
+            '  IoU GAMMAL '+n(r.ga.iou)+' -> PÅ '+n(r.pa.iou));
+    if(r.ga.iou>=0.5&&r.pa.iou<0.5)
+      skriv('   FÖRSÄMRAD '+r.fil+'  cyB'+n(r.cyB)+
+            '  IoU GAMMAL '+n(r.ga.iou)+' -> PÅ '+n(r.pa.iou));
+  }
+  skriv('');
+}
+window.__gr=tabell;
+{ /* En rad som går att svepa på: summan över alla förvrängningar. */
+  let las=0,topp=0,n=0;
+  for(const rader of Object.values(tabell)){
+    n+=rader.length;
+    las+=rader.filter(r=>r.pa.iou>=0.5).length;
+    topp+=rader.filter(r=>r.pa.topp>=0.5).length;
+  }
+  window.__summa={tak:PLATTGRIND.horisontTak,las,topp,n};
+  skriv('SUMMA  horisontTak '+PLATTGRIND.horisontTak+'   lås '+las+'/'+n+
+        '   topp1 '+topp+'/'+n);
+}
+skriv('KLAR');
+</script>
