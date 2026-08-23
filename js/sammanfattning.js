@@ -429,7 +429,40 @@ export function beskrivning(rapport, opts = {}) {
   const rubrik = `${typ}${plats.text}`;
   const kort = `${rubrik} — ${kalla.text}.${akt.kort}`;
   const lang = foga(`${rubrik} — ${kalla.text}.`, akt.lang, stod.text, original);
-  const tal = foga(`${rubrik}.`, `${stor(kalla.tal)}.`, akt.lang, stod.text);
+  /*
+   * RÖSTEN LÄSER UPP DET SOM FAKTISKT SKREVS.
+   *
+   * Ägarens beslut 23 aug 2026, ordagrant: "Du ska alltid läsa upp
+   * meddelandet som personen har skrivit på Facebook. Du behöver inte
+   * validera det. Säg bara upp meddelandet precis det som personen har
+   * skrivit."
+   *
+   * Skälet är gott, och det märks först i bilen. Vår egen mening säger
+   * "Trafikkontroll vid Rocklunda". Föraren skrev "Laser rondellen Rocklunda
+   * 50 sträckan, börjar nu" — och där ligger riktningen, hastighetsgränsen
+   * och att det pågår just nu. Sammanfattningen kastar allt det.
+   *
+   * VAD SOM INTE ÄNDRAS, och varför:
+   *
+   *   Nykterhetsspärren. farBeskrivas() körs allra först i den här
+   *   funktionen och ger tom sträng för drog- och nykterhetstexter. Ingen
+   *   råtext kan ta sig förbi den, och det är inte en del av det som
+   *   överprövats här.
+   *
+   *   Låsskärmen. Notisen bär fortfarande den sammanfattade meningen. Där
+   *   är risken en annan: en notis går fram till en telefon som ligger i
+   *   fickan hos någon som inte bett om just den texten, och råtext dit
+   *   gör låsskärmen till en kanal rakt in i telefonen för vem som helst i
+   *   gruppen. Se supabase/fbmejl.sql. Appen är öppen och tittad på; det
+   *   är en annan sak.
+   *
+   * Kapningen på 100 tecken i originalFras() gäller fortfarande. En röst som
+   * läser en femhundra tecken lång utläggning i 90 km/h är farligare än
+   * tystnad — föraren väntar på slutet i stället för att titta på vägen.
+   */
+  const tal = original
+    ? foga(`${rubrik}.`, original, `${stor(kalla.tal)}.`, akt.lang)
+    : foga(`${rubrik}.`, `${stor(kalla.tal)}.`, akt.lang, stod.text);
 
   return {
     kort, lang, tal,
