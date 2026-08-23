@@ -5095,10 +5095,16 @@ function wireModePicker() {
     saveSettings();
     if (plate) plate.settings.zoomLage = lage;
     const auto = lage === 'auto';
-    $('plZoomAuto').classList.toggle('on', auto);
-    $('plZoomManuell').classList.toggle('on', !auto);
-    $('plZoomAuto').setAttribute('aria-pressed', String(auto));
-    $('plZoomManuell').setAttribute('aria-pressed', String(!auto));
+    // Båda knapp-paren speglas: det inne i läsningen (#plControls) OCH för-valet
+    // på startskärmen (#plPanel). Ett par kan saknas beroende på vy — därför
+    // null-vakten. Se pl-forval i index.html.
+    for (const [aId, mId] of [['plZoomAuto', 'plZoomManuell'], ['plZoomAutoPre', 'plZoomManuellPre']]) {
+      const a = $(aId), m = $(mId);
+      if (!a || !m) continue;
+      a.classList.toggle('on', auto);  m.classList.toggle('on', !auto);
+      a.setAttribute('aria-pressed', String(auto));
+      m.setAttribute('aria-pressed', String(!auto));
+    }
     // Reglaget är kvar synligt i autoläget men går inte att dra. Att dölja
     // det hade gjort att bilden hoppar när man byter läge, och man ser ändå
     // vad appen valt.
@@ -5110,6 +5116,12 @@ function wireModePicker() {
 
   $('plZoomAuto').onclick = () => sattZoomLage('auto');
   $('plZoomManuell').onclick = () => sattZoomLage('manuell');
+  // Samma val på startskärmen (för-valet), innan kameran ens gått igång.
+  const preA = $('plZoomAutoPre'), preM = $('plZoomManuellPre');
+  if (preA) preA.onclick = () => sattZoomLage('auto');
+  if (preM) preM.onclick = () => sattZoomLage('manuell');
+  // Spegla sparat läge direkt vid start så för-valet visar rätt knapp.
+  sattZoomLage(settings.plZoomLage || 'auto');
 
   $('plZoom').oninput = e => {
     const v = Number(e.target.value);

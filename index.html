@@ -391,6 +391,20 @@
            eftersom de delar kamera och bara ett av dem kan vara igång.
            Knappen först — allt förklarande under, i .dc-mer. -->
       <div id="plPanel" hidden>
+        <!-- Zoomvalet FÖRE start. Det finns även inne i läsningen (#plControls),
+             men den panelen syns först när kameran går — och då hade man redan
+             undrat varför man inte fick välja. Båda paren styr samma
+             settings.plZoomLage via sattZoomLage i js/app.js. -->
+        <div class="pl-forval">
+          <p class="dc-steg">1. Hur ska den zooma in på skylten?</p>
+          <div class="dc-row pl-zoomlage">
+            <button class="btn-ghost on" id="plZoomAutoPre" type="button" aria-pressed="true">Automatisk</button>
+            <button class="btn-ghost" id="plZoomManuellPre" type="button" aria-pressed="false">Manuell</button>
+          </div>
+          <p class="hint" id="plZoomForvalNot">Automatisk: appen zoomar själv tills skylten fyller rutan. Manuell: du drar zoomreglaget själv. Du kan byta när som helst medan den läser.</p>
+          <p class="hint">📐 Telefonen får luta i hållaren — läsaren mäter skyltens egen vinkel och läser den ändå.</p>
+        </div>
+
         <p class="dc-steg">2. Tryck här, så startar kameran:</p>
         <button class="btn-primary big" id="plStart" type="button">Starta skyltläsning</button>
         <p class="dc-warn" id="plSupport" hidden></p>
