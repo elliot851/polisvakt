@@ -3159,6 +3159,59 @@ function Kolla-Session {
 # Den SKRIKER inte och den startar ingenting om. Omladdningen var femte
 # minut är åtgärden; det här är kvittot på att åtgärden fungerar. Slutar
 # raden dyka upp vet man att flödet lever.
+<#
+  Hur länge får en grupp vara tyst innan tystnaden i sig är misstänkt?
+
+  DET HÄR VAR HÅRDKODAT TILL 60 MINUTER, OCH DET VAR FEL PÅ ETT SÄTT SOM
+  KOSTADE FÖRTROENDE. Västeråsgruppen skriver ungefär 24 gånger i månaden,
+  alltså mindre än ett inlägg om dagen. En timmes tystnad är gruppens
+  NORMALTILLSTÅND. Larmet gick fyra gånger på ett förmiddagspass i en helt
+  frisk kedja, och ett larm som går varje dag utan att något är fel lär den
+  som läser loggen att hoppa över raden — precis den dag den betyder något.
+
+  Gränsen följer nu gruppens egen takt: tre gånger mediangapet mellan de
+  inlägg bryggan faktiskt har sett, klämt mellan 6 och 24 timmar.
+    6 h nedåt   — under det är även en aktiv grupp regelbundet tyst (natten).
+    24 h uppåt  — en verkligt död brygga ska aldrig få ligga obemärkt över
+                  ett dygn, hur långsam gruppen än är.
+  Färre än tre sedda inlägg ger inget mediangap att räkna på, och då gäller
+  taket: hellre sent än falskt.
+
+  OCH EN ÄRLIGHET SOM MÅSTE STÅ HÄR, ANNARS BYGGER NÄSTA PERSON FEL SAK:
+  det finns inget billigt POSITIVT frystest i den här kedjan. Det närmaste
+  som frestar är inläggens `alderMin`, men den räknas som
+  `Date.now() - inläggets tidsstämpel` — den växer alltså vidare även om
+  fliken är stendöd, eftersom det är klockan som rör sig och inte flödet.
+  Att OMLADDNING och INJEKTION loggas grönt bevisar att fliken svarar, inte
+  att Facebook lämnar ut något nytt. Vill man verkligen veta får man jämföra
+  översta inläggets id mot en oberoende hämtning — det är inte gratis, och
+  det är därför det inte görs var trettionde sekund.
+#>
+function Tystnadsgrans {
+  param([string]$Gid)
+
+  $TAK = 24 * 60
+  $GOLV = 6 * 60
+
+  $tider = @()
+  if ($script:InlaggsTider -and $script:InlaggsTider.ContainsKey($Gid)) {
+    $tider = @($script:InlaggsTider[$Gid] | Sort-Object)
+  }
+  if ($tider.Count -lt 3) { return $TAK }
+
+  $gap = @()
+  for ($i = 1; $i -lt $tider.Count; $i++) {
+    $gap += ($tider[$i] - $tider[$i - 1]).TotalMinutes
+  }
+  $gap = @($gap | Sort-Object)
+  $median = $gap[[int][math]::Floor($gap.Count / 2)]
+
+  $grans = $median * 3
+  if ($grans -lt $GOLV) { return $GOLV }
+  if ($grans -gt $TAK)  { return $TAK }
+  return $grans
+}
+
 function Kolla-Frusen {
   param($Grupp, $Svepresultat)
 
@@ -3181,7 +3234,8 @@ function Kolla-Frusen {
   }
 
   $tyst = ((Get-Date) - $script:SenastNyttInlagg[$gid]).TotalMinutes
-  if ($tyst -lt 60) { return }
+  $grans = Tystnadsgrans -Gid $gid
+  if ($tyst -lt $grans) { return }
 
   # En gång i timmen, inte var tjugonde sekund. En vakt som skriker lär folk
   # att sluta läsa loggen.
@@ -3190,10 +3244,13 @@ function Kolla-Frusen {
   if (((Get-Date) - $sagd).TotalMinutes -lt 60) { return }
   $script:FrusenSagd[$gid] = Get-Date
 
-  Logga 'FRUSEN?' ('[' + $Grupp.namn + '] inget NYTT inlägg på ' + [int]$tyst +
-    ' min, trots omladdning var ' + [int]($script:OmladdningSek / 60) + ':e minut.') DarkYellow
+  Logga 'FRUSEN?' ('[' + $Grupp.namn + '] inget NYTT inlägg på ' + [int]($tyst / 60) +
+    ' h. Gruppens egen takt ger gränsen ' + [int]($grans / 60) + ' h.') DarkYellow
   Logga 'FRUSEN?' '  Antingen är gruppen tyst, eller så hämtar fliken inte nytt. Öppna' DarkGray
   Logga 'FRUSEN?' '  gruppen i en vanlig webbläsare och jämför översta inlägget.' DarkGray
+  Logga 'FRUSEN?' ('  Notera: omladdning och injektion loggas var ' +
+    [int]($script:OmladdningSek / 60) + ':e minut och är gröna — det som INTE går att' ) DarkGray
+  Logga 'FRUSEN?' '  bevisa härifrån är om flödet levererar nytt. Se kommentaren i koden.' DarkGray
 }
 
 function Kolla-Vakthund {
@@ -3782,6 +3839,20 @@ function Behandla-Svep {
       [void]$script:UnikaSedda.Add($p.nyckel)
       $script:Summa.sedda++
       $nya++
+
+      # Tidpunkten sparas också för Tystnadsgrans, som räknar ut hur länge
+      # just den här gruppen får vara tyst innan tystnaden är misstänkt.
+      # Bara klockslaget — samma regel som pulsen nedan: ingen nyckel, ingen
+      # text, ingen typ. Ett mediangap får inte gå att läsa baklänges till
+      # vad som postats.
+      $gidNu = [string]$Grupp.id
+      if (-not $script:InlaggsTider.ContainsKey($gidNu)) {
+        $script:InlaggsTider[$gidNu] = @()
+      }
+      # Taket håller listan liten och gör måttet FÄRSKT: en grupp som gått
+      # från tyst till livlig ska inte bära ett halvår gammalt mediangap.
+      $script:InlaggsTider[$gidNu] = @(
+        @($script:InlaggsTider[$gidNu]) + (Get-Date) | Select-Object -Last 40)
       # Bara TIDPUNKTEN, till pulsen. Ingen nyckel, ingen text, ingen typ —
       # en puls som kunde avslöja VAD som postats vore en varning bakvägen.
       [void]$script:InlaggTider.Add((Get-Date))
@@ -5129,6 +5200,7 @@ $script:SenastOmladdad = @{}     # gruppid -> när fliken senast laddades om
 # Frusenhetsvakten. Se Kolla-Frusen längre ner.
 $script:SenastNyttInlagg = @{}   # gruppid -> när gruppen senast gav ett NYTT inlägg
 $script:FrusenSagd = @{}         # gruppid -> när vi senast sa ifrån om frysning
+$script:InlaggsTider = @{}       # gruppid -> klockslag för de 40 senaste sedda inläggen
 $slutTid = $null
 if ($MinuterAttKora -gt 0) { $slutTid = (Get-Date).AddMinutes($MinuterAttKora) }
 
