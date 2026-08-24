@@ -2445,3 +2445,43 @@ a.btn-kop.stor, .btn-kop.stor {
   .view   { box-shadow: 0 0 0 1px var(--line-stark); }
   .tabbar { border-left: 1px solid var(--line-stark); border-right: 1px solid var(--line-stark); }
 }
+
+/* ============================================================
+   Finslipning: entré-rörelse + remsan täcker inte scrollvyer
+   ------------------------------------------------------------
+   Följer samma regler som js/rorelse.js: kort rörelse som BÄR
+   något (en ny yta reser sig fram), och allt tystnar helt vid
+   prefers-reduced-motion — dampad() lyssnar bara på just den,
+   så en media-fråga här är exakt samma gräns.
+   ============================================================ */
+
+/* Modaler reste sig inte, de bara fanns. En modal som tonar in med
+   ett litet lyft läses som att den lagts OVANPÅ — samma sak skuggan
+   säger, fast i rörelse. Scrimen tonar, kortet reser sig. */
+@keyframes rr-modal-scrim { from { opacity: 0; } }
+@keyframes rr-modal-kort  { from { opacity: 0; transform: translateY(12px) scale(.985); } }
+.modal:not([hidden])            { animation: rr-modal-scrim .18s ease both; }
+.modal:not([hidden]) .modal-card { animation: rr-modal-kort .22s cubic-bezier(.22,.61,.36,1) both; }
+
+/* Produktsidan i butiken öppnas INNE i fliken (ingen vy-slide att ärva),
+   så den fick ingen rörelse alls — den bytte bara innehåll. Samma lilla
+   lyft som modalen, så bytet från hylla till produkt känns som ett steg
+   framåt och inte ett hopp. */
+@keyframes rr-detalj-in { from { opacity: 0; transform: translateY(10px); } }
+#butikDetalj:not([hidden]) { animation: rr-detalj-in .24s cubic-bezier(.22,.61,.36,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .modal:not([hidden]),
+  .modal:not([hidden]) .modal-card,
+  #butikDetalj:not([hidden]) { animation: none; }
+}
+
+/* Plats-remsan (js/platsstart.js) ligger fixed över skärmens topp och
+   täckte de översta ~74 px av ALLA vyer. Kartans HUD viker redan undan
+   (regeln i platsstart.js), men scrollvyerna gjorde det inte — så i
+   blockerat läge låg t.ex. butikens "Tillbaka"-knapp och inställningarnas
+   sökrad dolda bakom remsan. Samma nedskjutning som .topp, mätt höjd via
+   samma variabel. Slår bara till när remsan faktiskt är uppe. */
+body.pv-ps-remsa-uppe .view.scroll {
+  padding-top: calc(var(--pv-ps-remsa-h, 84px) + var(--sp-4));
+}
