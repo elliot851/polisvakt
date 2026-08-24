@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-08-24-104';
+const VERSION = '2026-08-24-105';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -125,6 +125,7 @@ const SHELL = [
   './butik/hallare-vinkel.png',
   './butik/kamera-hero.png',
   './butik/matta.png',
+  './butik/doft-hero.png',
   './butik/doft.png',
   './butik/marken.png',
   './butik/hallare-ref.jpg',
