@@ -2405,3 +2405,43 @@ a.btn-kop.stor, .btn-kop.stor {
   .product[role="button"] { transition: none; }
   .product[role="button"]:active { transform: none; }
 }
+
+/* ============================================================
+   Telefonram på breda skärmar
+   ------------------------------------------------------------
+   Appen är byggd för en telefon i en bilhållare — en smal
+   stående kolumn. På en telefon ÄR skärmen den kolumnen, och
+   inget här gör någon skillnad: viewporten är smalare än
+   brytpunkten så media-frågan slår aldrig till. På en
+   surfplatta, hopfällbar eller dator ramas appen i stället in
+   i en centrerad kolumn i stället för att spreta över hela
+   bredden — annars hamnar t.ex. butikens "SNART"-märke ett
+   halvt tusen pixlar från sin egen produkt.
+
+   Centreringen sker med left/width, ALDRIG med transform: en
+   transform på .view skulle bli containing block för kartans
+   och HUD:ens positionering och flytta dem. Brytpunkten ligger
+   ovanför de bredaste telefonerna i stående läge (~430 px) så
+   ingen telefon råkar hamna i ramen; kolumnen är någon pixel
+   bredare än så. --bar-total, --safe-* och all inre layout
+   ärvs oförändrade. */
+@media (min-width: 500px) {
+  :root { --app-w: 448px; }
+  body { background: #06080b; }
+  .view,
+  .tabbar,
+  .fordonslarm,
+  .morkt-lage,
+  body .pv-ps-remsa {
+    left: calc(50% - var(--app-w) / 2);
+    right: auto;
+    width: var(--app-w);
+  }
+  /* body-prefix på remsan: den injiceras från js/platsstart.js EFTER app.css
+     i kaskaden, så en lika specifik regel här hade förlorat. body-.pv-ps-remsa
+     (0,1,1) slår modulens .pv-ps-remsa (0,1,0) oavsett ordning. */
+
+  /* Kolumnen ska läsas som EN sammanhållen yta mot ramen. */
+  .view   { box-shadow: 0 0 0 1px var(--line-stark); }
+  .tabbar { border-left: 1px solid var(--line-stark); border-right: 1px solid var(--line-stark); }
+}
