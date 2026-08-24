@@ -58,13 +58,13 @@
       "rad": "Halkfri dashboardmatta — håller nycklar, mynt och telefon på plats och dämpar speglingar i nattbilden.",
       "pris": 99,
       "ikon": "⬛",
-      "bild": "butik/matta.png",
+      "bild": "butik/matta-hero.png",
       "leverans": "2–4 arbetsdagar",
       "frakt": "Fri frakt över 199 kr",
       "lank": null,
       "status": "coming",
       "bilder": [
-        "butik/matta.png"
+        "butik/matta-hero.png"
       ],
       "beskrivning": "Läggs på instrumentbrädan där du vill ha en yta som håller. Nycklar, mynt, solglasögon och telefon ligger kvar genom kurvor och inbromsningar, och den matta ytan dämpar speglingar som annars stör dashcam-bilden i mörker. Går att klippa till.",
       "punkter": [
@@ -73,7 +73,8 @@
         "Går att klippa till din instrumentbräda.",
         "Torkas av med en fuktig trasa."
       ],
-      "garanti": "30 dagars öppet köp"
+      "garanti": "30 dagars öppet köp",
+      "kalla": "https://www.temu.com/se-en/1pc-car-dashboard-anti-slip-mat-center-console-car-phone-perfume-pad-ornament-storage-pad-durable-anti-slip-extension-car-universal-heat-resistant-center-console-protection-pad-g-606396363935317.html"
     },
     {
       "id": "scent",
