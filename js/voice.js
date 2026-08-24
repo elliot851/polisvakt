@@ -158,6 +158,55 @@ let ljudCtx = null;
 let ljudkedja = null;
 let taltIGang = 0;     // riktiga yttranden i luften just nu
 
+/*
+ * MEDIEFÖRANKRINGEN — det som drar AI-rösten ut i CarPlay i stället för
+ * telefonhögtalaren.
+ *
+ * Problemet: `navigator.audioSession.type = 'transient'` duckar musiken rätt
+ * (bevisat), men på iOS routas `speechSynthesis` (AVSpeechSynthesizer) inte
+ * alltid till den aktiva medieutgången — den kan hamna i telefonens egen
+ * högtalare även när bilen är kopplad via CarPlay/Bluetooth. Web Audio (vårt
+ * pling) följer däremot ALLTID den aktiva medierutten. Så länge en Web
+ * Audio-nod faktiskt matar ut ljud hålls medierutten (CarPlay) vaken, och
+ * talsyntesen läggs på samma rutt.
+ *
+ * Därför spelar vi en OHÖRBAR slinga genom den delade contexten under hela
+ * uppläsningen: en tyst buffert på loop, gain nära noll. Den hörs inte, men
+ * den håller mediautgången aktiv så rösten hamnar där musiken låg — i
+ * bilhögtalarna.
+ *
+ * VIKTIGT ATT VETA: detta ökar oddsen men är inte en garanti — iOS
+ * routnings­beteende går bara att bekräfta i en riktig bil. Håller det inte
+ * är den säkra vägen att sluta lita på speechSynthesis och spela en
+ * server-renderad TTS-ström genom Web Audio (som bevisligen routar till
+ * CarPlay). Se ROADMAP.
+ */
+let mediaAnkare = null;
+
+function mediaAnkarePa() {
+  const ctx = haLjudkontext({ skapa: false });
+  if (!ctx || ctx.state !== 'running' || mediaAnkare) return;
+  try {
+    // En kort tyst buffert på loop. Ren tystnad räcker för att hålla rutten
+    // på de flesta iOS-versioner; gain-noden ligger ändå kvar som spärr så
+    // ingenting kan råka bli hörbart.
+    const buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.5)), ctx.sampleRate);
+    const src = ctx.createBufferSource();
+    src.buffer = buf; src.loop = true;
+    const g = ctx.createGain(); g.gain.value = 0.0004;   // ohörbart
+    src.connect(g); g.connect(ctx.destination);
+    src.start();
+    mediaAnkare = { src, g };
+  } catch { mediaAnkare = null; }
+}
+
+function mediaAnkareAv() {
+  if (!mediaAnkare) return;
+  try { mediaAnkare.src.stop(); } catch {}
+  try { mediaAnkare.src.disconnect(); mediaAnkare.g.disconnect(); } catch {}
+  mediaAnkare = null;
+}
+
 /** Alla levande Speaker-instanser, så återhämtningen når dem utan app.js. */
 const levandeTalare = new Set();
 
@@ -1658,8 +1707,8 @@ export class Speaker {
 
   #drain() {
     if (this.speaking || !this.queue.length) {
-      // Kön tom: lämna tillbaka ljudet till musiken
-      if (!this.queue.length && !this.speaking) audioSession.background();
+      // Kön tom: lämna tillbaka ljudet till musiken OCH släpp medierutten.
+      if (!this.queue.length && !this.speaking) { audioSession.background(); mediaAnkareAv(); }
       return;
     }
     const item = this.queue.shift();
@@ -1672,6 +1721,7 @@ export class Speaker {
     this.speaking = true;
     taltIGang++;
     audioSession.duck();   // sänk musiken, operativsystemet höjer tillbaka
+    mediaAnkarePa();       // håll medierutten (CarPlay) vaken så rösten hamnar där, inte i telefonen
     notifySpeaking(true, item.text);  // och stäng mikrofonen så vi inte hör oss själva
     this.onSpeakingChange(true);
 
@@ -2076,6 +2126,7 @@ export class Speaker {
     clearTimeout(this.plingVakt); this.plingVakt = null;
     clearTimeout(this.duckVakt); this.duckVakt = null;
     audioSession.background();   // stop() betyder tyst, alltså tillbaka musiken
+    mediaAnkareAv();             // släpp medierutten helt när allt tystnar
     try { speechSynthesis.cancel(); } catch {}
     this.speaking = false;
     this.current = null;
@@ -2123,7 +2174,7 @@ export class Speaker {
        */
       clearTimeout(this.duckVakt);
       this.duckVakt = setTimeout(() => {
-        if (!this.speaking && !this.queue.length) audioSession.background();
+        if (!this.speaking && !this.queue.length) { audioSession.background(); mediaAnkareAv(); }
       }, PLING_ROST_FRIST_MS);
     }
 

@@ -4775,8 +4775,8 @@ function plateInst() {
          */
         const proc = Math.round(d.sakerhet || 0);
         $('plProvStatus').textContent = proc > 0
-          ? `Provläge — läste ${visaPlat(d.plat)} (${proc} %). Inte ditt fordon, inget sparat.`
-          : `Provläge — läste ${visaPlat(d.plat)}. Inte ditt fordon, inget sparat.`;
+          ? `Provläge — läste ${visaPlat(d.plat)} (${proc} %). Ingen bevakad bil, inget sparat.`
+          : `Provläge — läste ${visaPlat(d.plat)}. Ingen bevakad bil, inget sparat.`;
         return;
       }
       larmaFordon(d);
@@ -4844,7 +4844,7 @@ function larmaFordon(d) {
   const visatNamn = smek || (v?.regnr ? visaPlat(v.regnr) : d.etikett);
   avbrytLarm = larma({ ...d, etikett: smek }, {
     visa: t => {
-      $('larmNamn').textContent = visatNamn || 'Ditt fordon';
+      $('larmNamn').textContent = visatNamn || 'Bevakad bil';
       // Numret som lästes visas bara i larmögonblicket — se Fordonsregister.
       $('larmNr').textContent = visaPlat(t.plat);
       rutan.hidden = false;

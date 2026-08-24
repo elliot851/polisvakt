@@ -421,9 +421,10 @@
             <div class="why-item"><span>✌️</span><div><b>Den gissar inte.</b>
               En skylt visas först när två bildrutor läst samma sak, och bara om den
               följer svenskt format. Hellre inget svar än fel svar.</div></div>
-            <div class="why-item"><span>🚗</span><div><b>Egna fordon.</b>
-              Lägg in dina egna registreringsnummer under Inställningar, så markeras
-              de med grönt och en ljusare ton när de dyker upp.</div></div>
+            <div class="why-item"><span>🚨</span><div><b>Bevakade bilar.</b>
+              Lägg in registreringsnummer på bilar att hålla koll på under
+              Inställningar. Dyker en upp i kameran markeras den <b>rött</b> och
+              larmet går — det är inget positivt att möta en bevakad bil.</div></div>
           </div>
         </div>
       </div>
@@ -557,7 +558,7 @@
          är precis då man behöver den: läsaren säger "inte ditt fordon" och
          nästa tanke är "hur lägger jag in det?". Genvägen hör hemma här. -->
     <div class="dc-row">
-      <button class="btn-ghost" id="btnPlMinaFordon" type="button">Mina fordon</button>
+      <button class="btn-ghost" id="btnPlMinaFordon" type="button">Bevakade bilar</button>
     </div>
 
     <div class="dc-row">
@@ -1179,11 +1180,11 @@
 
     <!-- id:t minaFordonRubrik är rullmålet för knappen btnPlMinaFordon i
          dashcam-vyn. Ändras det slutar hoppet mellan vyerna fungera. -->
-    <h4 class="sub-head" id="minaFordonRubrik">Mina fordon</h4>
-    <p class="hint">Skriv dina registreringsnummer, ett nummer per rad — du kan
-      klistra in en hel lista. Vill du kan du skriva ett namn efter numret,
-      till exempel <i>ABC 123 Volvon</i>. Känner läsaren igen ett av dina
-      fordon varnar appen.</p>
+    <h4 class="sub-head" id="minaFordonRubrik">Bevakade bilar</h4>
+    <p class="hint">Skriv registreringsnummer på bilar att hålla koll på, ett
+      nummer per rad — du kan klistra in en hel lista. Vill du kan du skriva en
+      notering efter numret, till exempel <i>ABC 123 grå skåpbil</i>. Känner
+      läsaren igen en bevakad bil slår larmet till.</p>
 
     <!-- Ett fält, inte två. Den gamla varianten hade separata fält för nummer
          och namn, och man kunde bara lägga in ett fordon i taget. -->
@@ -1885,7 +1886,7 @@
      aria-labelledby="larmRubrik" hidden>
   <div>
     <div class="larm-ikon" aria-hidden="true">⚠️</div>
-    <p class="larm-rubrik" id="larmRubrik">FORDON IGENKÄNT</p>
+    <p class="larm-rubrik" id="larmRubrik">BEVAKAD BIL</p>
     <p class="larm-namn" id="larmNamn"></p>
     <p class="larm-nr" id="larmNr"></p>
     <button class="larm-tyst" id="btnLarmTyst" type="button">Tysta</button>
