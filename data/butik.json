@@ -30,34 +30,68 @@
     {
       "id": "mat",
       "namn": "Antireflexmatta",
-      "rad": "Mörk matta under hållaren som tar bort instrumentbrädans spegling ur nattbilden.",
+      "rad": "Mörk antireflexmatta som tar bort instrumentbrädans spegling ur nattbilden.",
       "pris": 99,
       "ikon": "⬛",
-      "bild": null,
+      "bild": "butik/matta.png",
       "leverans": "2–4 arbetsdagar",
       "frakt": "Fri frakt över 199 kr",
       "lank": null,
-      "status": "coming"
+      "status": "coming",
+      "bilder": [
+        "butik/matta.png"
+      ],
+      "beskrivning": "Läggs under hållaren på instrumentbrädan. Den matta, texturerade ytan slukar reflexerna som annars speglas i vindrutan och förstör dashcam-bilden i mörker — och håller samtidigt hållaren på plats. Halkfri undersida, går att skära till.",
+      "punkter": [
+        "Dödar speglingar — renare nattbild från bakkameran.",
+        "Halkfri undersida — håller hållaren stilla.",
+        "Går att klippa till din instrumentbräda.",
+        "Torkas av med en fuktig trasa."
+      ],
+      "garanti": "30 dagars öppet köp"
     },
     {
       "id": "scent",
       "namn": "Bildoft",
-      "rad": "Diskret ventilklämma med utbytbar doftplatta.",
+      "rad": "Diskret ventilklämma i matt svart med utbytbar doftplatta.",
       "pris": 129,
       "ikon": "🌿",
-      "bild": null,
+      "bild": "butik/doft.png",
       "lank": null,
-      "status": "idea"
+      "status": "coming",
+      "bilder": [
+        "butik/doft.png"
+      ],
+      "beskrivning": "En stram, matt svart doftpinne som kläms fast i ventilen och sprider en diskret doft när fläkten går. Utbytbar doftplatta — byt doft utan att byta hela klämman.",
+      "punkter": [
+        "Kläms fast i ventilen på sekunder.",
+        "Utbytbar doftplatta — mindre svinn.",
+        "Matt svart, syns knappt — stör inte interiören.",
+        "Doften styrs av fläkten, inte av värme."
+      ],
+      "leverans": "2–4 arbetsdagar",
+      "frakt": "Fri frakt över 199 kr"
     },
     {
       "id": "sticker",
-      "namn": "Klistermärken",
-      "rad": "Tre stycken i förpackningen — följer med gratis vid köp av hållare.",
+      "namn": "Polisvakt-klistermärken",
+      "rad": "Tre die-cut vinylmärken med Polisvakts sköld — följer med gratis vid köp av hållare.",
       "pris": 49,
       "ikon": "✨",
-      "bild": null,
+      "bild": "butik/marken.png",
       "lank": null,
-      "status": "idea"
+      "status": "coming",
+      "bilder": [
+        "butik/marken.png"
+      ],
+      "beskrivning": "Tre tåliga die-cut vinylmärken med Polisvakts sköld i blått. Väder- och tvättåliga. Följer med gratis vid köp av mobilhållaren.",
+      "punkter": [
+        "Die-cut vinyl — ingen fyrkantig kant.",
+        "Väder- och tvättålig.",
+        "Tre i förpackningen.",
+        "Gratis vid köp av hållare."
+      ],
+      "leverans": "2–4 arbetsdagar"
     }
   ]
 }
