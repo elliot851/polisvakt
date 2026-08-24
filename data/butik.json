@@ -29,34 +29,6 @@
       "status": "coming"
     },
     {
-      "id": "holder",
-      "namn": "Polisvakt Mobilhållare",
-      "rad": "360° roterbar hållare med halkfri bottenplatta — står stadigt på instrumentbrädan och vrids dit du ser bäst.",
-      "pris": 299,
-      "ikon": "📱",
-      "bild": "butik/hallare-hero.png",
-      "bilder": [
-        "butik/hallare-hero.png",
-        "butik/hallare-vinkel.png",
-        "butik/hallare-ref.jpg"
-      ],
-      "beskrivning": "Byggd för att Polisvakt ska kunna göra sitt jobb. Telefonen sitter still och rakt på instrumentbrädan, så bakkameran filmar vägen och varningarna hörs och syns medan du kör — utan att du håller i något. Den halkfria bottenplattan sitter kvar genom gupp, kurvor och inbromsningar, och 360°-leden låter dig vrida skärmen mot dig med ett finger.",
-      "punkter": [
-        "360° vridbar — vänd skärmen mot dig med ett finger, utan att lyfta hållaren.",
-        "Halkfri bottenplatta — sitter kvar genom gupp, kurvor och hårda inbromsningar.",
-        "Öppen ram — laddkabeln når kontakten och knapparna är fria.",
-        "Passar alla telefoner — justerbart fäste för både små och stora modeller."
-      ],
-      "lager": 60,
-      "leverans": "2–4 arbetsdagar",
-      "frakt": "Fri frakt över 199 kr",
-      "garanti": "30 dagars öppet köp",
-      "cogs": null,
-      "cogs_notis": "Ingen Temu-källa. Dubblett av kamerahållaren (cradle) — kandidat att tas bort. Ingen COGS satt tills beslut/källa finns.",
-      "lank": null,
-      "status": "coming"
-    },
-    {
       "id": "mat",
       "namn": "Antireflexmatta",
       "rad": "Halkfri dashboardmatta — håller nycklar, mynt och telefon på plats och dämpar speglingar i nattbilden.",
