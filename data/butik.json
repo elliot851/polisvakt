@@ -23,6 +23,8 @@
       "frakt": "Fri frakt över 199 kr",
       "garanti": "30 dagars öppet köp",
       "kalla": "https://www.temu.com/se-en/car-phone-holder-ar-navigation-mount-trip-recorder--rotating-phone-holder-for-vehicles-g-601099519546072.html",
+      "temu_pris": 52.51,
+      "cogs": 86,
       "lank": null,
       "status": "coming"
     },
@@ -49,6 +51,8 @@
       "leverans": "2–4 arbetsdagar",
       "frakt": "Fri frakt över 199 kr",
       "garanti": "30 dagars öppet köp",
+      "cogs": null,
+      "cogs_notis": "Ingen Temu-källa. Dubblett av kamerahållaren (cradle) — kandidat att tas bort. Ingen COGS satt tills beslut/källa finns.",
       "lank": null,
       "status": "coming"
     },
@@ -56,7 +60,9 @@
       "id": "mat",
       "namn": "Antireflexmatta",
       "rad": "Halkfri dashboardmatta — håller nycklar, mynt och telefon på plats och dämpar speglingar i nattbilden.",
-      "pris": 99,
+      "pris": 149,
+      "temu_pris": 65.78,
+      "cogs": 99,
       "ikon": "⬛",
       "bild": "butik/matta-hero.png",
       "leverans": "2–4 arbetsdagar",
@@ -80,7 +86,9 @@
       "id": "scent",
       "namn": "Bildoft",
       "rad": "Diskret ventilklämma i matt svart med utbytbar doftplatta.",
-      "pris": 129,
+      "pris": 99,
+      "temu_pris": 21.86,
+      "cogs": 55,
       "ikon": "🌿",
       "bild": "butik/doft-hero.png",
       "lank": null,
@@ -119,7 +127,9 @@
         "Gratis vid köp av hållare."
       ],
       "leverans": "2–4 arbetsdagar",
-      "kalla": "custom-tryck (Sticker Mule e.d.) — Temu har bara generiska dekaler"
+      "kalla": "custom-tryck (Sticker Mule e.d.) — Temu har bara generiska dekaler",
+      "cogs": 25,
+      "cogs_notis": "Uppskattat tryckpris ~20-25 kr/3-pack, ej Temu — bekräfta hos tryckeri innan live."
     }
   ]
 }
