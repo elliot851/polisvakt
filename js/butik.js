@@ -51,6 +51,22 @@ function hamta() {
   return hamtning;
 }
 
+/* Laddnings-skelett: n st kort i samma form som ett riktigt .product, med
+   en skimrande platta i stället för innehåll. aria-hidden — en skärmläsare
+   ska höra "laddar", inte tre tomma kort. */
+function skelett(n) {
+  const kort =
+    '<div class="product prod-skeleton" aria-hidden="true">' +
+      '<div class="sk sk-bild"></div>' +
+      '<div class="sk-body">' +
+        '<div class="sk sk-line" style="width:60%"></div>' +
+        '<div class="sk sk-line short"></div>' +
+        '<div class="sk sk-line" style="width:80%"></div>' +
+      '</div>' +
+    '</div>';
+  return kort.repeat(n);
+}
+
 /**
  * Rita hyllan. Anropas från showView('butik') varje gång fliken öppnas —
  * billigt nog (en handfull kort) och det är så "Meddela mig"-knappen
@@ -62,6 +78,12 @@ export function rita() {
   if (!wrap) return;
 
   if (produkter == null) {           // första gången, eller efter ett misslyckande
+    // Skelett medan json:en hämtas. Kall första start är den enda gången det
+    // hinner synas — annars är filen precachad och de riktiga korten står
+    // direkt. Formen matchar .product så bytet inte hoppar. tomt-texten göms
+    // så man inte ser "kunde inte läsas" blinka förbi före första försöket.
+    if (tomt) tomt.hidden = true;
+    wrap.innerHTML = skelett(3);
     hamta().then(rita);
     return;
   }

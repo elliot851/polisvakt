@@ -111,8 +111,15 @@ const MJUK = 'cubic-bezier(.22,.61,.36,1)';
 // gav vi tryckkvittens på sju rubriker i en utrullning där modulen saknades:
 // rubriken krympte under fingret som en riktig knapp och gjorde sedan
 // ingenting. Ett uteblivet svar är ett fel; ett svar som ljuger är värre.
+// .act (kartans Polis/Kontroll/Civil/TALA) står MED FLIT inte här: den har
+// egen :active-krympning i css/app.css OCH en håll-in-fyllnad (.act.holding),
+// och en rr-tryck ovanpå hade slagits mot hållgesten. Alla andra tryckytor —
+// primär- och spökknappar, köplänken, sök- och ikonknappen, modalernas
+// knappar, produktsidans tillbaka — saknade kvittens helt tills raden nedan.
 const KVITTENS_MAL =
-  '.tab, #view-settings h2.grupp[role="button"], #view-settings button';
+  '.tab, #view-settings h2.grupp[role="button"], #view-settings button, ' +
+  '.btn-primary, .btn-ghost, a.btn-kop, .route-go, .icon-btn, ' +
+  '.modal button, .platform-pick button, .pd-tillbaka';
 
 // Rullningen ska landa UNDER den klistrade sökraden, inte bakom den.
 //
