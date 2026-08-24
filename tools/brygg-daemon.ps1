@@ -915,6 +915,12 @@ if ($GruppId -and @($GruppId).Count -gt 0) {
 $script:GruppMedId = @{}
 foreach ($g in $script:Grupper) { $script:GruppMedId[$g.id] = $g }
 
+# Backoff-räknare per grupp för fliköppning (Anslut). MÅSTE initieras här på
+# skript-nivå: daemonen kör under Set-StrictMode, och att bara läsa en osatt
+# $script:-variabel inne i Anslut kastar "variable has not been set" — vilket
+# den gjorde varje svep tills den här raden lades till.
+$script:FlikForsok = @{}
+
 # TVÅ TIDER, INTE EN. Se kommentaren vid VISNING_MINUTER i fb-bridge.user.js
 # och det längre resonemanget i js/store.js.
 #
@@ -1368,8 +1374,65 @@ function Anslut {
     #
     # Bara adresser som byggs av ett id ur bryggfilen kan hamna här.
     $fb = @($flikar | Where-Object { $_.type -eq 'page' -and $_.url -match 'facebook\.com' })
+
+    # UTLOGGAD = ÖPPNA INGENTING.
+    #
+    # 2026-08-24 öppnade daemonen hundratals flikar i en loop. Orsaken satt
+    # exakt här: när Facebook-sessionen är utloggad svarar /json/new med en
+    # flik på facebook.com/login?next=...groups/<id>. Den adressen matchar
+    # ALDRIG gruppkollen ovan (den letar efter /groups/<id>), men den ÄR en
+    # facebook.com-sida, så $fb.Count blev > 0 och koden öppnade en till varje
+    # svep. Varje ny flik redirectades till login igen — en oändlig loop.
+    #
+    # Att öppna fler flikar hjälper aldrig när man är utloggad. Upptäck en
+    # login/checkpoint-flik, säg ifrån, och öppna INGET tills någon loggat in.
+    $loginFlik = $fb | Where-Object { $_.url -match 'facebook\.com/(login|checkpoint)' } | Select-Object -First 1
+    if ($loginFlik) {
+      return @{ fel = 'Facebook är utloggat (flik på facebook.com/' +
+        ($(if ($loginFlik.url -match '/checkpoint') { 'checkpoint' } else { 'login' })) +
+        '). Logga in i bryggfönstret — daemonen öppnar inga fler flikar tills dess.' }
+    }
+
+    # HÅRT TAK PÅ ANTAL FACEBOOK-FLIKAR.
+    #
+    # Andra livrem: även om något annat än utloggning gör att gruppfliken inte
+    # matchas ska daemonen ALDRIG kunna öppna obegränsat. Taket är antal
+    # grupper i bryggfilen plus en marginal — normalt behövs en flik per grupp.
+    $tak = [Math]::Max(1, @($script:Grupper).Count) + 1
+    if ($fb.Count -ge $tak) {
+      return @{ fel = 'Redan ' + $fb.Count + ' Facebook-flikar öppna (tak ' + $tak +
+        ') men ingen står på grupp ' + $gid + ' (' + $Grupp.namn +
+        '). Öppnar inga fler — kontrollera flikarna i bryggfönstret.' }
+    }
+
+    # BACKOFF PER GRUPP — den url-agnostiska livremmen.
+    #
+    # Login-kollen ovan förutsätter att jag kan se att fliken är en login-flik.
+    # 2026-08-24 slank loopen igenom ändå (den nyöppnade fliken rapporterade
+    # varken /groups/<id> ELLER /login i /json/list — den öppnade en var
+    # annan sekund). Den här regeln bryr sig inte om vad url:en säger: öppna
+    # för en grupp HÖGST 2 gånger, och aldrig oftare än var 120:e sekund. Dök
+    # ingen riktig gruppflik upp efter två försök är något fel (utloggad,
+    # redirect, cookie-vägg) och fler flikar hjälper ändå inte — då slutar den
+    # helt tills en gruppflik faktiskt syns (räknaren nollas där uppe).
+    # $script:FlikForsok initieras på skript-nivå (nära GruppMedId) — under
+    # StrictMode kastar det att läsa den osatt.
+    $nu = Get-Date
+    $f = $script:FlikForsok[$gid]
+    if ($f) {
+      if ($f.antal -ge 2) {
+        return @{ fel = 'har redan försökt öppna flik för grupp ' + $gid + ' (' + $Grupp.namn +
+          ') två gånger utan att en gruppflik dök upp — öppnar inga fler (sannolikt utloggad eller cookie-vägg). Logga in/öppna gruppen i bryggfönstret.' }
+      }
+      if (($nu - $f.tid).TotalSeconds -lt 120) {
+        return @{ fel = 'väntar på att fliken för ' + $Grupp.namn + ' ska ladda (öppnar inte fler än var 2:a minut).' }
+      }
+    }
+
     if ($fb.Count -gt 0) {
       if (Oppna-Flik -Port $Port -GruppId $gid) {
+        $antalNu = if ($f) { [int]$f.antal + 1 } else { 1 }
+        $script:FlikForsok[$gid] = @{ tid = $nu; antal = $antalNu }
         return @{ fel = 'öppnade en ny flik för ' + $Grupp.namn + ' — ansluter vid nästa försök.' }
       }
       return @{ fel = 'Chrome är igång men ingen flik står på grupp ' + $gid +
@@ -1377,6 +1440,10 @@ function Anslut {
     }
     return @{ fel = 'Chrome är igång men ingen Facebook-flik är öppen.' }
   }
+
+  # Gruppfliken finns — nolla backoff-räknaren så normal drift återupptas
+  # efter att någon loggat in och gruppen laddat.
+  if ($script:FlikForsok) { $script:FlikForsok.Remove($gid) }
 
   $ws = New-Object System.Net.WebSockets.ClientWebSocket
   $cts = New-Object System.Threading.CancellationTokenSource
@@ -4219,11 +4286,15 @@ function Tom-Utkorg {
     # medan ingenting hände på andra sidan.
     $skapade = 0; $dubbletter = 0; $vagrade = 0; $notis = 'okänd'
     if ($svar) {
-      if ($null -ne $svar.skrivna)     { $skapade    = [int]$svar.skrivna }
-      elseif ($null -ne $svar.skapade) { $skapade    = [int]$svar.skapade }
-      if ($null -ne $svar.dubbletter)  { $dubbletter = [int]$svar.dubbletter }
-      if ($null -ne $svar.vagrade)     { $vagrade    = [int]$svar.vagrade }
-      if ($null -ne $svar.notis)       { $notis      = [string]$svar.notis }
+      # StrictMode: att läsa $svar.skrivna när fältet saknas KASTAR ("property
+      # cannot be found") — det var det som gav SKICK-FEL fast anropet gick
+      # igenom. Kolla fältnamnen först, precis som avsiktligt-raden nedan.
+      $falt = @($svar.PSObject.Properties.Name)
+      if ($falt -contains 'skrivna')     { $skapade    = [int]$svar.skrivna }
+      elseif ($falt -contains 'skapade') { $skapade    = [int]$svar.skapade }
+      if ($falt -contains 'dubbletter')  { $dubbletter = [int]$svar.dubbletter }
+      if ($falt -contains 'vagrade')     { $vagrade    = [int]$svar.vagrade }
+      if ($falt -contains 'notis')       { $notis      = [string]$svar.notis }
     }
     $script:Summa.skickade   += $skapade
     $script:Summa.dubbletter += $dubbletter
@@ -4243,7 +4314,7 @@ function Tom-Utkorg {
         (Split-Path -Leaf $Bryggfil) + ' — notisvägen på servern saknar geografi och skulle ' +
         'skicka den till varenda prenumerant, oavsett stad.'
       ) DarkGray
-    } elseif ($svar -and $svar.utanNyckel) {
+    } elseif ($svar -and (@($svar.PSObject.Properties.Name) -contains 'utanNyckel') -and $svar.utanNyckel) {
       # Halva kedjan gick. Säg det rakt ut varje gång — annars tror man att
       # tystnaden i telefonen betyder att inget hände i gruppen.
       Logga 'KARTA-UTAN-NOTIS' (
