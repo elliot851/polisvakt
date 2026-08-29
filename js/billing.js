@@ -202,6 +202,12 @@ export class Billing extends EventTarget {
 
   /** Får appen användas just nu? */
   get allowed() {
+    // Testfasen (KONTOKRAV_AKTIVT = false): ingen betalning krävs, så
+    // provperioden får ALDRIG gata. Utan den här raden slog en utgången
+    // enhets-trial upp betalväggen "Provperioden är slut" mitt i testfasen —
+    // maybeShowPaywall() körs var 60:e sekund och kollade bara allowed, inte
+    // testläget. Hela provlogiken är vilande tills kontokravet slås på.
+    if (!KONTOKRAV_AKTIVT) return true;
     return this.status === 'trial' || this.status === 'active';
   }
 

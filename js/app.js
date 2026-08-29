@@ -9,7 +9,7 @@ import { Speaker, Listener, voiceInputSupported, pausEfterPling } from './voice.
 import { AlertEngine } from './alerts.js';
 import { HazardMap } from './map.js';
 import { Dashcam, dashcamSupported, fmtBytes, fmtDuration } from './dashcam.js';
-import { Billing, PRICE_TEXT, TRIAL_DAYS } from './billing.js';
+import { Billing, PRICE_TEXT, TRIAL_DAYS, KONTOKRAV_AKTIVT } from './billing.js';
 import * as Install from './install.js';
 import { SpeedLimitService } from './speedlimit.js';
 import { ImpactDetector, motionSupported, motionNeedsPermission } from './impact.js';
@@ -4622,6 +4622,17 @@ function renderBilling() {
   const s = billing.status;
   const chip = $('chipTrial');
   const el = $('billingStatus');
+
+  // Testfasen (KONTOKRAV_AKTIVT = false): ingen betalning krävs, alltså finns
+  // ingen provperiod att visa. Utan det här stod "Provperiod slut" i chippen
+  // fem dygn efter första start fast inget faktiskt gatas — förvirrande i en
+  // app som ännu inte lanserats. Hela trial-UI:t tänds med kontokravet.
+  if (!KONTOKRAV_AKTIVT) {
+    if (chip) chip.hidden = true;
+    if (el) el.textContent = '';
+    const sub = $('btnSubscribe'); if (sub) sub.hidden = true;
+    return;
+  }
 
   if (s === 'active') {
     chip.hidden = true;

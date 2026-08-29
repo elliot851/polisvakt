@@ -30,33 +30,34 @@ function trovardighetMin(h) {
   return TTL_MINUTES[h.type] ?? 45;
 }
 
+// KARTBRICKORNA — nyckelfria (Esri Canvas).
+//
+// Låg tidigare på CARTO (basemaps.cartocdn.com). CARTO kräver sedan 2024/2025
+// en API-nyckel för sina basemaps, och utan den svarar de "API key required" —
+// kartan blev då bara en tom, grå ruta. Bytt till Esris Canvas-brickor som
+// fungerar utan nyckel: World_Dark_Gray_Base (natt) och World_Light_Gray_Base
+// (dag). Rena, dämpade kartor som passar en varningskarta man kastar en blick
+// på i bilen.
+//
+// OBS ordningen: Esri är {z}/{y}/{x} (inte {z}/{x}/{y} som CARTO), och det
+// finns inget @2x/{r} och inga {s}-subdomäner — en enda värd. maxNativeZoom
+// är 16 (Esri Canvas ritar inte längre in), men maxZoom får vara 19 så Leaflet
+// skalar upp sista stegen i stället för att visa tomt.
+//
+// INFÖR LANSERING: vill man ha CARTO:s snyggare mörka kartografi igen skaffar
+// man en CARTO-nyckel (gratis upp till ~75k brickor/mån) och lägger URL:en med
+// ?api_key=... i en config-slot. Esri räcker gott för testfasen och kostar
+// ingenting.
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas';
+const ATTR =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · ' +
+  'Brickor: <a href="https://www.esri.com/">Esri</a> · ' +
+  'Rutter: <a href="http://project-osrm.org/">OSRM</a> · ' +
+  'Sök: <a href="https://nominatim.openstreetmap.org/">Nominatim</a>';
+
 const TILES = {
-  day: {
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    // Kartbrickor från CARTO, kartdata från OpenStreetMap, ruttberäkning från
-    // OSRM och adressökning från Nominatim. Alla fyra är gratis att använda
-    // och alla fyra kräver att man skriver vem de kommer ifrån. Vi använde
-    // OSRM och Nominatim utan att nämna dem — det är inte en detalj, det är
-    // villkoret för att få fortsätta använda dem.
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, ' +
-      '&copy; <a href="https://carto.com/attributions">CARTO</a> · ' +
-      'Rutter: <a href="http://project-osrm.org/">OSRM</a> · ' +
-      'Sök: <a href="https://nominatim.openstreetmap.org/">Nominatim</a>',
-  },
-  night: {
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    // Kartbrickor från CARTO, kartdata från OpenStreetMap, ruttberäkning från
-    // OSRM och adressökning från Nominatim. Alla fyra är gratis att använda
-    // och alla fyra kräver att man skriver vem de kommer ifrån. Vi använde
-    // OSRM och Nominatim utan att nämna dem — det är inte en detalj, det är
-    // villkoret för att få fortsätta använda dem.
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, ' +
-      '&copy; <a href="https://carto.com/attributions">CARTO</a> · ' +
-      'Rutter: <a href="http://project-osrm.org/">OSRM</a> · ' +
-      'Sök: <a href="https://nominatim.openstreetmap.org/">Nominatim</a>',
-  },
+  day:   { url: ESRI + '/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: ATTR },
+  night: { url: ESRI + '/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',  attribution: ATTR },
 };
 
 export class HazardMap extends EventTarget {
@@ -81,7 +82,9 @@ export class HazardMap extends EventTarget {
 
     this.theme = 'night';
     this.tileLayer = L.tileLayer(TILES.night.url, {
-      attribution: TILES.night.attribution, maxZoom: 19, subdomains: 'abcd',
+      // maxNativeZoom 16: Esri Canvas har inga brickor bortom det. maxZoom 19
+      // behålls så inzoomningen känns likadan — Leaflet skalar upp 17–19.
+      attribution: TILES.night.attribution, maxZoom: 19, maxNativeZoom: 16,
     }).addTo(this.map);
 
     L.control.zoom({ position: 'bottomleft' }).addTo(this.map);
