@@ -653,6 +653,77 @@ export async function hamtaGruppnotiser() {
   }
 }
 
+/* ==================== VILKA STÄDER (REGIONER) ===================== */
+/*
+ * Uttryckligt val av städer, skilt från den geografiska "Nära mig"-vägen
+ * nedan. Den senare gissar var du hör hemma ur dina GPS-rutor; den här låter
+ * dig SÄGA det: "Västerås och Stockholm, inte Uppsala". Kravet kom rakt från
+ * ägaren — en person kan vara kopplad till flera grupper och vill kunna kryssa
+ * i och ur var för sig.
+ *
+ * Lagras i push_subscriptions.regioner (text[]) via fbmejl_satt_regioner. Läs
+ * ALLTID tillbaka serverns svar — samma läxa som gruppnotiser: telefonens
+ * localStorage är en cache, aldrig sanningen.
+ *
+ * null på servern = "alla regioner" (bakåtkompatibelt: den som aldrig rört
+ * väljaren får allt). Nycklarna ägs av js/regioner.js.
+ */
+
+const REGIONER_KEY_CACHE = 'regionerCache';
+
+/**
+ * Sätt vilka städer telefonen vill ha notiser från.
+ * @param {string[]|null} nycklar  live-nycklar ur js/regioner.js, redan städade.
+ *   null = "alla regioner".
+ * @returns {Promise<{ok:boolean, regioner:(string[]|null)}>}
+ */
+export async function settRegioner(nycklar) {
+  const st = load();
+  if (!st.endpoint || !st.device) return { ok: false, regioner: null };
+  try {
+    const svar = await rpc('fbmejl_satt_regioner', {
+      p_endpoint: st.endpoint, p_device: st.device,
+      p_regioner: nycklar === null ? null : (Array.isArray(nycklar) ? nycklar : []),
+    });
+    if (!svar?.ok) return { ok: false, regioner: null };
+    const reg = Array.isArray(svar.regioner) ? svar.regioner : null;
+    save({ ...st, [REGIONER_KEY_CACHE]: reg });
+    return { ok: true, regioner: reg };
+  } catch {
+    return { ok: false, regioner: null };
+  }
+}
+
+/**
+ * Cachen: vad telefonen TROR är valt. null = alla (förvalet). Använd
+ * hamtaRegioner() när det spelar roll.
+ */
+export function harRegioner() {
+  const st = load();
+  const v = st[REGIONER_KEY_CACHE];
+  return Array.isArray(v) ? v : null;
+}
+
+/**
+ * Frågar servern vilka städer som faktiskt gäller.
+ * @returns {Promise<{finns:boolean, regioner:(string[]|null), nadde:boolean}>}
+ *   regioner = null betyder "alla".
+ */
+export async function hamtaRegioner() {
+  const st = load();
+  if (!st.endpoint || !st.device) return { finns: false, regioner: null, nadde: true };
+  try {
+    const s = await rpc('fbmejl_har_regioner', {
+      p_endpoint: st.endpoint, p_device: st.device,
+    });
+    const reg = Array.isArray(s?.regioner) ? s.regioner : null;
+    if (s?.finns) save({ ...st, [REGIONER_KEY_CACHE]: reg });
+    return { finns: !!s?.finns, regioner: reg, nadde: true };
+  } catch {
+    return { finns: true, regioner: harRegioner(), nadde: false };
+  }
+}
+
 /* ==================== VAR NOTISERNA SKA GÄLLA ====================== */
 /*
  * Gruppnotisen gick förut till varenda prenumerant, oavsett var i landet hen
