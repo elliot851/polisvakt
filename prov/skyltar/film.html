@@ -230,17 +230,39 @@ $('kor').addEventListener('click', async () => {
   const ms = Math.round(performance.now() - T0);
   const lista = [...funna.entries()].sort((a, b) => b[1].antal - a[1].antal);
 
-  /* Ett nummer som setts i många bildrutor är nästan säkert rätt. Ett som
-   * setts EN gång och ligger ett tecken från ett stabilt nummer är nästan
-   * säkert samma bil, felläst. Det är den enda felsignal som går att få utan
-   * facit — och det är precis den sortens fel som är farlig. */
-  const stabila = lista.filter(([, p]) => p.antal >= 3).map(([t]) => t);
+  /*
+   * Ett nummer som setts i många bildrutor är nästan säkert rätt. Två nummer
+   * som skiljer sig på ETT tecken är nästan säkert samma bil, där det ena är
+   * felläst. Det är den enda felsignal som går att få utan facit, och det är
+   * precis den sortens fel som är farlig.
+   *
+   * DEN FÖRSTA VERSIONEN AV DEN HÄR REGELN MISSADE ETT VERKLIGT FALL, OCH
+   * DET SKA STÅ HÄR. Den krävde att GRANNEN var stabil (minst tre bildrutor)
+   * innan den vågade kalla något en felläsning. På den första riktiga filmen
+   * kom paret FWO370 (2 bildrutor) och FWD370 (1 bildruta) ut, båda vid 44–45
+   * px, båda med 75–76 i säkerhet — och bänken rapporterade noll misstänkta,
+   * eftersom ingen av dem var stabil. Att båda är sällsynta gör paret MER
+   * misstänkt, inte mindre: två bilar vars nummer skiljer sig på ett enda
+   * tecken, i samma klipp, inom en sekund, finns i praktiken inte.
+   *
+   * Nu jämförs alla mot alla. Har grannen fler bildrutor är det här numret
+   * troligen felläsningen; är de lika sällsynta är paret osäkert och båda
+   * flaggas, för vilket av dem som är rätt går inte att avgöra härifrån.
+   */
   const bedom = (text, p) => {
+    const grannar = lista
+      .filter(([t]) => t !== text && avstand(t, text) === 1)
+      .map(([t, q]) => ({ t, antal: q.antal }))
+      .sort((a, b) => b.antal - a.antal);
+    const g = grannar[0];
+    if (g && g.antal >= p.antal * 2) {
+      return { txt: `troligen felläsning av ${g.t}`, k: 'fel' };
+    }
+    if (g) return { txt: `osäkert par med ${g.t} — ett av dem är fel`, k: 'fel' };
     if (p.antal >= 3) return { txt: 'stabil', k: 'ok' };
-    const granne = stabila.find(s => s !== text && avstand(s, text) === 1);
-    if (granne) return { txt: `troligen felläsning av ${granne}`, k: 'fel' };
     return { txt: 'enstaka — okänt', k: 'varn' };
   };
+  const stabila = lista.filter(([t, p]) => bedom(t, p).k === 'ok').map(([t]) => t);
 
   const tbody = $('tab').querySelector('tbody');
   let minPxStabil = null, misstankta = 0;
