@@ -3,8 +3,13 @@
 // UT: speechSynthesis på svenska. Kö så två varningar aldrig pratar i mun
 //     på varandra, och prioritet så en nära fara går före en avlägsen.
 //
-// IN: SpeechRecognition som en ren strömbrytare. Ett tryck startar, ett
-//     tryck stoppar — mikrofonen stänger sig aldrig själv. Webbläsarens
+// IN: SpeechRecognition bakom en knapp. Ett tryck startar; sedan avslutar
+//     antingen ett andra tryck eller — vanligare — 2,5 sekunders TYSTNAD
+//     efter att föraren talat klart. Tystnadsklockan startar först när något
+//     hörts, så ett tryck följt av tänkepaus skickar inte in tomhet.
+//     Bakgrunden är bilen: den som säger "polis vid Enköping" har händerna
+//     på ratten och ska inte behöva leta upp knappen igen för att skicka.
+//     Webbläsarens
 //     igenkänning gör tvärtom: den avslutar sessionen vid en paus i talet,
 //     vid tystnad, och på vissa telefoner efter en fast tid. Därför startar
 //     Listener om igenkänningen internt så länge föraren har den påslagen,
@@ -2591,6 +2596,28 @@ const MAX_ALTERNATIVES = 5;
 const WAKE_SILENCE_MS = 2800;     // tystnad efter tal avslutar
 const WAKE_MAX_MS = 14000;        // tak även om någon pratar oavbrutet
 
+/*
+ * TYSTNAD AVSLUTAR ÄVEN NÄR MAN TRYCKT PÅ KNAPPEN.
+ *
+ * Förut var mikrofonknappen en ren strömbrytare: ett tryck på, ett tryck av.
+ * Det är fel ergonomi i en bil. Föraren säger "polis vid Enköping" och har då
+ * händerna på ratten och blicken på vägen — att kräva ett andra tryck betyder
+ * att rapporten ligger kvar i mikrofonen tills någon råkar titta på skärmen,
+ * och att allt som sägs i bilen däremellan hamnar i samma yttrande.
+ *
+ * 2,5 sekunder är valt i det spann som känns som "jag är klar" utan att kapa
+ * en naturlig paus mitt i en mening — "polis vid… Enköping" ska överleva.
+ * Kortare än två sekunder kapar tänkepauser, längre än tre känns som att
+ * appen hängt sig.
+ *
+ * Klockan startar FÖRST NÄR NÅGOT HÖRTS, aldrig vid trycket. Den som trycker
+ * och sedan tänker i fem sekunder ska inte få ett tomt yttrande inskickat —
+ * och taket nedan finns för att ett yttrande inte ska kunna växa i evighet
+ * om mikrofonen fångar radio eller passagerare.
+ */
+const TAL_SILENCE_MS = 2500;
+const TAL_MAX_MS = 20000;
+
 const FLUSH_MS = 900;             // hur länge vi väntar på sista slutresultatet
 const ECHO_TAIL_MS = 500;         // ekosvans efter att appen slutat prata
 const SPEAK_MAX_MS = 30000;       // längsta tid mikrofonen får hållas stängd av uppläsning
@@ -2636,7 +2663,8 @@ export class Listener extends EventTarget {
     this.interimText = '';
 
     this.wakeArmed = false;       // väckningsordet ska tillbaka efteråt
-    this.autoFinish = false;      // sant bara i väckningsläge
+    this.autoFinish = false;      // sant så fort någon lyssning är igång
+    this.autoFinishKalla = null;  // 'knapp' eller 'vackning' — styr tiderna
     this.silenceTimer = null;
     this.capTimer = null;
     this.restartTimer = null;
@@ -2674,6 +2702,9 @@ export class Listener extends EventTarget {
    * filen ägs av någon annan. Därför är startCommand en synonym för toggle:
    * andra trycket avslutar och lämnar över texten istället för att starta om
    * en session som redan är igång.
+   *
+   * Andra trycket är numera en genväg och inte enda vägen ut — tystnad
+   * avslutar av sig själv, se `start` och `#armAutoFinish`.
    */
   toggle() {
     if (this.state === 'listening' || this.state === 'processing') this.finish();
@@ -2683,7 +2714,13 @@ export class Listener extends EventTarget {
   /** Tryck-och-tala. Se toggle() — samma knapp, samma tryck. */
   startCommand() { this.toggle(); }
 
-  /** Slå på mikrofonen. Den stängs aldrig av sig själv efter det här. */
+  /**
+   * Slå på mikrofonen.
+   *
+   * Den stänger sig själv efter TAL_SILENCE_MS tystnad — men först efter att
+   * något hörts, se `#armAutoFinish`. Ett andra tryck avslutar direkt och är
+   * fortfarande snabbare; tystnaden är ett skyddsnät, inte enda vägen ut.
+   */
   start() {
     if (!SR) { this.#emit('unsupported'); return; }
     if (this.state === 'listening') return;
@@ -2694,7 +2731,13 @@ export class Listener extends EventTarget {
     this.lastError = null;
     this.errorMessage = '';
     this.mode = 'command';
-    this.autoFinish = false;       // inget tidsslut: föraren trycker själv
+    /*
+     * Tystnad avslutar. Klockan armeras inte här utan i `#onResult`, alltså
+     * först när föraren faktiskt sagt något — ett tryck följt av tystnad
+     * lämnar mikrofonen öppen i stället för att skicka in ingenting.
+     */
+    this.autoFinish = true;
+    this.autoFinishKalla = 'knapp';
     this.wantsRunning = true;
     // Pratar appen just nu får mikrofonen vänta tills munnen är stängd,
     // annars är det första den hör vår egen röst. resume() tar vid.
@@ -2985,6 +3028,7 @@ export class Listener extends EventTarget {
       if (WAKE_PHRASES.some(p => low.includes(p))) {
         this.mode = 'command';
         this.autoFinish = true;      // ingen knapp att trycka av med
+        this.autoFinishKalla = 'vackning';
         this.finals = [];
         this.interimText = '';
         this.#resetCounters();
@@ -3004,16 +3048,33 @@ export class Listener extends EventTarget {
     if (this.autoFinish) this.#armAutoFinish();
   }
 
-  /** Bara i väckningsläge: tystnad efter talet avslutar yttrandet. */
+  /**
+   * Tystnad efter talet avslutar yttrandet.
+   *
+   * Anropas bara ur `#onResult`, alltså först när något faktiskt hörts.
+   * Varje ny bit tal nollställer klockan, så det som mäts är tystnad SEDAN
+   * SENAST NÅGON SA NÅGOT — inte tid sedan mikrofonen slogs på.
+   *
+   * Väckningsordet och knappen har olika tider med flit: väckningsläget kan
+   * stå på i timmar och ska stänga sig snålt, knappen är ett medvetet tryck
+   * där föraren vet att hen ska säga något.
+   */
   #armAutoFinish() {
+    /* Vilken väg som slog på lyssnandet, inte vilket läge vi råkar vara i:
+     * väckningsordet sätter `mode` till 'command' när det triggat, så `mode`
+     * kan inte skilja dem åt, och `wakeArmed` kan hänga kvar från ett
+     * väckningsläge som stod på när knappen trycktes. */
+    const franVackning = this.autoFinishKalla === 'vackning';
+    const tystnad = franVackning ? WAKE_SILENCE_MS : TAL_SILENCE_MS;
+    const tak = franVackning ? WAKE_MAX_MS : TAL_MAX_MS;
     clearTimeout(this.silenceTimer);
     this.silenceTimer = setTimeout(() => {
       if (this.state === 'listening') this.finish();
-    }, WAKE_SILENCE_MS);
+    }, tystnad);
     if (!this.capTimer) {
       this.capTimer = setTimeout(() => {
         if (this.state === 'listening') this.finish();
-      }, WAKE_MAX_MS);
+      }, tak);
     }
   }
 

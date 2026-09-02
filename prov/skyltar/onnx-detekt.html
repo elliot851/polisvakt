@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ONNX-detektion — Väg B, steg 1</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 760px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 10px 18px; font: inherit; font-weight: 700; margin: 8px 8px 8px 0; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 12px 0;
+           border-bottom: 1px solid #33445a; font-size: 16px; z-index: 5; }
+  .stor { font-size: 22px; font-weight: 700; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; }
+  .kort { display: inline-block; margin: 6px; vertical-align: top; }
+  .kort canvas { border: 1px solid #33445a; border-radius: 6px; display: block; }
+  .kort div { font-size: 12px; color: #b9c7d6; max-width: 420px; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>ONNX-detektion — Väg B, steg 1</h1>
+<p class="hint">
+  Mätningen på <code>bilkamera.html</code> pekade ut <b>detektionen</b>, inte OCR:en:
+  det blå bandet missades helt på de tydligaste bilderna och spårningen låste på
+  hela grillen. Den här sidan byter bara ut sökningen — en YOLOv9-t tränad på
+  registreringsskyltar (MIT, 7,8 MB, NMS inbyggd) — och ritar ut vad den hittar.
+  Ingenting i appen är ändrat. Först när lådorna sitter rätt är det värt att
+  koppla dem till läsningen.
+</p>
+<button id="kor">Kör detektionen</button>
+<label style="color:#b9c7d6">tröskel
+  <input id="troskel" type="number" value="0.25" min="0.05" max="0.9" step="0.05" style="width:70px">
+</label>
+<div id="summa">Tryck Kör.</div>
+<div id="galleri"></div>
+
+<script type="module">
+const ORT_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js';
+const MODELL  = '/modeller/yolo-v9-t-640-plate.onnx';
+const S = 640;                     // modellens indatasida
+
+const $ = id => document.getElementById(id);
+
+function laddaSkript(url) {
+  return new Promise((ok, nej) => {
+    const s = document.createElement('script');
+    s.src = url; s.onload = ok; s.onerror = () => nej(new Error('kunde inte ladda ' + url));
+    document.head.appendChild(s);
+  });
+}
+function laddaBild(url) {
+  return new Promise((ok, nej) => {
+    const i = new Image();
+    i.onload = () => ok(i); i.onerror = () => nej(new Error('kunde inte ladda ' + url));
+    i.src = url;
+  });
+}
+
+/**
+ * Brevlådeskalning: krymp med BEVARADE proportioner och fyll ut resten.
+ * En rak omskalning till 640x640 skulle klämma ihop en 16:9-ruta på höjden,
+ * och en skylt är redan avlång — då tränas modellen på en form den aldrig
+ * sett. Skalan och kanterna sparas så lådorna kan räknas tillbaka.
+ */
+function brevlada(duk) {
+  const skala = Math.min(S / duk.width, S / duk.height);
+  const nb = Math.round(duk.width * skala), nh = Math.round(duk.height * skala);
+  const dx = Math.floor((S - nb) / 2), dy = Math.floor((S - nh) / 2);
+  const d = document.createElement('canvas'); d.width = S; d.height = S;
+  const g = d.getContext('2d', { willReadFrequently: true });
+  g.fillStyle = '#727272';           // 114,114,114 — samma utfyllnad som vid träning
+  g.fillRect(0, 0, S, S);
+  g.drawImage(duk, 0, 0, duk.width, duk.height, dx, dy, nb, nh);
+  return { duk: d, skala, dx, dy };
+}
+
+/** RGB, 0–1, kanal-först — det modellen vill ha. */
+function tillTensor(duk) {
+  const d = duk.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, S, S).data;
+  const ut = new Float32Array(3 * S * S);
+  const yta = S * S;
+  for (let i = 0, p = 0; i < yta; i++, p += 4) {
+    ut[i]           = d[p]     / 255;
+    ut[i + yta]     = d[p + 1] / 255;
+    ut[i + 2 * yta] = d[p + 2] / 255;
+  }
+  return new ort.Tensor('float32', ut, [1, 3, S, S]);
+}
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  const troskel = +$('troskel').value || 0.25;
+  $('galleri').innerHTML = '';
+  $('summa').textContent = 'Laddar onnxruntime-web…';
+  try { if (!window.ort) await laddaSkript(ORT_URL); }
+  catch (e) { $('summa').textContent = e.message; $('kor').disabled = false; return; }
+
+  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+  $('summa').textContent = 'Laddar modellen (7,8 MB)…';
+  let sess;
+  const tModell = performance.now();
+  try { sess = await ort.InferenceSession.create(MODELL, { executionProviders: ['wasm'] }); }
+  catch (e) { $('summa').textContent = 'Modellen gick inte att ladda: ' + e.message;
+              $('kor').disabled = false; return; }
+  const modellMs = Math.round(performance.now() - tModell);
+
+  const poster = await (await fetch('bilkamera-ram/facit.json')).json();
+  let hittade = 0, tider = [];
+
+  for (const p of poster) {
+    $('summa').textContent = `Kör ${p.fil}…`;
+    const bild = await laddaBild('bilkamera-ram/' + p.fil);
+    const duk = document.createElement('canvas');
+    duk.width = bild.naturalWidth; duk.height = bild.naturalHeight;
+    duk.getContext('2d', { willReadFrequently: true }).drawImage(bild, 0, 0);
+
+    const bl = brevlada(duk);
+    const t0 = performance.now();
+    const svar = await sess.run({ images: tillTensor(bl.duk) });
+    const ms = performance.now() - t0;
+    tider.push(ms);
+
+    /*
+     * [N,7] = [bild, x1, y1, x2, y2, KLASS, POÄNG] i brevlådans koordinater.
+     * Poängen ligger SIST, inte på plats 5. Den ordningen är uppmätt på en
+     * riktig körning, inte läst ur en README: med plats 5 som poäng blev varje
+     * låda 0,00 och bänken rapporterade "hittade 0/14" fastän modellen hittade
+     * skylten med 0,88 säkerhet.
+     */
+    const ut = svar[sess.outputNames[0]];
+    const rad = ut.dims[1] || 7;
+    const n = ut.dims[0];
+    const lador = [];
+    for (let i = 0; i < n; i++) {
+      const o = i * rad;
+      const poang = ut.data[o + 6];
+      if (poang < troskel) continue;
+      lador.push({
+        x1: (ut.data[o + 1] - bl.dx) / bl.skala,
+        y1: (ut.data[o + 2] - bl.dy) / bl.skala,
+        x2: (ut.data[o + 3] - bl.dx) / bl.skala,
+        y2: (ut.data[o + 4] - bl.dy) / bl.skala,
+        poang,
+      });
+    }
+    lador.sort((a, b) => b.poang - a.poang);
+    if (lador.length) hittade++;
+
+    // Rita ut: hela rutan nedskalad, med lådorna.
+    const v = document.createElement('canvas');
+    v.width = 420; v.height = Math.round(420 * duk.height / duk.width);
+    const g = v.getContext('2d');
+    g.drawImage(duk, 0, 0, v.width, v.height);
+    const k = v.width / duk.width;
+    g.lineWidth = 2; g.font = '11px monospace';
+    for (const l of lador) {
+      g.strokeStyle = '#6ee2a6'; g.fillStyle = '#6ee2a6';
+      g.strokeRect(l.x1 * k, l.y1 * k, (l.x2 - l.x1) * k, (l.y2 - l.y1) * k);
+      g.fillText(l.poang.toFixed(2), l.x1 * k, Math.max(9, l.y1 * k - 3));
+    }
+    const kort = document.createElement('div');
+    kort.className = 'kort';
+    kort.appendChild(v);
+    const txt = document.createElement('div');
+    const b = lador[0];
+    txt.innerHTML = `<b>${p.fil}</b> · facit ${p.facit || '—'}<br>` +
+      (b ? `${lador.length} låda(or), bäst ${b.poang.toFixed(2)}, ` +
+           `${Math.round(b.x2 - b.x1)}×${Math.round(b.y2 - b.y1)} px`
+         : `<span class="fel">ingen låda</span>`) +
+      ` · ${Math.round(ms)} ms`;
+    kort.appendChild(txt);
+    $('galleri').appendChild(kort);
+  }
+
+  const medel = Math.round(tider.reduce((a, b) => a + b, 0) / tider.length);
+  window.__onnxdet = { hittade, av: poster.length, medelMs: medel, modellMs };
+  $('summa').innerHTML =
+    `<span class="stor ${hittade === poster.length ? 'ok' : ''}">Hittade skylt i ${hittade}/${poster.length} bilder</span><br>` +
+    `<span style="color:#b9c7d6">Modellen laddades på ${modellMs} ms. ` +
+    `${medel} ms per bildruta (WASM, ${S}×${S}).</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-08-24-115';
+const VERSION = '2026-09-02-116';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -31,6 +31,24 @@ const VERSION = '2026-08-24-115';
 // sig ur sitt eget fel. Med cache:'reload' frågar vi alltid servern.
 const fromNetwork = req => fetch(new Request(req, { cache: 'reload' }));
 const CACHE = `polisvakt-${VERSION}`;
+
+/*
+ * Skyltmodellerna bor i en EGEN cache, utan versionsnummer i namnet.
+ *
+ * Två skäl, båda om megabyte över mobildata:
+ *
+ * 1. Den versionerade cachen töms vid varje deploy (se `activate`). Låg
+ *    modellerna där skulle 13 MB hämtas om varje gång en knapptext ändras.
+ *    Den här cachen står kvar över deployer och rensas bara när namnet
+ *    nedan ändras — vilket det ska göra den dagen en modellfil byts ut.
+ * 2. Appskalet hämtas nät-först, för en fix ska slå igenom samma dag. Det är
+ *    fel för modellerna: de är oföränderligt innehåll med sitt versionsnummer
+ *    i filnamnet, så nät-först hade betytt 13 MB nedladdning vid varje start.
+ *    De hämtas cache-först.
+ */
+const MODELLCACHE = 'polisvakt-modeller-1';
+const arModell = url => url.origin === location.origin &&
+                        url.pathname.includes('/modeller/');
 
 const SHELL = [
   './',
@@ -51,6 +69,13 @@ const SHELL = [
   './js/map.js',
   './js/dashcam.js',
   './js/plate.js',
+  // js/plate.js importerar skyltmodell.js STATISKT. Samma fälla som
+  // facebook.js/telegram.js nedan: saknas filen i cachen och appen startas
+  // utan nät faller begäran tillbaka på index.html, importen kastar, och
+  // ingen app startar alls. Själva MODELLFILERNA hör däremot inte hemma
+  // här — 13 MB ska inte förhandshämtas, de tas cache-först vid första
+  // användning (se MODELLCACHE).
+  './js/skyltmodell.js',
   './js/chatt.js',
   './js/ljud.js',
   './js/notiser.js',
@@ -157,7 +182,11 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      // MODELLCACHE undantas med flit — se kommentaren vid konstanten. Utan
+      // undantaget hämtas 13 MB modeller om vid varje deploy.
+      .then(keys => Promise.all(keys
+        .filter(k => k !== CACHE && k !== MODELLCACHE)
+        .map(k => caches.delete(k))))
       .then(() => self.clients.claim())
       .then(() => self.clients.matchAll({ type: 'window' }))
       .then(clients => {
@@ -261,6 +290,27 @@ self.addEventListener('fetch', e => {
   // Aldrig cacha rapporter, geokodning, ruttning eller kartbrickor
   const live = /supabase\.co|nominatim|overpass|project-osrm|basemaps\.cartocdn|tile\./.test(url.host);
   if (live) return;
+
+  /*
+   * Skyltmodellerna: cache-först, och hämtas bara en gång. Ligger de i cachen
+   * rörs nätet inte alls — 13 MB ska inte över mobildata en andra gång.
+   * Misslyckas hämtningen svarar vi INTE med index.html som reservgrenen
+   * nedan gör: onnxruntime hade då fått en HTML-sida där en modell skulle
+   * ligga och kastat ett obegripligt fel. Ett rent nätverksfel är ärligare —
+   * skyltmodell.js fångar det och appen kör vidare på den handskrivna vägen.
+   */
+  if (arModell(url)) {
+    e.respondWith(
+      caches.match(e.request).then(traff => traff || fetch(e.request).then(res => {
+        if (res.ok) {
+          const kopia = res.clone();
+          caches.open(MODELLCACHE).then(c => c.put(e.request, kopia));
+        }
+        return res;
+      }))
+    );
+    return;
+  }
 
   // Appskalet: nät först, cache som reserv. Nät först är rätt val här —
   // en dashcam-fix eller ny kameradata ska slå igenom samma dag, och

@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Väg B — hela kedjan i modeller</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 800px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 10px 18px; font: inherit; font-weight: 700; margin: 8px 0; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 12px 0;
+           border-bottom: 1px solid #33445a; font-size: 16px; z-index: 5; }
+  .stor { font-size: 22px; font-weight: 700; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; } .varn { color: #ffb020; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid #22303f; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { color: #9fb3c8; font-weight: 600; }
+  td.mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .06em; }
+  td img { display: block; margin-top: 3px; border: 1px solid #33445a; border-radius: 4px;
+           image-rendering: pixelated; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Väg B — hela kedjan i modeller</h1>
+<p class="hint">
+  Samma 14 rutor och samma facit. Här är <b>både</b> sökningen och läsningen
+  utbytta: en YOLOv9-t som hittar skylten (7,8 MB) och en MobileViT tränad på
+  <b>europeiska</b> skyltar som läser den (5,0 MB). Båda MIT, båda kör i
+  webbläsaren via onnxruntime-web. Tesseract används inte alls.
+  Siffrorna att slå: gamla läsaren <b>0/8 rätt, 1 uppfunnet</b>;
+  ONNX-detektor + Tesseract <b>4/8 rätt, 2 uppfunna</b>.
+  Läsarmodellen ger en säkerhet per tecken — reglaget nedan är den lägsta
+  säkerhet vi accepterar, och allt under blir tystnad i stället för en gissning.
+</p>
+<button id="kor">Kör bänken</button>
+<label style="color:#b9c7d6">minsta teckensäkerhet
+  <input id="minSak" type="number" value="0.40" min="0" max="0.99" step="0.05" style="width:70px">
+</label>
+<div id="summa">Tryck Kör.</div>
+<table id="tab"><thead><tr>
+  <th>Bild</th><th>Facit</th><th>Utklipp och läsning</th><th>Utfall</th>
+</tr></thead><tbody></tbody></table>
+
+<script type="module">
+const ORT     = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+const DETEKT  = '/modeller/yolo-v9-t-640-plate.onnx';
+const LASARE  = '/modeller/eu-ocr.onnx';
+const S = 640;                 // detektorns indatasida
+const OB = 140, OH = 70;       // läsarens indatastorlek (eu-ocr-config.yaml)
+const ALFABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_';
+const SLOTS = 9;
+const TROSKEL = 0.25;
+
+const $ = id => document.getElementById(id);
+const bar = t => (t || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+
+const laddaSkript = url => new Promise((ok, nej) => {
+  const s = document.createElement('script');
+  s.src = url; s.onload = ok; s.onerror = () => nej(new Error('kunde inte ladda ' + url));
+  document.head.appendChild(s);
+});
+const laddaBild = url => new Promise((ok, nej) => {
+  const i = new Image();
+  i.onload = () => ok(i); i.onerror = () => nej(new Error('kunde inte ladda ' + url));
+  i.src = url;
+});
+
+function brevlada(duk) {
+  const skala = Math.min(S / duk.width, S / duk.height);
+  const nb = Math.round(duk.width * skala), nh = Math.round(duk.height * skala);
+  const dx = Math.floor((S - nb) / 2), dy = Math.floor((S - nh) / 2);
+  const d = document.createElement('canvas'); d.width = S; d.height = S;
+  const g = d.getContext('2d', { willReadFrequently: true });
+  g.fillStyle = '#727272'; g.fillRect(0, 0, S, S);
+  g.drawImage(duk, 0, 0, duk.width, duk.height, dx, dy, nb, nh);
+  return { duk: d, skala, dx, dy };
+}
+function detektTensor(duk) {
+  const d = duk.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, S, S).data;
+  const ut = new Float32Array(3 * S * S), yta = S * S;
+  for (let i = 0, p = 0; i < yta; i++, p += 4) {
+    ut[i] = d[p] / 255; ut[i + yta] = d[p + 1] / 255; ut[i + 2 * yta] = d[p + 2] / 255;
+  }
+  return new ort.Tensor('float32', ut, [1, 3, S, S]);
+}
+
+/**
+ * Skyltutklippet → läsarens indata: 140×70, gråskala, uint8, NHWC.
+ *
+ * Modellen vill ha uint8 rakt av, inte 0–1. Att dividera med 255 här ger en
+ * bild som för modellen är kolsvart, och den svarar då med nio padding-tecken
+ * utan att klaga. Formen [N,70,140,1] är hämtad ur modellens egen signatur.
+ */
+function lasarTensor(duk, l) {
+  const d = document.createElement('canvas'); d.width = OB; d.height = OH;
+  const g = d.getContext('2d', { willReadFrequently: true });
+  g.drawImage(duk, l.x1, l.y1, l.x2 - l.x1, l.y2 - l.y1, 0, 0, OB, OH);
+  const px = g.getImageData(0, 0, OB, OH).data;
+  const ut = new Uint8Array(OB * OH);
+  for (let i = 0, p = 0; i < ut.length; i++, p += 4) {
+    // Luma, samma vikter som resten av läsaren använder.
+    ut[i] = (px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114) | 0;
+  }
+  return { tensor: new ort.Tensor('uint8', ut, [1, OH, OB, 1]), forhandsvisning: d.toDataURL('image/png') };
+}
+
+/**
+ * Läsarens utdata: [1, 333] = 9 platser × 37 tecken. Per plats tas det
+ * troligaste tecknet OCH hur säkert det var. Padding-tecknet `_` avslutar.
+ *
+ * Den lägsta säkerheten över alla RIKTIGA tecken är hela numrets säkerhet —
+ * en kedja är inte starkare än sin svagaste länk, och det är precis den
+ * siffran som avgör om vi säger något alls. Det är den grinden som gör
+ * skillnad på "läste" och "hittade på".
+ */
+function avkoda(data, minSak) {
+  let text = '', lagsta = 1;
+  for (let s = 0; s < SLOTS; s++) {
+    const o = s * ALFABET.length;
+    let bast = 0, summa = 0;
+    for (let c = 0; c < ALFABET.length; c++) {
+      const v = data[o + c];
+      summa += v;
+      if (v > data[o + bast]) bast = c;
+    }
+    const tecken = ALFABET[bast];
+    if (tecken === '_') break;
+    const sakerhet = summa > 0 ? data[o + bast] / summa : 0;
+    if (sakerhet < lagsta) lagsta = sakerhet;
+    text += tecken;
+  }
+  return { text, sakerhet: lagsta, godkand: text.length >= 5 && lagsta >= minSak };
+}
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  const minSak = +$('minSak').value || 0;
+  $('summa').textContent = 'Laddar onnxruntime-web…';
+  try { if (!window.ort) await laddaSkript(ORT + 'ort.min.js'); }
+  catch (e) { $('summa').textContent = e.message; $('kor').disabled = false; return; }
+  ort.env.wasm.wasmPaths = ORT;
+
+  $('summa').textContent = 'Laddar modellerna (7,8 + 5,0 MB)…';
+  let dSess, lSess;
+  const t0 = performance.now();
+  try {
+    [dSess, lSess] = await Promise.all([
+      ort.InferenceSession.create(DETEKT, { executionProviders: ['wasm'] }),
+      ort.InferenceSession.create(LASARE, { executionProviders: ['wasm'] }),
+    ]);
+  } catch (e) { $('summa').textContent = 'Modell: ' + e.message; $('kor').disabled = false; return; }
+  const modellMs = Math.round(performance.now() - t0);
+
+  const poster = await (await fetch('bilkamera-ram/facit.json')).json();
+  const tbody = $('tab').querySelector('tbody');
+  tbody.innerHTML = '';
+  let medFacit = 0, ratt = 0, hittade = 0, falska = 0, tider = [];
+  const T0 = performance.now();
+
+  for (const p of poster) {
+    $('summa').textContent = `Kör ${p.fil}…`;
+    const bild = await laddaBild('bilkamera-ram/' + p.fil);
+    const duk = document.createElement('canvas');
+    duk.width = bild.naturalWidth; duk.height = bild.naturalHeight;
+    duk.getContext('2d', { willReadFrequently: true }).drawImage(bild, 0, 0);
+
+    const tRuta = performance.now();
+    const bl = brevlada(duk);
+    const dSvar = await dSess.run({ images: detektTensor(bl.duk) });
+    const ut = dSvar[dSess.outputNames[0]];
+    const rad = ut.dims[1] || 7;
+    const lador = [];
+    for (let i = 0; i < ut.dims[0]; i++) {
+      const o = i * rad;
+      const poang = ut.data[o + 6];      // poängen ligger SIST i [bild,x1,y1,x2,y2,klass,poäng]
+      if (poang < TROSKEL) continue;
+      lador.push({
+        x1: (ut.data[o + 1] - bl.dx) / bl.skala, y1: (ut.data[o + 2] - bl.dy) / bl.skala,
+        x2: (ut.data[o + 3] - bl.dx) / bl.skala, y2: (ut.data[o + 4] - bl.dy) / bl.skala,
+        poang,
+      });
+    }
+    lador.sort((a, b) => b.poang - a.poang);
+
+    const trafflista = [];
+    for (const l of lador) {
+      const { tensor, forhandsvisning } = lasarTensor(duk, l);
+      const r = await lSess.run({ [lSess.inputNames[0]]: tensor });
+      const a = avkoda(r[lSess.outputNames[0]].data, minSak);
+      trafflista.push({ ...a, poang: l.poang, w: Math.round(l.x2 - l.x1),
+                        h: Math.round(l.y2 - l.y1), bild: forhandsvisning });
+    }
+    tider.push(performance.now() - tRuta);
+
+    const facit = p.facit ? bar(p.facit) : null;
+    if (facit) { medFacit++; if (lador.length) hittade++; }
+    const traffade = facit && trafflista.some(t => t.godkand && t.text === facit);
+    if (traffade) ratt++;
+    const uppfunna = trafflista.filter(t => t.godkand && t.text !== facit).length;
+    falska += uppfunna;
+
+    let utfall, klass;
+    if (facit) {
+      if (traffade) { utfall = uppfunna ? 'RÄTT (+ extra läsning)' : 'RÄTT'; klass = 'ok'; }
+      else if (uppfunna) { utfall = 'FEL — uppfunnet'; klass = 'fel'; }
+      else if (lador.length) { utfall = 'hittad men tyst'; klass = 'varn'; }
+      else { utfall = 'ingen låda'; klass = 'fel'; }
+    } else {
+      utfall = uppfunna ? 'UPPFUNNET (skulle tigit)' : 'tyst — rätt beteende';
+      klass = uppfunna ? 'fel' : 'ok';
+    }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td>${p.fil}<br><span style="color:#7d8fa3">${p.notis}</span></td>` +
+      `<td class="mono">${facit || '—'}</td>` +
+      `<td class="mono">${trafflista.length
+        ? trafflista.map(t =>
+            `${t.godkand ? t.text : '(tyst: ' + (t.text || 'tomt') + ')'} · ` +
+            `säk ${t.sakerhet.toFixed(2)} · låda ${t.poang.toFixed(2)} · ${t.w}×${t.h}px` +
+            `<img src="${t.bild}" alt="">`).join('<br>')
+        : '<span class="fel">ingen låda</span>'}</td>` +
+      `<td class="${klass}">${utfall}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  const ms = Math.round(performance.now() - T0);
+  const perRuta = Math.round(tider.reduce((a, b) => a + b, 0) / tider.length);
+  window.__vagb2 = { ratt, medFacit, hittade, falska, ms, perRuta, modellMs, minSak };
+  $('summa').innerHTML =
+    `<span class="stor ${ratt >= 6 && falska === 0 ? 'ok' : ''}">${ratt}/${medFacit} rätt · ` +
+    `${falska} uppfunna</span><br>` +
+    `<span style="color:#b9c7d6">Detektorn hittade skylt i ${hittade}/${medFacit}. ` +
+    `${perRuta} ms per bildruta (detektor + läsare, WASM). Modellerna laddade på ${modellMs} ms. ` +
+    `Tröskel ${minSak}. Körtid ${ms} ms.</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

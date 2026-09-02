@@ -20,5 +20,22 @@
 *.png
 *.webp
 *.avif
+*.HEIC
+*.heic
 lista.txt
 _ut/
+
+# Bilkamera-bänken (bilkamera.html) körs på ägarens EGNA foton från förarplats.
+# De är känsligare än de 22 referensbilderna: på dem syns främmande människors
+# bilar och registreringsnummer, fotograferade i trafiken i Västerås. Varken
+# bilderna, de beskurna rutorna eller facit.json — som är en LISTA över de
+# registreringsnumren — får någonsin ligga i ett publikt repo. Hela mapparna
+# ignoreras, inte bara bildfilerna, så att inget nytt filformat smiter igenom.
+#
+# HÄMTA HEM DEM SÅ HÄR (ägarens Drive):
+#   https://drive.google.com/drive/folders/1-Dk1zVeFZ-s--WKyW9DD8mdStyiN3csD
+# Rutorna och facit byggs om ur originalen med bilkamera-ram.py.
+bilkamera/
+bilkamera-jpg/
+bilkamera-liten/
+bilkamera-ram/

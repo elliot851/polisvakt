@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liveprov — PlateReader med falsk kamera</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 780px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 10px 18px; font: inherit; font-weight: 700; margin: 8px 0; }
+  #summa { font-size: 16px; padding: 12px 0; border-bottom: 1px solid #33445a; }
+  .stor { font-size: 22px; font-weight: 700; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; }
+  pre { background: #151e28; border: 1px solid #33445a; border-radius: 8px;
+        padding: 10px; overflow-x: auto; font-size: 12.5px; }
+  canvas { max-width: 380px; border: 1px solid #33445a; border-radius: 8px; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Liveprov — hela PlateReader, med en falsk kamera</h1>
+<p class="hint">
+  De andra bänkarna anropar funktionerna i plate.js direkt. Den här startar
+  <b>hela <code>PlateReader</code></b> — kamerauppstart, sökslinga, målsökare,
+  OCR-slinga, rösträkning — men matar den med en canvas i stället för en
+  kamera, via <code>captureStream()</code>. Det är det enda sättet att prova
+  själva inkopplingen utan att sätta sig i bilen: att den byter till
+  modellvägen mitt i drift, att spåren låser, och att ett nummer faktiskt tar
+  sig hela vägen ut som en <code>traff</code>-händelse.
+  Bilden är rutan där facit är <b>MDM774</b>.
+</p>
+<button id="kor">Kör liveprovet</button>
+<div id="summa">Tryck Kör.</div>
+<canvas id="scen" width="380" height="214"></canvas>
+<pre id="logg"></pre>
+
+<script type="module">
+import { PlateReader } from '../../js/plate.js';
+import { skyltmodellLage } from '../../js/skyltmodell.js';
+
+const $ = id => document.getElementById(id);
+const FACIT = 'MDM774';
+const RUTA = 'bilkamera-ram/cc9fdc6a.jpg';
+const logg = [];
+const skriv = t => { logg.push(t); $('logg').textContent = logg.join('\n'); };
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  logg.length = 0;
+  $('summa').textContent = 'Startar…';
+
+  const bild = await new Promise((ok, nej) => {
+    const i = new Image(); i.onload = () => ok(i);
+    i.onerror = () => nej(new Error('saknas: ' + RUTA)); i.src = RUTA;
+  });
+
+  /*
+   * Den falska kameran. En canvas som ritar samma bildruta om och om igen och
+   * lämnar ifrån sig en riktig MediaStream. PlateReader kan inte se skillnad:
+   * den får en videospår med bredd, höjd och bildfrekvens som vilken kamera
+   * som helst. Bilen står visserligen still, men det är precis rätt för att
+   * mäta INKOPPLINGEN — rör sig ingenting kan ingenting heller skylla på att
+   * skylten hann flytta sig.
+   */
+  const scen = document.createElement('canvas');
+  scen.width = bild.naturalWidth; scen.height = bild.naturalHeight;
+  const sg = scen.getContext('2d');
+  sg.drawImage(bild, 0, 0);
+  const rita = setInterval(() => sg.drawImage(bild, 0, 0), 33);
+  const strom = scen.captureStream(30);
+
+  const riktig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getUserMedia = async () => strom;
+
+  // Visa vad "kameran" ser.
+  const v = $('scen').getContext('2d');
+  v.drawImage(bild, 0, 0, 380, 214);
+
+  const lasare = new PlateReader({
+    settings: {
+      provlage: true,      // annars skickas 'traff' bara för egna fordon
+      ritaSikte: false,
+    },
+  });
+
+  let traffar = [], byte = null, forstaLas = null, kandRader = 0;
+  lasare.addEventListener('modell', e => {
+    byte = e.detail;
+    skriv(`modell: ${JSON.stringify(e.detail)}`);
+  });
+  lasare.addEventListener('traff', e => {
+    traffar.push(e.detail);
+    skriv(`TRÄFF: ${e.detail.plat} (säkerhet ${e.detail.sakerhet})`);
+  });
+  lasare.addEventListener('kandidater', e => {
+    kandRader++;
+    if (!forstaLas && e.detail.last) {
+      forstaLas = e.detail.last;
+      skriv(`lås: ${Math.round(forstaLas.w)}×${Math.round(forstaLas.h)} px, ` +
+            `poäng ${forstaLas.poang?.toFixed?.(2)}, ankrad ${forstaLas.ankrad}`);
+    }
+  });
+  lasare.addEventListener('fel', e => {
+    const d = e.detail;
+    const txt = d instanceof Error ? (d.stack || d.message)
+      : (d && typeof d === 'object'
+          ? JSON.stringify(d, Object.getOwnPropertyNames(d)) + ' | ' +
+            (d.fel?.stack || d.error?.stack || d.message || '')
+          : String(d));
+    skriv('FEL: ' + txt);
+    (window.__fel ||= []).push(d);
+  });
+  lasare.addEventListener('status', e => skriv('status: ' + (e.detail?.text ?? e.detail)));
+
+  try {
+    await lasare.start();
+    skriv('PlateReader igång, väntar 18 s…');
+    // Hjärtslag: en hängd sida ska gå att skilja från en som arbetar.
+    for (let s = 0; s < 18; s++) {
+      await new Promise(r => setTimeout(r, 1000));
+      window.__puls = { sekund: s + 1, traffar: traffar.length, kandRader };
+    }
+  } catch (e) {
+    skriv('start() kastade: ' + e.message);
+  }
+
+  const matning = lasare.matdata ? lasare.matdata() : null;
+  try { lasare.stop(); } catch {}
+  clearInterval(rita);
+  navigator.mediaDevices.getUserMedia = riktig;
+
+  const ratt = traffar.some(t => t.plat === FACIT);
+  const fel = traffar.filter(t => t.plat !== FACIT);
+  const lg = skyltmodellLage();
+  window.__liveprov = {
+    ratt, traffar, felaktiga: fel.length, byte, modell: lg,
+    sokOverhoppade: matning?.sokOverhoppade, sok: matning?.sok, ocr: matning?.ocr,
+    kandidatHandelser: kandRader,
+  };
+  $('summa').innerHTML =
+    `<span class="stor ${ratt && !fel.length ? 'ok' : 'fel'}">` +
+    `${ratt ? 'Läste ' + FACIT + ' hela vägen ut' : 'Ingen träff på ' + FACIT}` +
+    `${fel.length ? ' — men ' + fel.length + ' felaktig(a) träffar' : ''}</span><br>` +
+    `<span style="color:#b9c7d6">Modellvägen: ${lg.laddad ? 'aktiv (' + lg.motor + ')' : 'INTE aktiv'}. ` +
+    `Överhoppade sökningar: ${matning?.sokOverhoppade ?? '–'}. ` +
+    `Sökning median ${Math.round(matning?.sok?.median ?? 0)} ms, ` +
+    `OCR median ${Math.round(matning?.ocr?.median ?? 0)} ms.</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

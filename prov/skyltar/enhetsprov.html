@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enhetsprov — skyltmodellen på den här enheten</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 14px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 10px;
+           padding: 15px 22px; font: inherit; font-weight: 700; width: 100%; margin: 10px 0; }
+  #summa { padding: 12px 0; border-bottom: 1px solid #33445a; }
+  .stor { font-size: 20px; font-weight: 700; display: block; margin-bottom: 4px; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; } .varn { color: #ffb020; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid #22303f; padding: 7px 6px; text-align: left; }
+  th { color: #9fb3c8; font-weight: 600; }
+  .mono, td.mono { font-family: ui-monospace, Consolas, monospace; }
+  #kopia { width: 100%; height: 170px; background: #151e28; color: #b9c7d6;
+           border: 1px solid #33445a; border-radius: 8px;
+           font: 12px/1.4 ui-monospace, monospace; padding: 8px; margin-top: 10px; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Enhetsprov — skyltmodellen här</h1>
+<p class="hint">
+  Svarar på de två frågor som bara <b>den här</b> enheten kan svara på:
+  <b>hur snabb</b> är den, och <b>räknar den likadant</b> som datorn modellen
+  provades på. Inga foton, inga fordon, ingenting om någon annan — provet matar
+  in ett bestämt mönster och jämför svaret.
+</p>
+<p class="hint">
+  Det här provet mäter <b>inte</b> träffsäkerhet på riktiga skyltar. Den siffran
+  kommer från fotobänken (<code>vagb.html</code>), och den går inte att köra här
+  eftersom bilderna innehåller främmande fordon och aldrig publiceras.
+</p>
+<button id="kor">Kör provet</button>
+<div id="summa">Tryck Kör. Tar ungefär tjugo sekunder, plus nedladdning av 13 MB första gången.</div>
+<table id="tab"><thead><tr><th>Mätning</th><th>Här</th><th>Referens</th><th></th></tr></thead><tbody></tbody></table>
+<textarea id="kopia" readonly placeholder="Resultatet hamnar här — markera allt och klistra in i chatten."></textarea>
+
+<script type="module">
+import { haSkyltmodell, skyltmodellLage, sokMedModell, lasMedModell, MODELL }
+  from '../../js/skyltmodell.js';
+
+const $ = id => document.getElementById(id);
+
+/*
+ * REFERENSEN, mätt på den dator modellvägen byggdes och verifierades på
+ * (2026-09-02, WebGPU för sökningen, WASM för läsningen).
+ *
+ * `fingeravtryck` är det viktiga. Ett bestämt gråskalemönster in ger ett
+ * bestämt svar ut — inte ett riktigt registreringsnummer, bara det modellen
+ * råkar se i bruset. Får en annan enhet ett ANNAT svar räknar den olika, och
+ * då är läsningen inte att lita på hur snabb den än är. Det är exakt så den
+ * tysta WebGPU-buggen såg ut: rätt hastighet, "000000000" som svar.
+ */
+const REFERENS = {
+  fingeravtryck: 'OC2928P',
+  sokMs: 68,
+  lasMs: 15,
+};
+
+/** Bestämt mönster. Samma bytes på varje enhet, varje gång. */
+function provduk() {
+  const B = 140, H = 70;
+  const d = document.createElement('canvas');
+  d.width = B; d.height = H;
+  const g = d.getContext('2d', { willReadFrequently: true });
+  const bild = g.createImageData(B, H);
+  for (let i = 0, p = 0; i < B * H; i++, p += 4) {
+    const v = (i * 31 + ((i / B | 0) * 7)) & 0xff;
+    bild.data[p] = bild.data[p + 1] = bild.data[p + 2] = v;
+    bild.data[p + 3] = 255;
+  }
+  g.putImageData(bild, 0, 0);
+  return d;
+}
+
+/** En 1920×1080-scen att tidta sökningen på. Innehållet spelar ingen roll —
+ *  detektorn kostar lika mycket oavsett vad den hittar. */
+function scenduk() {
+  const d = document.createElement('canvas');
+  d.width = 1920; d.height = 1080;
+  const g = d.getContext('2d', { willReadFrequently: true });
+  const l = g.createLinearGradient(0, 0, 1920, 1080);
+  l.addColorStop(0, '#8a9099'); l.addColorStop(1, '#3a3f45');
+  g.fillStyle = l; g.fillRect(0, 0, 1920, 1080);
+  return d;
+}
+
+const rad = (namn, har, ref, ok, enhet = '') => {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${namn}</td><td class="mono ${ok === false ? 'fel' : ok ? 'ok' : ''}">` +
+    `${har}${enhet}</td><td class="mono" style="color:#7d8fa3">${ref}${ref !== '—' ? enhet : ''}</td>` +
+    `<td>${ok === true ? '✓' : ok === false ? '✗' : ''}</td>`;
+  $('tab').querySelector('tbody').appendChild(tr);
+};
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  $('tab').querySelector('tbody').innerHTML = '';
+  $('summa').textContent = 'Laddar modellerna (13 MB första gången)…';
+
+  const t0 = performance.now();
+  try { await haSkyltmodell(); }
+  catch (e) {
+    $('summa').innerHTML =
+      `<span class="stor fel">Modellvägen startar inte här</span>` +
+      `<span class="mono">${e.message}</span><br>` +
+      `<span style="color:#b9c7d6">Appen fungerar ändå — den kör då på den ` +
+      `handskrivna vägen, precis som före modellerna. Men den här enheten får ` +
+      `inte den nya läsaren, och det är värt att veta.</span>`;
+    $('kopia').value = 'ENHETSPROV MISSLYCKADES\n' + navigator.userAgent + '\n' + e.message;
+    $('kor').disabled = false; return;
+  }
+  const laddMs = Math.round(performance.now() - t0);
+  const lg = skyltmodellLage();
+
+  // --- Sökningen: tidtagning på en full bildruta -------------------------
+  $('summa').textContent = 'Mäter sökningen…';
+  const scen = scenduk();
+  const yta = { x: 0, y: 0, w: 1920, h: 1080 };
+  await sokMedModell(scen, yta);                 // uppvärmning räknas inte
+  let t = performance.now();
+  for (let i = 0; i < 5; i++) await sokMedModell(scen, yta);
+  const sokMs = Math.round((performance.now() - t) / 5);
+
+  // --- Läsningen: tidtagning OCH fingeravtryck ---------------------------
+  $('summa').textContent = 'Mäter läsningen…';
+  const duk = provduk();
+  const kand = { x: 0, y: 0, w: 140, h: 70, cx: 70, cy: 35, rw: 140, rh: 70,
+                 vinkel: 0, euAndel: 0.115, ankrad: true, poang: 0.9 };
+  // Ingen tolkning: vi vill se modellens RÅTEXT, inte ett format-godkänt svar.
+  const utanTolkning = () => ({ plat: null, exaktSex: false });
+  let svar;
+  await lasMedModell(duk, kand, utanTolkning);
+  t = performance.now();
+  for (let i = 0; i < 5; i++) svar = await lasMedModell(duk, kand, utanTolkning);
+  const lasMs = Math.round((performance.now() - t) / 5);
+
+  const avtryck = svar.ratext || '(tomt)';
+  const raknarLika = avtryck === REFERENS.fingeravtryck;
+  const bildrutaMs = sokMs + lasMs;
+
+  rad('Motor', lg.motor, 'webgpu + wasm', null);
+  rad('Modellerna laddade', laddMs, REFERENS.sokMs ? '~2000' : '—', null, ' ms');
+  rad('Sökning per bildruta', sokMs, REFERENS.sokMs, sokMs < 250, ' ms');
+  rad('Läsning per skylt', lasMs, REFERENS.lasMs, lasMs < 120, ' ms');
+  rad('Summa per bildruta', bildrutaMs, REFERENS.sokMs + REFERENS.lasMs,
+      bildrutaMs < 300, ' ms');
+  rad('Fingeravtryck', avtryck, REFERENS.fingeravtryck, raknarLika);
+
+  const svarObj = {
+    enhet: navigator.userAgent,
+    skarm: `${screen.width}×${screen.height} @${devicePixelRatio}`,
+    tradar: navigator.hardwareConcurrency,
+    webgpuFinns: !!navigator.gpu,
+    motor: lg.motor,
+    laddMs, sokMs, lasMs, bildrutaMs,
+    fingeravtryck: avtryck,
+    raknarLika,
+    troskel: MODELL.minTecken,
+  };
+  window.__enhetsprov = svarObj;
+  $('kopia').value = 'ENHETSPROV skyltmodellen\n' + JSON.stringify(svarObj, null, 1);
+
+  let dom, klass;
+  if (!raknarLika) {
+    dom = 'Enheten räknar ANNORLUNDA — läsningen är inte att lita på här';
+    klass = 'fel';
+  } else if (bildrutaMs < 150) { dom = 'Snabb och räknar rätt'; klass = 'ok'; }
+  else if (bildrutaMs < 300) { dom = 'Räknar rätt, men trögare än datorn'; klass = 'varn'; }
+  else { dom = 'Räknar rätt men är långsam — låset kommer ta tid'; klass = 'fel'; }
+
+  $('summa').innerHTML =
+    `<span class="stor ${klass}">${bildrutaMs} ms per bildruta — ${dom}</span>` +
+    `<span style="color:#b9c7d6">Motor: <b>${lg.motor}</b>. ` +
+    `Sökning ${sokMs} ms + läsning ${lasMs} ms. Modellerna laddade på ${laddMs} ms.<br>` +
+    `Kopiera hela rutan nedan och klistra in i chatten.</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modellvägen i skarp kod</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 780px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 10px 18px; font: inherit; font-weight: 700; margin: 8px 0; }
+  #summa { font-size: 16px; padding: 12px 0; border-bottom: 1px solid #33445a; }
+  .stor { font-size: 22px; font-weight: 700; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; } .varn { color: #ffb020; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid #22303f; padding: 6px 8px; text-align: left; }
+  th { color: #9fb3c8; font-weight: 600; }
+  td.mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .06em; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Modellvägen i skarp kod</h1>
+<p class="hint">
+  Skillnaden mot <code>vagb.html</code>: den sidan hade en egen kopia av
+  förbehandling och avkodning. Den här importerar <b>samma moduler som appen
+  kör</b> — <code>js/skyltmodell.js</code> för sökning och läsning,
+  <code>tolkaRatext</code> ur <code>js/plate.js</code> för formatkontroll — så
+  det som mäts här är produktionskoden och inte en bänkkopia av den. Siffran
+  som ska komma ut är <b>6/8 rätt, 0 uppfunna</b>.
+</p>
+<button id="kor">Kör</button>
+<div id="summa">Tryck Kör.</div>
+<table id="tab"><thead><tr>
+  <th>Bild</th><th>Facit</th><th>Råtext ur nätet</th><th>Efter tolkaRatext</th>
+  <th>Säkerhet</th><th>Utfall</th>
+</tr></thead><tbody></tbody></table>
+
+<script type="module">
+import { tolkaRatext } from '../../js/plate.js';
+import { haSkyltmodell, skyltmodellLage, skyltmodellRedo,
+         sokMedModell, lasMedModell, MODELL } from '../../js/skyltmodell.js';
+
+const $ = id => document.getElementById(id);
+const laddaBild = url => new Promise((ok, nej) => {
+  const i = new Image();
+  i.onload = () => ok(i); i.onerror = () => nej(new Error('saknas: ' + url));
+  i.src = url;
+});
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  $('summa').textContent = 'Laddar modellerna via haSkyltmodell()…';
+  try { await haSkyltmodell(); }
+  catch (e) { $('summa').innerHTML = `<span class="fel">Modellerna gick inte att ladda: ${e.message}</span>`;
+              $('kor').disabled = false; return; }
+  if (!skyltmodellRedo()) {
+    $('summa').innerHTML = '<span class="fel">skyltmodellRedo() är false trots att laddningen gick igenom.</span>';
+    $('kor').disabled = false; return;
+  }
+  const lg = skyltmodellLage();
+
+  const poster = await (await fetch('bilkamera-ram/facit.json')).json();
+  const tbody = $('tab').querySelector('tbody');
+  tbody.innerHTML = '';
+  let medFacit = 0, ratt = 0, hittade = 0, falska = 0, tider = [];
+
+  for (const p of poster) {
+    const bild = await laddaBild('bilkamera-ram/' + p.fil);
+    const duk = document.createElement('canvas');
+    duk.width = bild.naturalWidth; duk.height = bild.naturalHeight;
+    duk.getContext('2d', { willReadFrequently: true }).drawImage(bild, 0, 0);
+    const yta = { x: 0, y: 0, w: duk.width, h: duk.height };
+
+    const t0 = performance.now();
+    const kand = await sokMedModell(duk, yta);
+    const lasningar = [];
+    for (const k of kand) {
+      lasningar.push(await lasMedModell(duk, k, tolkaRatext));
+    }
+    tider.push(performance.now() - t0);
+
+    const facit = p.facit || null;
+    if (facit) { medFacit++; if (kand.length) hittade++; }
+    const traff = facit && lasningar.some(l => l.plat === facit);
+    if (traff) ratt++;
+    const uppfunna = lasningar.filter(l => l.plat && l.plat !== facit).length;
+    falska += uppfunna;
+
+    let utfall, klass;
+    if (facit) {
+      if (traff) { utfall = 'RÄTT'; klass = 'ok'; }
+      else if (uppfunna) { utfall = 'FEL — uppfunnet'; klass = 'fel'; }
+      else if (kand.length) { utfall = 'hittad men tyst'; klass = 'varn'; }
+      else { utfall = 'ingen låda'; klass = 'fel'; }
+    } else {
+      utfall = uppfunna ? 'UPPFUNNET' : 'tyst — rätt beteende';
+      klass = uppfunna ? 'fel' : 'ok';
+    }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td>${p.fil}</td><td class="mono">${facit || '—'}</td>` +
+      `<td class="mono">${lasningar.map(l => l.ratext || '—').join(' / ') || '—'}</td>` +
+      `<td class="mono">${lasningar.map(l => l.plat || '(tyst)').join(' / ') || '—'}</td>` +
+      `<td>${lasningar.map(l => l.sakerhet).join(' / ') || '—'}</td>` +
+      `<td class="${klass}">${utfall}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  const perRuta = Math.round(tider.reduce((a, b) => a + b, 0) / tider.length);
+  const grona = ratt === 6 && falska === 0;
+  window.__modellvag = { ratt, medFacit, hittade, falska, perRuta,
+                         motor: lg.motor, laddMs: lg.laddMs, troskel: MODELL.minTecken };
+  $('summa').innerHTML =
+    `<span class="stor ${grona ? 'ok' : 'fel'}">${ratt}/${medFacit} rätt · ${falska} uppfunna` +
+    `${grona ? ' — samma som bänken' : ' — AVVIKER FRÅN BÄNKEN (6/8, 0)'}</span><br>` +
+    `<span style="color:#b9c7d6">Hittade skylt i ${hittade}/${medFacit}. ` +
+    `${perRuta} ms per bildruta (sökning + alla läsningar). Motor ${lg.motor}, ` +
+    `modellerna laddade på ${lg.laddMs} ms. Tröskel ${MODELL.minTecken}.</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

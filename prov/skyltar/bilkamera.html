@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bilkamera-bänk — skyltläsaren</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 760px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 10px 18px; font: inherit; font-weight: 700; margin: 8px 0; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 12px 0;
+           border-bottom: 1px solid #33445a; font-size: 16px; z-index: 5; }
+  .stor { font-size: 22px; font-weight: 700; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; } .varn { color: #ffb020; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid #22303f; padding: 6px 8px; text-align: left;
+           vertical-align: top; }
+  th { color: #9fb3c8; font-weight: 600; }
+  td.mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .06em; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Bilkamera-bänk</h1>
+<p class="hint">
+  Elliots egna foton tagna <b>från förarplats</b> — samma vinkel som mobilhållaren ger.
+  Varje foto är beskuret till liggande och nedskalat till <b>1920×1080</b>, exakt den
+  upplösning appen filmar i (<code>KAMERA</code> i plate.js), så skyltarna är lika
+  många pixlar höga här som i verkligheten. Åtta bilder har facit, sex har
+  <b>medvetet inget</b>: där är skylten oläslig även för ögat, och varje läsning
+  bänken får ut är ett <b>uppfunnet nummer</b> — det värsta felet läsaren kan göra.
+  Varje bild körs <span id="varv">8</span> gånger genom sökning → spårning → OCR,
+  som om bilen låg still framför dig i åtta bildrutor.
+</p>
+<button id="kor">Kör bänken</button>
+<div id="summa">Tryck Kör.</div>
+<table id="tab"><thead><tr>
+  <th>Bild</th><th>Facit</th><th>Läste</th><th>Skylt&nbsp;px</th><th>Lås</th><th>Utfall</th><th>Alla läsningar</th>
+</tr></thead><tbody></tbody></table>
+
+<script type="module">
+import { sokKandidater, lasKandidat, haMotor, Malsokare } from '../../js/plate.js';
+
+const $ = id => document.getElementById(id);
+const bar = t => (t || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+const VARV = 8;
+
+function ladda(url) {
+  return new Promise((ok, nej) => {
+    const i = new Image();
+    i.onload = () => ok(i);
+    i.onerror = () => nej(new Error('kunde inte ladda ' + url));
+    i.src = url;
+  });
+}
+
+/** Vanligaste läsningen, och hur många gånger den kom. */
+function majoritet(lista) {
+  const r = new Map();
+  for (const t of lista) r.set(t, (r.get(t) || 0) + 1);
+  let bast = null, n = 0;
+  for (const [t, c] of r) if (c > n) { bast = t; n = c; }
+  return { text: bast, antal: n };
+}
+
+$('varv').textContent = VARV;
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  $('summa').textContent = 'Värmer OCR-motorn…';
+  try { await haMotor(); }
+  catch (e) { $('summa').textContent = 'OCR-motorn gick inte att ladda: ' + e.message;
+              $('kor').disabled = false; return; }
+
+  const poster = await (await fetch('bilkamera-ram/facit.json')).json();
+  const tbody = $('tab').querySelector('tbody');
+  tbody.innerHTML = '';
+
+  let medFacit = 0, ratt = 0, last = 0, falska = 0, tysta = 0, utanFacit = 0;
+  const rader = [];
+  const T0 = performance.now();
+
+  for (const p of poster) {
+    $('summa').textContent = `Kör ${p.fil}…`;
+    const bild = await ladda('bilkamera-ram/' + p.fil);
+    const duk = document.createElement('canvas');
+    duk.width = bild.naturalWidth; duk.height = bild.naturalHeight;
+    duk.getContext('2d', { willReadFrequently: true }).drawImage(bild, 0, 0);
+    const yta = { x: 0, y: 0, w: duk.width, h: duk.height };
+
+    const malsokare = new Malsokare();
+    const lasningar = [];
+    let pxH = null, lastNagon = false;
+
+    for (let v = 0; v < VARV; v++) {
+      const kand = sokKandidater(duk, yta, { arbetsbredd: 400, skarmvinkel: 90 });
+      const r = malsokare.mata(kand, Date.now() + v * 120);
+      if (!r.last) continue;
+      lastNagon = true;
+      if (pxH == null) pxH = Math.round(r.last.rh || r.last.h || 0);
+      let svar;
+      try { svar = await lasKandidat(duk, r.last); } catch { continue; }
+      const t = svar && svar.plat ? bar(svar.plat) : null;
+      if (t) lasningar.push(t);
+    }
+
+    const m = majoritet(lasningar);
+    const facit = p.facit ? bar(p.facit) : null;
+    let utfall, klass;
+    if (facit) {
+      medFacit++;
+      if (lastNagon) last++;
+      if (m.text === facit) { utfall = 'RÄTT'; klass = 'ok'; ratt++; }
+      else if (m.text) { utfall = 'FEL — uppfunnet'; klass = 'fel'; falska++; }
+      else { utfall = 'tyst'; klass = ''; tysta++; }
+    } else {
+      utanFacit++;
+      if (m.text) { utfall = 'UPPFUNNET (skulle tigit)'; klass = 'fel'; falska++; }
+      else { utfall = 'tyst — rätt beteende'; klass = 'ok'; }
+    }
+
+    rader.push({ fil: p.fil, facit, last: m.text, pxH, lastNagon, utfall, lasningar, notis: p.notis });
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td>${p.fil}<br><span style="color:#7d8fa3">${p.notis}</span></td>` +
+      `<td class="mono">${facit || '—'}</td>` +
+      `<td class="mono">${m.text ? m.text + ` (${m.antal}/${VARV})` : '—'}</td>` +
+      `<td>${pxH ?? '—'}</td>` +
+      `<td>${lastNagon ? 'ja' : 'nej'}</td>` +
+      `<td class="${klass}">${utfall}</td>` +
+      `<td class="mono" style="color:#7d8fa3">${lasningar.join(' ') || '—'}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  const ms = Math.round(performance.now() - T0);
+  window.__bilkamera = { rader, medFacit, ratt, last, falska, tysta, utanFacit, ms };
+  $('summa').innerHTML =
+    `<span class="stor ${falska ? 'fel' : 'ok'}">${ratt}/${medFacit} rätt · ` +
+    `${falska} uppfunna</span><br>` +
+    `<span style="color:#b9c7d6">Lås på ${last}/${medFacit} med facit. ` +
+    `${utanFacit} bilder utan facit (skylten oläslig för ögat) — där är varje ` +
+    `läsning ett fel. Körtid ${ms} ms.</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

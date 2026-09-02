@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prov — tystnad avslutar talet</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 760px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 10px 18px; font: inherit; font-weight: 700; margin: 8px 0; }
+  #summa { font-size: 16px; padding: 12px 0; border-bottom: 1px solid #33445a; }
+  .stor { font-size: 20px; font-weight: 700; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; }
+  pre { background: #151e28; border: 1px solid #33445a; border-radius: 8px;
+        padding: 10px; font-size: 12.5px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>Tystnad avslutar talet</h1>
+<p class="hint">
+  Ingen mikrofon behövs. Sidan sätter in en <b>stubbad taligenkänning</b> före
+  voice.js laddas, och spelar upp exakt de förlopp som betyder något i bilen:
+  någon talar och tystnar, någon trycker och tänker, någon trycker av själv.
+  Klockan mäts på riktigt — provet tar ungefär tjugo sekunder.
+</p>
+<button id="kor">Kör provet</button>
+<div id="summa">Tryck Kör.</div>
+<pre id="logg"></pre>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const logg = [];
+const skriv = t => { logg.push(t); $('logg').textContent = logg.join('\n'); };
+
+/**
+ * Stubbad SpeechRecognition. Gör bara det voice.js faktiskt använder:
+ * start/stop/abort och händelserna. Ingenting hittas på — texten matas in av
+ * provet, så det som mäts är NÄR voice.js bestämmer sig, inte vad den hörde.
+ */
+class StubbadIgenkanning {
+  constructor() { this.levande = false; window.__sr = this; }
+  start() {
+    if (this.levande) throw new Error('redan igång');
+    this.levande = true;
+    setTimeout(() => this.onstart && this.onstart(), 0);
+  }
+  stop() {
+    if (!this.levande) return;
+    this.levande = false;
+    setTimeout(() => this.onend && this.onend(), 0);
+  }
+  abort() { this.stop(); }
+  /** Mata in tal som om någon sagt det. */
+  saga(text, slutgiltig = true) {
+    const res = [{ 0: { transcript: text, confidence: 0.9 }, length: 1,
+                   isFinal: slutgiltig }];
+    res.length = 1;
+    this.onresult && this.onresult({ resultIndex: 0, results: res });
+  }
+}
+window.SpeechRecognition = StubbadIgenkanning;
+window.webkitSpeechRecognition = StubbadIgenkanning;
+
+const { Listener } = await import('../js/voice.js');
+
+const vanta = ms => new Promise(r => setTimeout(r, ms));
+
+async function fall(namn, kor) {
+  const l = new Listener();
+  const handelser = [];
+  for (const h of ['command', 'timeout', 'state', 'listening', 'stopped']) {
+    l.addEventListener(h, e => handelser.push({ h, t: Date.now(), d: e.detail }));
+  }
+  const t0 = Date.now();
+  const svar = await kor(l, handelser, t0);
+  try { l.stop(); } catch {}
+  return { namn, ...svar };
+}
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  logg.length = 0;
+  const utfall = [];
+
+  // 1. Föraren talar och tystnar. Ska avsluta av sig själv efter ~2,5 s.
+  utfall.push(await fall('talar och tystnar', async (l, h, t0) => {
+    l.startCommand();
+    await vanta(300);
+    window.__sr.saga('polis vid Enköping');
+    const talSlut = Date.now();
+    await vanta(5000);
+    const kmd = h.find(x => x.h === 'command');
+    const vantan = kmd ? kmd.t - talSlut : null;
+    skriv(`1. talar och tystnar → ${kmd ? '"' + kmd.d.text + '" efter ' + vantan + ' ms tystnad' : 'INGET kommando'}`);
+    return { ok: !!kmd && vantan >= 2200 && vantan <= 4200, text: kmd?.d.text, vantan };
+  }));
+
+  // 2. Föraren trycker och säger ingenting. Får INTE skicka in tomhet.
+  utfall.push(await fall('tryck utan tal', async (l, h) => {
+    l.startCommand();
+    await vanta(5000);
+    const kmd = h.find(x => x.h === 'command');
+    const tom = h.find(x => x.h === 'timeout');
+    skriv(`2. tryck utan tal → ${kmd ? 'SKICKADE "' + kmd.d.text + '" (fel)' :
+           tom ? 'stängde tomt (fel — skulle vänta)' : 'lyssnar kvar (rätt)'}`);
+    return { ok: !kmd && !tom, lyssnar: l.listening };
+  }));
+
+  // 3. Paus mitt i meningen ska INTE kapa yttrandet.
+  utfall.push(await fall('paus mitt i meningen', async (l, h) => {
+    l.startCommand();
+    await vanta(300);
+    window.__sr.saga('polis vid');
+    await vanta(1500);                    // tänkepaus, kortare än gränsen
+    window.__sr.saga('Enköping');
+    await vanta(4000);
+    const kmd = h.find(x => x.h === 'command');
+    const helt = !!kmd && /polis vid/i.test(kmd.d.text) && /enköping/i.test(kmd.d.text);
+    skriv(`3. paus mitt i meningen → ${kmd ? '"' + kmd.d.text + '"' : 'INGET'} ` +
+          `${helt ? '(hela meningen kvar)' : '(KAPAD)'}`);
+    return { ok: helt, text: kmd?.d.text };
+  }));
+
+  // 4. Andra trycket ska fortfarande avsluta direkt, snabbare än tystnaden.
+  utfall.push(await fall('andra trycket', async (l, h) => {
+    l.startCommand();
+    await vanta(300);
+    window.__sr.saga('kontroll i Västerås');
+    await vanta(200);
+    const tryck = Date.now();
+    l.startCommand();                     // andra trycket
+    await vanta(2500);
+    const kmd = h.find(x => x.h === 'command');
+    const dt = kmd ? kmd.t - tryck : null;
+    skriv(`4. andra trycket → ${kmd ? '"' + kmd.d.text + '" efter ' + dt + ' ms' : 'INGET'}`);
+    return { ok: !!kmd && dt < 1500, vantan: dt };
+  }));
+
+  const gick = utfall.filter(u => u.ok).length;
+  window.__rostprov = utfall;
+  $('summa').innerHTML =
+    `<span class="stor ${gick === utfall.length ? 'ok' : 'fel'}">` +
+    `${gick}/${utfall.length} fall rätt</span><br>` +
+    utfall.map(u => `${u.ok ? '✓' : '✗'} ${u.namn}`).join('<br>');
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

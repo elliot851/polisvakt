@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distans-bänk — skyltläsaren</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 640px; }
+  label { display: block; margin: 10px 0; }
+  input[type=text], input[type=number] { background: #151e28; color: #eef4fa;
+    border: 1px solid #33445a; border-radius: 8px; padding: 8px 10px; font: inherit; }
+  input[type=text] { width: 220px; text-transform: uppercase; letter-spacing: .08em; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+    padding: 10px 18px; font: inherit; font-weight: 700; margin: 8px 0; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 12px 0;
+    border-bottom: 1px solid #33445a; font-size: 16px; z-index: 5; }
+  .stor { font-size: 22px; font-weight: 700; color: #6ee2a6; }
+  .rad { color: #b9c7d6; }
+  canvas { max-width: 100%; border: 1px solid #33445a; border-radius: 8px; margin: 8px 0; }
+  pre { background: #151e28; border: 1px solid #33445a; border-radius: 8px;
+    padding: 10px; overflow-x: auto; font-size: 12.5px; line-height: 1.45; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Distans-bänk för skyltläsaren</h1>
+<p class="hint">
+  Närbildsbänken (<code>matning.html</code>) mäter träffsäkerhet på handlarnärbilder
+  men kan <b>inte</b> mäta räckvidd. Den här gör det: filma en <b>känd</b> skylt
+  medan du <b>närmar dig</b> (långt → nära), skriv skyltens nummer, och ladda upp
+  filmen. Bänken kör hela läsaren (sökning → lås → OCR) över varje bildruta med
+  ETT delat spår, precis som vid körning, och säger vid vilken <b>skyltstorlek i
+  pixlar</b> den FÖRST läser rätt. Mindre px = längre bort = bättre räckvidd.
+  Kör samma film före/efter en ändring och jämför px-talet.
+</p>
+
+<label>Facit — skyltens nummer (t.ex. ABC12D): <input id="facit" type="text" placeholder="ABC12D"></label>
+<label>Film på en skylt du närmar dig: <input id="fil" type="file" accept="video/*"></label>
+<label>Bildrutesteg (ms, appen kör ~120): <input id="steg" type="number" value="120" min="40" step="20" style="width:90px"></label>
+<button id="kor" disabled>Kör mätningen</button>
+
+<div id="summa">Ladda en film och ange facit.</div>
+<canvas id="preview" width="480" height="270"></canvas>
+<pre id="logg"></pre>
+
+<script type="module">
+import { sokKandidater, lasKandidat, haMotor, Malsokare, Rostrakning }
+  from '../../js/plate.js';
+
+const $ = id => document.getElementById(id);
+const bar = t => (t || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+const en = (n, d = 0) => (n == null || !isFinite(n) ? '–'
+  : (Math.round(n * 10 ** d) / 10 ** d).toString().replace('.', ','));
+
+const video = document.createElement('video');
+video.playsInline = true; video.muted = true; video.preload = 'auto';
+let filUrl = null;
+
+$('fil').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  if (filUrl) URL.revokeObjectURL(filUrl);
+  filUrl = URL.createObjectURL(f);
+  video.src = filUrl;
+  video.onloadedmetadata = () => {
+    $('summa').textContent = `Film laddad: ${en(video.duration,1)} s, ${video.videoWidth}×${video.videoHeight}. Tryck Kör.`;
+    $('kor').disabled = false;
+  };
+});
+
+/** Sätt currentTime och vänta tills bildrutan faktiskt bytts. */
+function soktill(t) {
+  return new Promise(ok => {
+    const klar = () => { video.removeEventListener('seeked', klar); ok(); };
+    video.addEventListener('seeked', klar);
+    video.currentTime = Math.min(t, Math.max(0, video.duration - 0.001));
+  });
+}
+
+$('kor').addEventListener('click', async () => {
+  const facit = bar($('facit').value);
+  if (!facit) { alert('Skriv skyltens nummer först.'); return; }
+  const stegMs = Math.max(40, +$('steg').value || 120);
+  $('kor').disabled = true;
+  $('logg').textContent = '';
+  $('summa').textContent = 'Värmer OCR-motorn…';
+
+  try { await haMotor(); } catch (e) { $('summa').textContent = 'OCR-motorn gick inte att ladda: ' + e.message; $('kor').disabled = false; return; }
+
+  const src = document.createElement('canvas');
+  src.width = video.videoWidth; src.height = video.videoHeight;
+  const sg = src.getContext('2d', { willReadFrequently: true });
+  const pv = $('preview').getContext('2d');
+  const yta = { x: 0, y: 0, w: src.width, h: src.height };
+
+  const malsokare = new Malsokare();
+  const logg = [];
+  let bildruta = 0, forstaLasT = null, forstLastFrame = null;
+  let forstaRatt = null;       // {t, pxH, bildrutaEfterLas}
+  let forstaFalsk = null;      // en felläsning i giltigt format innan rätt
+  let lasFrame = null;
+
+  const T0 = performance.now();
+  for (let t = 0; t < video.duration; t += stegMs / 1000) {
+    await soktill(t);
+    sg.drawImage(video, 0, 0, src.width, src.height);
+    bildruta++;
+
+    // Sökning + spårning (skärmvinkel 90 = liggande i hållare, som appen kör).
+    const kand = sokKandidater(src, yta, { arbetsbredd: 400, skarmvinkel: 90 });
+    const r = malsokare.mata(kand, Date.now() + bildruta * stegMs);
+    if (!r.last) continue;
+
+    if (forstaLasT == null) { forstaLasT = t; forstLastFrame = bildruta; }
+    const pxH = Math.round(r.last.rh || r.last.h || 0);
+
+    // Läs det låsta spåret.
+    let svar;
+    try { svar = await lasKandidat(src, r.last); }
+    catch (e) { logg.push(`t=${en(t,2)}s  px=${pxH}  FEL ${e.message}`); continue; }
+    const plat = svar.plat ? bar(svar.plat) : null;
+    if (!plat) { logg.push(`t=${en(t,2)}s  px=${pxH}  låst, ingen text`); continue; }
+
+    const ratt = plat === facit;
+    logg.push(`t=${en(t,2)}s  px=${pxH}  läste ${plat} ${ratt ? '✓ RÄTT' : '✗ (facit ' + facit + ')'}`);
+
+    if (!ratt && !forstaFalsk && plat.length === 6) forstaFalsk = { t, pxH, plat };
+    if (ratt && !forstaRatt) {
+      forstaRatt = { t, pxH, bildrutaEfterLas: bildruta - forstLastFrame };
+      // rita bildrutan där den först läste rätt
+      pv.canvas.width = 480; pv.canvas.height = Math.round(480 * src.height / src.width);
+      pv.drawImage(src, 0, 0, pv.canvas.width, pv.canvas.height);
+      break;   // räckvidden är hittad: minsta storlek den klarade
+    }
+  }
+  const vaggMs = performance.now() - T0;
+
+  const rader = [];
+  if (forstaRatt) {
+    rader.push(`<span class="stor">Läste rätt först vid ${forstaRatt.pxH} px skylthöjd</span> (t=${en(forstaRatt.t,2)} s).`);
+    rader.push(`<span class="rad">Det är räckvidden: mindre px nästa gång = läser längre bort. Verifieringen tog ${forstaRatt.bildrutaEfterLas} bildrutor efter första låset.</span>`);
+  } else {
+    rader.push(`<span class="stor" style="color:#ff9c9d">Läste ALDRIG rätt (${facit}) i hela filmen.</span>`);
+    rader.push(`<span class="rad">Antingen för långt/suddigt hela vägen, eller så syns inte skylten. Kolla loggen.</span>`);
+  }
+  if (forstaFalsk) rader.push(`<span class="rad" style="color:#ffb020">Varning: en felläsning i giltigt format (${forstaFalsk.plat}) vid ${forstaFalsk.pxH} px INNAN rätt — en uppfunnen skylt är värre än ingen.</span>`);
+  rader.push(`<span class="rad">Första lås vid bildruta ${forstLastFrame ?? '–'}. ${bildruta} bildrutor körda på ${en(vaggMs,0)} ms.</span>`);
+  window.__distans = { facit, forstaRatt, forstaFalsk, forstLastFrame, bildrutor: bildruta };
+  $('summa').innerHTML = rader.join('<br>');
+  $('logg').textContent = logg.join('\n');
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

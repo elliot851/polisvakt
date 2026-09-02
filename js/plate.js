@@ -86,6 +86,15 @@
  */
 
 import { motionSupported, motionNeedsPermission } from './impact.js';
+/*
+ * Modellvägen. Den ersätter INGENTING här i filen — den läggs bredvid, och
+ * `PlateReader` väljer den bara när båda näten faktiskt är laddade. Allt
+ * nedanför det här importstycket fungerar oförändrat på en enhet som aldrig
+ * lyckas hämta modellerna. Se skyltmodell.js för varför den finns och vad den
+ * är uppmätt till.
+ */
+import { haSkyltmodell, skyltmodellRedo, skyltmodellLage, sokMedModell, lasMedModell }
+  from './skyltmodell.js';
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 
@@ -4450,6 +4459,15 @@ export function lasKandidat(kalla, kandidat) {
    * mätningen och läs. Det tar bort en hel skanning per OCR-varv och, viktigare,
    * det behåller den bättre av de två mätningarna i stället för att skriva över
    * den med en sämre.
+   *
+   * PRÖVAT OCH FÖRKASTAT (2026, mätt mot prov/skyltar/matning.html): "vägen
+   * vidare" vid `sokBredd` — att mäta om ankarets kanter i FULL upplösning här
+   * innan beskärningen. Det gav +1 rätt text (11→12/21) men skapade en FALSK
+   * läsning: ABU773 lästes som UZE773. En snävare stämmer-grind på mitt och
+   * storlek tog bort vinsten men INTE den falska (den skarpare beskärningen låg
+   * geometriskt nära men sköt ändå tecknen en klass fel). Netto: samma rätt,
+   * +1 uppfunnet nummer. En läsare som hittar på ett nummer är sämre än ingen,
+   * så vägen är förkastad — inte omätt längre.
    */
   if (kandidat.ankrad && kandidat.rw && kandidat.rh) {
     return lasRuta(kalla, kandidat, { fardigMatt: kandidat });
@@ -5577,6 +5595,24 @@ export class PlateReader extends EventTarget {
       fallbackMs: 3000,
 
       /*
+       * MODELLVÄGEN. `true` = hämta de två näten i bakgrunden och byt till dem
+       * när de är klara; `false` = kör bara den handskrivna vägen.
+       *
+       * Den är på som förval därför att mätningen på ägarens egna bilder från
+       * förarplats är entydig: handskriven väg 0 av 8 rätt och 0 av 8 skyltar
+       * hittade, modellvägen 6 av 8 rätt och 8 av 8 hittade, med noll uppfunna
+       * nummer i båda fallen efter grinden. Se skyltmodell.js.
+       *
+       * BYTET SKER FÖRST NÄR NÄTEN ÄR LADDADE, aldrig före. Läsaren startar på
+       * den handskrivna vägen, fungerar direkt, och byter mitt i drift utan att
+       * någonting ovanför märker det — kandidaterna har samma form. Går
+       * hämtningen inte igenom står den gamla vägen kvar och användaren har
+       * fortfarande en fungerande läsare. 13 MB modell får aldrig stå mellan
+       * användaren och en app som fungerar.
+       */
+      modell: true,
+
+      /*
        * PROVLÄGE — hör till provkörning, inte till produkten.
        *
        * Normalt skickas 'traff' bara för ett av dina egna fordon. Allt annat
@@ -5738,6 +5774,32 @@ export class PlateReader extends EventTarget {
     // Värm motorn medan användaren riktar in sig, så första läsningen inte
     // tar fem sekunder.
     haMotor().catch(e => this.#fel(e));
+
+    /*
+     * Hämta modellerna i bakgrunden. Ingen `await`: sökningen och läsningen är
+     * redan igång på den handskrivna vägen, och den ska fortsätta gå medan
+     * 13 MB laddas ner. När löftet infrias börjar `#sok` och `#steg` använda
+     * näten av sig själva, för de frågar `skyltmodellRedo()` varje varv.
+     *
+     * Ett misslyckande är inte ett fel för användaren — det är en enhet som
+     * kör vidare på den gamla vägen. Därför `#status`-rad och inte `#fel`,
+     * som hade slagit larm om något som fortfarande fungerar.
+     */
+    if (this.settings.modell) {
+      haSkyltmodell()
+        .then(() => {
+          if (!this.running) return;
+          const l = skyltmodellLage();
+          this.dispatchEvent(new CustomEvent('modell', {
+            detail: { redo: true, motor: l.motor, laddMs: l.laddMs },
+          }));
+        })
+        .catch(e => {
+          this.dispatchEvent(new CustomEvent('modell', {
+            detail: { redo: false, fel: e.message },
+          }));
+        });
+    }
   }
 
   /**
@@ -5806,6 +5868,15 @@ export class PlateReader extends EventTarget {
        * självschemaläggande slingan i `start()` ska talet dessutom vara noll.
        */
       overhoppade: 0,
+      /*
+       * Överhoppade SÖKNINGAR. Den handskrivna sökningen är synkron och kan
+       * per definition inte krocka med sig själv. Modellvägen är asynkron och
+       * kan: tar en detektion längre tid än `sokMs` ligger nästa tick redan i
+       * dörren. Den hoppas över, och den räknas — samma skäl som ovan. Ett
+       * stort tal här betyder att sökintervallet är tätare än vad enheten
+       * hinner med, och det ska gå att se i stället för att gissas.
+       */
+      sokOverhoppade: 0,
       lastAt: 0,
       forstaLasMs: null,            // start → första låset
       forstaGiltigMs: null,         // start → första giltiga OCR-läsningen
@@ -5834,6 +5905,8 @@ export class PlateReader extends EventTarget {
       giltiga: m.giltiga,
       ogiltiga: m.ogiltiga,
       overhoppade: m.overhoppade,
+      sokOverhoppade: m.sokOverhoppade,
+      modell: skyltmodellLage(),
       forstaLasMs: rund(m.forstaLasMs),
       forstaGiltigMs: rund(m.forstaGiltigMs),
       forstaTraffFranStart: rund(m.forstaTraffFranStart),
@@ -5985,9 +6058,15 @@ export class PlateReader extends EventTarget {
    */
   #sok() {
     if (!this.running || !this.video.videoWidth) return;
-    const yta = this._utsnitt ||
-      { x: 0, y: 0, w: this.video.videoWidth, h: this.video.videoHeight };
 
+    /*
+     * Är näten laddade söker de i stället. Frågan ställs varje varv och inte
+     * en gång vid start, därför att modellerna blir klara MITT I drift — den
+     * här raden är hela bytet, och den kostar en boolesk jämförelse.
+     */
+    if (this.settings.modell && skyltmodellRedo()) { this.#sokModell(); return; }
+
+    const yta = this.#sokyta();
     let kand = [];
     const t0 = performance.now();
     try {
@@ -6015,7 +6094,53 @@ export class PlateReader extends EventTarget {
     } catch (e) {
       this.#fel(e); return;
     }
-    this.sokMsSenast = performance.now() - t0;
+    this.#efterSok(kand, performance.now() - t0);
+  }
+
+  /** Sökområdet. Utsnittet, inte hela videon — se `#sok`. */
+  #sokyta() {
+    return this._utsnitt ||
+      { x: 0, y: 0, w: this.video.videoWidth, h: this.video.videoHeight };
+  }
+
+  /**
+   * Modellsökningen. Samma jobb som `#sok`, men asynkront, för en detektion är
+   * ett anrop till ett neuralt nät och inte en slinga över pixlar.
+   *
+   * Återinträdesspärren är nödvändig här och saknades aldrig i den synkrona
+   * vägen: en detektion tar 84 ms på WebGPU men 380 ms på WASM, och
+   * `sokMs` är 120. På en enhet utan WebGPU står alltså tre tickar och knackar
+   * medan den första räknar. De hoppas över och RÄKNAS — en tyst förlust här
+   * hade sett ut som en läsare som slutat söka.
+   */
+  async #sokModell() {
+    if (this._sokerModell) { this.matning.sokOverhoppade++; return; }
+    this._sokerModell = true;
+    const t0 = performance.now();
+    try {
+      const kand = await sokMedModell(this.video, this.#sokyta());
+      // Kameran kan ha släckts medan nätet räknade. Utan kontrollen fyller en
+      // sökning som var i luften vid `stop()` på spårlistan efter `rensa()`.
+      if (!this.running) return;
+      this.#efterSok(kand, performance.now() - t0);
+    } catch (e) {
+      this.#fel(e);
+    } finally {
+      this._sokerModell = false;
+    }
+  }
+
+  /**
+   * Allt som händer EFTER att kandidaterna är kända: mätning, spårning, lås,
+   * status och händelse till gränssnittet.
+   *
+   * Bruten ut ur `#sok` för att den handskrivna och den modellbaserade
+   * sökningen ska dela exakt samma efterbehandling. Två kopior av det här
+   * hade garanterat glidit ifrån varandra, och då hade den ena vägen fått en
+   * rättelse som den andra saknade — utan att någon mätning visat det.
+   */
+  #efterSok(kand, sokMs) {
+    this.sokMsSenast = sokMs;
     this.sokMsMedel = this.sokMsMedel
       ? this.sokMsMedel * 0.9 + this.sokMsSenast * 0.1
       : this.sokMsSenast;
@@ -6328,6 +6453,13 @@ export class PlateReader extends EventTarget {
           cx: last.matt.cx, cy: last.matt.cy,
           rw: last.matt.rw, rh: last.matt.rh,
           euAndel: last.matt.euAndel,
+          /*
+           * Vem som mätte upp rutan följer med. Ett spår som föddes på den
+           * handskrivna vägen ska läsas på den handskrivna vägen även om
+           * näten hunnit bli klara däremellan — dess mått är gjorda för den
+           * beskärningen. Nya spår blir modellspår av sig själva.
+           */
+          modell: !!last.matt.modell,
         });
       }
     } else if (this.settings.centrumFallback && this._roi &&
@@ -6352,9 +6484,21 @@ export class PlateReader extends EventTarget {
        * nedskalning, samma flödesfyllning, en gång per OCR-varv, till ingen
        * nytta. Är `matt` null beter sig anropet precis som förut.
        */
-      const svar = lasId
-        ? await lasKandidat(this.video, roi)
-        : await lasRuta(this.video, roi, { fardigMatt: matt });
+      /*
+       * Tre vägar, i tur och ordning:
+       *
+       * 1. Modellspår — rutan är uppmätt av detektorn, så läsarnätet får den
+       *    rakt av. `tolkaRatext` skickas med: modellens råtext ska genom
+       *    exakt samma formatkontroll och teckenrättning som Tesseracts, så
+       *    att bytet av motor inte smyger förbi någon grind.
+       * 2. Låst spår från den handskrivna vägen — som förut.
+       * 3. Ingen låsning alls, mittenfallbacken — som förut.
+       */
+      const svar = (roi.modell && skyltmodellRedo())
+        ? await lasMedModell(this.video, roi, tolkaRatext)
+        : lasId
+          ? await lasKandidat(this.video, roi)
+          : await lasRuta(this.video, roi, { fardigMatt: matt });
       const { plat, sakerhet, tider, exaktSex } = svar;
 
       /*
