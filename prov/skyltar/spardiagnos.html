@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spårdiagnos — var i kedjan numret försvinner</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  h2 { font-size: 16px; margin: 22px 0 4px; color: #9fb3c8; }
+  p.hint { color: #b9c7d6; max-width: 840px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 11px 20px; font: inherit; font-weight: 700; margin: 8px 8px 8px 0; }
+  #summa { padding: 12px 0; border-bottom: 1px solid #33445a; }
+  .stor { font-size: 21px; font-weight: 700; display: block; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; } .varn { color: #ffb020; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 13px; }
+  th, td { border-bottom: 1px solid #22303f; padding: 6px 7px; text-align: left;
+           vertical-align: top; }
+  th { color: #9fb3c8; font-weight: 600; }
+  td.mono, .mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .04em; }
+  .stapel { display: inline-block; height: 9px; background: #3d9dff; border-radius: 2px;
+            vertical-align: middle; }
+  .stapel.klar { background: #6ee2a6; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Spårdiagnos</h1>
+<p class="hint">
+  <code>film.html</code> säger vad modellen <b>läser</b>. <code>rostprov.html</code>
+  säger vad appen <b>publicerar</b>. Den här säger vad som händer <b>däremellan</b> —
+  per spår, för varje läsning: syntes skylten, låste spåret, vad lästes, och vad
+  sa rösträkningen. Två gissningar om flaskhalsen har redan mätts och förkastats;
+  den här sidan finns för att slippa en tredje.
+</p>
+<p class="hint">
+  Läs kolumnen <b>Röst</b> så här: <code>vikt</code> är hur tungt det ledande
+  numret väger, <code>mål</code> är vad som krävs för att publicera. Ett spår som
+  aldrig kommer över målet hann inte samla ihop tillräckligt innan bilen var
+  förbi — då är det <b>tiden</b> som fattas, inte läsningen.
+</p>
+<label style="color:#b9c7d6">Film: <input id="fil" type="file" accept="video/*" multiple></label>
+<label style="color:#b9c7d6">intervalMs <input id="iv" type="number" value="150" min="40" step="50"
+  style="width:80px;background:#151e28;color:#eef4fa;border:1px solid #33445a;border-radius:8px;padding:6px"></label>
+<label style="color:#b9c7d6">krav <input id="krav" type="number" value="2" min="1" max="4"
+  style="width:60px;background:#151e28;color:#eef4fa;border:1px solid #33445a;border-radius:8px;padding:6px"></label>
+<br>
+<button id="kor" disabled>Kör</button>
+<div id="summa">Välj en eller flera filmer.</div>
+<div id="ut"></div>
+
+<script type="module">
+import { PlateReader } from '../../js/plate.js';
+
+const $ = id => document.getElementById(id);
+let filmer = [];
+const FACIT = new Set(['RZB062', 'JUR18T', 'CFD29W', 'MGG708', 'WLZ153', 'UXC77C']);
+
+$('fil').addEventListener('change', e => {
+  filmer = [...e.target.files];
+  $('summa').textContent = `${filmer.length} film(er). Tryck Kör.`;
+  $('kor').disabled = !filmer.length;
+});
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  $('ut').innerHTML = '';
+  const intervalMs = +$('iv').value || 150;
+  const krav = +$('krav').value || 2;
+  const riktig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  const allt = [];
+
+  for (const fil of filmer) {
+    $('summa').textContent = `Spelar ${fil.name}…`;
+    const url = URL.createObjectURL(fil);
+    const v = document.createElement('video');
+    v.src = url; v.muted = true; v.playsInline = true;
+    await new Promise(ok => { v.onloadedmetadata = ok; v.onerror = ok; });
+    if (!v.videoWidth) { URL.revokeObjectURL(url); continue; }
+    navigator.mediaDevices.getUserMedia = async () =>
+      (v.captureStream ? v.captureStream() : v.mozCaptureStream());
+
+    const lasare = new PlateReader({
+      settings: { provlage: true, ritaSikte: false, intervalMs, krav },
+    });
+    const handelser = [];
+    const publicerat = [];
+    const T0 = performance.now();
+    lasare.addEventListener('spardiagnos', e =>
+      handelser.push({ ...e.detail, t: (performance.now() - T0) / 1000 }));
+    lasare.addEventListener('traff', e =>
+      publicerat.push({ plat: e.detail.plat, t: (performance.now() - T0) / 1000 }));
+
+    try {
+      // Spela först, starta läsaren sedan — se rostprov.html.
+      await v.play();
+      await new Promise(r => setTimeout(r, 200));
+      await lasare.start();
+      await new Promise(r => { v.onended = r; setTimeout(r, (v.duration + 4) * 1000); });
+      await new Promise(r => setTimeout(r, 1200));
+    } catch {}
+    try { lasare.stop(); } catch {}
+    v.pause(); URL.revokeObjectURL(url);
+    allt.push({ fil: fil.name, handelser, publicerat });
+  }
+  navigator.mediaDevices.getUserMedia = riktig;
+
+  /* Gruppera per spår. Ett spår är en bil så länge målsökaren höll ihop den;
+   * tappas den och återfinns blir det ett nytt spår, och det är i sig en
+   * uppgift värd att se. */
+  const rader = [];
+  for (const { fil, handelser, publicerat } of allt) {
+    const spar = new Map();
+    for (const h of handelser) {
+      let s = spar.get(h.sparId);
+      if (!s) {
+        s = { id: h.sparId, fil, lasningar: 0, tysta: 0, texter: new Map(),
+              minPx: Infinity, maxPx: 0, maxVikt: 0, mal: null, utfall: new Set(),
+              forst: h.t, sist: h.t, ankrad: h.ankrad, traffar: h.traffar };
+        spar.set(h.sparId, s);
+      }
+      s.lasningar++;
+      s.sist = h.t;
+      if (h.traffar != null) s.traffar = Math.max(s.traffar ?? 0, h.traffar);
+      if (h.px) { s.minPx = Math.min(s.minPx, h.px); s.maxPx = Math.max(s.maxPx, h.px); }
+      if (h.plat) s.texter.set(h.plat, (s.texter.get(h.plat) || 0) + 1);
+      else s.tysta++;
+      if (h.rost) { s.maxVikt = Math.max(s.maxVikt, h.rost.vikt); s.mal = h.rost.mal; }
+      s.utfall.add(h.utfall);
+    }
+    for (const s of spar.values()) rader.push(s);
+    // Rubrik per film
+    const h2 = document.createElement('h2');
+    h2.textContent = `${fil} — ${publicerat.length} publicerade: ` +
+      (publicerat.map(p => p.plat).join(', ') || 'inget');
+    $('ut').appendChild(h2);
+
+    const tab = document.createElement('table');
+    tab.innerHTML = '<thead><tr><th>Spår</th><th>Läsningar</th><th>Tysta</th>' +
+      '<th>Lästa nummer</th><th>Skylt px</th><th>Röst mot mål</th><th>Levde</th>' +
+      '<th>Utfall</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    for (const s of [...spar.values()].sort((a, b) => b.lasningar - a.lasningar)) {
+      const texter = [...s.texter.entries()].sort((a, b) => b[1] - a[1]);
+      const publicerad = s.utfall.has('publicerad');
+      const bredd = s.mal ? Math.min(100, Math.round(s.maxVikt / s.mal * 100)) : 0;
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        `<td class="mono">${s.id}</td>` +
+        `<td>${s.lasningar}</td>` +
+        `<td class="${s.tysta === s.lasningar ? 'fel' : ''}">${s.tysta}</td>` +
+        `<td class="mono">${texter.map(([t, n]) =>
+            `${FACIT.has(t) ? t : '<span class="fel">' + t + '</span>'}×${n}`).join('<br>') || '–'}</td>` +
+        `<td>${s.minPx === Infinity ? '–' : (s.minPx === s.maxPx ? s.minPx : s.minPx + '–' + s.maxPx)}</td>` +
+        `<td>${s.mal
+            ? `<span class="stapel ${publicerad ? 'klar' : ''}" style="width:${bredd}px"></span> ` +
+              `${s.maxVikt.toFixed(2)} / ${s.mal.toFixed(2)}`
+            : '–'}</td>` +
+        `<td>${(s.sist - s.forst).toFixed(1)} s</td>` +
+        `<td class="${publicerad ? 'ok' : 'varn'}">${[...s.utfall].join(', ')}</td>`;
+      tb.appendChild(tr);
+    }
+    tab.appendChild(tb);
+    $('ut').appendChild(tab);
+  }
+
+  /* Domen: för varje facit-nummer som INTE publicerades, var föll det? */
+  const publUnika = new Set(allt.flatMap(a => a.publicerat.map(p => p.plat)));
+  const lasta = new Map();
+  for (const a of allt) for (const h of a.handelser) {
+    if (h.plat) lasta.set(h.plat, (lasta.get(h.plat) || 0) + 1);
+  }
+  const dom = [...FACIT].map(p => {
+    if (publUnika.has(p)) return { plat: p, var: 'publicerad', k: 'ok' };
+    const n = lasta.get(p) || 0;
+    if (!n) return { plat: p, var: 'lästes ALDRIG — faller på detektion eller lås', k: 'fel' };
+    if (n === 1) return { plat: p, var: `lästes 1 gång — en enda röst når aldrig målet`, k: 'varn' };
+    return { plat: p, var: `lästes ${n} gånger men nådde inte målvikten`, k: 'varn' };
+  });
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Var föll varje nummer?';
+  $('ut').appendChild(h2);
+  const dl = document.createElement('table');
+  dl.innerHTML = '<thead><tr><th>Nummer</th><th>Var det tog slut</th></tr></thead>';
+  const dtb = document.createElement('tbody');
+  for (const d of dom) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="mono">${d.plat}</td><td class="${d.k}">${d.var}</td>`;
+    dtb.appendChild(tr);
+  }
+  dl.appendChild(dtb); $('ut').appendChild(dl);
+
+  window.__spardiagnos = { allt, dom, rader, intervalMs, krav };
+  const klara = dom.filter(d => d.k === 'ok').length;
+  $('summa').innerHTML =
+    `<span class="stor ${klara === FACIT.size ? 'ok' : 'varn'}">${klara} av ${FACIT.size} ` +
+    `publicerade</span><span style="color:#b9c7d6">intervalMs ${intervalMs}, krav ${krav}. ` +
+    `Tabellen nedan visar var de övriga tog slut.</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>

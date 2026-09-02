@@ -6608,7 +6608,42 @@ export class PlateReader extends EventTarget {
         if (lasId) this.malsokare.rapporteraLasning(lasId, !!plat, h);
         // Urnan är spårets, inte bildens. Två bilar i bild röstar var för
         // sig, så en felläsning av den ena inte kan störa den andra.
-        if (plat) await this.#rosta(plat, sakerhet, lasId ?? 'mitten', forstSedd, h, exaktSex);
+        const utfall = plat
+          ? await this.#rosta(plat, sakerhet, lasId ?? 'mitten', forstSedd, h, exaktSex)
+          : { utfall: 'ingen-läsning', rost: null };
+
+        /*
+         * SPÅRDIAGNOSTIKEN — bara i provläge.
+         *
+         * Varför den finns: två gånger i rad gissades fel om varför appen
+         * publicerar färre nummer än modellen läser. Först lästakten, sedan
+         * att bara ett spår lästes. Båda byggdes, båda mättes, båda gav noll.
+         * Det som saknades var inte en till idé utan en siffra på VAR i kedjan
+         * ett nummer försvinner: syntes det, låste det, lästes det, och vad
+         * sa rösten. Den här raden är den siffran.
+         *
+         * Grindad på `provlage` av exakt samma skäl som 'traff' är det: ett
+         * flöde som bär främmande fordons nummer är en logg över dem, och den
+         * ska inte finnas i produkten. Provläget följer med
+         * TESTLAGE_UTAN_INLOGGNING och slocknar när appen släpps.
+         */
+        if (this.settings.provlage) {
+          this.dispatchEvent(new CustomEvent('spardiagnos', { detail: {
+            sparId: lasId ?? 'mitten',
+            last: lasId === (this.malsokare.last?.id ?? null),
+            traffar: this.kandidater.find(s => s.id === lasId)?.traffar ?? null,
+            ankrad: !!roi.ankrad,
+            px: Math.round(roi.rw || roi.w || 0),
+            plat, sakerhet, ratext: svar.ratext ?? null, exaktSex,
+            utfall: utfall?.utfall ?? 'okänt',
+            // Vikten mot målet är hela svaret på "varför kom den inte ut":
+            // för få röster, för jämnt lopp, eller helt enkelt för kort tid.
+            rost: utfall?.rost
+              ? { vikt: +utfall.rost.vikt.toFixed(2), tvaa: +utfall.rost.tvaa.toFixed(2),
+                  mal: +utfall.rost.mal.toFixed(2), roster: utfall.rost.roster }
+              : null,
+          } }));
+        }
       }
     } catch (e) {
       this.#fel(e);
@@ -6666,7 +6701,7 @@ export class PlateReader extends EventTarget {
        * localhost), där crypto.subtle inte finns.
        */
       this.#status('Den här webbläsaren kan inte jämföra fordon säkert.');
-      return;
+      return { utfall: 'ingen-hash', rost: null };
     }
 
     /*
@@ -6712,11 +6747,11 @@ export class PlateReader extends EventTarget {
       // en logg över främmande fordon, målad direkt i gränssnittet.
       this._statusLas = nu + 1500;
       this.#status('Bekräftar skylt…');
-      return;
+      return { utfall: 'röstar', rost };
     }
     this._statusLas = 0;
     this.#status(this.#lagesText());
-    if (syn.annonserad) return;
+    if (syn.annonserad) return { utfall: 'redan-annonserad', rost };
     syn.annonserad = true;
     this.antalLasta++;
 
@@ -6741,11 +6776,11 @@ export class PlateReader extends EventTarget {
        * byggs. Skillnaden är enbart att den som provkör får se att läsaren
        * faktiskt läser. Se kommentaren vid `provlage` i konstruktorn.
        */
-      if (!this.settings.provlage) return;
+      if (!this.settings.provlage) return { utfall: 'främmande-fordon', rost };
       this.dispatchEvent(new CustomEvent('traff', {
         detail: { plat, sakerhet, egen: false, provlage: true },
       }));
-      return;
+      return { utfall: 'publicerad', rost };
     }
 
     if (this.settings.pip) this.#pip(true);
@@ -6755,6 +6790,7 @@ export class PlateReader extends EventTarget {
         fordonId: traff.id, etikett: traff.etikett, exakt: traff.exakt,
       },
     }));
+    return { utfall: 'publicerad', rost };
   }
 
   #pip(hog) {
