@@ -40,9 +40,19 @@
 </p>
 <label style="color:#b9c7d6">Film: <input id="fil" type="file" accept="video/*" multiple></label>
 <br>
-<button id="kor" disabled>Kör</button>
+<label style="color:#b9c7d6">intervalMs
+  <input id="varden" type="text" value="150" style="width:110px;background:#151e28;
+    color:#eef4fa;border:1px solid #33445a;border-radius:8px;padding:6px 8px;font:inherit"></label>
+<label style="color:#b9c7d6">extraSparPerVarv
+  <input id="extra" type="text" value="0,2" style="width:110px;background:#151e28;
+    color:#eef4fa;border:1px solid #33445a;border-radius:8px;padding:6px 8px;font:inherit"></label>
+<br>
+<button id="kor" disabled>Kör svepningen</button>
 <div id="summa">Välj en eller flera filmer.</div>
-<table id="tab"><thead><tr><th>Publicerat</th><th>Vid</th><th>Säkerhet</th><th>Film</th></tr></thead><tbody></tbody></table>
+<table id="tab"><thead><tr>
+  <th>Inställning</th><th>Publicerat</th><th>Rätt</th><th>Fel</th><th>Missade</th>
+  <th>Första svar</th><th>Läsvarv</th>
+</tr></thead><tbody></tbody></table>
 <pre id="logg"></pre>
 
 <script type="module">
@@ -54,21 +64,38 @@ const logg = [];
 const skriv = t => { logg.push(t); $('logg').textContent = logg.join('\n'); };
 let filmer = [];
 
+/*
+ * FACIT över ALLA FEM filmerna, satt med ögat på utklippen från film.html.
+ * Sex nummer som en människa kunde läsa i full upplösning.
+ *
+ * KÖR ALLTID HELA UPPSÄTTNINGEN MOT DEN HÄR LISTAN. Första gången jämfördes
+ * de här sex mot en körning på bara de två vindrutefilmerna, och slutsatsen
+ * blev att appen tappade fyra nummer. Den var fel: JUR18T, MGG708 och UXC77C
+ * finns bara i skärminspelningarna. I de två vindrutefilmerna finns tre
+ * läsbara nummer, och appen publicerade två av dem. Ett facit som inte hör
+ * ihop med materialet ljuger åt båda hållen.
+ *
+ * Det farligaste som kan komma ut är FWO370 / FWD370: samma bil vid 44–45 px,
+ * där modellen var 75–76 % säker på två olika svar. Publiceras något av dem
+ * har en snabbare inställning köpt fart med felläsningar, och det bytet är
+ * inte värt något.
+ */
+const FACIT = new Set(['RZB062', 'JUR18T', 'CFD29W', 'MGG708', 'WLZ153', 'UXC77C']);
+
 $('fil').addEventListener('change', e => {
   filmer = [...e.target.files];
   $('summa').textContent = `${filmer.length} film(er). Tryck Kör.`;
   $('kor').disabled = !filmer.length;
 });
 
-$('kor').addEventListener('click', async () => {
-  $('kor').disabled = true;
-  logg.length = 0;
-  $('tab').querySelector('tbody').innerHTML = '';
+/** En körning: alla filmer, ett värde på intervalMs. */
+async function svep(intervalMs, extraSparPerVarv) {
   const alla = [];
   const riktig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 
   for (const fil of filmer) {
-    $('summa').textContent = `Spelar ${fil.name} i verklig hastighet…`;
+    $('summa').textContent =
+      `intervalMs ${intervalMs}, extraSpår ${extraSparPerVarv} — spelar ${fil.name}…`;
     const url = URL.createObjectURL(fil);
     const v = document.createElement('video');
     v.src = url; v.muted = true; v.playsInline = true;
@@ -84,7 +111,9 @@ $('kor').addEventListener('click', async () => {
     const strom = v.captureStream ? v.captureStream() : v.mozCaptureStream();
     navigator.mediaDevices.getUserMedia = async () => strom;
 
-    const lasare = new PlateReader({ settings: { provlage: true, ritaSikte: false } });
+    const lasare = new PlateReader({
+      settings: { provlage: true, ritaSikte: false, intervalMs, extraSparPerVarv },
+    });
     const traffar = [];
     const T0 = performance.now();
     lasare.addEventListener('traff', e => {
@@ -118,29 +147,63 @@ $('kor').addEventListener('click', async () => {
     try { lasare.stop(); } catch {}
     v.pause(); URL.revokeObjectURL(url);
     alla.push({ fil: fil.name, traffar, matning });
-    skriv(`${fil.name}: ${traffar.length} publicerade, ` +
+    skriv(`  ${fil.name}: ${traffar.length} publicerade, ` +
           `${matning?.ocrVarv ?? '?'} läsvarv, ${matning?.giltiga ?? '?'} giltiga, ` +
           `lås efter ${matning?.forstaLasMs ?? '?'} ms`);
   }
   navigator.mediaDevices.getUserMedia = riktig;
 
-  const tbody = $('tab').querySelector('tbody');
-  let n = 0;
-  for (const a of alla) {
-    for (const t of a.traffar) {
-      n++;
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="mono">${t.plat}</td><td>${t.t.toFixed(1)} s</td>` +
-                     `<td>${t.sakerhet}</td><td style="color:#7d8fa3">${a.fil}</td>`;
-      tbody.appendChild(tr);
-    }
+  const publicerade = alla.flatMap(a => a.traffar.map(t => ({ ...t, fil: a.fil })));
+  const unika = [...new Set(publicerade.map(t => t.plat))];
+  const ratt = unika.filter(p => FACIT.has(p));
+  const fel = unika.filter(p => !FACIT.has(p));
+  const missade = [...FACIT].filter(p => !unika.includes(p));
+  const forsta = publicerade.length ? Math.min(...publicerade.map(t => t.t)) : null;
+  const lasvarv = alla.reduce((s, a) => s + (a.matning?.ocrVarv || 0), 0);
+  return { intervalMs, extraSparPerVarv, publicerade, unika, ratt, fel, missade,
+           forsta, lasvarv, alla };
+}
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  logg.length = 0;
+  $('tab').querySelector('tbody').innerHTML = '';
+  const intervall = $('varden').value.split(',').map(v => +v.trim()).filter(v => v > 0);
+  const extran = $('extra').value.split(',').map(v => +v.trim()).filter(v => v >= 0);
+  const kombos = [];
+  for (const i of intervall) for (const e of extran) kombos.push([i, e]);
+  const resultat = [];
+
+  for (const [v, e] of kombos) {
+    skriv(`— intervalMs ${v}, extraSpår ${e} —`);
+    const r = await svep(v, e);
+    resultat.push(r);
+    skriv(`  => ${r.ratt.length} rätt (${r.ratt.join(' ')}), ${r.fel.length} fel` +
+          `${r.fel.length ? ' (' + r.fel.join(' ') + ')' : ''}, första svar ` +
+          `${r.forsta != null ? r.forsta.toFixed(1) + ' s' : '–'}, ${r.lasvarv} läsvarv`);
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td><b>${v} ms</b><br><span style="color:#7d8fa3">extraSpår ${e}</span></td>` +
+      `<td class="mono">${r.unika.join(' ') || '–'}</td>` +
+      `<td class="ok">${r.ratt.length}</td>` +
+      `<td class="${r.fel.length ? 'fel' : ''}">${r.fel.length}${r.fel.length ? ' — ' + r.fel.join(' ') : ''}</td>` +
+      `<td class="mono" style="color:#7d8fa3">${r.missade.join(' ') || '–'}</td>` +
+      `<td>${r.forsta != null ? r.forsta.toFixed(1) + ' s' : '–'}</td>` +
+      `<td>${r.lasvarv}</td>`;
+    $('tab').querySelector('tbody').appendChild(tr);
   }
-  window.__rostprov = { alla, publicerade: n, motor: skyltmodellLage().motor };
+
+  window.__rostprov = { resultat, motor: skyltmodellLage().motor, facit: [...FACIT] };
+  const bast = resultat.filter(r => !r.fel.length)
+    .sort((a, b) => b.ratt.length - a.ratt.length)[0];
   $('summa').innerHTML =
-    `<span class="stor ${n ? 'ok' : 'varn'}">${n} nummer publicerade av appen</span>` +
-    `<span style="color:#b9c7d6">Ur ${filmer.length} film(er). ` +
-    `Jämför med vad film.html såg som enskilda läsningar — skillnaden är vad ` +
-    `målsökaren och rösträkningen kastade.</span>`;
+    `<span class="stor ${bast ? 'ok' : 'fel'}">` +
+    (bast ? `Bäst utan felläsning: intervalMs ${bast.intervalMs}, extraSpår ` +
+            `${bast.extraSparPerVarv} — ${bast.ratt.length} av ` +
+            `${FACIT.size} nummer, första svar ${bast.forsta?.toFixed(1)} s`
+          : 'Varje värde gav minst en felläsning') + `</span>` +
+    `<span style="color:#b9c7d6">Facit är de ${FACIT.size} nummer som gick att läsa ` +
+    `med ögat i klippen. Motor: ${skyltmodellLage().motor}.</span>`;
   $('kor').disabled = false;
 });
 </script>

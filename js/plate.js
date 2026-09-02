@@ -5590,6 +5590,31 @@ export class PlateReader extends EventTarget {
       tappForLas: MALSOK.tappForLas,
       minPoang: MALSOK.minPoang,
       brandForsok: MALSOK.brandForsok,
+      /*
+       * Hur många spår UTÖVER det låsta som får läsas i samma varv.
+       *
+       * NOLL, OCH DET ÄR ETT MÄTT BESLUT — inte ett ogjort arbete.
+       *
+       * Hypotesen var god: appen läser bara det låsta spåret, alltså en bil i
+       * taget, och skulle därför missa skyltar som syns samtidigt. Maskineriet
+       * i `#steg` är byggt och fungerar. A/B mot fem riktiga filmer, allt
+       * annat lika (intervalMs 150):
+       *
+       *   extraSpår 0 → 4 av 6 nummer, 0 felläsningar, första svar 1,5 s, 358 läsvarv
+       *   extraSpår 2 → 4 av 6 nummer, 0 felläsningar, första svar 1,5 s, 443 läsvarv
+       *
+       * Exakt samma fyra nummer. De 85 extra läsvarven köpte ingenting. De två
+       * som fattas (MGG708, WLZ153) syntes i 14 respektive 5 bildrutor, och de
+       * faller inte på att de aldrig lästes — de hinner inte låsa och samla
+       * ihop två överens­stämmande röster innan bilen är förbi. Flaskhalsen
+       * sitter alltså i LÅS + RÖST, inte i hur många spår som läses.
+       *
+       * Koden står kvar för att materialet var tunt: som mest två, tre skyltar
+       * samtidigt i bild. Sätt värdet till 2 och kör om `prov/skyltar/
+       * rostprov.html` på tätare trafik innan det slås på — och slå bara på det
+       * om siffran faktiskt rör sig.
+       */
+      extraSparPerVarv: 0,
       ritaSikte: true,        // false = modulen ritar bara videon, appen ritar siktet
       centrumFallback: true,  // läs mitten när målsökningen inte hittar något alls
       fallbackMs: 3000,
@@ -6411,6 +6436,48 @@ export class PlateReader extends EventTarget {
    * enda gissning som finns kvar när sökningen är tom, och formatvalideringen
    * står kvar bakom den.
    */
+  /**
+   * Rutan att läsa ur ett spår.
+   *
+   * Kopia, inte spåret självt: sökningen skriver om spåret medan läsningen
+   * pågår, och rutan skulle glida ifrån bilden vi beskar.
+   *
+   * Är spårets senaste mätning ankrad följer skyltens uppmätta kanter, vinkel
+   * och bandbredd med in i läsningen. Då används den RÅA mätningen, inte
+   * spårets utjämnade ruta. Utjämningen finns för att siktet inte ska darra på
+   * skärmen, och den är rätt till det — men den ligger drygt en sökbildruta
+   * efter sanningen, och i landsvägsfart hinner skylten flytta sig så mycket
+   * på den tiden att beskärningen hamnar bredvid. Den utjämnade rutan ritas,
+   * den råa läses.
+   */
+  #roiForSpar(s) {
+    const roi = { x: s.x, y: s.y, w: s.w, h: s.h };
+    if (!s.matt?.ankrad) return roi;
+    /*
+     * HELA rutan tas från den råa mätningen, inte bara den vridna
+     * rektangeln. Förut skrevs cx/cy/rw/rh över men x/y/w/h lämnades
+     * utjämnade, och de två beskrev då olika ögonblick. Vid vinkel 0 — skylt
+     * rakt framifrån, det vanligaste läget som finns — är det x/y/w/h som
+     * beskärs, alltså den eftersläpande rutan, precis det kommentaren ovan
+     * lovar att den inte gör.
+     */
+    return Object.assign(roi, {
+      ankrad: true,
+      x: s.matt.x, y: s.matt.y, w: s.matt.w, h: s.matt.h,
+      vinkel: s.matt.vinkel,
+      cx: s.matt.cx, cy: s.matt.cy,
+      rw: s.matt.rw, rh: s.matt.rh,
+      euAndel: s.matt.euAndel,
+      /*
+       * Vem som mätte upp rutan följer med. Ett spår som föddes på den
+       * handskrivna vägen ska läsas på den handskrivna vägen även om näten
+       * hunnit bli klara däremellan — dess mått är gjorda för den
+       * beskärningen. Nya spår blir modellspår av sig själva.
+       */
+      modell: !!s.matt.modell,
+    });
+  }
+
   async #steg() {
     if (!this.running || !this.video.videoWidth) return;
     // Kan inte längre inträffa med den självschemaläggande slingan, men om det
@@ -6419,126 +6486,130 @@ export class PlateReader extends EventTarget {
 
     const m = this.matning;
     const last = this.malsokare.last;
-    let roi = null, lasId = null, matt = null, forstSedd = 0;
+
+    /*
+     * VILKA SPÅR SOM LÄSES I DET HÄR VARVET.
+     *
+     * Förut: bara det låsta. Ett lås i taget, oavsett hur många bilar som
+     * syns. Det var rätt när en läsning kostade en halv sekund i Tesseract —
+     * då fanns det inget val. Med modellen kostar en läsning 14 ms, och den
+     * gamla regeln blev till en tyst begränsning i stället för en besparing.
+     *
+     * MÄTT PÅ TVÅ VINDRUTEFILMER: sex nummer gick att läsa av en människa,
+     * modellen läste alla sex, och appen publicerade TVÅ. Att tredubbla
+     * lästakten (intervalMs 700 → 150, 60 → 177 läsvarv) ändrade ingenting —
+     * samma två nummer. Det var inte takten som fattades, det var att de
+     * andra fyra bilarna aldrig lästes en enda gång.
+     *
+     * Det låsta spåret går först och behåller allt det hade: zoomen följer
+     * det, och mittenfallbacken gäller fortfarande bara när ingenting är
+     * låst. De extra spåren är ett tillägg, inte en omprioritering.
+     */
+    const jobb = [];
     if (last) {
-      lasId = last.id;
-      forstSedd = last.forstSedd || 0;
-      matt = { w: last.w, h: last.h, rw: last.matt?.rw, rh: last.matt?.rh };
-      // Kopia, inte spåret självt: sökningen skriver om spåret medan
-      // läsningen pågår, och rutan skulle glida ifrån bilden vi beskar.
-      roi = { x: last.x, y: last.y, w: last.w, h: last.h };
+      jobb.push({
+        roi: this.#roiForSpar(last), lasId: last.id,
+        forstSedd: last.forstSedd || 0,
+        matt: { w: last.w, h: last.h, rw: last.matt?.rw, rh: last.matt?.rh },
+      });
       /*
-       * Är spårets senaste mätning ankrad följer skyltens uppmätta kanter,
-       * vinkel och bandbredd med in i läsningen.
-       *
-       * Här används den RÅA mätningen, inte spårets utjämnade ruta. Utjämningen
-       * finns för att siktet inte ska darra på skärmen, och den är rätt till
-       * det — men den ligger drygt en sökbildruta efter sanningen, och i
-       * landsvägsfart hinner skylten flytta sig så mycket på den tiden att
-       * beskärningen hamnar bredvid. Den utjämnade rutan ritas, den råa läses.
+       * Sedan de bästa av de övriga. Kraven är med flit lägre än för ett lås
+       * men inte obefintliga: spåret ska vara ANKRAT (en detektor eller ett
+       * uppmätt blått band har sagt att det är en skylt) och ha synts i mer
+       * än en bildruta. En ljus fläck som blinkar förbi i en enda ruta får
+       * inte kosta en läsning — och framför allt inte komma in i en urna.
        */
-      if (last.matt?.ankrad) {
-        /*
-         * HELA rutan tas från den råa mätningen, inte bara den vridna
-         * rektangeln. Förut skrevs cx/cy/rw/rh över men x/y/w/h lämnades
-         * utjämnade, och de två beskrev då olika ögonblick. Vid vinkel 0 —
-         * skylt rakt framifrån, det vanligaste läget som finns — är det
-         * x/y/w/h som beskärs, alltså den eftersläpande rutan, precis det
-         * kommentaren ovan lovar att den inte gör.
-         */
-        Object.assign(roi, {
-          ankrad: true,
-          x: last.matt.x, y: last.matt.y, w: last.matt.w, h: last.matt.h,
-          vinkel: last.matt.vinkel,
-          cx: last.matt.cx, cy: last.matt.cy,
-          rw: last.matt.rw, rh: last.matt.rh,
-          euAndel: last.matt.euAndel,
-          /*
-           * Vem som mätte upp rutan följer med. Ett spår som föddes på den
-           * handskrivna vägen ska läsas på den handskrivna vägen även om
-           * näten hunnit bli klara däremellan — dess mått är gjorda för den
-           * beskärningen. Nya spår blir modellspår av sig själva.
-           */
-          modell: !!last.matt.modell,
-        });
+      const extra = Math.max(0, this.settings.extraSparPerVarv | 0);
+      if (extra) {
+        for (const s of this.kandidater) {
+          if (jobb.length > extra) break;
+          if (s.id === last.id || !s.ankrad || (s.traffar || 0) < 2) continue;
+          jobb.push({
+            roi: this.#roiForSpar(s), lasId: s.id,
+            forstSedd: s.forstSedd || 0, matt: null,
+          });
+        }
       }
     } else if (this.settings.centrumFallback && this._roi &&
                Date.now() - this._sistLast > this.settings.fallbackMs) {
-      roi = this._roi;
       const t0 = performance.now();
-      matt = hittaPlat(this.video, this._roi);
+      const matt = hittaPlat(this.video, this._roi);
       m.hitta.lagg(performance.now() - t0);
+      jobb.push({ roi: this._roi, lasId: null, forstSedd: 0, matt });
     }
-    if (!roi) return;
+    if (!jobb.length) return;
 
     this.arbetar = true;
     const tVarv = performance.now();
     try {
       // Skyltens storlek styr autozoomen, oavsett om den gick att läsa. En
       // skylt som hittas men är för liten är precis det fall zoomen finns för.
-      this.#justeraZoom(matt);
+      // Zoomen följer LÅSET, inte de extra spåren — annars skulle den dras
+      // mot vilken bil som helst i bild.
+      this.#justeraZoom(jobb[0].matt);
 
-      /*
-       * `matt` skickas med. Utan det letade `lasRuta` upp skylten en gång
-       * till inne i exakt samma ruta som vi just sökt igenom — samma
-       * nedskalning, samma flödesfyllning, en gång per OCR-varv, till ingen
-       * nytta. Är `matt` null beter sig anropet precis som förut.
-       */
-      /*
-       * Tre vägar, i tur och ordning:
-       *
-       * 1. Modellspår — rutan är uppmätt av detektorn, så läsarnätet får den
-       *    rakt av. `tolkaRatext` skickas med: modellens råtext ska genom
-       *    exakt samma formatkontroll och teckenrättning som Tesseracts, så
-       *    att bytet av motor inte smyger förbi någon grind.
-       * 2. Låst spår från den handskrivna vägen — som förut.
-       * 3. Ingen låsning alls, mittenfallbacken — som förut.
-       */
-      const svar = (roi.modell && skyltmodellRedo())
-        ? await lasMedModell(this.video, roi, tolkaRatext)
-        : lasId
-          ? await lasKandidat(this.video, roi)
-          : await lasRuta(this.video, roi, { fardigMatt: matt });
-      const { plat, sakerhet, tider, exaktSex } = svar;
+      for (const { roi, lasId, forstSedd, matt } of jobb) {
+        /*
+         * Tre vägar, i tur och ordning:
+         *
+         * 1. Modellspår — rutan är uppmätt av detektorn, så läsarnätet får
+         *    den rakt av. `tolkaRatext` skickas med: modellens råtext ska
+         *    genom exakt samma formatkontroll och teckenrättning som
+         *    Tesseracts, så att bytet av motor inte smyger förbi någon grind.
+         * 2. Låst spår från den handskrivna vägen — som förut.
+         * 3. Ingen låsning alls, mittenfallbacken — som förut. `matt` skickas
+         *    med så `lasRuta` slipper leta upp skylten en gång till inne i
+         *    exakt samma ruta som vi just sökt igenom.
+         */
+        const svar = (roi.modell && skyltmodellRedo())
+          ? await lasMedModell(this.video, roi, tolkaRatext)
+          : lasId
+            ? await lasKandidat(this.video, roi)
+            : await lasRuta(this.video, roi, { fardigMatt: matt });
+        const { plat, sakerhet, tider, exaktSex } = svar;
 
-      /*
-       * Kameran kan ha släckts medan läsningen pågick. Utan den här kontrollen
-       * kunde en läsning som var i luften när `stop()` kördes fylla på
-       * rösträkningen efter att `rensa()` tömt den — och då ligger hashar kvar
-       * i minnet med kameran av. Litet, men det biter mot regeln om att
-       * ingenting ska finnas kvar när läsaren är avstängd.
-       */
-      if (!this.running) return;
+        /*
+         * Kameran kan ha släckts medan läsningen pågick. Utan den här
+         * kontrollen kunde en läsning som var i luften när `stop()` kördes
+         * fylla på rösträkningen efter att `rensa()` tömt den — och då ligger
+         * hashar kvar i minnet med kameran av. Litet, men det biter mot
+         * regeln om att ingenting ska finnas kvar när läsaren är avstängd.
+         */
+        if (!this.running) return;
 
-      m.ocrVarv++;
-      if (tider) {
-        m.ocrKorningar += tider.ocrAntal;
-        if (tider.ocrAntal) m.ocr.lagg(tider.ocrMs / tider.ocrAntal);
-        if (tider.forbMs) m.forbehandla.lagg(tider.forbMs);
-        if (tider.hittaMs) m.hitta.lagg(tider.hittaMs);
-        if (tider.ankrad) m.ankradeVarv++;
+        m.ocrVarv++;
+        if (tider) {
+          m.ocrKorningar += tider.ocrAntal;
+          if (tider.ocrAntal) m.ocr.lagg(tider.ocrMs / tider.ocrAntal);
+          if (tider.forbMs) m.forbehandla.lagg(tider.forbMs);
+          if (tider.hittaMs) m.hitta.lagg(tider.hittaMs);
+          if (tider.ankrad) m.ankradeVarv++;
+        }
+        if (plat) {
+          m.giltiga++;
+          if (m.forstaGiltigMs == null) m.forstaGiltigMs = performance.now() - m.startAt;
+        } else {
+          m.ogiltiga++;
+        }
+
+        /*
+         * Hashen tas fram här och inte inne i `#rosta`, därför att BÅDA
+         * behöver den: rösträkningen för att räkna, och brandmekanismen för
+         * att se om spåret läser samma skylt igen eller hittar på en ny varje
+         * varv. Att hasha två gånger vore samma arbete två gånger — och att
+         * skicka numret vidare i klartext i stället är precis det modulen
+         * inte gör.
+         */
+        let h = null;
+        if (plat) { try { h = await this.#hasha(plat); } catch {} }
+
+        // Ett lås som aldrig ger en giltig skylt ska brinna upp, inte sitta
+        // kvar. Rapporten är det som gör det.
+        if (lasId) this.malsokare.rapporteraLasning(lasId, !!plat, h);
+        // Urnan är spårets, inte bildens. Två bilar i bild röstar var för
+        // sig, så en felläsning av den ena inte kan störa den andra.
+        if (plat) await this.#rosta(plat, sakerhet, lasId ?? 'mitten', forstSedd, h, exaktSex);
       }
-      if (plat) {
-        m.giltiga++;
-        if (m.forstaGiltigMs == null) m.forstaGiltigMs = performance.now() - m.startAt;
-      } else {
-        m.ogiltiga++;
-      }
-
-      /*
-       * Hashen tas fram här och inte inne i `#rosta`, därför att BÅDA behöver
-       * den: rösträkningen för att räkna, och brandmekanismen för att se om
-       * spåret läser samma skylt igen eller hittar på en ny varje varv. Att
-       * hasha två gånger vore samma arbete två gånger — och att skicka numret
-       * vidare i klartext i stället är precis det modulen inte gör.
-       */
-      let h = null;
-      if (plat) { try { h = await this.#hasha(plat); } catch {} }
-
-      // Ett lås som aldrig ger en giltig skylt ska brinna upp, inte sitta
-      // kvar. Rapporten är det som gör det.
-      if (lasId) this.malsokare.rapporteraLasning(lasId, !!plat, h);
-      if (plat) await this.#rosta(plat, sakerhet, lasId ?? 'mitten', forstSedd, h, exaktSex);
     } catch (e) {
       this.#fel(e);
     } finally {
