@@ -39,3 +39,9 @@ bilkamera/
 bilkamera-jpg/
 bilkamera-liten/
 bilkamera-ram/
+
+# Dashcam-filmerna till film.html. Samma skäl som bilkamera-mapparna ovanför,
+# och tyngre: en film från förarplats visar främmande fordon, ansikten och
+# exakt var ägaren körde och när. Den hör aldrig hemma i ett publikt repo.
+# Filmerna bor hos ägaren och matas in i bänken via filväljaren.
+film/
