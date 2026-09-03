@@ -4511,6 +4511,23 @@ export const MALSOK = {
   bildrutorForLasAnkrad: 3,
   tappForLas: 3,        // en låst kandidat får försvinna 3 bildrutor
   tappForSpar: 2,       // en olåst släpps snabbare
+  /*
+   * ...OCH SAMMA SAK I TID, vilket är det som faktiskt gäller.
+   *
+   * Bildrutetalen ovan var enda måttet förut, och de betyder olika saker vid
+   * olika söktakt. Kommentaren intill räknade om dem till 360 och 480 ms — men
+   * bara under antagandet att sökningen går var 120:e ms. UPPMÄTT gick den
+   * mellan 1,5 och 10,7 gånger i sekunden beroende på filmens upplösning, så
+   * samma tre bildrutor var ibland 280 ms och ibland två hela sekunder.
+   * Toleransen svajade alltså med kamerans upplösning, vilket ingen valt.
+   *
+   * Ett spår släpps nu när BÅDA måtten är passerade: tillräckligt många
+   * missade sökningar OCH tillräckligt lång tid. Bildrutetalet skyddar mot att
+   * en enda tappad sökning på en långsam enhet river ett fungerande spår;
+   * tidsgränsen skyddar mot att ett spår lever kvar i evighet på en snabb.
+   */
+  tappMsLas: 700,
+  tappMsSpar: 500,
   minPoang: 0.16,       // under det låser vi inte, hur ensam kandidaten än är
   /*
    * Så många läsningar utan giltig skylt bränner låset.
@@ -4713,8 +4730,11 @@ export class Malsokare {
 
     const kvar = [];
     for (const s of this.spar) {
-      const tak = s.id === this.lastId ? this.k.tappForLas : this.k.tappForSpar;
-      if (s.tappade > tak) {
+      const last = s.id === this.lastId;
+      const tak = last ? this.k.tappForLas : this.k.tappForSpar;
+      const takMs = last ? this.k.tappMsLas : this.k.tappMsSpar;
+      // Båda måtten måste vara passerade. Se `tappMsLas`.
+      if (s.tappade > tak && (nu - s.sistSedd) > takMs) {
         if (s.id === this.lastId) { this.lastId = null; this.sisteOrsak = 'tappad'; }
         this.#slapp(s);
         continue;
@@ -5624,6 +5644,9 @@ export class PlateReader extends EventTarget {
       bildrutorForLas: MALSOK.bildrutorForLas,
       bildrutorForLasAnkrad: MALSOK.bildrutorForLasAnkrad,
       tappForLas: MALSOK.tappForLas,
+      /* Hur länge ett spår får vara borta innan det släpps. Se MALSOK. */
+      tappMsLas: MALSOK.tappMsLas,
+      tappMsSpar: MALSOK.tappMsSpar,
       minPoang: MALSOK.minPoang,
       brandForsok: MALSOK.brandForsok,
       /*
@@ -5749,6 +5772,8 @@ export class PlateReader extends EventTarget {
       bildrutorForLas: this.settings.bildrutorForLas,
       bildrutorForLasAnkrad: this.settings.bildrutorForLasAnkrad,
       tappForLas: this.settings.tappForLas,
+      tappMsLas: this.settings.tappMsLas,
+      tappMsSpar: this.settings.tappMsSpar,
       minPoang: this.settings.minPoang,
       brandForsok: this.settings.brandForsok,
     });

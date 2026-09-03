@@ -57,6 +57,9 @@
 <label style="color:#b9c7d6">zoom-målband px
   <input id="mal" type="text" value="30,150" style="width:90px;background:#151e28;
     color:#eef4fa;border:1px solid #33445a;border-radius:8px;padding:6px;font:inherit"></label>
+<label style="color:#b9c7d6">tapp-tålighet ms (spår,lås)
+  <input id="tapp" type="text" value="500,700" style="width:100px;background:#151e28;
+    color:#eef4fa;border:1px solid #33445a;border-radius:8px;padding:6px;font:inherit"></label>
 <button id="kor" disabled>Kör</button>
 <div id="summa">Välj en eller flera filmer.</div>
 <div id="ut"></div>
@@ -101,6 +104,8 @@ $('kor').addEventListener('click', async () => {
     const lasare = new PlateReader({
       settings: { provlage: true, ritaSikte: false, intervalMs, krav,
                   zoomLage: $('zoom').value,
+                  tappMsSpar: +($('tapp').value.split(',')[0] || 0),
+                  tappMsLas: +($('tapp').value.split(',')[1] || 0),
                   zoomMalMinPx: +($('mal').value.split(',')[0] || 30),
                   zoomMalMaxPx: +($('mal').value.split(',')[1] || 150) },
     });
