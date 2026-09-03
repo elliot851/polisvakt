@@ -17,3 +17,7 @@ BLOCKERADE.md
 # publikt repo.
 tools/fbmejl.hemligheter.json
 fbmejl-prov/
+
+# Intern designdok for stad-2-routingen. Beskriver FB-bryggan i detalj och
+# hor inte hemma i ett PUBLIKT repo (samma skal som kunskapsexporten holls ute).
+supabase/migrationer/STAD-2-ROUTING.md
