@@ -40,6 +40,9 @@ const LASARE   = '/modeller/eu-ocr.onnx';
  *  skyltar: på samma bild föll bästa lådan från 0,70 till 0,04. Räckvidd kostar
  *  upplösning, och räckvidd är hela poängen. */
 const DS = 640;
+/** Samma tal, utåt. plate.js autozoom behöver veta hur bred bilden är som
+ *  detektorn faktiskt ser, för att kunna räkna sitt målband i de pixlarna. */
+export const SOKBREDD = DS;
 /** Läsarens indata, ur modellens egen config (modeller/eu-ocr-config.yaml). */
 const LB = 140, LH = 70;
 const ALFABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_';

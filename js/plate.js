@@ -93,7 +93,8 @@ import { motionSupported, motionNeedsPermission } from './impact.js';
  * lyckas hämta modellerna. Se skyltmodell.js för varför den finns och vad den
  * är uppmätt till.
  */
-import { haSkyltmodell, skyltmodellRedo, skyltmodellLage, sokMedModell, lasMedModell }
+import { haSkyltmodell, skyltmodellRedo, skyltmodellLage, sokMedModell, lasMedModell,
+         SOKBREDD as MODELL_SOKBREDD }
   from './skyltmodell.js';
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
@@ -5544,6 +5545,41 @@ export class PlateReader extends EventTarget {
       fonsterMs: 2500,
       franvaroMs: 8000,       // så länge måste en skylt ha varit borta för att räknas som ny
       pip: true,
+      /*
+       * AUTOZOOMENS MÅLBAND, i pixlar i den bild SÖKNINGEN faktiskt arbetar i.
+       *
+       * Enheten är ny, talen är de gamla — och det är ett MÄTT beslut som gick
+       * tvärtemot vad jag trodde.
+       *
+       * Regeln stod förut i andel av rutan: skylten skulle fylla 34–90 %. Det
+       * målet går inte att nå i trafik, där en skylt är 3–6 % av bildrutan, så
+       * regeln svarade "för liten" på varenda bildruta och gick mot taket
+       * oavsett vad den såg. Det såg ut som en policy som inte valde någonting,
+       * och hypotesen var att ett realistiskt band — 30 px, drygt en och en
+       * halv gång över de 19 px där modellen bevisligen läser rätt — skulle
+       * vara bättre.
+       *
+       * A/B på tre filmer, allt annat lika:
+       *   30–150 px .... 22 läsvarv,   7 giltiga läsningar, slutzoom 1,4×
+       *   218–576 px ... 138 läsvarv, 60 giltiga läsningar, slutzoom 2,5×
+       * Samma nummer publicerat i båda. Men sex gånger fler läsvarv och åtta
+       * gånger fler giltiga läsningar med det aggressiva bandet.
+       *
+       * Varför: en större skylt låser fast spåret och HÅLLER det. Zoomen köper
+       * inte bara pixlar på skylten, den köper stabilitet i spårningen — och
+       * det är spårningen som är flaskhalsen. Att zoomen ändå inte drar iväg
+       * beror på `#zoomtakForMal`, som stoppar den så fort målet närmar sig
+       * bildkanten. Den faktiska policyn är alltså "zooma så mycket som taket
+       * tillåter", och den är bättre än den försiktiga.
+       *
+       * Talen 218 och 576 är de gamla 34 % och 90 % av en 640 px arbetsbild.
+       * Enheten är kvar i pixlar för att den är oberoende av kamerans
+       * upplösning och för att den går att jämföra med det som faktiskt mätts:
+       * modellen läser rätt ner till 19 px i arbetsbilden och hittar på nummer
+       * vid 15. Sänk inte golvet utan att köra om A/B:t ovan.
+       */
+      zoomMalMinPx: 218,
+      zoomMalMaxPx: 576,
       zoomLage: 'auto',      // 'auto' eller 'manuell'
       zoomVilaMs: 1800,      // minsta tid mellan tva zoomandringar
 
@@ -6034,10 +6070,16 @@ export class PlateReader extends EventTarget {
       // lådan bredare än skylten, och zoomen hade trott att den redan var
       // stor nog.
       const andel = (traff.rw || traff.w) / this._roi.w;
-      // Under en tredjedel av rutan är skylten för liten för att läsas säkert.
-      if (andel < 0.34) mal = this.zoom + 0.4;
-      // Över nio tiondelar riskerar kanttecknen att hamna utanför.
-      else if (andel > 0.9) mal = this.zoom - 0.3;
+      /*
+       * Andelen räknas om till pixlar i den bild sökningen arbetar i — det är
+       * de pixlarna detektorn har att gå på, oavsett vad kameran levererar.
+       * Se `zoomMalMinPx`.
+       */
+      const arbetsbredd = (this.settings.modell && skyltmodellRedo())
+        ? MODELL_SOKBREDD : this.settings.sokBredd;
+      const platPx = andel * arbetsbredd;
+      if (platPx < this.settings.zoomMalMinPx) mal = this.zoom + 0.4;
+      else if (platPx > this.settings.zoomMalMaxPx) mal = this.zoom - 0.3;
       else return;                                  // lagom, rör ingenting
     }
 
