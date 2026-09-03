@@ -48,6 +48,12 @@
 <label style="color:#b9c7d6">krav <input id="krav" type="number" value="2" min="1" max="4"
   style="width:60px;background:#151e28;color:#eef4fa;border:1px solid #33445a;border-radius:8px;padding:6px"></label>
 <br>
+<label style="color:#b9c7d6">zoom
+  <select id="zoom" style="background:#151e28;color:#eef4fa;border:1px solid #33445a;
+    border-radius:8px;padding:6px;font:inherit">
+    <option value="auto">auto (förval)</option>
+    <option value="manuell">av (fast 1×)</option>
+  </select></label>
 <button id="kor" disabled>Kör</button>
 <div id="summa">Välj en eller flera filmer.</div>
 <div id="ut"></div>
@@ -90,11 +96,16 @@ $('kor').addEventListener('click', async () => {
       (v.captureStream ? v.captureStream() : v.mozCaptureStream());
 
     const lasare = new PlateReader({
-      settings: { provlage: true, ritaSikte: false, intervalMs, krav },
+      settings: { provlage: true, ritaSikte: false, intervalMs, krav,
+                  zoomLage: $('zoom').value },
     });
     const handelser = [];
     const publicerat = [];
+    const zoomar = [];
     const T0 = performance.now();
+    lasare.addEventListener('zoom', e =>
+      zoomar.push({ z: e.detail.zoom, fran: e.detail.fran,
+                    t: +((performance.now() - T0) / 1000).toFixed(1) }));
     lasare.addEventListener('spardiagnos', e =>
       handelser.push({ ...e.detail, t: (performance.now() - T0) / 1000 }));
     lasare.addEventListener('traff', e =>
@@ -111,7 +122,7 @@ $('kor').addEventListener('click', async () => {
     const matning = lasare.matdata ? lasare.matdata() : null;
     try { lasare.stop(); } catch {}
     v.pause(); URL.revokeObjectURL(url);
-    allt.push({ fil: fil.name, handelser, publicerat, matning, langd: v.duration });
+    allt.push({ fil: fil.name, handelser, publicerat, matning, zoomar, langd: v.duration });
   }
   navigator.mediaDevices.getUserMedia = riktig;
 
@@ -218,7 +229,7 @@ $('kor').addEventListener('click', async () => {
   }
   dl.appendChild(dtb); $('ut').appendChild(dl);
 
-  window.__spardiagnos = { allt, dom, rader, intervalMs, krav };
+  window.__spardiagnos = { allt, dom, rader, intervalMs, krav, zoomLage: $('zoom').value };
   const klara = dom.filter(d => d.k === 'ok').length;
   // Vad flikens timers faktiskt klarade. Står det "strypt" är alla tider nedan
   // att kasta — det är då bänken mäter fliken och inte läsaren.

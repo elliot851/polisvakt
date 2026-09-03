@@ -233,8 +233,24 @@ function iTur(arbete) {
   return nasta;
 }
 
-/* En återanvänd duk per storlek. Att skapa en 640×640-canvas per bildruta är
- * en allokering på 1,6 MB tio gånger i sekunden. */
+/*
+ * En återanvänd duk per storlek. Att skapa en 640×640-canvas per bildruta är
+ * en allokering på 1,6 MB tio gånger i sekunden.
+ *
+ * OCH INGET `willReadFrequently`. Flaggan ser ut att höra hemma här — vi läser
+ * ju ut varenda pixel varje bildruta — men den betyder "lägg duken i
+ * huvudminnet", och då görs nedskalningen av videon i programvara i stället
+ * för på grafikkortet.
+ *
+ * UPPMÄTT på en 2560×1440-film (prov/skyltar/bildkostnad.html):
+ *   drawImage med willReadFrequently .... 19,8 ms
+ *   drawImage utan ....................... under 0,1 ms
+ *   getImageData med ...................... 0,9 ms
+ *   getImageData utan ..................... 0,7 ms
+ * Flaggan kostade alltså 19,8 ms per sökning och gjorde återläsningen
+ * långsammare, inte snabbare. Det var den enskilt största posten före
+ * modellen, och den var ren förlust.
+ */
 const dukar = new Map();
 function duk(b, h) {
   const nyckel = b + 'x' + h;
@@ -242,11 +258,19 @@ function duk(b, h) {
   if (!d) {
     d = document.createElement('canvas');
     d.width = b; d.height = h;
-    d.ctx = d.getContext('2d', { willReadFrequently: true });
+    d.ctx = d.getContext('2d');
     dukar.set(nyckel, d);
   }
   return d;
 }
+
+/*
+ * 256 färdiga värden i stället för en division per färgkanal och pixel.
+ * 640×640×3 är 1,2 miljoner divisioner per bildruta; uppmätt 6,6 ms mot
+ * 4,3 ms med tabellen. Litet, men det är ren vinst på varje sökning.
+ */
+const DELAT_255 = new Float32Array(256);
+for (let i = 0; i < 256; i++) DELAT_255[i] = i / 255;
 
 /**
  * Brevlådeskalning: krymp med BEVARADE proportioner och fyll ut resten grått.
@@ -272,9 +296,9 @@ function detektTensor(d) {
   const antal = DS * DS;
   const ut = new Float32Array(3 * antal);
   for (let i = 0, p = 0; i < antal; i++, p += 4) {
-    ut[i]             = px[p]     / 255;
-    ut[i + antal]     = px[p + 1] / 255;
-    ut[i + 2 * antal] = px[p + 2] / 255;
+    ut[i]             = DELAT_255[px[p]];
+    ut[i + antal]     = DELAT_255[px[p + 1]];
+    ut[i + 2 * antal] = DELAT_255[px[p + 2]];
   }
   return new ort.Tensor('float32', ut, [1, 3, DS, DS]);
 }

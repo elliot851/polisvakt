@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bildrutekostnad — var tiden går före modellen</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.hint { color: #b9c7d6; max-width: 840px; }
+  button { background: #3d9dff; color: #0b0f14; border: 0; border-radius: 8px;
+           padding: 11px 20px; font: inherit; font-weight: 700; margin: 8px 8px 8px 0; }
+  #summa { padding: 12px 0; border-bottom: 1px solid #33445a; }
+  .stor { font-size: 21px; font-weight: 700; display: block; }
+  .ok { color: #6ee2a6; } .fel { color: #ff9c9d; } .varn { color: #ffb020; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid #22303f; padding: 7px 8px; text-align: left; }
+  th { color: #9fb3c8; font-weight: 600; }
+  .stapel { display: inline-block; height: 10px; background: #3d9dff; border-radius: 2px; }
+  code { background: #212d3b; padding: 1px 5px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<h1>Bildrutekostnad</h1>
+<p class="hint">
+  Modellen får alltid 640×640 och kostar detsamma oavsett källa. Ändå sjönk
+  söktakten till 1,5–3,2 gånger i sekunden på 2560×1440 medan den låg på 10,7 på
+  en mindre film. Tiden går alltså <b>före</b> modellen: i att få bildrutan från
+  videon in i en tensor. Den här sidan tidtar varje steg för sig, på en riktig
+  bildruta ur en riktig film, så att optimeringen sätts in där tiden faktiskt är.
+</p>
+<label style="color:#b9c7d6">Film: <input id="fil" type="file" accept="video/*"></label>
+<br>
+<button id="kor" disabled>Mät</button>
+<div id="summa">Välj en film.</div>
+<div id="ut"></div>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const S = 640;
+let video = null;
+
+$('fil').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  video = document.createElement('video');
+  video.src = URL.createObjectURL(f); video.muted = true; video.playsInline = true;
+  await new Promise(ok => { video.onloadeddata = ok; video.onerror = ok; });
+  if (!video.videoWidth) { $('summa').textContent = 'Gick inte att läsa filmen.'; return; }
+  await new Promise(r => { video.onseeked = r; video.currentTime = video.duration / 2; });
+  $('summa').textContent = `${f.name}: ${video.videoWidth}×${video.videoHeight}. Tryck Mät.`;
+  $('kor').disabled = false;
+});
+
+/** Kör `fn` n gånger och ge medianen. Median och inte medel: en enstaka
+ *  skräpkörning från sophämtaren ska inte färga hela siffran. */
+function tid(fn, n = 30) {
+  const v = [];
+  for (let i = 0; i < n; i++) { const t = performance.now(); fn(); v.push(performance.now() - t); }
+  v.sort((a, b) => a - b);
+  return v[Math.floor(v.length / 2)];
+}
+
+/* Uppslagstabell: 256 färdiga värden i stället för en division per kanal och
+ * pixel. 640×640×3 = 1,2 miljoner divisioner per bildruta blir 1,2 miljoner
+ * tabellslag. */
+const DIV255 = new Float32Array(256);
+for (let i = 0; i < 256; i++) DIV255[i] = i / 255;
+
+function gorDuk(medHint) {
+  const d = document.createElement('canvas');
+  d.width = S; d.height = S;
+  d.ctx = medHint
+    ? d.getContext('2d', { willReadFrequently: true })
+    : d.getContext('2d');
+  return d;
+}
+
+function rita(d, yta) {
+  const skala = Math.min(S / yta.w, S / yta.h);
+  const nb = Math.round(yta.w * skala), nh = Math.round(yta.h * skala);
+  const dx = Math.floor((S - nb) / 2), dy = Math.floor((S - nh) / 2);
+  d.ctx.fillStyle = '#727272'; d.ctx.fillRect(0, 0, S, S);
+  d.ctx.drawImage(video, 0, 0, yta.w, yta.h, dx, dy, nb, nh);
+}
+
+$('kor').addEventListener('click', async () => {
+  $('kor').disabled = true;
+  $('ut').innerHTML = '';
+  const yta = { x: 0, y: 0, w: video.videoWidth, h: video.videoHeight };
+  const rader = [];
+
+  // --- 1. Rita ner videon till 640×640, med och utan willReadFrequently ----
+  const dukHint = gorDuk(true), dukUtan = gorDuk(false);
+  rita(dukHint, yta); rita(dukUtan, yta);            // uppvärmning
+  rader.push(['drawImage → 640×640, willReadFrequently: true', tid(() => rita(dukHint, yta))]);
+  rader.push(['drawImage → 640×640, utan hint', tid(() => rita(dukUtan, yta))]);
+
+  // --- 2. Läsa tillbaka pixlarna ------------------------------------------
+  rader.push(['getImageData 640×640, med hint', tid(() => dukHint.ctx.getImageData(0, 0, S, S))]);
+  rader.push(['getImageData 640×640, utan hint', tid(() => dukUtan.ctx.getImageData(0, 0, S, S))]);
+
+  // --- 3. Bygga tensorn ur pixlarna ---------------------------------------
+  const px = dukHint.ctx.getImageData(0, 0, S, S).data;
+  const antal = S * S;
+  const ut = new Float32Array(3 * antal);
+  rader.push(['normalisering, division per kanal (nuvarande)', tid(() => {
+    for (let i = 0, p = 0; i < antal; i++, p += 4) {
+      ut[i] = px[p] / 255; ut[i + antal] = px[p + 1] / 255; ut[i + 2 * antal] = px[p + 2] / 255;
+    }
+  })]);
+  rader.push(['normalisering, uppslagstabell', tid(() => {
+    for (let i = 0, p = 0; i < antal; i++, p += 4) {
+      ut[i] = DIV255[px[p]]; ut[i + antal] = DIV255[px[p + 1]]; ut[i + 2 * antal] = DIV255[px[p + 2]];
+    }
+  })]);
+
+  // --- 4. Alternativ väg: createImageBitmap med skalning i webbläsaren ----
+  try {
+    await createImageBitmap(video, { resizeWidth: S, resizeHeight: S, resizeQuality: 'low' });
+    rader.push(['createImageBitmap med skalning (asynkron)', await (async () => {
+      const v = [];
+      for (let i = 0; i < 12; i++) {
+        const t = performance.now();
+        const bm = await createImageBitmap(video,
+          { resizeWidth: S, resizeHeight: S, resizeQuality: 'low' });
+        bm.close();
+        v.push(performance.now() - t);
+      }
+      v.sort((a, b) => a - b); return v[6];
+    })()]);
+  } catch (e) {
+    rader.push(['createImageBitmap med skalning', null, e.message]);
+  }
+
+  // --- 5. Vad modellen själv kostar, som jämförelsepunkt -------------------
+  let modellMs = null;
+  try {
+    const m = await import('../../js/skyltmodell.js');
+    await m.haSkyltmodell();
+    await m.sokMedModell(video, yta);
+    const v = [];
+    for (let i = 0; i < 8; i++) {
+      const t = performance.now();
+      await m.sokMedModell(video, yta);
+      v.push(performance.now() - t);
+    }
+    v.sort((a, b) => a - b);
+    modellMs = v[4];
+    rader.push(['HELA sokMedModell (rita + tensor + modell)', modellMs]);
+  } catch (e) {
+    rader.push(['sokMedModell', null, e.message]);
+  }
+
+  const max = Math.max(...rader.map(r => r[1] || 0));
+  const tab = document.createElement('table');
+  tab.innerHTML = '<thead><tr><th>Steg</th><th>Median</th><th></th></tr></thead>';
+  const tb = document.createElement('tbody');
+  for (const [namn, ms, fel] of rader) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${namn}</td>` +
+      `<td class="mono">${ms == null ? '<span class="fel">' + fel + '</span>' : ms.toFixed(1) + ' ms'}</td>` +
+      `<td>${ms == null ? '' : `<span class="stapel" style="width:${Math.round(ms / max * 240)}px"></span>`}</td>`;
+    tb.appendChild(tr);
+  }
+  tab.appendChild(tb); $('ut').appendChild(tab);
+
+  window.__bildkostnad = { kalla: `${yta.w}×${yta.h}`, rader };
+  $('summa').innerHTML =
+    `<span class="stor">${yta.w}×${yta.h}</span>` +
+    `<span style="color:#b9c7d6">Jämför raderna: allt ovanför "HELA sokMedModell" ` +
+    `är arbete som sker <b>innan</b> modellen ens startar.</span>`;
+  $('kor').disabled = false;
+});
+</script>
+</body>
+</html>
