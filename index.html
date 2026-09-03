@@ -982,6 +982,17 @@
          för dagens förare — det håller bara dörren stängd för bruset den dag
          appen finns i fler län. Koden håller samma förval: notisFolj i
          js/app.js står på true. -->
+    <!-- DÖLJD RADIE-MODELL — "Nära mig / Räckvidd".
+         Den lagras på prenumerationen men ANVÄNDS INTE vid utskick:
+         fbmejl_push_mottagare läser aldrig radien, så den lovade en
+         geo-filtrering som aldrig skedde (uppmätt 2026-09-04). Den ersätts av
+         stadsväljaren ovanför, som är den enda "var?"-kontroll en användare
+         behöver. Elementen är kvar med sina id:n så renderNotisOmfang/
+         synkaNotisOmfang (app.js) och push.js-registreringen fungerar
+         oförändrat — bara UI:t är gömt. En gömd FÖRÄLDER står emot att
+         renderNotisOmfang av-döljer notisRadieRow. Återuppta bara om en
+         RIKTIG radie-routing byggs, men region-modellen är det som gäller. -->
+    <div id="notisOmfangLegacy" hidden>
     <label class="row"><span>Var vill du få notiser?</span>
       <select id="setNotisOmfang">
         <option value="nara" selected>Nära mig</option>
@@ -995,6 +1006,7 @@
       vilken ruta på ungefär tre mil du hör hemma i, och först när telefonen
       varit där två olika dagar.</p>
     <p class="hint" id="notisPlatsStatus"></p>
+    </div>
 
     <!-- Notisljudet är en annan sak än appens egna ljud, och skillnaden är
          värd en egen rubrik.
