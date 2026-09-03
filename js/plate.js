@@ -4548,6 +4548,30 @@ export const MALSOK = {
    * hur ofta takten alls går att mäta där.
    */
   brandForsok: 3,
+  /*
+   * Så mycket större måste skylten ha blivit för att ett brännmärke ska
+   * förlåtas. 1,5 är valt så att bruset i mätningen av kanterna inte räcker —
+   * en kandidat vars bredd hoppar några procent mellan bildrutor ska inte
+   * kunna frita sig själv — men så att en bil man närmar sig passerar det
+   * inom någon sekund. Se `#brunnet`.
+   */
+  brandForlatVaxt: 1.5,
+  /*
+   * ...och en andra väg tillbaka: tid.
+   *
+   * Tillväxtregeln räcker inte, och det är uppmätt. I en av provfilmerna följs
+   * bilen framför på konstant avstånd i hela klippet — skyltens bredd står på
+   * exakt 52 px i tvåhundra sökningar i rad. Den växer alltså aldrig, och ett
+   * brännmärke som bara lyfts av tillväxt sitter kvar för alltid även på en
+   * äkta skylt.
+   *
+   * Men allt annat ändrar sig ändå: ljuset, vinkeln, rörelseoskärpan, om
+   * vindrutetorkaren just gick förbi. Efter fyra sekunder är det inte samma
+   * fråga längre. Kostnaden är hårt begränsad — tre bortkastade läsningar per
+   * fyra sekunder är en bråkdel av läsbudgeten, och det var den budgeten
+   * brännmärket fanns för att skydda.
+   */
+  brandForlatMs: 4000,
   glidning: 0.4,        // hur mycket av den nya positionen som slår igenom
   maxSpar: 12,
   /*
@@ -4966,6 +4990,45 @@ export class Malsokare {
    * en kandidat under horisonten. En ensam skylt högt i bildrutan bär inget
    * straff och behåller sitt snabblås.
    */
+  /*
+   * ÄR SPÅRET FORTFARANDE BRÄNT?
+   *
+   * Brännmärket satt förut för alltid, och det var den dyraste enskilda buggen
+   * i hela läsaren. UPPMÄTT på en 30-sekundersfilm: spår id12 låste vid
+   * sökning 27, brann vid 28 efter tre läsningar som gav 49, 49 och 52 px
+   * skylt — och som säkerhetsgrinden HELT KORREKT vägrade släppa igenom, för
+   * modellen läste RTB062 på en skylt som heter RZB062. Sedan följde 225
+   * sökningar där samma spår hade poäng 0,64, 223 träffar mot ett krav på
+   * tre, och aldrig mer kunde låsas. Bilen kom närmare, skylten blev läsbar,
+   * och appen tittade rakt på den utan att någonsin läsa den igen.
+   *
+   * Brännmärket finns för att släppa ett lås som satt sig på något som inte är
+   * en skylt — en solreflex, en dekal — så att tre bortkastade läsningar blir
+   * taket i stället för hundra. Det syftet är riktigt. Men mekanismen kan inte
+   * skilja "det här är ingen skylt" från "det här ÄR en skylt, den är bara för
+   * långt bort ännu", och de två ser exakt likadana ut: läsningar utan svar.
+   *
+   * Skillnaden syns i STORLEKEN. En solreflex som brann vid 50 px är samma
+   * reflex vid 50 px en sekund senare. En skylt man närmar sig växer. Därför
+   * förlåts brännmärket när skylten blivit påtagligt större än den var när den
+   * brann — då är det inte samma fråga som ställs om igen, det är en ny fråga
+   * med mer information. Räknarna nollas så spåret får en ärlig omstart och
+   * kan brinna igen om det visar sig vara skräp ändå.
+   */
+  #brunnet(s) {
+    if (!s.brand) return false;
+    const px = Math.round(s.matt?.rw || s.w || 0);
+    const vaxt = s.brandPx && px >= s.brandPx * this.k.brandForlatVaxt;
+    const tid = s.brandAt && (Date.now() - s.brandAt) >= this.k.brandForlatMs;
+    if (!vaxt && !tid) return true;
+    s.brand = false;
+    s.brandPx = 0;
+    s.brandAt = 0;
+    s.ocrBom = 0;
+    s.ocrForsok = 0;
+    return false;
+  }
+
   krav(s) {
     const straffad = !!(s.matt && s.matt.horisontStraffad);
     return (s.ankrad && !straffad)
@@ -4976,7 +5039,7 @@ export class Malsokare {
   #valjLas() {
     let bast = null;
     for (const s of this.spar) {
-      if (s.brand || s.traffar < this.krav(s)) continue;
+      if (this.#brunnet(s) || s.traffar < this.krav(s)) continue;
       if (s.poang < this.k.minPoang) continue;
       if (!bast || s.poang > bast.poang) bast = s;
     }
@@ -5044,6 +5107,13 @@ export class Malsokare {
     s.ocrBom++;
     if (!s.upprepade && s.ocrBom >= this.k.brandForsok) {
       s.brand = true;
+      /*
+       * Hur stor skylten var när den brann. Se `#valjLas`: ett brännmärke satt
+       * förut för alltid, och det är fel när skälet till bommarna var att
+       * bilen var för långt bort.
+       */
+      s.brandPx = Math.round(s.matt?.rw || s.w || 0);
+      s.brandAt = Date.now();
       if (s.id === this.lastId) { this.lastId = null; this.sisteOrsak = 'brand'; }
     }
   }
@@ -5963,6 +6033,17 @@ export class PlateReader extends EventTarget {
        * hinner med, och det ska gå att se i stället för att gissas.
        */
       sokOverhoppade: 0,
+      /*
+       * OCR-SLINGANS EGEN PULS. `ocrVarv` räknar LÄSNINGAR, alltså bara de varv
+       * som hade något att läsa. Ett varv som snurrar utan att hitta en ruta
+       * syns inte alls — och det gjorde att en film med 5 läsvarv och en med
+       * 195 såg likadana ut i mätningen, fast den ena slingan gick och den
+       * andra stod stilla. Utan de här tre talen går det inte att skilja
+       * "slingan står" från "slingan går men hittar inget att läsa".
+       */
+      stegKorda: 0,        // hur många gånger #steg alls kördes
+      stegUtanRuta: 0,     // ...varav utan något spår att läsa
+      stegSpar: 0,         // summa lästa spår, ska följa ocrVarv
       lastAt: 0,
       forstaLasMs: null,            // start → första låset
       forstaGiltigMs: null,         // start → första giltiga OCR-läsningen
@@ -5992,6 +6073,8 @@ export class PlateReader extends EventTarget {
       ogiltiga: m.ogiltiga,
       overhoppade: m.overhoppade,
       sokOverhoppade: m.sokOverhoppade,
+      stegKorda: m.stegKorda,
+      stegUtanRuta: m.stegUtanRuta,
       modell: skyltmodellLage(),
       forstaLasMs: rund(m.forstaLasMs),
       forstaGiltigMs: rund(m.forstaGiltigMs),
@@ -6590,6 +6673,7 @@ export class PlateReader extends EventTarget {
     if (this.arbetar) { this.matning.overhoppade++; return; }
 
     const m = this.matning;
+    m.stegKorda++;
     const last = this.malsokare.last;
 
     /*
@@ -6657,7 +6741,8 @@ export class PlateReader extends EventTarget {
       m.hitta.lagg(performance.now() - t0);
       jobb.push({ roi: this._roi, lasId: null, forstSedd: 0, matt });
     }
-    if (!jobb.length) return;
+    if (!jobb.length) { m.stegUtanRuta++; return; }
+    m.stegSpar += jobb.length;
 
     this.arbetar = true;
     const tVarv = performance.now();
