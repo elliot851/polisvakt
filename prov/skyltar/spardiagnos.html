@@ -54,6 +54,7 @@
 
 <script type="module">
 import { PlateReader } from '../../js/plate.js';
+import { starkaTimers, taktprov } from './_takt.js';
 
 const $ = id => document.getElementById(id);
 let filmer = [];
@@ -67,6 +68,11 @@ $('fil').addEventListener('change', e => {
 
 $('kor').addEventListener('click', async () => {
   $('kor').disabled = true;
+  /* Timers först. En dold flik klämmer setInterval till ~1/s, och då
+   * mäter bänken en läsare som inte finns. Se _takt.js. */
+  const slappTimers = starkaTimers();
+  const takt = await taktprov(120);
+
   $('ut').innerHTML = '';
   const intervalMs = +$('iv').value || 150;
   const krav = +$('krav').value || 2;
@@ -102,9 +108,10 @@ $('kor').addEventListener('click', async () => {
       await new Promise(r => { v.onended = r; setTimeout(r, (v.duration + 4) * 1000); });
       await new Promise(r => setTimeout(r, 1200));
     } catch {}
+    const matning = lasare.matdata ? lasare.matdata() : null;
     try { lasare.stop(); } catch {}
     v.pause(); URL.revokeObjectURL(url);
-    allt.push({ fil: fil.name, handelser, publicerat });
+    allt.push({ fil: fil.name, handelser, publicerat, matning, langd: v.duration });
   }
   navigator.mediaDevices.getUserMedia = riktig;
 
@@ -133,10 +140,28 @@ $('kor').addEventListener('click', async () => {
     }
     for (const s of spar.values()) rader.push(s);
     // Rubrik per film
+    const mt = allt.find(a => a.fil === fil)?.matning;
+    const langd = allt.find(a => a.fil === fil)?.langd || 1;
     const h2 = document.createElement('h2');
     h2.textContent = `${fil} — ${publicerat.length} publicerade: ` +
       (publicerat.map(p => p.plat).join(', ') || 'inget');
     $('ut').appendChild(h2);
+    if (mt) {
+      /* Var tiden tar vägen. Ett varv som är mycket längre än själva läsningen
+       * betyder att tiden går i väntan — på kön, på sökningen, på nästa tick —
+       * och då hjälper det inte att göra läsningen snabbare. */
+      const p = document.createElement('p');
+      p.className = 'hint';
+      p.innerHTML =
+        `<b>${mt.ocrVarv}</b> läsvarv på ${langd.toFixed(0)} s ` +
+        `(<b>${(mt.ocrVarv / langd).toFixed(1)}/s</b>) · ` +
+        `varv median <b>${Math.round(mt.varv?.median ?? 0)} ms</b>, ` +
+        `varav läsning ${Math.round(mt.ocr?.median ?? 0)} ms · ` +
+        `sökning ${Math.round(mt.sok?.median ?? 0)} ms ` +
+        `(${mt.sok?.antal ?? 0} st, ${mt.sokOverhoppade ?? 0} överhoppade) · ` +
+        `giltiga ${mt.giltiga}, tomma ${mt.ogiltiga}`;
+      $('ut').appendChild(p);
+    }
 
     const tab = document.createElement('table');
     tab.innerHTML = '<thead><tr><th>Spår</th><th>Läsningar</th><th>Tysta</th>' +
@@ -195,10 +220,20 @@ $('kor').addEventListener('click', async () => {
 
   window.__spardiagnos = { allt, dom, rader, intervalMs, krav };
   const klara = dom.filter(d => d.k === 'ok').length;
+  // Vad flikens timers faktiskt klarade. Står det "strypt" är alla tider nedan
+  // att kasta — det är då bänken mäter fliken och inte läsaren.
+  const taktrad = document.createElement('p');
+  taktrad.className = 'hint';
+  taktrad.innerHTML = takt.strypt
+    ? `<b class="fel">TIMERSTRYPNING: ${takt.uppmatt}/s mot begärda ${takt.begard}/s.</b> ` +
+      `Tiderna ovan går inte att lita på.`
+    : `Timertakt ok: ${takt.uppmatt}/s mot begärda ${takt.begard}/s.`;
+  $('ut').appendChild(taktrad);
   $('summa').innerHTML =
     `<span class="stor ${klara === FACIT.size ? 'ok' : 'varn'}">${klara} av ${FACIT.size} ` +
     `publicerade</span><span style="color:#b9c7d6">intervalMs ${intervalMs}, krav ${krav}. ` +
     `Tabellen nedan visar var de övriga tog slut.</span>`;
+  slappTimers();
   $('kor').disabled = false;
 });
 </script>

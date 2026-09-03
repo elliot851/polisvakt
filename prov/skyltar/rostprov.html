@@ -57,6 +57,7 @@
 
 <script type="module">
 import { PlateReader } from '../../js/plate.js';
+import { starkaTimers, taktprov } from './_takt.js';
 import { skyltmodellLage } from '../../js/skyltmodell.js';
 
 const $ = id => document.getElementById(id);
@@ -166,6 +167,11 @@ async function svep(intervalMs, extraSparPerVarv) {
 
 $('kor').addEventListener('click', async () => {
   $('kor').disabled = true;
+  /* Timers först. En dold flik klämmer setInterval till ~1/s, och då
+   * mäter bänken en läsare som inte finns. Se _takt.js. */
+  const slappTimers = starkaTimers();
+  const takt = await taktprov(120);
+
   logg.length = 0;
   $('tab').querySelector('tbody').innerHTML = '';
   const intervall = $('varden').value.split(',').map(v => +v.trim()).filter(v => v > 0);
@@ -204,6 +210,7 @@ $('kor').addEventListener('click', async () => {
           : 'Varje värde gav minst en felläsning') + `</span>` +
     `<span style="color:#b9c7d6">Facit är de ${FACIT.size} nummer som gick att läsa ` +
     `med ögat i klippen. Motor: ${skyltmodellLage().motor}.</span>`;
+  slappTimers();
   $('kor').disabled = false;
 });
 </script>

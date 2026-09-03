@@ -6531,6 +6531,21 @@ export class PlateReader extends EventTarget {
         }
       }
     } else if (this.settings.centrumFallback && this._roi &&
+               /*
+                * MITTENFALLBACKEN GÄLLER INTE PÅ MODELLVÄGEN.
+                *
+                * Den byggdes när sökningen letade ljusa fläckar och kunde gå
+                * bet på en skylt som satt mitt i bilden. Detektorn skannar
+                * hela bildrutan varje varv — fallbacken letar alltså efter
+                * något som redan är genomsökt, och betalar med de läsvarv det
+                * riktiga spåret behöver.
+                *
+                * MÄTT (spardiagnos.html, fem filmer): i film två fick
+                * mittenrutan 15 läsningar på en 2099 px bred yta, ALLA tysta,
+                * medan det spår som faktiskt bar en skylt fick tre. Den var
+                * inte ett skyddsnät, den var en konkurrent om läsbudgeten.
+                */
+               !(this.settings.modell && skyltmodellRedo()) &&
                Date.now() - this._sistLast > this.settings.fallbackMs) {
       const t0 = performance.now();
       const matt = hittaPlat(this.video, this._roi);
