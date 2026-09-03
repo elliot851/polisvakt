@@ -37,10 +37,45 @@ function Skriv($niva, $text) {
   [System.IO.File]::AppendAllText($Logg, $rad + "`r`n", $enc)
 }
 
+# ---------------------------------------------------------------------
+#  BRYGG-LIVSKOLL
+#
+#  Keepaliven haller Supabase vaket. Men den andra tysta doden ar att
+#  BRYGGAN slutar svepa utan att nagon markerar det - den lag tyst i 5 dygn
+#  en gang (24-29 aug). Samma dagliga korning laser darfor nyaste
+#  brygg-daemon-loggen och ser efter hur lange sedan sista svepet var. Ingen
+#  backend behovs; det ar en ren lokal filkoll.
+# ---------------------------------------------------------------------
+function KollaBryggan {
+  $senaste = Get-ChildItem $DataMapp -Filter 'brygg-daemon-*.log' -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $senaste) { Skriv 'BRYGGA' 'ingen brygg-daemon-logg alls - bryggan har aldrig kort har'; return }
+
+  $svep = Select-String -Path $senaste.FullName -Pattern 'SUMMA\s+svep=' -ErrorAction SilentlyContinue |
+          Select-Object -Last 1
+  if (-not $svep) { Skriv 'BRYGGA' ("loggen {0} finns men saknar SUMMA-svep - startade men svepte aldrig" -f $senaste.Name); return }
+
+  $t = $null
+  if ($svep.Line -match '^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)') { [void][DateTime]::TryParse($Matches[1], [ref]$t) }
+  if (-not $t) { Skriv 'BRYGGA' 'kunde inte lasa tid ur sista svep-raden'; return }
+
+  $timmar = [Math]::Round(((Get-Date) - $t).TotalHours, 1)
+  # Ett dygn utan ett enda svep = daemonen hanger (svepet gar var ~20 s aven
+  # nar inget nytt finns). 6-24 h ar vart att notera men kan vara normalt.
+  if ($timmar -gt 24) {
+    Skriv 'BRYGGA' ("TYST {0} h - sista svepet {1}. Daemonen hanger troligen. Starta om via Autostart-mappen." -f $timmar, $t.ToString('yyyy-MM-dd HH:mm'))
+  } elseif ($timmar -gt 6) {
+    Skriv 'BRYGGA' ("sista svepet for {0} h sedan ({1}) - inom det normala men vart att halla ogonen pa" -f $timmar, $t.ToString('HH:mm'))
+  } else {
+    Skriv 'OK' ("bryggan svepte for {0} h sedan - frisk" -f $timmar)
+  }
+}
+
 try {
   $svar = Invoke-WebRequest -Uri $Url -Headers @{ apikey = $Nyckel; Authorization = "Bearer $Nyckel" } `
                             -TimeoutSec 30 -UseBasicParsing
   Skriv 'OK' ("ping HTTP {0} - projektet ar vaket" -f $svar.StatusCode)
+  KollaBryggan
   exit 0
 }
 catch {
@@ -54,6 +89,8 @@ catch {
   } else {
     Skriv 'PROB' ("ping misslyckades: {0}" -f $m)
   }
+  # Bryggan kollas aven nar Supabase ar nere - de tva doda-lagena ar oberoende.
+  KollaBryggan
   # Icke-noll sa Schemalaggaren markerar korningen som misslyckad och det syns
   # i uppgiftshistoriken, inte bara i loggen.
   exit 1
