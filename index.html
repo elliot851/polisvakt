@@ -948,6 +948,26 @@
       hör medan den är öppen ställer du högst upp, under
       <b>Var vill du bli varnad?</b></p>
 
+    <!-- STÄDER DU FÅR NOTISER FRÅN.
+         Den här listan är svaret på "hur väljer varje person själv vilken
+         grupp de vill ha notiser från". Polisvakt läser de PUBLIKA
+         "Här står polisen"-grupperna via bryggan; användaren kryssar i de
+         städer hen vill väckas av. Valet är personligt och styrs härifrån,
+         inte av någon admin.
+
+         Rendreras av renderStadNotiser i js/app.js ur js/regioner.js. En
+         'live'-stad går att kryssa; en 'kommande' visas nedtonad så ingen
+         väljer den och tror att den fungerar. -->
+    <h4 class="sub-head">Städer du får notiser från</h4>
+    <p class="hint">Polisvakt läser de publika <b>Här står polisen</b>-grupperna.
+      Kryssa i de städer du vill bli väckt av — det bestämmer du själv, ingen
+      annan. I dag är <b>Västerås</b> igång; fler städer öppnar allt eftersom
+      deras grupper ansluts.</p>
+    <div class="stad-lista" id="setStadNotiser"></div>
+    <p class="hint" id="stadNotisStatus"></p>
+    <p class="hint">Saknas din stad? <button type="button" class="lank-knapp" id="btnStadOnska">Önska
+      din stad</button> — vi ansluter gruppen och den dyker upp här.</p>
+
     <!-- "Nära mig" är förvalt, och selected står utskrivet fastän alternativet
          redan ligger först. En webbläsare väljer nämligen första alternativet
          av sig själv, men den som flyttar en rad i listan i framtiden ska

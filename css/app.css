@@ -1642,6 +1642,16 @@ a.btn-kop {
 }
 .lank-knapp:disabled { text-decoration: none; opacity: .55; cursor: default; }
 
+/* Städväljaren: en rad per stad, kryssrutan till höger som andra .row.
+   En 'kommande' stad tonas ner så den läses som "på väg", inte valbar. */
+.stad-lista { margin: var(--sp-2) 0; }
+.stad-rad.stad-kommande { opacity: .5; }
+.stad-rad .stad-markor {
+  font-size: var(--t-sm); color: var(--fg-2);
+  border: 1px solid var(--stroke); border-radius: 999px;
+  padding: 1px 8px; margin-left: 6px; vertical-align: middle;
+}
+
 .chatt-botten {
   flex: 0 0 auto;
   padding: 8px 14px 10px;

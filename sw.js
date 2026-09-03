@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-09-03-121';
+const VERSION = '2026-09-03-122';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -157,6 +157,12 @@ const SHELL = [
   './butik/hallare-ref.jpg',
   './js/platsstart.js',
   './js/push.js',
+  // js/push.js importerar regioner.js STATISKT. Samma kalla-start-fälla som
+  // varningsyta.js och facebook.js beskrivs ha nedan: saknas filen i cachen
+  // och appen startas utan nät faller begäran tillbaka på index.html,
+  // push.js-importen kastar, och notisregistreringen dör tyst. Hittad när
+  // stadsväljaren kopplades in.
+  './js/regioner.js',
   './js/groups.js',
   './js/config.js',
   './js/auth.js',

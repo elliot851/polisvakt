@@ -29,6 +29,7 @@ import { WinterService } from './vinter.js';
 import { Groups } from './groups.js';
 import * as Behorigheter from './behorigheter.js';
 import * as Push from './push.js';
+import { REGIONER, LIVE_NYCKLAR, stada } from './regioner.js';
 import { larma } from './larm.js';
 import * as Facebook from './facebook.js';
 import { Vakthund } from './vakthund.js';
@@ -2686,6 +2687,17 @@ function wireFbGrupper() {
       : 'Kunde inte kopiera automatiskt — markera texten i rutan och kopiera för hand.');
   });
 
+  // "Önska din stad" — ingen server tar emot önskemål än, så knappen fejkar
+  // inte en inskickning. Den förklarar ärligt HUR en stad blir tillagd (bryggan
+  // ansluter stadens publika grupp) och lämnar valet av kanal öppet.
+  $('btnStadOnska')?.addEventListener('click', () => {
+    const s = $('stadNotisStatus');
+    if (s) s.innerHTML = 'En stad dyker upp här när Polisvakt anslutit dess ' +
+      'publika <b>Här står polisen</b>-grupp. Vill du ha din stad tillagd: ' +
+      'skriv stadens namn och en länk till gruppen i den publika gruppen där ' +
+      'du är med, eller till oss så ansluter vi den.';
+  });
+
   $('btnFbGruppUpptack').addEventListener('click', async () => {
     const ok = await kopiera(FB_UPPTACK_SNUTT);
     status(ok
@@ -4447,7 +4459,7 @@ function showView(name) {
   if (name === 'map') map.invalidate();
   if (name === 'dashcam') refreshClipList();
   if (name === 'butik') butikModul?.rita();
-  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); ritaBehKort(); }
+  if (name === 'settings') { refreshLearnedList(); renderBilling(); renderShareQR(); renderPlans(); renderChain($('roadmapChain')); renderNotisTyper(); synkaGruppnotis(); synkaNotisOmfang(); synkaStadNotiser(); ritaBehKort(); }
 }
 
 /* ================= Genvägar in i inställningarna ================= */
@@ -6977,6 +6989,87 @@ function renderNotisTyper() {
     box.appendChild(rad);
   }
 }
+
+/*
+ * STÄDER DU FÅR NOTISER FRÅN.
+ *
+ * Svaret på ägarens fråga: hur väljer varje person själv vilken grupp de vill
+ * ha notiser från, utan att det styrs av en admin. En kryssruta per stad,
+ * personligt, sparat på telefonens egen prenumeration via Push.settRegioner.
+ *
+ * Bara 'live'-städer går att kryssa. En 'kommande' stad visas nedtonad med
+ * "på väg" så att ingen väljer den och tror att den fungerar — bryggan läser
+ * den inte än. I dag är det bara Västerås; listan är ändå byggd för flera,
+ * för det är hela poängen med den.
+ *
+ * SERVERN ÄGER SANNINGEN. Precis som gruppnotiserna läses valet tillbaka från
+ * servern, aldrig från telefonens cache. Går servern inte att nå (eller är
+ * regionkolumnen inte utrullad än) betyder null "alla städer" — den som kör i
+ * dag får allt precis som förut, ingen tystnar.
+ */
+let synkaStadNotiser = () => {};
+function renderStadNotiser(valda) {
+  const box = $('setStadNotiser');
+  if (!box) return;
+  // valda = array av nycklar, eller null = "alla live-städer" (förvalet).
+  const aktiva = new Set(valda === null ? LIVE_NYCKLAR : stada(valda));
+  box.innerHTML = '';
+
+  for (const r of REGIONER) {
+    const live = r.status === 'live';
+    const rad = document.createElement('label');
+    rad.className = 'row stad-rad' + (live ? '' : ' stad-kommande');
+
+    const namn = document.createElement('span');
+    namn.innerHTML = live
+      ? escapeHtml(r.label)
+      : `${escapeHtml(r.label)} <span class="stad-markor">på väg</span>`;
+    rad.appendChild(namn);
+
+    const kryss = document.createElement('input');
+    kryss.type = 'checkbox';
+    kryss.checked = live && aktiva.has(r.key);
+    kryss.disabled = !live;
+    kryss.onchange = () => sparaStadNotiser();
+    kryss.dataset.stad = r.key;
+    rad.appendChild(kryss);
+    box.appendChild(rad);
+  }
+}
+
+async function sparaStadNotiser() {
+  const box = $('setStadNotiser');
+  if (!box) return;
+  const valda = [...box.querySelectorAll('input[type=checkbox]')]
+    .filter(k => k.checked).map(k => k.dataset.stad);
+  const status = $('stadNotisStatus');
+  // Ingen stad ikryssad är ett giltigt val — då vill personen inte väckas av
+  // någon stadsgrupp alls. Skickas som tom lista, inte null (null vore "alla").
+  const svar = await Push.settRegioner(stada(valda));
+  if (svar.ok) {
+    renderStadNotiser(svar.regioner);
+    if (status) status.textContent = valda.length
+      ? 'Sparat: ' + valda.map(k => REGIONER.find(r => r.key === k)?.label || k).join(', ') + '.'
+      : 'Sparat: inga stadsnotiser (du väcks inte av någon grupp).';
+  } else if (status) {
+    // settRegioner svarar {ok:false} när telefonen inte registrerat push än
+    // (ingen endpoint/device) eller när servern inte nås. I båda fallen ligger
+    // valet kvar i rutan; det får verkan när notiserna är igång.
+    status.textContent = Push.permission() === 'granted'
+      ? 'Kunde inte spara just nu — valet får verkan när notiserna är igång.'
+      : 'Slå på notiser först (knappen ovan), så kan du välja städer.';
+  }
+}
+
+synkaStadNotiser = async () => {
+  const box = $('setStadNotiser');
+  if (!box) return;
+  renderStadNotiser(Push.harRegioner());          // rita direkt ur cachen
+  try {
+    const s = await Push.hamtaRegioner();
+    if (s.nadde) renderStadNotiser(s.regioner);    // och rätta mot servern
+  } catch { /* cachen står kvar, det räcker */ }
+};
 
 /* ================= Gränssnittsljud ================= */
 /*
