@@ -67,6 +67,7 @@
 <script type="module">
 import { PlateReader } from '../../js/plate.js';
 import { starkaTimers, taktprov } from './_takt.js';
+import { skyltmodellRakning } from '../../js/skyltmodell.js';
 
 const $ = id => document.getElementById(id);
 let filmer = [];
@@ -186,7 +187,11 @@ $('kor').addEventListener('click', async () => {
         `varav läsning ${Math.round(mt.ocr?.median ?? 0)} ms · ` +
         `sökning ${Math.round(mt.sok?.median ?? 0)} ms ` +
         `(${mt.sok?.antal ?? 0} st, ${mt.sokOverhoppade ?? 0} överhoppade) · ` +
-        `giltiga ${mt.giltiga}, tomma ${mt.ogiltiga}`;
+        `giltiga ${mt.giltiga}, tomma ${mt.ogiltiga}` +
+        (() => { const rk = skyltmodellRakning();
+          return ` · bildrutor till detektorn ${rk.bildrutor}, varav TOMMA ` +
+            `<b class="${rk.tomma ? 'fel' : ''}">${rk.tomma}</b>` +
+            (rk.bytteTillSaker ? ' · bytte till säker återläsning' : ''); })();
       $('ut').appendChild(p);
     }
 

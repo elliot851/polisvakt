@@ -77,6 +77,25 @@ const lage = {
 };
 export const skyltmodellLage = () => ({ ...lage });
 
+/*
+ * RÄKNARE FÖR TOMMA BILDRUTOR.
+ *
+ * En misstanke som måste gå att mäta, inte diskuteras: `willReadFrequently`
+ * togs bort från sökningens duk för att den kostade 19,8 ms per bildruta. Med
+ * en GPU-backad duk är `drawImage` från video snabb, men `getImageData` läser
+ * tillbaka från grafikkortet — och om ritningen inte hunnit spolas igenom kan
+ * det som kommer tillbaka vara tomt. Det syns inte som ett fel någonstans:
+ * detektorn får en jämngrå bild och svarar helt korrekt att den inte ser
+ * någon skylt.
+ *
+ * Direkt efter den ändringen gick en av provfilmerna från 64 läsvarv och ett
+ * publicerat nummer till NOLL kandidater i 174 sökningar, medan en annan film
+ * fortsatte fungera. Det kan vara en slump i materialet och det kan vara den
+ * här. Skillnaden går att se: en tom bildruta har noll spridning i pixlarna.
+ */
+export const skyltmodellRakning = () => ({ ...rakning });
+const rakning = { bildrutor: 0, tomma: 0, bytteTillSaker: false };
+
 let lofte = null;
 let dSess = null, lSess = null;
 
@@ -195,7 +214,7 @@ async function lasarenSvararVettigt() {
     const prov = new Uint8Array(LB * LH);
     for (let i = 0; i < prov.length; i++) prov[i] = (i * 7) & 0xff;
     const t = new ort.Tensor('uint8', prov, [1, LH, LB, 1]);
-    const svar = await iTur(() => lSess.run({ [lSess.inputNames[0]]: t }));
+    const svar = await iTur(() => lSess.run({ [lSess.inputNames[0]]: t }), true);
     const d = svar[lSess.outputNames[0]].data;
     if (!d || d.length !== PLATSER * ALFABET.length) return false;
     for (let s = 0; s < PLATSER; s++) {
@@ -227,13 +246,45 @@ async function lasarenSvararVettigt() {
  * serialiserade av hårdvaran gör kostnaden liten — det som försvinner är
  * krocken, inte kapaciteten.
  */
-let ko = Promise.resolve();
-function iTur(arbete) {
-  const nasta = ko.then(arbete, arbete);
-  // Kön får aldrig fastna i ett avvisat löfte: då skulle varje efterföljande
-  // anrop ärva felet utan att ens ha körts.
-  ko = nasta.then(() => {}, () => {});
-  return nasta;
+let koHog = [];        // läsningar
+let koLag = [];        // sökningar
+let kor = false;
+
+/**
+ * Ställ ett modellanrop i kö. `hog` betyder att det får gå före allt som
+ * väntar med låg prioritet.
+ *
+ * LÄSNINGEN GÅR FÖRE SÖKNINGEN, och det är uppmätt och inte en princip.
+ * Kön var först en rak Promise-kedja, alltså rättvis i tur och ordning. På en
+ * 30-sekundersfilm i 2560×1440 blev det: 264 sökningar à ~94 ms, vilket är 25
+ * av 30 sekunder i kön — och 6 läsningar. Sex. Spåret hade låst efter tre
+ * bildrutor och satt kvar i 241 sökningar, alltså hela filmen, utan att bli
+ * läst mer än sex gånger. Sökningen åt upp läsningen.
+ *
+ * Att ge läsningen företräde kostar nästan ingenting åt andra hållet: en
+ * läsning är ~14 ms mot sökningens ~94. En sökning som skjuts upp en läsning
+ * blir 14 ms senare. En läsning som skjuts upp en sökning blir 94 ms senare —
+ * och det är den som bär numret hela vägen till föraren.
+ */
+function iTur(arbete, hog = false) {
+  return new Promise((ok, nej) => {
+    (hog ? koHog : koLag).push({ arbete, ok, nej });
+    driv();
+  });
+}
+
+async function driv() {
+  if (kor) return;
+  kor = true;
+  try {
+    while (koHog.length || koLag.length) {
+      const j = koHog.length ? koHog.shift() : koLag.shift();
+      try { j.ok(await j.arbete()); }
+      catch (e) { j.nej(e); }
+    }
+  } finally {
+    kor = false;
+  }
 }
 
 /*
@@ -255,13 +306,24 @@ function iTur(arbete) {
  * modellen, och den var ren förlust.
  */
 const dukar = new Map();
+/*
+ * `sakerLasning` slås på av sig själv om den snabba vägen visar sig ge tomma
+ * bildrutor på just den här enheten. Se `arTomBildruta`: en GPU-backad duk är
+ * tjugo gånger snabbare att rita till, men återläsningen går över
+ * grafikkortet och det finns enheter och videoformat där den kommer tillbaka
+ * tom. Hellre en självläkande väg än ett val som är rätt på min dator och
+ * tyst fel på någon annans.
+ */
+let sakerLasning = false;
 function duk(b, h) {
-  const nyckel = b + 'x' + h;
+  const nyckel = (sakerLasning ? 's' : 'g') + b + 'x' + h;
   let d = dukar.get(nyckel);
   if (!d) {
     d = document.createElement('canvas');
     d.width = b; d.height = h;
-    d.ctx = d.getContext('2d');
+    d.ctx = sakerLasning
+      ? d.getContext('2d', { willReadFrequently: true })
+      : d.getContext('2d');
     dukar.set(nyckel, d);
   }
   return d;
@@ -292,6 +354,20 @@ function brevlada(kalla, yta) {
   d.ctx.fillRect(0, 0, DS, DS);
   d.ctx.drawImage(kalla, yta.x, yta.y, yta.w, yta.h, dx, dy, nb, nh);
   return { d, skala, dx, dy };
+}
+
+/** Sant om tensorn saknar all variation, alltså om återläsningen gav en
+ *  jämngrå eller svart platta i stället för bildrutan. */
+function arTomBildruta(data) {
+  const antal = DS * DS;
+  let min = 2, max = -1;
+  // Var 997:e pixel — ett primtal, så steget inte råkar följa bildens raster.
+  for (let i = 0; i < antal; i += 997) {
+    const v = data[i];
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return (max - min) < 0.02;
 }
 
 function detektTensor(d) {
@@ -325,7 +401,33 @@ export async function sokMedModell(kalla, yta) {
    * beskriver då ett annat ögonblick än det som mättes. */
   const bl = brevlada(kalla, yta);
   const indata = detektTensor(bl.d);
-  const svar = await iTur(() => dSess.run({ images: indata }));
+  /*
+   * Är bildrutan tom? Mäts på ett stickprov, inte på alla 409 600 pixlarna —
+   * en bildruta som blev tom är tom överallt. Fyra rader räcker för att skilja
+   * en riktig bild från en jämngrå platta.
+   */
+  rakning.bildrutor++;
+  if (arTomBildruta(indata.data)) {
+    rakning.tomma++;
+    /*
+     * Den snabba vägen gav ingenting. Byt till den säkra duken och gör om
+     * bildrutan direkt — en gång. Blir den fortfarande tom är det bilden som
+     * är jämngrå (en vit vägg, ett mörkt garage) och inte återläsningen, och
+     * då ska vi inte byta väg för det.
+     */
+    if (!sakerLasning) {
+      sakerLasning = true;
+      const bl2 = brevlada(kalla, yta);
+      const indata2 = detektTensor(bl2.d);
+      if (arTomBildruta(indata2.data)) {
+        sakerLasning = false;          // inte duken som var problemet
+      } else {
+        rakning.bytteTillSaker = true;
+        return sokMedModell(kalla, yta);
+      }
+    }
+  }
+  const svar = await iTur(() => dSess.run({ images: indata }), false);
   const ut = svar[dSess.outputNames[0]];
   const kolumner = ut.dims[1] || 7;
   const kandidater = [];
@@ -446,7 +548,7 @@ export async function lasMedModell(kalla, kandidat, tolkaRatext) {
   }
 
   const indata = lasarTensor(kalla, r);   // ur videon före kön, se `sokMedModell`
-  const svar = await iTur(() => lSess.run({ [lSess.inputNames[0]]: indata }));
+  const svar = await iTur(() => lSess.run({ [lSess.inputNames[0]]: indata }), true);
   const { text, sakerhet } = avkoda(svar[lSess.outputNames[0]].data);
   const ocrMs = performance.now() - t0;
   const tider = { ocrAntal: 1, ocrMs, forbMs: 0, hittaMs: 0, ankrad: !!kandidat.ankrad };
