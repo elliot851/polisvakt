@@ -4576,11 +4576,33 @@ function renderStatus() {
 
   const hint = $('syncHint');
   if (hint) {
+    /*
+     * Vid synkfel ska föraren få veta VAD det betyder, inte motorns
+     * feltext. "Synkfel: Failed to fetch" säger ingenting till den som kör —
+     * det viktiga är att varningarna på skärmen är SPARADE och kanske gamla,
+     * och hur gamla. Den tekniska texten (store.syncError) är kvar i chipens
+     * title för felsökning, men hinten talar människospråk. Det här är inte
+     * hypotetiskt: när backend ligger nere ser varje användare exakt det här.
+     */
+    // Tre olika synkfel-lägen, och de säger olika saker till föraren:
+    //  · synkat i den här sessionen men tappat kontakt → hur färskt det var
+    //  · ingen synk än men rapporter finns cachade (IndexedDB, förra sessionen)
+    //    → det du ser är sparat, inte live
+    //  · varken synk eller cache → verkligt tomt
+    const harCache = store.reports && store.reports.size > 0;
     hint.textContent = !store.isRemote
       ? 'Rapporter stannar på den här telefonen. Lägg in Supabase för att dela med alla i Västmanland.'
-      : store.syncError ? `Synkfel: ${store.syncError}`
+      : store.syncError
+        ? (store.lastSync
+            ? `Ingen kontakt med servern just nu. Du ser sparade varningar, senast uppdaterade ${relativeTime(store.lastSync)}.`
+            : harCache
+              ? 'Ingen kontakt med servern. Du ser sparade varningar från tidigare — de kan vara inaktuella.'
+              : 'Ingen kontakt med servern. Det finns inga sparade varningar att visa än.')
       : store.lastSync ? `Senast synkad ${relativeTime(store.lastSync)}.` : 'Ansluten.';
   }
+  // Motorns råa feltext göms i chipens title — nåbar vid felsökning, aldrig i vägen.
+  const chip = $('chipSync');
+  if (chip) chip.title = store.syncError ? `Tekniskt: ${store.syncError}` : '';
 }
 
 /* ================= Priser och tillbehör ================= */
