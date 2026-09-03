@@ -6250,6 +6250,44 @@ export class PlateReader extends EventTarget {
     // sökningen över den 120 ms senare och texten blinkar förbi.
     if (Date.now() > (this._statusLas || 0)) this.#status(this.#lagesText());
     this.dispatchEvent(new CustomEvent('kandidater', { detail: this.siktdata() }));
+
+    /*
+     * SÖKDIAGNOSTIKEN — den blinda fläcken i `spardiagnos`.
+     *
+     * `spardiagnos` skickas per LÄSNING, så ett spår som aldrig blir läst
+     * finns inte i den. Och det var precis det som hände: två av tre filmer
+     * gav noll läsvarv trots 170–290 sökningar. Något hände mellan kandidat
+     * och lås, och det gick inte att se — mätningen var blind på exakt det
+     * ställe felet satt.
+     *
+     * Den här skickas per SÖKNING och bär hela spårlistan med det som avgör
+     * om ett lås någonsin kan bli av: hur många träffar spåret samlat, hur
+     * många det KRÄVS (`krav` skiljer sig mellan ankrat och oankrat), poängen
+     * mot minPoang, och om det brunnit. Ett spår som varje varv står på två
+     * träffar av tre nödvändiga berättar en helt annan historia än ett som
+     * aldrig får en poäng över golvet.
+     *
+     * Samma grind som allt annat diagnostiskt: bara i provläge, för listan
+     * bär positioner för främmande fordon.
+     */
+    if (this.settings.provlage) {
+      this.dispatchEvent(new CustomEvent('sokdiagnos', { detail: {
+        kandidater: kand.length,
+        bastaKandidat: kand.length ? +(kand[0].poang || 0).toFixed(3) : null,
+        minPoang: this.malsokare.k.minPoang,
+        spar: spar.map(s => ({
+          id: s.id,
+          traffar: s.traffar,
+          krav: this.malsokare.krav(s),
+          tappade: s.tappade,
+          poang: +(s.poang || 0).toFixed(3),
+          ankrad: !!s.ankrad,
+          brand: !!s.brand,
+          last: !!s.last,
+          px: Math.round(s.matt?.rw || s.w || 0),
+        })),
+      } }));
+    }
   }
 
   /**

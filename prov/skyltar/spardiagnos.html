@@ -120,6 +120,11 @@ $('kor').addEventListener('click', async () => {
       handelser.push({ ...e.detail, t: (performance.now() - T0) / 1000 }));
     lasare.addEventListener('traff', e =>
       publicerat.push({ plat: e.detail.plat, t: (performance.now() - T0) / 1000 }));
+    /* Varje sökning, hela spårlistan. Det är den här som fångar spåren som
+     * aldrig blir lästa — se sokdiagnos i plate.js. */
+    const sokt = [];
+    lasare.addEventListener('sokdiagnos', e =>
+      sokt.push({ ...e.detail, t: (performance.now() - T0) / 1000 }));
 
     try {
       // Spela först, starta läsaren sedan — se rostprov.html.
@@ -132,7 +137,8 @@ $('kor').addEventListener('click', async () => {
     const matning = lasare.matdata ? lasare.matdata() : null;
     try { lasare.stop(); } catch {}
     v.pause(); URL.revokeObjectURL(url);
-    allt.push({ fil: fil.name, handelser, publicerat, matning, zoomar, langd: v.duration });
+    allt.push({ fil: fil.name, handelser, publicerat, matning, zoomar, sokt,
+                langd: v.duration });
   }
   navigator.mediaDevices.getUserMedia = riktig;
 
@@ -211,6 +217,63 @@ $('kor').addEventListener('click', async () => {
     }
     tab.appendChild(tb);
     $('ut').appendChild(tab);
+  }
+
+  /* SPÅR SOM ALDRIG BLEV LÄSTA. Den blinda fläcken. Här samlas varje spår som
+   * någonsin funnits, oavsett om det ledde till en läsning, med det som avgör
+   * om ett lås kunde bli av. */
+  for (const { fil, sokt } of allt) {
+    if (!sokt || !sokt.length) continue;
+    const alla = new Map();
+    let utanKandidat = 0;
+    for (const s of sokt) {
+      if (!s.kandidater) utanKandidat++;
+      for (const t of s.spar) {
+        let a = alla.get(t.id);
+        if (!a) {
+          a = { id: t.id, sedd: 0, maxTraffar: 0, krav: t.krav, maxPoang: 0,
+                ankrad: false, last: false, brand: false, minPx: Infinity, maxPx: 0,
+                forst: s.t, sist: s.t };
+          alla.set(t.id, a);
+        }
+        a.sedd++; a.sist = s.t;
+        a.maxTraffar = Math.max(a.maxTraffar, t.traffar);
+        a.krav = t.krav;
+        a.maxPoang = Math.max(a.maxPoang, t.poang);
+        a.ankrad = a.ankrad || t.ankrad;
+        a.last = a.last || t.last;
+        a.brand = a.brand || t.brand;
+        if (t.px) { a.minPx = Math.min(a.minPx, t.px); a.maxPx = Math.max(a.maxPx, t.px); }
+      }
+    }
+    const minPoang = sokt[0].minPoang;
+    const h = document.createElement('h2');
+    h.textContent = `${fil} — alla spår (${alla.size} st), ` +
+      `${sokt.length} sökningar varav ${utanKandidat} utan kandidat`;
+    $('ut').appendChild(h);
+    const tab = document.createElement('table');
+    tab.innerHTML = '<thead><tr><th>Spår</th><th>Sökningar</th><th>Träffar / krav</th>' +
+      '<th>Bästa poäng</th><th>Ankrad</th><th>px</th><th>Levde</th><th>Varför inget lås</th>' +
+      '</tr></thead>';
+    const tb = document.createElement('tbody');
+    for (const a of [...alla.values()].sort((x, y) => y.sedd - x.sedd).slice(0, 14)) {
+      let dom, k;
+      if (a.last) { dom = 'LÅSTE'; k = 'ok'; }
+      else if (a.brand) { dom = 'brann — läste aldrig något giltigt'; k = 'fel'; }
+      else if (a.maxPoang < minPoang) {
+        dom = `poäng ${a.maxPoang} under golvet ${minPoang}`; k = 'fel';
+      } else if (a.maxTraffar < a.krav) {
+        dom = `hann bara ${a.maxTraffar} av ${a.krav} träffar`; k = 'varn';
+      } else { dom = 'nådde kravet men låset togs av ett annat spår'; k = 'varn'; }
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="mono">${a.id}</td><td>${a.sedd}</td>` +
+        `<td>${a.maxTraffar} / ${a.krav}</td><td>${a.maxPoang}</td>` +
+        `<td>${a.ankrad ? 'ja' : '<span class="fel">nej</span>'}</td>` +
+        `<td>${a.minPx === Infinity ? '–' : a.minPx + '–' + a.maxPx}</td>` +
+        `<td>${(a.sist - a.forst).toFixed(1)} s</td><td class="${k}">${dom}</td>`;
+      tb.appendChild(tr);
+    }
+    tab.appendChild(tb); $('ut').appendChild(tab);
   }
 
   /* Domen: för varje facit-nummer som INTE publicerades, var föll det? */
