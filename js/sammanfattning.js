@@ -335,8 +335,16 @@ function stodFras(rapport) {
   return { text: ut.join(' '), bekraftelser: extra, dementier: emot };
 }
 
-/** Originalinlägget, kapat. Bara när det säger något etiketten inte gör. */
-function originalFras(rapport) {
+/**
+ * Originalinlägget, kapat. Bara när det säger något etiketten inte gör.
+ *
+ * @param medCitat  true = visuell form med citattecken ("I inlägget stod: …").
+ *   false = talform UTAN citattecken. Rösten SKA läsa upp meddelandet (ägarens
+ *   beslut, se beskrivning()), men citattecknen är tecken VI lagt runt det, inte
+ *   del av det någon skrev — och en talsyntes uttalar dem på vissa röster. Själva
+ *   texten läses ordagrant; bara vårt eget skal tas bort.
+ */
+function originalFras(rapport, medCitat = true) {
   for (const f of INLAGGSFALT) {
     const v = rapport[f];
     if (typeof v !== 'string') continue;
@@ -344,7 +352,7 @@ function originalFras(rapport) {
     if (!t) continue;
     if (normalize(t) === normalize(rapport.label || '')) continue;
     const kapat = t.length > 100 ? t.slice(0, 99).trimEnd() + '…' : t;
-    return `I inlägget stod: "${kapat}".`;
+    return medCitat ? `I inlägget stod: "${kapat}".` : `I inlägget stod: ${kapat}.`;
   }
   return '';
 }
@@ -460,8 +468,10 @@ export function beskrivning(rapport, opts = {}) {
    * läser en femhundra tecken lång utläggning i 90 km/h är farligare än
    * tystnad — föraren väntar på slutet i stället för att titta på vägen.
    */
-  const tal = original
-    ? foga(`${rubrik}.`, original, `${stor(kalla.tal)}.`, akt.lang)
+  // Talformen läser originalet UTAN citattecken — se originalFras(medCitat).
+  const originalTal = originalFras(rapport, false);
+  const tal = originalTal
+    ? foga(`${rubrik}.`, originalTal, `${stor(kalla.tal)}.`, akt.lang)
     : foga(`${rubrik}.`, `${stor(kalla.tal)}.`, akt.lang, stod.text);
 
   return {

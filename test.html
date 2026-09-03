@@ -490,7 +490,11 @@ await T('bilingenkännaren finns i appen, inte i en annan app', () => {
 });
 
 await T('läsaren stoppas när man lämnar dashcam-vyn', () =>
-  /showView[\s\S]{0,900}?plate\?\.running[\s\S]{0,80}?stoppaPlate\(\)/.test(appSrc)
+  // Tät byte-fönster-matchning gick sönder så fort showView fick fler
+  // kommentarer (avståndet showView→raden är ~1500 tecken nu). Testet bryr
+  // sig om INVARIANTEN, inte om hur många tecken kommentarerna tar: att
+  // lämna en icke-dashcam-vy medan läsaren kör stänger den.
+  /name !== 'dashcam' && plate\?\.running\)\s*stoppaPlate\(\)/.test(appSrc)
   || 'kameran skulle fortsätta vara upptagen i bakgrunden');
 
 await T('en uppslagen plats påstår inte att den är GPS-mätt', () => {
@@ -1043,9 +1047,28 @@ await T('O används inte på sista positionen', () =>
   plate.normaliseraPlat('ABC12O') === 'ABC120' || `fick ${plate.normaliseraPlat('ABC12O')}`);
 
 await T('för kort och för långt förkastas', () => {
-  const dåliga = ['ABC12', 'ABC1234', '', 'A', 'ABCDEF'];
+  // 'ABC1234' togs bort ur listan MED FLIT och efter mätning. Ett 7-tecken
+  // med en unik giltig 6-teckens-tolkning (här ABC123, det spuriösa 4:et bort)
+  // återhämtas avsiktligt — det tjänar en riktig läsning i matning.html (utan
+  // återhämtningen: 11→10 rätt). Säkerheten ligger inte i att normaliseraPlat
+  // vägrar, utan i att en sådan läsning är exaktSex:false och därför aldrig
+  // ensam får bära ett svar (röstgrinden, se nästa test). De här är äkta
+  // skräp/fel längd som SKA ge null.
+  const dåliga = ['ABC12', '', 'A', 'ABCDEF'];
   const släppta = dåliga.filter(p => plate.normaliseraPlat(p));
   return !släppta.length || `släppte igenom ${släppta.join(', ')}`;
+});
+
+await T('en återhämtad delsträng får aldrig ensam bära ett svar', () => {
+  // Det VERKLIGA säkerhetskontraktet bakom att 7/8-tecken återhämtas: en sådan
+  // läsning måste vara exaktSex:false, så röstgrinden (Rostrakning, flaggan
+  // exakt) kräver minst en läsning med exakt sex tecken innan numret annonseras.
+  const r = plate.tolkaRatext('ABC1234');
+  if (r.plat !== 'ABC123') return `oväntad återhämtning: ${r.plat}`;
+  if (r.exaktSex !== false) return 'återhämtningen märktes som exakt — den kan då bära ett svar ensam';
+  // Ett äkta sex-teckenssvar SKA däremot vara exaktSex:true.
+  const sex = plate.tolkaRatext('ABC123');
+  return sex.exaktSex === true || 'ett rent sex-teckenssvar märktes inte som exakt';
 });
 
 await T('rent skräp ger inget svar alls', () => {
@@ -1290,10 +1313,15 @@ await T('de tre längderna säger samma sak men är inte samma text', () => {
    är den vanligaste källan till fel betoning. */
 await T('talformen är uppläsningsvänlig', () => {
   const t = sam.sammanfattaTal(rapportrad({ createdAt: NU - 42 * 60000, confirms: 4, denials: 2 }), { nu: NU });
-  if (/[—–·"()\[\]]/.test(t)) return `otillåtna tecken: ${t}`;
-  if (/\d/.test(t)) return `siffror kvar: ${t}`;
+  // Rösten SKA läsa upp originalinlägget ordagrant — ägarens beslut 23 aug
+  // 2026, dokumenterat i beskrivning() i sammanfattning.js. Det som förut var
+  // "originalinlägget läses upp = fel" är alltså nu det RÄTTA beteendet, och
+  // "laserhälla" ska finnas med. Kvar att kräva: vårt EGET skal ska vara
+  // talrent — inga tankstreck och inga citattecken som vi lagt runt texten
+  // (en talsyntes uttalar dem). Själva meddelandets innehåll läses som det är.
+  if (/[—–·"()\[\]]/.test(t)) return `otillåtna tecken i vårt skal: ${t}`;
   if (!t.includes('fyrtiotvå minuter')) return `räkneordet blev fel: ${t}`;
-  if (t.includes('laserhälla')) return `originalinlägget läses upp: ${t}`;
+  if (!t.includes('laserhälla')) return `originalinlägget skulle läsas upp: ${t}`;
   return true;
 });
 
