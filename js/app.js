@@ -4834,6 +4834,13 @@ function plateInst() {
       if (k.sanktForPixlar) bit.push('bildfrekvensen sänktes för att behålla upplösningen');
       $('plKamera').textContent = bit.join(' · ');
     });
+    // Kamerastarten berättar vad den väntar på — "Tillåt kameran…" när en
+    // tillståndsruta är på väg upp — så knappen inte bara står och dör på
+    // "Startar kameran…" medan användaren undrar om appen hängt sig.
+    plate.addEventListener('kamerastatus', e => {
+      if (!$('plStart').disabled) return;   // bara medan starten pågår
+      $('plStart').textContent = e.detail.text;
+    });
     plate.addEventListener('lutning', e => { renderLutning(e.detail); });
     plate.addEventListener('fel', e => {
       $('plStatus').textContent = e.detail.fel?.message || 'Något gick fel i läsningen.';
@@ -5018,8 +5025,11 @@ function wireModePicker() {
       renderLutning();     // knappen visas bara om telefonen har en givare
       renderOlasta();      // chattknappen hor till kameravyn
     } catch (e) {
-      $('plStatus').textContent = '';
-      toast(e.message || 'Kunde inte starta kameran.', 6000);
+      // Meddelandet stannar kvar i statusraden — en toast hinner försvinna
+      // innan en fastnad användare hunnit läsa hur kameran slås på igen.
+      const msg = e.message || 'Kunde inte starta kameran.';
+      $('plStatus').textContent = msg;
+      toast(msg, 6000);
       p.canvas.hidden = true;
     } finally {
       $('plStart').disabled = false;

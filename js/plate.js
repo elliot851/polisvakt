@@ -5564,6 +5564,20 @@ export const KAMERA = {
   reservBildfrekvens: 30,
 };
 
+/*
+ * Tidsgränser för kamerastarten. Utan dem kan knappen fastna på
+ * "Startar kameran…" för alltid: getUserMedia varken löser eller avvisar sig
+ * när en annan app håller kameran, när tillståndet hänger, eller när rutan
+ * "Tillåt kameran?" står öppen och aldrig besvaras.
+ *
+ * KAMERA_TIMEOUT_KLAR gäller när tillståndet redan är beviljat — då ska
+ * kameran komma direkt, så en kort gräns fångar en enhet som hänger.
+ * KAMERA_TIMEOUT_FRAGA gäller när en tillståndsruta väntas: användaren måste
+ * hinna läsa och trycka Tillåt, så gränsen är generös men inte oändlig.
+ */
+export const KAMERA_TIMEOUT_KLAR  = 15000;
+export const KAMERA_TIMEOUT_FRAGA = 45000;
+
 /**
  * Videovillkoren, som ett eget uttryck så att de går att mäta utan kamera.
  *
@@ -5890,18 +5904,56 @@ export class PlateReader extends EventTarget {
      * Kameravalet är det enda som får vara hårt: får vi selfiekameran är läget
      * meningslöst, och ett tydligt fel är bättre än en sökare mot taket.
      */
+    // Släpp en eventuell kvarlämnad ström först. Startas läsaren om medan en
+    // gammal ström lever håller den kameran, och nästa getUserMedia kan då
+    // hänga i stället för att svara — en av de tysta orsakerna till att
+    // knappen fastnade på "Startar kameran…".
+    this.#slappStream();
+
+    /*
+     * Läs tillståndet innan vi rör kameran. Tre utfall, tre svar:
+     *  - nekad  → svara direkt med hur man slår på den igen. På vissa enheter
+     *             HÄNGER getUserMedia i stället för att avvisa när kameran är
+     *             blockerad; att fråga först undviker den fällan helt.
+     *  - fråga  → en tillståndsruta kommer att dyka upp; visa det för
+     *             användaren och ge generös tid att trycka Tillåt.
+     *  - klar   → kameran ska komma direkt; kort tidsgräns fångar en hängning.
+     */
+    let tillstand = 'unknown';
+    try {
+      const p = await navigator.permissions?.query({ name: 'camera' });
+      if (p?.state) tillstand = p.state;
+    } catch { /* Permissions API saknas (Safari m.fl.) — kör vidare på gissning */ }
+
+    if (tillstand === 'denied') throw this.#kameraFel('nekad');
+
+    const forstaTimeout = tillstand === 'granted' ? KAMERA_TIMEOUT_KLAR : KAMERA_TIMEOUT_FRAGA;
+    this.dispatchEvent(new CustomEvent('kamerastatus', {
+      detail: { text: tillstand === 'granted' ? 'Startar kameran…' : 'Tillåt kameran i rutan som dyker upp…' },
+    }));
+
     const vc = kameravillkor();
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { ...vc, facingMode: { exact: 'environment' } }, audio: false,
-      });
-    } catch {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { ...vc, facingMode: 'environment' }, audio: false,
-      });
+      this.stream = await this.#hamtaStream(
+        { video: { ...vc, facingMode: { exact: 'environment' } }, audio: false }, forstaTimeout);
+    } catch (e) {
+      if (e?.kod === 'timeout') throw this.#kameraFel(tillstand === 'granted' ? 'timeout' : 'ingenSvar');
+      if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') throw this.#kameraFel('nekad');
+      // OverconstrainedError/NotFoundError = ingen bakre kamera med exakt krav.
+      // Prova utan det hårda kravet. Tillståndet är avgjort nu, så kort gräns.
+      try {
+        this.stream = await this.#hamtaStream(
+          { video: { ...vc, facingMode: 'environment' }, audio: false }, KAMERA_TIMEOUT_KLAR);
+      } catch (e2) {
+        if (e2?.kod === 'timeout') throw this.#kameraFel('timeout');
+        if (e2?.name === 'NotAllowedError' || e2?.name === 'SecurityError') throw this.#kameraFel('nekad');
+        if (e2?.name === 'NotFoundError' || e2?.name === 'OverconstrainedError' || e2?.name === 'DevicesNotFoundError')
+          throw this.#kameraFel('ingen');
+        throw e2;
+      }
       if (this.#arFramat(this.stream.getVideoTracks()[0])) {
         this.#slappStream();
-        throw new Error('Telefonen gav selfiekameran. Skyltläsaren behöver den bakre kameran.');
+        throw this.#kameraFel('framat');
       }
     }
 
@@ -6541,6 +6593,50 @@ export class PlateReader extends EventTarget {
   #slappStream() {
     this.stream?.getTracks().forEach(t => t.stop());
     this.stream = null;
+  }
+
+  /**
+   * getUserMedia med tidsgräns. Vinner klockan slänger vi den ström som
+   * eventuellt dyker upp för sent — annars hade kameran tänts i bakgrunden
+   * utan att någon höll i den (lampan lyser, batteriet dräneras). Felet från
+   * klockan bär `kod:'timeout'` så anroparen kan skilja det från ett riktigt
+   * getUserMedia-fel.
+   */
+  #hamtaStream(constraints, ms) {
+    return new Promise((resolve, reject) => {
+      let avgjort = false;
+      const timer = setTimeout(() => {
+        if (avgjort) return;
+        avgjort = true;
+        const fel = new Error('kameran svarade inte i tid');
+        fel.kod = 'timeout';
+        reject(fel);
+      }, ms);
+      navigator.mediaDevices.getUserMedia(constraints).then(
+        stream => {
+          if (avgjort) { stream.getTracks().forEach(t => t.stop()); return; }
+          avgjort = true; clearTimeout(timer); resolve(stream);
+        },
+        err => {
+          if (avgjort) return;
+          avgjort = true; clearTimeout(timer); reject(err);
+        },
+      );
+    });
+  }
+
+  /** Kamerafel med begriplig svensk text i stället för DOMException-koder. */
+  #kameraFel(kod) {
+    const texter = {
+      nekad:    'Kameran är blockerad. Tryck på ikonen till vänster om adressfältet, sätt Kamera på Tillåt och tryck Starta igen.',
+      ingenSvar:'Ingen tillät kameran. Tryck Tillåt i rutan som dyker upp, eller slå på kameran i webbläsarens inställningar.',
+      timeout:  'Kameran svarade inte. Stäng andra appar som kan använda kameran och tryck Starta igen.',
+      ingen:    'Hittar ingen bakre kamera på den här enheten.',
+      framat:   'Telefonen gav selfiekameran. Skyltläsaren behöver den bakre kameran.',
+    };
+    const fel = new Error(texter[kod] || 'Kunde inte starta kameran.');
+    fel.kod = kod;
+    return fel;
   }
 
   #arFramat(track) {
