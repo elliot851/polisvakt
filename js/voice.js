@@ -3199,6 +3199,10 @@ export class Listener extends EventTarget {
     clearTimeout(this.silenceTimer); this.silenceTimer = null;
     clearTimeout(this.capTimer); this.capTimer = null;
     clearTimeout(this.restartTimer); this.restartTimer = null;
+    // flushTimer hör till samma livscykel: utan den här raden överlevde en
+    // schemalagd #submit() ett kryss (stop()), och 900 ms senare bubblade ett
+    // falskt timeout-läge upp som kunde stänga och öppna röstrutan igen.
+    clearTimeout(this.flushTimer); this.flushTimer = null;
   }
 
   #setState(state, extra = {}) {

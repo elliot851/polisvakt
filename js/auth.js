@@ -510,6 +510,20 @@ export class Auth extends EventTarget {
 
   async refresh() {
     if (!this.session?.refresh_token) return false;
+    /*
+     * En förnyelse i taget. Supabase roterar refresh_token vid varje lyckad
+     * förnyelse, så två parallella anrop med SAMMA token är förödande: det
+     * första byter ut den, det andra kommer tillbaka med 400 och loggar ut
+     * användaren mitt i sessionen. accessToken() kan trigga refresh() från
+     * flera samtidiga DB-anrop nära utgången — därför delar de på ETT löfte.
+     */
+    if (this._refreshing) return this._refreshing;
+    this._refreshing = this.#gorRefresh();
+    try { return await this._refreshing; }
+    finally { this._refreshing = null; }
+  }
+
+  async #gorRefresh() {
     const res = await this.#call('/token?grant_type=refresh_token', {
       body: { refresh_token: this.session.refresh_token },
     });
@@ -519,6 +533,9 @@ export class Auth extends EventTarget {
         this.session = null; this.user = null; saveSession(null); this.#emit('change');
         this.#meddelaKonto();   // utloggad på riktigt — billing ska veta det
       } else {
+        // Rensa först: annars kan en retry-timer och en schemalagd förnyelse
+        // ligga och ticka samtidigt och båda försöka rotera token.
+        clearTimeout(this.refreshTimer);
         this.refreshTimer = setTimeout(() => this.refresh(), 60000);
       }
       return false;

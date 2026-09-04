@@ -252,7 +252,7 @@ const arBojningAv = (ord, bas) => {
  */
 const SOBRIETY_WORDS = [
   'nykterhetskontroll', 'nykterhetskontroller', 'nykterhet', 'nykter',
-  'alkoholkontroll', 'alkotest', 'alkoholtest', 'blåsa', 'blåser', 'blås',
+  'alkoholkontroll', 'alkotest', 'alkoholtest', 'blåsa', 'blåser',
   'utandningsprov', 'promillekontroll', 'rattfylla', 'rattfyllerikontroll',
   'sållningsprov', 'drogkontroll', 'drogtest',
   // Narkotikaorden saknades helt. En granskning körde riktiga meningar genom
@@ -270,9 +270,14 @@ const SOBRIETY_WORDS = [
    * Folk skriver utan prickar på gamla telefoner, i bilen, och när
    * autokorrigeringen står på engelska.
    *
-   * "blas" ensamt står INTE här. Det är för kort och för nära vanliga ord
-   * ("blast", engelska "blase"), och en spärr som vägrar riktiga
-   * polisrapporter kostar också liv. Böjningarna räcker.
+   * "blas"/"blås" ensamma står INTE här längre. De är för korta och matchas
+   * med includes() som ren delsträng — och då sväljer "blås" stadsdelen
+   * Blåsbo (en riktig plats i PLATSORD), så "Polis vid Blåsbo" vägrades som
+   * nykterhetskontroll. Exakt samma fälla som 'drog' (även imperfekt av
+   * "dra"): lösningen är att låta "blås"/"blas" vara FÖRLED i stället (se
+   * SOBRIETY_PREFIX). Då krävs ett kontrollord efter — "blåskontroll",
+   * "blås prov" fångas, medan "Blåsbo" och "blåst" går fria. Böjningarna
+   * nedan täcker verbet.
    */
   'blaser', 'blasa', 'blaste', 'blasning', 'blåsning',
 ];
@@ -316,6 +321,10 @@ const SOBRIETY_PREFIX = [
   'alkohol', 'alko', 'nykterhets', 'nykterhet', 'promille', 'rattfylleri',
   'rattfylla', 'drog', 'droger', 'utandnings', 'sållnings', 'sallnings',
   'narkotika', 'narko',
+  // 'blås'/'blas' som förled, inte som eget ord: fångar "blåskontroll",
+  // "blås prov", "blåstest" men lämnar stadsdelen Blåsbo i fred (kräver ett
+  // kontrollord efter förledet). Se SOBRIETY_WORDS.
+  'blås', 'blas',
 ];
 /*
  * Huvudorden matchas med arBojningAv(), inte med exakt likhet.

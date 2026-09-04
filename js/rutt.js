@@ -617,8 +617,15 @@ export class RouteGuide extends EventTarget {
 
     for (let attempt = 0; attempt < 3; attempt++) {
       const host = OSRM_HOSTS[attempt % OSRM_HOSTS.length];
+      // Tidsgräns via AbortController. Utan den kan en värd som tar emot
+      // uppkopplingen men aldrig svarar (vanligt "server nere, socket öppen")
+      // låta await:et hänga för alltid → this.busy fastnar på true och all
+      // omräkning av rutten är död resten av sessionen. Systerfunktionen i
+      // navigering.js har haft den här remmen; rutt.js saknade den.
+      const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      const klocka = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
       try {
-        const r = await fetch(`${host}/${coords}${qs}`, { headers: { Accept: 'application/json' } });
+        const r = await fetch(`${host}/${coords}${qs}`, { headers: { Accept: 'application/json' }, signal: ctrl?.signal });
         if (!r.ok) throw new Error(`Ruttjänsten svarade ${r.status}.`);
         const j = await r.json();
         if (j.code && j.code !== 'Ok') throw new Error(this.#osrmMessage(j.code));
@@ -626,10 +633,12 @@ export class RouteGuide extends EventTarget {
         if (!route?.geometry?.coordinates?.length) throw new Error('Ingen väg hittades dit.');
         return route;
       } catch (e) {
-        lastErr = e;
+        lastErr = e?.name === 'AbortError' ? new Error('Ruttjänsten svarade inte i tid.') : e;
         // Kort paus innan nästa värd. Är det nätet som är borta hjälper det,
         // är det servern som är nere byter vi maskin i nästa varv.
         if (attempt < 2) await new Promise(res => setTimeout(res, 600 * (attempt + 1)));
+      } finally {
+        if (klocka) clearTimeout(klocka);
       }
     }
     throw lastErr || new Error('Ruttjänsten svarar inte.');

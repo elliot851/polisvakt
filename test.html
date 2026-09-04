@@ -102,6 +102,9 @@ await T('narkotika och bindestreck vägras också', () => {
     'Polis vid Erikslund med drogsökhund',
     'Polis kollar droger vid Erikslund',
     'Polisen blåsning vid Erikslund',
+    'Polis blåskontroll vid Erikslund',
+    'blåstest på E18',
+    'polis blås prov vid rondellen',
     'Polis nykterhets-kontroll Hälla',
     'polisen står med sållnings-prov vid rondellen',
     'rattfylleri-kontroll city',
@@ -115,7 +118,11 @@ await T('narkotika och bindestreck vägras också', () => {
 await T('riktiga polisrapporter tystas inte av nykterhetsspärren', () => {
   const far = ['Polis vid Erikslund', 'Fartkontroll på E18', 'Civilbil vid rondellen',
                'Polisen drog vidare från Hälla', 'polisen drog iväg mot city',
-               'Polis står vid Stora Gatan-korsningen', 'Trafikkontroll vid Hälla'];
+               'Polis står vid Stora Gatan-korsningen', 'Trafikkontroll vid Hälla',
+               // Blåsbo är en stadsdel i Västerås. "blås" som delsträng vägrade
+               // den förr som nykterhetskontroll — nu är "blås"/"blas" förled och
+               // kräver ett kontrollord efter, så stadsdelen går fri.
+               'Polis vid Blåsbo', 'polis blåsbo', 'Fartkamera vid Blåsbo'];
   const stoppade = far.filter(t => parser.isSobrietyCheck(t));
   return stoppade.length === 0 || `felaktigt vägrade: ${stoppade.join(' · ')}`;
 });

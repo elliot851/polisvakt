@@ -368,7 +368,17 @@ export class Dashcam extends EventTarget {
     }
 
     await this.#requestWakeLock();
-    this.#startSegment();
+    try {
+      this.#startSegment();
+    } catch (e) {
+      // Skapades ingen inspelare läcker annars vaklåset och strömmarna vi just
+      // tagit — kameran lyser vidare fast inget spelas in. Släpp och kasta.
+      this.#releaseWakeLock();
+      this.#stopStream(this.rearStream);  this.rearStream = null;
+      this.#stopStream(this.frontStream); this.frontStream = null;
+      this.#stopStream(this.audioStream); this.audioStream = null;
+      throw e;
+    }
 
     this.recording = true;
     this.#emit('start', { dual: this.dualActive });
@@ -749,11 +759,36 @@ export class Dashcam extends EventTarget {
     const rec = this.recorder;
     this.recorder = null;
     if (rec && rec.state !== 'inactive') {
-      rec.onstop = () => { this.#saveSegment(); if (this.recording) this.#startSegment(); };
+      rec.onstop = () => {
+        this.#saveSegment();
+        if (!this.recording) return;
+        try {
+          this.#startSegment();
+        } catch (e) {
+          // Ett kastat fel här sväljs av webbläsarens eventutskick och hade
+          // lämnat recording=true utan inspelare och utan timer — dashcamen
+          // "spelar in" i UI:t men gör ingenting. Stäng ner rent i stället.
+          this.#nodstopp('Inspelningen stannade — kunde inte fortsätta filma.');
+        }
+      };
       rec.stop();
     } else if (this.recording) {
-      this.#startSegment();
+      try { this.#startSegment(); }
+      catch { this.#nodstopp('Inspelningen stannade — kunde inte fortsätta filma.'); }
     }
+  }
+
+  /** Nödstopp när ett nytt segment inte gick att starta mitt i en inspelning. */
+  #nodstopp(text) {
+    this.recording = false;
+    clearTimeout(this.segmentTimer);
+    this.#stopStream(this.rearStream);  this.rearStream = null;
+    this.#stopStream(this.frontStream); this.frontStream = null;
+    this.#stopStream(this.audioStream); this.audioStream = null;
+    this.#releaseWakeLock();
+    this.#emit('note', { text });
+    this.#emit('stop');
+    this.#emit('change');
   }
 
   async #finishSegment() {

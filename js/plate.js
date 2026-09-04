@@ -5880,7 +5880,20 @@ export class PlateReader extends EventTarget {
   }
 
   async start() {
-    if (this.running) return;
+    if (this.running) return false;
+
+    /*
+     * Starten är en kedja av await (tillstånd, getUserMedia, kamerainställning,
+     * första bildrutan) och under tiden är `running` fortfarande false. Trycker
+     * användaren Stopp mitt i den kedjan hinner `stop()` köra medan strömmen
+     * ännu inte finns — den släpper ingenting — och utan den här vakten skulle
+     * `start()` sedan återuppta, tända kameran och dra igång looparna trots att
+     * användaren stoppat. Varje start tar ett nummer; `stop()` räknar upp det.
+     * Ser starten efter en await att numret bytts vet den att den blivit
+     * avbruten, släpper det den hunnit ta och lämnar tyst.
+     */
+    const gen = this._startGen = (this._startGen || 0) + 1;
+    const avbruten = () => gen !== this._startGen;
 
     if (!this.register) {
       try { this.register = haFordonsregister(); } catch { this.register = null; }
@@ -5957,11 +5970,25 @@ export class PlateReader extends EventTarget {
       }
     }
 
+    // Stoppades starten medan kameran hämtades? Släpp den nyss tagna strömmen
+    // och lämna — annars lyser kameran vidare fast användaren tryckt Stopp.
+    if (avbruten()) { this.#slappStream(); return false; }
+
     await this.#stallInKamera();
 
     this.video.srcObject = this.stream;
     await this.video.play().catch(() => {});
-    await this.#vantaPaBild();
+    // Kameran kan vara godkänd och ändå aldrig ge en bild (togs av en annan
+    // app, eller enheten hängde). Låtsas då inte köra på en död video — släpp
+    // strömmen och svara med ett tydligt fel i stället för en frusen sökare.
+    if (!(await this.#vantaPaBild())) {
+      this.#slappStream();
+      throw this.#kameraFel('ingenBild');
+    }
+
+    // Sista chansen att upptäcka ett Stopp under uppstarten, precis innan
+    // looparna armeras. Efter det här är `running` sant och `stop()` städar.
+    if (avbruten()) { this.#slappStream(); this.video.srcObject = null; return false; }
 
     this.running = true;
     this.malsokare.nollstall();
@@ -6008,6 +6035,7 @@ export class PlateReader extends EventTarget {
           }));
         });
     }
+    return true;
   }
 
   /**
@@ -6040,6 +6068,9 @@ export class PlateReader extends EventTarget {
 
   stop() {
     this.running = false;
+    // Räkna upp startnumret så en pågående start() ser att den blivit avbruten
+    // och släpper kameran i stället för att tända den efter att vi städat.
+    this._startGen = (this._startGen || 0) + 1;
     clearTimeout(this._ocrTimer); clearInterval(this._ritTimer); clearInterval(this._sokTimer);
     this._ocrTimer = this._ritTimer = this._sokTimer = null;
     this.malsokare.nollstall();
@@ -6631,6 +6662,7 @@ export class PlateReader extends EventTarget {
       nekad:    'Kameran är blockerad. Tryck på ikonen till vänster om adressfältet, sätt Kamera på Tillåt och tryck Starta igen.',
       ingenSvar:'Ingen tillät kameran. Tryck Tillåt i rutan som dyker upp, eller slå på kameran i webbläsarens inställningar.',
       timeout:  'Kameran svarade inte. Stäng andra appar som kan använda kameran och tryck Starta igen.',
+      ingenBild:'Kameran gav ingen bild. Stäng andra appar som använder kameran och tryck Starta igen.',
       ingen:    'Hittar ingen bakre kamera på den här enheten.',
       framat:   'Telefonen gav selfiekameran. Skyltläsaren behöver den bakre kameran.',
     };
@@ -6649,11 +6681,19 @@ export class PlateReader extends EventTarget {
     return /\b(front|user|selfie|face|fram)\b/.test(namn);
   }
 
+  /**
+   * Väntar på första bildrutan. Returnerar `true` så fort videon har mått,
+   * `false` om det aldrig kom en ruta inom fyra sekunder. Skillnaden är viktig:
+   * strömmen kan vara godkänd och ändå aldrig leverera en bild (kameran togs av
+   * en annan app, eller enheten hängde) — och då ska läsaren INTE låtsas köra
+   * på en död video, utan svara med ett tydligt fel. Se `start()`.
+   */
   #vantaPaBild() {
     return new Promise(ok => {
       let kvar = 40;
       const kolla = () => {
-        if (this.video.videoWidth > 0 || --kvar <= 0) { clearInterval(id); ok(); }
+        if (this.video.videoWidth > 0) { clearInterval(id); ok(true); }
+        else if (--kvar <= 0)          { clearInterval(id); ok(false); }
       };
       const id = setInterval(kolla, 100);
       kolla();

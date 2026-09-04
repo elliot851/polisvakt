@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-09-04-126';
+const VERSION = '2026-09-04-127';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -54,6 +54,13 @@ const SHELL = [
   './',
   './index.html',
   './css/app.css',
+  // Leaflet (kartmotorn) ligger LOKALT, inte på unpkg. Från CDN kunde den
+  // aldrig cachas (fetch-hanteraren cachar bara samma origin) och en kallstart
+  // utan nät — i en tunnel, i ett garage, det scenario cachen finns FÖR — fick
+  // tillbaka index.html i stället för leaflet.js, varpå L blev undefined och
+  // hela boot() kastade. Lokalt + i SHELL = kartan startar offline.
+  './lib/leaflet-1.9.4/leaflet.js',
+  './lib/leaflet-1.9.4/leaflet.css',
   './icon.svg',
   './manifest.webmanifest',
   './js/app.js',
@@ -188,15 +195,24 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      // MODELLCACHE undantas med flit — se kommentaren vid konstanten. Utan
-      // undantaget hämtas 13 MB modeller om vid varje deploy.
-      .then(keys => Promise.all(keys
-        .filter(k => k !== CACHE && k !== MODELLCACHE)
-        .map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-      .then(() => self.clients.matchAll({ type: 'window' }))
-      .then(clients => {
-        for (const c of clients) c.postMessage({ type: 'updated', version: VERSION });
+      .then(keys => {
+        // Fanns det en gammal appskal-cache är det här en UPPDATERING; fanns
+        // ingen (bara den nyss skapade CACHE, ev. MODELLCACHE) är det första
+        // installationen. Skillnaden avgör om klienterna ska få 'updated' och
+        // ladda om — förr postades det vid VARJE activate, så en helt ny
+        // användare fick "Ny version installerad. Startar om…" och en omladdning
+        // 1 s in på sitt allra första besök, fast ingenting uppdaterats.
+        const varUppdatering = keys.some(k => k !== CACHE && k !== MODELLCACHE);
+        // MODELLCACHE undantas med flit — se kommentaren vid konstanten. Utan
+        // undantaget hämtas 13 MB modeller om vid varje deploy.
+        return Promise.all(keys
+          .filter(k => k !== CACHE && k !== MODELLCACHE)
+          .map(k => caches.delete(k)))
+          .then(() => self.clients.claim())
+          .then(() => (varUppdatering ? self.clients.matchAll({ type: 'window' }) : []))
+          .then(clients => {
+            for (const c of clients) c.postMessage({ type: 'updated', version: VERSION });
+          });
       })
   );
 });

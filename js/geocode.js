@@ -346,7 +346,10 @@ async function nominatim(query, val = {}) {
   return {
     lat: parseFloat(hit.lat),
     lon: parseFloat(hit.lon),
-    label: String(hit.name || hit.display_name.split(',')[0] || query).trim(),
+    // display_name?. — en partiell eller trasig svarsrad (proxy, felande
+    // backend) kan sakna det fältet, och då kastade .split() ett TypeError som
+    // fällde hela geokodningen i stället för att falla tillbaka på frågan.
+    label: String(hit.name || hit.display_name?.split(',')[0] || query).trim(),
     // Vad svaret var och hur brett det pekar. Fälten går vidare till
     // geokod_typ och geokod_radius_m via gissaGeokodTyp(plats, traff) i
     // js/telegram.js, som föredrar traff.typ framför sin egen gissning.

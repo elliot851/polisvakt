@@ -178,7 +178,17 @@ export class Billing extends EventTarget {
     this.kontoToken = accessToken || null;
     // Bara ett byte av konto motiverar en omsynk. Tokenförnyelser kommer
     // varje timme och ska inte trigga nätverkstrafik i onödan.
-    if (bytte) this.sync();
+    if (bytte) {
+      // paidUntil är bundet till prenumerationen, inte till enheten. Vid ett
+      // kontobyte (inloggning, utloggning) MÅSTE det gamla kontots betalstatus
+      // nollas innan omsynk — annars ärver nästa användare på samma telefon
+      // föregående kontos betalda åtkomst tills servern hinner svara (och för
+      // alltid om servern inte har någon rad). Serverns sync() skriver över
+      // med rätt värde direkt efteråt när den når fram.
+      this.state.paidUntil = null;
+      this.#save();
+      this.sync();
+    }
   }
 
   /** Provperiodens längd i dagar för DEN HÄR instansen. */

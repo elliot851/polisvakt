@@ -309,10 +309,13 @@ export class SpeedLimitService extends EventTarget {
     } else if (hit) {
       this.current = hit;
     } else if (!hit) {
-      // Tappar vi vägen helt (parkering, ny bricka laddas) — behåll en stund
-      if (this.current && Date.now() - (this._lostAt || 0) > 15000) {
-        this._lostAt = Date.now();
-      }
+      // Tappar vi vägen helt (parkering, ny bricka laddas) — behåll en stund.
+      // Stämpla starten på tappet EN gång: förr stämplades _lostAt OM vid 15 s
+      // (Date.now() - _lostAt > 15000 blir sant igen när tappet varat 15 s),
+      // vilket sköt 20-sekundersgränsen framför sig i all oändlighet. Följden
+      // var att current aldrig nollades — en gammal hastighetsgräns stod kvar
+      // och gav falska "du kör för fort" mot en väg man redan lämnat.
+      if (this.current && !this._lostAt) this._lostAt = Date.now();
       if (this.current && this._lostAt && Date.now() - this._lostAt > 20000) {
         this.current = null;
         this.#emit('limit', null);

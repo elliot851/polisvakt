@@ -418,7 +418,14 @@ let instModul = null;
    instModul ovanför. Se laddaButik() bredvid laddaInst(). */
 let butikModul = null;
 
-if (!globalThis.PV_INGEN_BOOT) boot();
+if (!globalThis.PV_INGEN_BOOT) {
+  boot().catch(err => {
+    // Kastar boot() uteblir 'polisvakt:ready' och räddningsnätet i index.html
+    // tar över efter 8 s. Logga felet så det inte försvinner tyst — utan den
+    // här raden syntes bara räddningsskärmen, aldrig varför den kom.
+    console.error('[polisvakt] boot() kraschade:', err);
+  });
+}
 
 async function boot() {
   /* Först av allt: rörelsens stilmall och tryckkvittensen.
@@ -5002,7 +5009,10 @@ function wireModePicker() {
       if (!p.canvas.isConnected) stage.insertBefore(p.canvas, stage.firstChild);
       p.canvas.hidden = false;
 
-      await p.start();
+      // false = starten avbröts (t.ex. Stopp trycktes medan kameran hämtades).
+      // Visa då inte kontrollerna som om läsaren kör — finally städar knappen.
+      const startad = await p.start();
+      if (!startad) { p.canvas.hidden = true; return; }
 
       $('dcIdle').hidden = true;
       $('plControls').hidden = false;

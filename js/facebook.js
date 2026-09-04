@@ -277,6 +277,7 @@ export async function ingest(posts, options = {}) {
   const remember = key => { if (!dryRun) { seen[key] = now; seenChanged = true; } };
 
   for (const post of items) {
+   try {
     const { stable, externalId } = keysFor(post, now);
     if (seen[stable]) { summary.duplicates++; continue; }
 
@@ -380,6 +381,16 @@ export async function ingest(posts, options = {}) {
       summary.errors.push(`Kunde inte spara "${row.label}": ${e.message}`);
       // Ingen minnesmarkering här heller — nästa körning får ta om den.
     }
+   } catch (postFel) {
+     // Ett enda trasigt inlägg (t.ex. en text som får parsern att kasta) fick
+     // förr hela ingest() att avvisa och tappa ALLA återstående inlägg i
+     // svepet. Felet tas nu per inlägg — modulens uttalade mål är "Fel ska tas
+     // här, inte på kartan". Kom ihåg posten så samma gift inte körs varje
+     // svep; en parse-/byggkrasch är deterministisk för samma text.
+     summary.skipped.failed++;
+     summary.errors.push(`Inlägg kunde inte behandlas: ${postFel.message}`);
+     try { remember(keysFor(post, now).stable); } catch { /* nyckeln gick inte att bilda */ }
+   }
   }
 
   if (seenChanged) saveSeen(seen);
