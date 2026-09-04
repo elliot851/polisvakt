@@ -3208,6 +3208,20 @@ function graderadeFaror() {
         label: g.kluster.label, bedomning: g.bedomning,
 
         /*
+         * Klustrets ålder = SENASTE observationen, inte ledarens.
+         *
+         * Ledaren väljs på bästa position, inte nyaste tid. Låg en gammal men
+         * exakt kartnål (eller två) på samma plats som en sekundfärsk rapport
+         * blev en av de gamla ledare, och HELA klustret bar då ledarens gamla
+         * createdAt. Åldersgrinden i inkommandeSok (inkommandeArFarsk) dömde
+         * det som "for-gammal" och tystade den färska rapporten — exakt det
+         * fall en kallstart utan sync skulle höra. Samma rättelse som redan
+         * gjorts i graderingen (se bedomFlodet), nu även på själva faran så
+         * åldersgrinden ser rätt tid.
+         */
+        createdAt: g.kluster.senastAt || g.kluster.ledare.createdAt,
+
+        /*
          * Alla id:n i klustret följer med.
          *
          * Faran bär ledarens id. Står en polis på Vasagatan och tre förare
