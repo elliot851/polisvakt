@@ -33,7 +33,10 @@ export class ImpactDetector extends EventTarget {
     this.permission = motionNeedsPermission ? 'unknown' : 'granted';
     this.peakG = 0;
     this.lastEventAt = 0;
-    this.baseline = G;              // vilande tyngdkraft, kalibreras löpande
+    this.lastLevel = null;          // 'crash' | 'hardbrake' — senast utlösta nivå
+    // Vilande tyngdkraft som VEKTOR (en per axel), inte som skalär. Se #onMotion
+    // för varför skalären var fel.
+    this.bx = 0; this.by = 0; this.bz = 0;
     this._handler = e => this.#onMotion(e);
     this._samples = 0;
   }
@@ -72,35 +75,71 @@ export class ImpactDetector extends EventTarget {
   }
 
   #onMotion(e) {
-    // includingGravity finns på fler enheter och är stabilare att kalibrera mot
-    const a = e.accelerationIncludingGravity || e.acceleration;
+    // Har enheten en tyngdkraftsFRI avläsning är den bäst: magnituden ÄR då
+    // själva händelsen, utan att tyngdkraften behöver räknas bort.
+    const lin = e.acceleration;
+    if (lin && lin.x != null && (lin.x || lin.y || lin.z)) {
+      this.#bedom(Math.hypot(lin.x || 0, lin.y || 0, lin.z || 0) / G);
+      return;
+    }
+
+    // Annars: accelerationIncludingGravity. Här satt den gamla buggen. Att ta
+    // magnituden och jämföra mot en skalär ~1 g-nollpunkt är fel: tyngdkraften
+    // (~1 g) ligger alltid på och står ungefär vinkelrätt mot broms-/krocklaster,
+    // så en horisontell händelse adderas i KVADRATUR — en riktig panikbroms på
+    // 1 g läses som sqrt(1+1)-1 ≈ 0,41 g och en 3 g-krock som ≈ 2,16 g, under
+    // trösklarna. Rätt sätt är att dra bort tyngdkraften som VEKTOR (per axel)
+    // och mäta längden på det som blir kvar (den linjära accelerationen).
+    const a = e.accelerationIncludingGravity;
     if (!a || a.x == null) return;
+    const ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
 
-    const mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
+    // Uppvärmning: medelvärda de första rutorna till en nollpunkt, så en enda
+    // guppig första ruta inte förgiftar vektorn.
+    if (this._samples < 30) {
+      this._samples++;
+      this.bx = (this.bx * (this._samples - 1) + ax) / this._samples;
+      this.by = (this.by * (this._samples - 1) + ay) / this._samples;
+      this.bz = (this.bz * (this._samples - 1) + az) / this._samples;
+      return;
+    }
 
-    // Håll ett långsamt glidande medelvärde som nollpunkt. En telefon i en
-    // hållare ligger inte plant, och tyngdkraften fördelas olika på axlarna.
-    this._samples++;
-    if (this._samples < 30) { this.baseline = mag; return; }
-    this.baseline = this.baseline * 0.995 + mag * 0.005;
+    const g = Math.hypot(ax - this.bx, ay - this.by, az - this.bz) / G;
+    // Låt nollpunkten glida med långsamt — men BARA när det är lugnt, annars
+    // äter själva händelsen upp sin egen nollpunkt och trycket försvinner.
+    if (g < 0.4) {
+      this.bx = this.bx * 0.99 + ax * 0.01;
+      this.by = this.by * 0.99 + ay * 0.01;
+      this.bz = this.bz * 0.99 + az * 0.01;
+    }
+    this.#bedom(g);
+  }
 
-    const deltaG = Math.abs(mag - this.baseline) / G;
-    if (deltaG > this.peakG) this.peakG = deltaG;
-
+  #bedom(g) {
+    if (g > this.peakG) this.peakG = g;
     const now = Date.now();
-    if (now - this.lastEventAt < this.cooldownMs) return;
+    const iCooldown = now - this.lastEventAt < this.cooldownMs;
 
-    if (deltaG >= this.crashG) {
-      this.lastEventAt = now;
+    if (g >= this.crashG) {
+      // En krock får ALLTID lösa ut — även strax efter en hårdbroms, för det
+      // vanligaste krockförloppet är broms följt av smäll inom en sekund, och
+      // förr blindade hårdbromsens cooldown den efterföljande krocken i 20 s.
+      // Undantaget: en krock som redan låst nyss ska inte dubbelrapportera på
+      // sin egen efterskälvning.
+      if (iCooldown && this.lastLevel === 'crash') return;
+      this.lastEventAt = now; this.lastLevel = 'crash';
       this.#emit('impact', {
-        level: 'crash', g: +deltaG.toFixed(1),
-        text: `Kraftig smäll registrerad (${deltaG.toFixed(1)} g). Klippet är låst.`,
+        level: 'crash', g: +g.toFixed(1),
+        text: `Kraftig smäll registrerad (${g.toFixed(1)} g). Klippet är låst.`,
       });
-    } else if (deltaG >= this.hardBrakeG) {
-      this.lastEventAt = now;
+      return;
+    }
+    if (g >= this.hardBrakeG) {
+      if (iCooldown) return;                 // hårdbroms respekterar cooldown
+      this.lastEventAt = now; this.lastLevel = 'hardbrake';
       this.#emit('impact', {
-        level: 'hardbrake', g: +deltaG.toFixed(1),
-        text: `Kraftig inbromsning (${deltaG.toFixed(1)} g). Klippet är låst.`,
+        level: 'hardbrake', g: +g.toFixed(1),
+        text: `Kraftig inbromsning (${g.toFixed(1)} g). Klippet är låst.`,
       });
     }
   }

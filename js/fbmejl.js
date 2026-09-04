@@ -904,7 +904,10 @@ export function gissaGeokodTyp(plats, traff) {
    * passerar platsHopplosOverM och gör att rapporten faller bort i stället för
    * att bli en självsäker nål på ett godtyckligt vägavsnitt.
    */
-  if (/^(e\s?\d{1,3}|rv\s?\d{1,3}|riksväg\s?\d{1,3}|väg\s?\d{1,3})\b/.test(t)) return 'led';
+  // Även prefixade vägnamn (länsväg/landsväg/motorväg) och var som helst i
+  // strängen, inte bara i början — "länsväg 250" föll förr till adressgrenen
+  // (40 m) fast den är en genomfartsväg, precis samma fälla som "riksväg 66".
+  if (/\b(e|rv|riksväg|länsväg|landsväg|motorväg|väg)\s?\d{1,3}\b/.test(t)) return 'led';
   if (/\d/.test(t) && /(gatan|vägen|gata|väg)\b/.test(t)) return 'adress';
   if (/(gatan|vägen|leden|gränd|torget|bron|rondell|rondellen|korsning|korsningen|motet|avfart|påfart|infart|rampen)/.test(t)) return 'vag';
   if (/^(västerås|sala|köping|arboga|fagersta|hallstahammar|surahammar|kungsör|norberg|skinnskatteberg|västmanland)$/.test(t)) return 'ort';
@@ -1189,6 +1192,7 @@ export async function bearbeta(mejl, val = {}) {
   for (const m of lista) {
     if (!m || typeof m !== 'object') { bort(SKAL.TOM); continue; }
 
+   try {
     const tolkning = tolkaMejl(m, { nu, minTillit, grupp, gruppId, kravAvsandare, kravGrupp });
     const { stabil, text: textNyckel, textGrannar = [] } = tolkning.nycklar;
 
@@ -1251,6 +1255,15 @@ export async function bearbeta(mejl, val = {}) {
     summering.rapporter.push(byggRapport(tolkning, traff, { deviceId, kalla }));
     summering.skapade++;
     sedda.add(stabil); sedda.add(textNyckel);
+   } catch (postFel) {
+     // Saknad geokoda är ett konfigurationsfel — det ska INTE tystas per mejl.
+     if (/geokoda-funktionen saknas/.test(postFel.message || '')) throw postFel;
+     // Ett enda trasigt mejl (t.ex. en text som får parsern att kasta) rev förr
+     // hela ingest() och tappade alla återstående mejl i svepet. Ta felet per
+     // mejl — modulens uttalade mål, precis som i facebook.js.
+     bort('fel');
+     summering.fel.push(`Mejl kunde inte behandlas: ${postFel.message}`);
+   }
   }
 
   return summering;

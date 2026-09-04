@@ -220,9 +220,16 @@ export class Tour extends EventTarget {
 
   #el(target) {
     if (!target) return null;
-    if (target === 'tab-dashcam') return document.querySelector('.tab[data-view="dashcam"]');
-    if (target === 'tab-settings') return document.querySelector('.tab[data-view="settings"]');
-    return document.getElementById(target);
+    let el;
+    if (target === 'tab-dashcam') el = document.querySelector('.tab[data-view="dashcam"]');
+    else if (target === 'tab-settings') el = document.querySelector('.tab[data-view="settings"]');
+    else el = document.getElementById(target);
+    // Finns elementet men ritas det inte ut (display:none / [hidden] / utanför
+    // layouten)? Behandla det som frånvarande. Annars ger getBoundingClientRect
+    // 0×0 vid (0,0) och strålkastaren pekar mot skärmhörnet mitt i guiden —
+    // och steget hoppas heller inte över (skip-logiken kollade bara existens).
+    if (!el || el.getClientRects().length === 0) return null;
+    return el;
   }
 
   #render() {

@@ -192,7 +192,9 @@ function visaDetalj(p) {
   // Lagerraden — bara ett ärligt besked. Antal visas när varan går att köpa;
   // annars säger den vad status faktiskt är, inte en påhittad siffra.
   let lagerrad;
-  if (kopbar && Number.isFinite(Number(p.lager))) {
+  // p.lager != null && !== '' innan Number(): Number('') är 0 (finit), så en tom
+  // lagersträng visade förr "Bara 0 kvar i lager" på en köpbar vara.
+  if (kopbar && p.lager != null && p.lager !== '' && Number.isFinite(Number(p.lager))) {
     const n = Number(p.lager);
     const lag = n <= 10;
     lagerrad = `<span class="pd-lager${lag ? ' fa' : ''}">● ${lag ? `Bara ${n} kvar i lager` : `${n} i lager`}</span>`;

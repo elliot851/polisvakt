@@ -89,7 +89,14 @@ export class Coverage extends EventTarget {
       `${fromLon},${fromLat};${dest.lon},${dest.lat}` +
       `?overview=full&geometries=geojson&alternatives=false&steps=false`;
 
-    const r = await fetch(url);
+    // Tidsgräns: en värd som tar emot men aldrig svarar skulle annars hänga
+    // setRoute för alltid (samma rem som rutt.js/navigering.js har).
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const klocka = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
+    let r;
+    try { r = await fetch(url, { signal: ctrl?.signal }); }
+    catch (e) { throw new Error(e?.name === 'AbortError' ? 'Ruttjänsten svarade inte i tid.' : 'Ruttjänsten svarar inte.'); }
+    finally { if (klocka) clearTimeout(klocka); }
     if (!r.ok) throw new Error('Ruttjänsten svarar inte.');
     const j = await r.json();
     const route = j.routes?.[0];
@@ -128,7 +135,7 @@ export class Coverage extends EventTarget {
       if (!rows.length) return null;
       return {
         lat: +rows[0].lat, lon: +rows[0].lon,
-        label: (rows[0].name || rows[0].display_name.split(',')[0]).trim(),
+        label: (rows[0].name || rows[0].display_name?.split(',')[0] || q).trim(),
       };
     } catch { return null; }
   }
@@ -154,8 +161,16 @@ export class Coverage extends EventTarget {
     if (!this._grid) return false;
     const { cell, grid } = this._grid;
     const cy = Math.round(lat / cell), cx = Math.round(lon / cell);
-    for (let y = cy - 1; y <= cy + 1; y++) {
-      for (let x = cx - 1; x <= cx + 1; x++) {
+    // Hur många celler korridoren spänner över — PER AXEL. Förr skannades alltid
+    // ±1 cell, men en cell är ~2,2 km i latitud och bara ~1,1 km i longitud på
+    // våra breddgrader, medan korridoren är 3 km. En fara 2–3 km rakt öster/väster
+    // om vägen låg då 2–3 celler bort och skannades aldrig → tyst missad varning.
+    const mLat = cell * 111320;
+    const mLon = cell * 111320 * Math.max(0.1, Math.cos(lat * Math.PI / 180));
+    const ny = Math.max(1, Math.ceil(this.corridorM / mLat));
+    const nx = Math.max(1, Math.ceil(this.corridorM / mLon));
+    for (let y = cy - ny; y <= cy + ny; y++) {
+      for (let x = cx - nx; x <= cx + nx; x++) {
         const arr = grid.get(`${y}:${x}`);
         if (!arr) continue;
         for (const [plat, plon] of arr) {

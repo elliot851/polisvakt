@@ -256,7 +256,10 @@ export function gissaGeokodTyp(plats, traff) {
    * passerar platsHopplosOverM och gör att rapporten faller bort i stället för
    * att bli en självsäker nål på ett godtyckligt vägavsnitt.
    */
-  if (/^(e\s?\d{1,3}|rv\s?\d{1,3}|riksväg\s?\d{1,3}|väg\s?\d{1,3})\b/.test(t)) return 'led';
+  // Även prefixade vägnamn (länsväg/landsväg/motorväg) och var som helst i
+  // strängen, inte bara i början — "länsväg 250" föll förr till adressgrenen
+  // (40 m) fast den är en genomfartsväg, precis samma fälla som "riksväg 66".
+  if (/\b(e|rv|riksväg|länsväg|landsväg|motorväg|väg)\s?\d{1,3}\b/.test(t)) return 'led';
   if (/\d/.test(t) && /(gatan|vägen|gata|väg)\b/.test(t)) return 'adress';
   if (/(gatan|vägen|leden|gränd|torget|bron|rondell|rondellen|korsning|korsningen|motet|avfart|påfart|infart|rampen)/.test(t)) return 'vag';
   if (/^(västerås|sala|köping|arboga|fagersta|hallstahammar|surahammar|kungsör|norberg|skinnskatteberg|västmanland)$/.test(t)) return 'ort';
@@ -462,59 +465,84 @@ export async function bearbeta(payload, val = {}) {
 
   const bort = skal => { summering.bortsorterade[skal] = (summering.bortsorterade[skal] || 0) + 1; };
 
+  let retryFran = null;   // lägsta updateId vars geokodning föll på nätfel
   for (const { msg, updateId } of poster) {
     // Offset flyttas fram oavsett vad som händer med meddelandet. Ett inlägg
     // som inte går att hantera ska inte spelas om i evighet och blockera allt
-    // som kom efter det.
+    // som kom efter det. (Nätverksmissad geokodning är undantaget — den backas
+    // efter loopen via retryFran.)
     if (updateId != null) {
       summering.sistaUpdateId = Math.max(summering.sistaUpdateId ?? updateId, updateId);
     }
 
-    const tolkning = tolkaMeddelande(msg, { nu, minTillit, chatId });
-    const { stabil, text: textNyckel } = tolkning.nycklar;
+    try {
+      const tolkning = tolkaMeddelande(msg, { nu, minTillit, chatId });
+      const { stabil, text: textNyckel } = tolkning.nycklar;
 
-    // Dedup före allt annat arbete. Både meddelandets egen identitet och
-    // textnyckeln räknas: det första fångar en omkörning av samma pollning,
-    // det andra fångar samma inlägg speglat en gång till med nytt id.
-    if (sedda.has(stabil) || sedda.has(textNyckel)) {
-      summering.dubbletter++;
-      continue;
-    }
-
-    if (!tolkning.ok) {
-      bort(tolkning.skal);
-      // Fel chatt märks inte som sedd — boten kan läggas till i rätt kanal
-      // senare, och då ska inget vara tyst bortsorterat sedan innan.
-      if (tolkning.skal !== SKAL.FEL_CHATT) { sedda.add(stabil); sedda.add(textNyckel); }
-      continue;
-    }
-
-    let traff = tolkning.position;
-    if (!traff) {
-      if (typeof geokoda !== 'function') {
-        throw new Error('bearbeta: geokoda-funktionen saknas — skicka in den, ' +
-                        'modulen gör inga egna nätverksanrop.');
-      }
-      try {
-        traff = await geokoda(tolkning.plats);
-      } catch (e) {
-        bort(SKAL.GEOKOD_FEL);
-        summering.fel.push(`Geokodning av "${tolkning.plats}" misslyckades: ${e.message}`);
-        continue;   // ingen minnesmarkering: nätverksfel ska få försöka igen
-      }
-      if (!traff || !Number.isFinite(traff.lat) || !Number.isFinite(traff.lon)) {
-        bort(SKAL.OKAND_PLATS);
-        if (!summering.okandaPlatser.includes(tolkning.plats)) {
-          summering.okandaPlatser.push(tolkning.plats);
-        }
-        sedda.add(stabil); sedda.add(textNyckel);
+      // Dedup före allt annat arbete. Både meddelandets egen identitet och
+      // textnyckeln räknas: det första fångar en omkörning av samma pollning,
+      // det andra fångar samma inlägg speglat en gång till med nytt id.
+      if (sedda.has(stabil) || sedda.has(textNyckel)) {
+        summering.dubbletter++;
         continue;
       }
-    }
 
-    summering.rapporter.push(byggRapport(tolkning, traff, { deviceId, kalla }));
-    summering.skapade++;
-    sedda.add(stabil); sedda.add(textNyckel);
+      if (!tolkning.ok) {
+        bort(tolkning.skal);
+        // Fel chatt märks inte som sedd — boten kan läggas till i rätt kanal
+        // senare, och då ska inget vara tyst bortsorterat sedan innan.
+        if (tolkning.skal !== SKAL.FEL_CHATT) { sedda.add(stabil); sedda.add(textNyckel); }
+        continue;
+      }
+
+      let traff = tolkning.position;
+      if (!traff) {
+        if (typeof geokoda !== 'function') {
+          throw new Error('bearbeta: geokoda-funktionen saknas — skicka in den, ' +
+                          'modulen gör inga egna nätverksanrop.');
+        }
+        try {
+          traff = await geokoda(tolkning.plats);
+        } catch (e) {
+          bort(SKAL.GEOKOD_FEL);
+          summering.fel.push(`Geokodning av "${tolkning.plats}" misslyckades: ${e.message}`);
+          // Nätverksfel ska få försöka igen. Men offset flyttades redan fram
+          // ovan, så acken måste backas till FÖRE det här inlägget — annars
+          // ackas det bort och Telegram skickar det aldrig igen (retry-avsikten
+          // motsades tyst av offset-framflyttningen).
+          if (updateId != null) retryFran = retryFran == null ? updateId : Math.min(retryFran, updateId);
+          continue;
+        }
+        if (!traff || !Number.isFinite(traff.lat) || !Number.isFinite(traff.lon)) {
+          bort(SKAL.OKAND_PLATS);
+          if (!summering.okandaPlatser.includes(tolkning.plats)) {
+            summering.okandaPlatser.push(tolkning.plats);
+          }
+          sedda.add(stabil); sedda.add(textNyckel);
+          continue;
+        }
+      }
+
+      summering.rapporter.push(byggRapport(tolkning, traff, { deviceId, kalla }));
+      summering.skapade++;
+      sedda.add(stabil); sedda.add(textNyckel);
+    } catch (postFel) {
+      // Saknad geokoda är ett konfigurationsfel, inte ett trasigt meddelande —
+      // det ska INTE tystas per meddelande.
+      if (/geokoda-funktionen saknas/.test(postFel.message || '')) throw postFel;
+      // Ett enda trasigt meddelande (t.ex. en text som får parsern att kasta)
+      // rev förr hela batchen och tappade allt som kom efter. Ta felet per
+      // meddelande. Offset flyttades redan fram, så inlägget spelas inte om.
+      bort('fel');
+      summering.fel.push(`Meddelande kunde inte behandlas: ${postFel.message}`);
+    }
+  }
+
+  // Backa acken till före första nätverksmissade geokodningen, så det inlägget
+  // (och allt efter, som dedupas bort) hämtas om nästa pollning i stället för
+  // att tyst tappas.
+  if (retryFran != null && summering.sistaUpdateId != null) {
+    summering.sistaUpdateId = Math.min(summering.sistaUpdateId, retryFran - 1);
   }
 
   return summering;

@@ -1174,7 +1174,14 @@ export function bedomFlodet(rapporter, kontext = {}, opts = {}) {
     bedomning: bedomRapport(
       // Klustret ärver ledarens egenskaper men får den viktade positionen och
       // klustrets egen osäkerhet — annars räknas farten in en gång till.
-      { ...k.ledare, lat: k.lat, lon: k.lon, label: k.label },
+      //
+      // createdAt tas från SENASTE observationen, inte ledarens. Ledaren väljs
+      // på bästa position, inte nyaste tid — så en gammal men exakt kartnål
+      // kunde leda ett kluster där någon just sett patrullen, och åldern
+      // räknades då på den gamla nålen → färskhetsgraden föll till LAG och
+      // varningen tystades trots en sekundfärsk bekräftelse. senastAt är rätt
+      // grund för "står den kvar?".
+      { ...k.ledare, lat: k.lat, lon: k.lon, label: k.label, createdAt: k.senastAt || k.ledare.createdAt },
       { ...kontext, nu, kluster: k, osakerhetM: k.osakerhetM },
       o),
   }));

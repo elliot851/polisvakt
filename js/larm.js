@@ -38,7 +38,10 @@ const TON_LANGD = 0.16;
 const TON_VOLYM = 0.09;      // gamla larmet låg på 0.5
 
 let ljudkontext = null;
-let slocknaTimer = null;
+// Ett aktivt larm i taget. Håller det pågående larmets timers och dölj-hook, så
+// ett nytt larm kan ta över rent och en sen avbryt från ett gammalt larm inte
+// river ett nyare. { rostTimer, slocknaTimer, dolj }
+let aktivtLarm = null;
 
 /**
  * Två mjuka pling. Inget svep, ingen upprepning som fortsätter.
@@ -51,6 +54,10 @@ export function spelaSignal() {
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return false;
+    // Stäng en ev. tidigare kontext som ännu inte hunnit stänga sig själv, så
+    // överlappande larm inte samlar på sig öppna AudioContext mot webbläsarens
+    // tak.
+    try { ljudkontext?.close(); } catch {}
     const ac = new Ctx();
     ljudkontext = ac;
     const t0 = ac.currentTime;
@@ -123,8 +130,23 @@ export function larmMening(etikett) {
  */
 export function larma(traff, krokar) {
   const { visa, dolj, speaker, vibrera = true } = krokar || {};
+
+  // Ett larm i taget. Kommer ett nytt medan ett gammalt ligger uppe: avbryt det
+  // gamlas timers utan att dölja rutan (samma ruta uppdateras och släck-timern
+  // startas om). Förr delade alla larm på EN modul-global slocknaTimer, så det
+  // andra larmet nollställde det förstas släck-timer och den röda rutan blev
+  // kvar på skärmen i onödan; dessutom stackades röst-timrar och dubbeltalade.
+  if (aktivtLarm) {
+    clearTimeout(aktivtLarm.rostTimer);
+    clearTimeout(aktivtLarm.slocknaTimer);
+    aktivtLarm = null;
+  }
+
   visa?.(traff);
   spelaSignal();
+
+  // Mjukare vibration också: två korta i stället för fem stötar.
+  if (vibrera) { try { navigator.vibrate?.([120, 90, 120]); } catch {} }
 
   /*
    * Rösten kommer efter tonen, inte samtidigt. Talsyntesen skulle annars
@@ -135,21 +157,28 @@ export function larma(traff, krokar) {
    * polisvarning två hundra meter fram är viktigare än att ett fordon man
    * själv antecknat passerar. Igenkänningen får vänta sin tur.
    */
-  const rostTimer = setTimeout(() => {
-    try { speaker?.say?.(larmMening(traff?.etikett), { priority: 1 }); } catch {}
-  }, 700);
-
-  // Mjukare vibration också: två korta i stället för fem stötar.
-  if (vibrera) { try { navigator.vibrate?.([120, 90, 120]); } catch {} }
-
-  clearTimeout(slocknaTimer);
-  const avbryt = () => {
-    clearTimeout(rostTimer);
-    clearTimeout(slocknaTimer);
-    slocknaTimer = null;
-    tystaSignal();
-    dolj?.();
+  const detta = {
+    dolj,
+    slocknaTimer: null,
+    rostTimer: setTimeout(() => {
+      try { speaker?.say?.(larmMening(traff?.etikett), { priority: 1 }); } catch {}
+    }, 700),
   };
-  slocknaTimer = setTimeout(avbryt, LARM_MAX_MS);
+
+  const avbryt = () => {
+    clearTimeout(detta.rostTimer);
+    clearTimeout(detta.slocknaTimer);
+    // Dölj/tysta bara om DET HÄR larmet fortfarande är det aktiva — annars
+    // skulle en sen avbryt (t.ex. anroparens sparade referens) släcka ett
+    // nyare larm som redan tagit över rutan.
+    if (aktivtLarm === detta) {
+      aktivtLarm = null;
+      tystaSignal();
+      dolj?.();
+    }
+  };
+
+  detta.slocknaTimer = setTimeout(avbryt, LARM_MAX_MS);
+  aktivtLarm = detta;
   return avbryt;
 }
