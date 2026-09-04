@@ -56,7 +56,7 @@
      Vitlista. Nya regler använder dessa och inget annat. Att den går att
      kontrollera i efterhand med en grep är hela poängen — utan den driver
      avstånden isär ett par pixlar i taget tills ingen rytm finns kvar. */
-  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
   --sp-6: 24px; --sp-8: 32px; --sp-12: 48px;
 
   /* ---- TYPOGRAFISK SKALA ----
@@ -1648,7 +1648,7 @@ a.btn-kop {
 .stad-rad.stad-kommande { opacity: .5; }
 .stad-rad .stad-markor {
   font-size: var(--t-sm); color: var(--fg-2);
-  border: 1px solid var(--stroke); border-radius: 999px;
+  border: 1px solid var(--line); border-radius: 999px;
   padding: 1px 8px; margin-left: 6px; vertical-align: middle;
 }
 

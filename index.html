@@ -8,7 +8,7 @@
 <title>Polisvakt Västmanland</title>
 
 <link rel="manifest" href="./manifest.webmanifest">
-<link rel="apple-touch-icon" href="./icon.svg">
+<link rel="apple-touch-icon" href="./icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Polisvakt">
@@ -1940,7 +1940,13 @@
   var loaded = false, failed = false;
   window.addEventListener('polisvakt:ready', function () { loaded = true; });
   window.addEventListener('error', function (e) {
-    if (e && e.target && /\/js\/.*\.js/.test(e.target.src || '')) failed = true;
+    // Resurs-fel: en .js gick inte att HÄMTA (404, avbruten) — bär e.target.src.
+    if (e && e.target && /\/js\/.*\.js/.test(e.target.src || '')) { failed = true; return; }
+    // Skript-fel: en .js laddades (HTTP 200) men var trasig/halv och kastade ett
+    // syntax-/parsefel — inget e.target.src, men e.filename pekar ut .js-filen.
+    // Det är "halv fil i cachen"-fallet i kommentaren ovan, det vanligaste riktiga
+    // deploy-felet, och förr fångades det aldrig (fel gissad orsak i rutan).
+    if (e && e.message && /\.js(\?|$)/.test(e.filename || '')) failed = true;
   }, true);
 
   function rescue(reason) {
