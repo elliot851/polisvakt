@@ -101,6 +101,11 @@ addEventListener('beforeunload', lamnaTillbaka);
 await import('./js/app.js');
 const P = window.polisvakt;
 const IN = P.inkommande;
+// Uttalandet körs utan fördröjning i provet: via en mikrotask i stället för en
+// timer som en bakgrundsflik stryper till ~1 s. Utan det här sköt uttalandet
+// från ett prov förbi provets väntetid och lästes upp mitt i NÄSTA prov —
+// sviten blev icke-deterministisk (falska "sade fel sak"-fel). Se js/app.js.
+IN.fordrojningMs = 0;
 const Kvalitet = await import('./js/kvalitet.js');
 const Notiser = await import('./js/notiser.js');
 
@@ -146,8 +151,11 @@ async function kor(rapporter, { omgangar = 2, forbered, sagDirekt = true } = {})
   IN.omgangar = omgangar;
   forbered?.();
   IN.sok();
-  if (sagDirekt) IN.sag();
-  await vanta(420);
+  // Deterministiskt: invänta att uttalandet körts KLART i stället för en fast
+  // väntetid som kan vara för kort när timers stryps. IN.sag() resolvar när
+  // rösten (eller tyst-beslutet) är helt avgjord.
+  if (sagDirekt) await IN.sag();
+  else await Promise.resolve();
   return {
     sagt: [...sagt],
     plingat: [...plingat],

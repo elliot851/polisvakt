@@ -4183,7 +4183,14 @@ window.polisvakt = {
     spar: () => [...inkommandeSpar],
     sparText: () => inkommandeSparText(),
     sok: () => inkommandeSok(),
-    sag: () => inkommandeSag(),
+    // Normaliseras till ett löfte: uttalandevägen returnerar ett Promise som
+    // resolvar när rösten körts klart, de synkrona vägarna returnerar undefined.
+    // Provet kan då `await IN.sag()` och slippa gissa en fast väntetid.
+    sag: () => Promise.resolve(inkommandeSag()),
+    // Prov-krok: sätt uttalandefördröjningen (ms). 0 = kör via mikrotask, så
+    // provet inte beror på en strypbar bakgrundstimer. null återställer.
+    set fordrojningMs(v) { inkommandeTestFordrojning = v; },
+    get fordrojningMs() { return inkommandeTestFordrojning; },
     flode: () => inkommandeFlode(),
     farsk: (h, nu) => inkommandeArFarsk(h, nu),
     lyft: h => inkommandeKvalitetslyft(h),
@@ -7686,6 +7693,13 @@ const inkommandeSedda = new Set();     // id:n vi redan tagit ställning till
 const inkommandeKo = new Map();        // id -> { h, talat, avstand }, väntar på att sägas
 let inkommandeOmgangar = 0;
 let inkommandeTimer = null;
+/*
+ * Fördröjning för själva uttalandet, i ms. null = produktionens riktiga paus
+ * (pausEfterPling). Bara inkommande-test.html rör den: satt till 0 körs
+ * uttalandet via en mikrotask i stället för en strypbar bakgrundstimer, så
+ * provet blir deterministiskt och snabbt. Se inkommandeSag och test-kroken.
+ */
+let inkommandeTestFordrojning = null;
 
 /*
  * Är utgångsläget bokfört?
@@ -8530,7 +8544,13 @@ function inkommandeSag() {
    * Fördröjningen på 380 ms är samma som i alerts.js: plinget ska hinna klart
    * innan rösten börjar, annars hörs varken det ena eller det andra.
    */
-  setTimeout(() => {
+  // Uttalandet ligger bakom en fördröjning så plinget hinner klart först.
+  // Löftet resolvar när uttalandet är HELT klart, så kor() i provet kan invänta
+  // det exakt i stället för att gissa en fast tid. I prov kan fördröjningen
+  // sättas till 0 (inkommandeTestFordrojning) och körs då via en mikrotask —
+  // annars stryper en bakgrundsflik timern och provet blir icke-deterministiskt.
+  return new Promise(resolve => {
+   const uttala = () => { try {
     /*
      * Sista kontrollen, efter de 380 ms och inte före dem.
      *
@@ -8616,7 +8636,12 @@ function inkommandeSag() {
      * blev 840 ms, och rösten hamnade mitt i det. På iPhone tystnade talet
      * helt av överlappningen.
      */
-  }, pausEfterPling('alert'));
+   } finally { resolve(); } };
+   const dr = inkommandeTestFordrojning ?? pausEfterPling('alert');
+   // 0 → mikrotask, inte timer: en bakgrundsflik stryper setTimeout till ~1 s
+   // och provet skulle annars läcka uttalanden mellan omgångarna.
+   if (dr <= 0) queueMicrotask(uttala); else setTimeout(uttala, dr);
+  });
 }
 
 /** Nollställ hela kedjan. Bara för prov — se inkommande-test.html. */
