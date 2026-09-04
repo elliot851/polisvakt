@@ -6720,6 +6720,9 @@ export class PlateReader extends EventTarget {
     const v = this.video;
     if (!v.videoWidth) return;
     const c = this.canvas, g = c.getContext('2d');
+    // getContext kan ge null (canvas frånkopplad, kontext förlorad). Utan den
+    // här raden kastade #rita var 100:e ms förbi #fel och spammade konsolen.
+    if (!g) return;
     if (c.width !== v.videoWidth) { c.width = v.videoWidth; c.height = v.videoHeight; }
 
     /*

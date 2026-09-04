@@ -89,8 +89,11 @@ function parseMaxspeed(v) {
   const m = /^(\d+)/.exec(s);
   if (!m) return 0;
   const n = parseInt(m[1], 10);
-  if (s.includes('mph')) return Math.round(n * 1.609);
-  return n >= 5 && n <= 150 ? n : 0;
+  // Räkna om mph först, sedan SAMMA rimlighetsintervall för båda. Förr
+  // returnerade mph-grenen ovillkorligt, så en skräptaggad mph-siffra kunde ge
+  // en orimlig gräns (t.ex. 1600 km/h) som den metriska vägen hade filtrerat.
+  const kmh = s.includes('mph') ? Math.round(n * 1.609) : n;
+  return kmh >= 5 && kmh <= 150 ? kmh : 0;
 }
 
 /* ---------------- Tjänsten ---------------- */

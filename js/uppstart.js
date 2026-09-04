@@ -500,8 +500,14 @@ let appRedo = false;
 function friskrivningKvar() {
   try {
     const s = JSON.parse(localStorage.getItem('pv.settings.v1'));
-    return !!s && s.disclaimerAccepted === false;
-  } catch { return false; }
+    // Kravet är "har den godkänts?", inte "finns en sparad rad som säger nej".
+    // På en färsk enhet finns ingen pv.settings.v1 alls (saveSettings skrivs
+    // först NÄR något godkänts/ändrats), och app.js visar friskrivningen så
+    // länge settings.disclaimerAccepted är falskt — som här defaultar till
+    // false. Förr gav !!s att en oskriven enhet lästes som "inget kvar", och
+    // uppstartsguiden fick rita bakom den ännu ogodkända friskrivningen.
+    return !(s && s.disclaimerAccepted === true);
+  } catch { return true; }
 }
 
 /** Får vi visa något alls just nu? */

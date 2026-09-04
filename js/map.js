@@ -258,8 +258,12 @@ export class HazardMap extends EventTarget {
     // det som ligger närmast mitten av kartan — det man faktiskt tittar på.
     if (synliga.length > HazardMap.MAX_NALAR) {
       const c = this.map.getCenter();
+      // En longitudgrad är kortare än en latitudgrad på våra breddgrader (~0,5
+      // vid 59°N). Utan cos(lat)-vikten övervärderas nord–syd-avstånd och fel
+      // nålar väljs som "närmast mitten". Väg om lon-ledet.
+      const kx = Math.cos(c.lat * Math.PI / 180);
       synliga = synliga
-        .map(h => [h, (h.lat - c.lat) ** 2 + (h.lon - c.lng) ** 2])
+        .map(h => [h, (h.lat - c.lat) ** 2 + ((h.lon - c.lng) * kx) ** 2])
         .sort((a, b) => a[1] - b[1])
         .slice(0, HazardMap.MAX_NALAR)
         .map(p => p[0]);

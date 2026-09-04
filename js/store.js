@@ -605,7 +605,17 @@ export class ReportStore extends EventTarget {
     // ett tak som biter tyst hade tappat de äldsta — alltså precis dem den
     // längre livslängden finns för. 1200 rader är fortfarande små pengar i
     // localStorage.
-    writeJSON(LOCAL_KEY, [...this.reports.values()].slice(-1200));
+    const alla = [...this.reports.values()];
+    // Trimma på relevans, inte insättningsordning. Map.set() på en befintlig
+    // rapport behåller dess ursprungsplats, så slice(-1200) kunde tappa en
+    // gammal men fortfarande aktiv (om-uppdaterad) rapport före en nyare
+    // utgången. Sortera på expiresAt så de med längst kvar — de aktiva —
+    // överlever taket.
+    if (alla.length > 1200) {
+      alla.sort((a, b) => (b.expiresAt || 0) - (a.expiresAt || 0));
+      alla.length = 1200;
+    }
+    writeJSON(LOCAL_KEY, alla);
   }
 
   #emit(name) { this.dispatchEvent(new CustomEvent(name)); }
