@@ -312,8 +312,13 @@ await T('halverad inställning halverar gainen', () => {
     || `${volymL.master.gain.value} är inte hälften av ${hog}`;
 });
 
-await T('förvalet är lågt — under halva skalan', () => {
-  return LJUD_FORVAL.ljudVolym <= 0.5 || `förvalet är ${LJUD_FORVAL.ljudVolym}`;
+await T('förvalet är hörbart men inte maxat', () => {
+  // Förvalet höjdes med flit från 0,35 → 0,75 (se js/ljud.js): klickljuden var
+  // knappt hörbara, och uppläsningen kliver undan via dämpning, inte via en låg
+  // grundvolym. Kravet är därför "hörbart men med huvud kvar", inte "under
+  // halva skalan" som förr — den gamla assertionen hade blivit stale.
+  const v = LJUD_FORVAL.ljudVolym;
+  return (v > 0.5 && v < 1) || `förvalet är ${v}`;
 });
 
 await T('orimliga värden klams istället för att gå igenom', () => {
