@@ -5919,55 +5919,72 @@ export class PlateReader extends EventTarget {
      */
     // Släpp en eventuell kvarlämnad ström först. Startas läsaren om medan en
     // gammal ström lever håller den kameran, och nästa getUserMedia kan då
-    // hänga i stället för att svara — en av de tysta orsakerna till att
-    // knappen fastnade på "Startar kameran…".
+    // hänga i stället för att svara.
     this.#slappStream();
 
     /*
-     * Läs tillståndet innan vi rör kameran. Tre utfall, tre svar:
-     *  - nekad  → svara direkt med hur man slår på den igen. På vissa enheter
-     *             HÄNGER getUserMedia i stället för att avvisa när kameran är
-     *             blockerad; att fråga först undviker den fällan helt.
-     *  - fråga  → en tillståndsruta kommer att dyka upp; visa det för
-     *             användaren och ge generös tid att trycka Tillåt.
-     *  - klar   → kameran ska komma direkt; kort tidsgräns fångar en hängning.
+     * getUserMedia MÅSTE anropas direkt i användargesten. På iOS Safari tappas
+     * användaraktiveringen om något await:as före anropet (t.ex.
+     * navigator.permissions.query), och då dyker tillståndsrutan ALDRIG upp —
+     * knappen fastnar på "Tillåt kameran…" och väntar på en ruta som aldrig
+     * kommer. (Samma gest-fälla som lutningsgivaren varnar för.) Därför:
+     * ingen förhandskoll av tillståndet. En nekad kamera känns igen på
+     * NotAllowedError i stället, och en blockerad/hängd enhet fångas av
+     * tidsgränsen.
      */
-    let tillstand = 'unknown';
-    try {
-      const p = await navigator.permissions?.query({ name: 'camera' });
-      if (p?.state) tillstand = p.state;
-    } catch { /* Permissions API saknas (Safari m.fl.) — kör vidare på gissning */ }
-
-    if (tillstand === 'denied') throw this.#kameraFel('nekad');
-
-    const forstaTimeout = tillstand === 'granted' ? KAMERA_TIMEOUT_KLAR : KAMERA_TIMEOUT_FRAGA;
-    this.dispatchEvent(new CustomEvent('kamerastatus', {
-      detail: { text: tillstand === 'granted' ? 'Startar kameran…' : 'Tillåt kameran i rutan som dyker upp…' },
-    }));
+    this.dispatchEvent(new CustomEvent('kamerastatus', { detail: { text: 'Startar kameran…' } }));
 
     const vc = kameravillkor();
+    let stream = null, sisteFel = null;
+    // Kommer ingen bild snabbt är det troligen en tillståndsruta som väntar på
+    // ett tryck — säg det, utan att blockera. Rensas så fort vi fått en ström.
+    const promptTips = setTimeout(() => {
+      if (!stream) this.dispatchEvent(new CustomEvent('kamerastatus',
+        { detail: { text: 'Tillåt kameran i rutan som dyker upp…' } }));
+    }, 1400);
+
+    // Två uppsättningar villkor: först hård bakkamera, sedan mjuk. Varje sätt
+    // får ett återförsök om kameran är UPPTAGEN — det vanliga läget direkt
+    // efter att appen dödats med kameran igång och enheten inte hunnit släppa.
+    const forsok = [
+      { video: { ...vc, facingMode: { exact: 'environment' } }, audio: false },
+      { video: { ...vc, facingMode: 'environment' }, audio: false },
+    ];
+    const upptagen = e => e?.name === 'NotReadableError' || e?.name === 'AbortError' || e?.name === 'TrackStartError';
     try {
-      this.stream = await this.#hamtaStream(
-        { video: { ...vc, facingMode: { exact: 'environment' } }, audio: false }, forstaTimeout);
-    } catch (e) {
-      if (e?.kod === 'timeout') throw this.#kameraFel(tillstand === 'granted' ? 'timeout' : 'ingenSvar');
-      if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') throw this.#kameraFel('nekad');
-      // OverconstrainedError/NotFoundError = ingen bakre kamera med exakt krav.
-      // Prova utan det hårda kravet. Tillståndet är avgjort nu, så kort gräns.
-      try {
-        this.stream = await this.#hamtaStream(
-          { video: { ...vc, facingMode: 'environment' }, audio: false }, KAMERA_TIMEOUT_KLAR);
-      } catch (e2) {
-        if (e2?.kod === 'timeout') throw this.#kameraFel('timeout');
-        if (e2?.name === 'NotAllowedError' || e2?.name === 'SecurityError') throw this.#kameraFel('nekad');
-        if (e2?.name === 'NotFoundError' || e2?.name === 'OverconstrainedError' || e2?.name === 'DevicesNotFoundError')
-          throw this.#kameraFel('ingen');
-        throw e2;
+      for (let i = 0; i < forsok.length && !stream; i++) {
+        for (let brk = 0; brk < 2 && !stream; brk++) {
+          try {
+            stream = await this.#hamtaStream(forsok[i], KAMERA_TIMEOUT_FRAGA);
+          } catch (e) {
+            sisteFel = e;
+            if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') throw this.#kameraFel('nekad');
+            if (upptagen(e) && brk === 0) {
+              this.dispatchEvent(new CustomEvent('kamerastatus',
+                { detail: { text: 'Kameran var upptagen, försöker igen…' } }));
+              await new Promise(r => setTimeout(r, 700));
+              continue;                       // samma villkor en gång till
+            }
+            break;                            // prova nästa villkorsuppsättning
+          }
+        }
       }
-      if (this.#arFramat(this.stream.getVideoTracks()[0])) {
-        this.#slappStream();
-        throw this.#kameraFel('framat');
-      }
+    } finally {
+      clearTimeout(promptTips);
+    }
+
+    if (!stream) {
+      if (sisteFel?.kod === 'timeout') throw this.#kameraFel('ingenSvar');
+      if (upptagen(sisteFel)) throw this.#kameraFel('upptagen');
+      if (sisteFel?.name === 'NotFoundError' || sisteFel?.name === 'OverconstrainedError' || sisteFel?.name === 'DevicesNotFoundError')
+        throw this.#kameraFel('ingen');
+      throw sisteFel || this.#kameraFel('timeout');
+    }
+
+    this.stream = stream;
+    if (this.#arFramat(this.stream.getVideoTracks()[0])) {
+      this.#slappStream();
+      throw this.#kameraFel('framat');
     }
 
     // Stoppades starten medan kameran hämtades? Släpp den nyss tagna strömmen
@@ -6662,6 +6679,7 @@ export class PlateReader extends EventTarget {
       nekad:    'Kameran är blockerad. Tryck på ikonen till vänster om adressfältet, sätt Kamera på Tillåt och tryck Starta igen.',
       ingenSvar:'Ingen tillät kameran. Tryck Tillåt i rutan som dyker upp, eller slå på kameran i webbläsarens inställningar.',
       timeout:  'Kameran svarade inte. Stäng andra appar som kan använda kameran och tryck Starta igen.',
+      upptagen: 'Kameran används av något annat. Stäng andra appar (och kameran) och tryck Starta igen.',
       ingenBild:'Kameran gav ingen bild. Stäng andra appar som använder kameran och tryck Starta igen.',
       ingen:    'Hittar ingen bakre kamera på den här enheten.',
       framat:   'Telefonen gav selfiekameran. Skyltläsaren behöver den bakre kameran.',
