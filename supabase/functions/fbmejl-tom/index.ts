@@ -29,8 +29,21 @@
 //
 // SUPABASE_URL och SUPABASE_SERVICE_ROLE_KEY injiceras av plattformen.
 
+/*
+ * LÅST TILL EN EXAKT COMMIT, inte till den levande Pages-adressen.
+ *
+ * Förr importerades https://polisvakt.pages.dev/js/fbmejl.js — körbar kod
+ * hämtad vid varje kallstart, in i en funktion som håller service_role-
+ * nyckeln. Den som kunde pusha till Pages/repot (eller kapa DNS) fick då
+ * service_role-åtkomst till databasen, och varje front-end-deploy ändrade
+ * tyst backendens beteende. jsDelivr-URL:en med commit-hash är oföränderlig:
+ * innehållet kan inte bytas under hashen, och modulens relativa imports
+ * (parser.js, store.js, util.js) löses mot samma låsta commit. Vill man ha
+ * nyare logik i bryggan byter man hashen HÄR och deployar om — medvetet.
+ * (Granskningsfynd 2026-09-05, före lansering.)
+ */
 import { bearbeta, normaliseraMessageId, SKAL }
-  from 'https://polisvakt.pages.dev/js/fbmejl.js';
+  from 'https://cdn.jsdelivr.net/gh/elliot851/polisvakt@63260bc/js/fbmejl.js';
 
 /* ========================== KONFIGURATION =========================== */
 

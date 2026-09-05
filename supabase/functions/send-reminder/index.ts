@@ -330,6 +330,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   let kropp: { dry?: boolean; endpoint?: string; lead?: number } = {};
   try { kropp = await req.json(); } catch { /* tom kropp är normalfallet */ }
+  // JSON-kroppen `null` (eller en sträng/lista) passerar req.json() men gör
+  // kropp.lead till ett TypeError → ohanterad 500. Allt som inte är ett objekt
+  // behandlas som tom kropp.
+  if (!kropp || typeof kropp !== 'object' || Array.isArray(kropp)) kropp = {};
 
   // Nytt ECDH-nyckelpar per körning. Se noten om RFC 8291 §2 överst i filen.
   let server: webpush.ApplicationServer | null = null;

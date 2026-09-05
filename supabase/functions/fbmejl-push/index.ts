@@ -409,6 +409,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   let kropp: Kropp = {};
   try { kropp = await req.json(); } catch { /* tom kropp hanteras nedan */ }
+  // JSON-kroppen `null` (eller sträng/lista) passerar req.json() men gör
+  // kropp.titel till ett TypeError → ohanterad 500. Icke-objekt = tom kropp.
+  if (!kropp || typeof kropp !== 'object' || Array.isArray(kropp)) kropp = {};
 
   const data = byggNyttolast(kropp);
   const nyttolast = JSON.stringify(data);

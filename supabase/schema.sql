@@ -48,6 +48,14 @@ create or replace view public.reports_active as
     and expires_at > (extract(epoch from now()) * 1000)::bigint
     and not (denials >= 3 and denials > confirms);
 
+-- security_invoker: vyn läser med ANROPARENS rättigheter, så kolumnspärren på
+-- reports.device_id (dolj-enhets-id.sql) gäller även här. Utan den läckte
+-- device_id till anon via select * — och med ett device_id kan vem som helst
+-- radera/rösta i andras namn via remove_report/confirm_report. Ligger även i
+-- grupper.sql; upprepas här eftersom CREATE OR REPLACE VIEW nollställer
+-- reloptions och en omkörning av bara den här filen annars öppnade hålet igen.
+alter view public.reports_active set (security_invoker = on);
+
 alter table public.reports enable row level security;
 
 -- Alla får läsa. Rapporter är hela poängen med tjänsten.
@@ -219,7 +227,16 @@ create policy subs_read on public.subscribers
 drop policy if exists subs_insert on public.subscribers;
 create policy subs_insert on public.subscribers
   for insert to anon, authenticated
-  with check (paid_until is null and email is null and stripe_id is null);
+  with check (
+    paid_until is null and email is null and stripe_id is null
+    -- Ingen får skapa en rad åt någon ANNAN inloggad, och ingen får ljuga om
+    -- starten bakåt: förr kunde vem som helst förskapa ett gäst-id:s rad med
+    -- trial_start = 1970 så provperioden såg utgången ut — och utan
+    -- UPDATE-policy kunde offret aldrig rätta den. Framåt-satt tid är
+    -- ofarlig (klienten tar minsta värdet), fem minuters klockslack räcker.
+    and trial_start <= now() + interval '5 minutes'
+    and (auth.uid() is null or device_id = auth.uid()::text)
+  );
 
 -- Ingen UPDATE-policy: bara Stripe-webhooken (service role) får sätta paid_until.
 
@@ -399,7 +416,14 @@ create or replace view public.monthly_winners as
   group by r.device_id
   order by score desc;
 
--- select * from monthly_winners limit 10;
+-- Definer-vy som exponerar device_id + smeknamn för varje rapportör. Supabase
+-- auto-grantar SELECT till anon på nya vyer, så utan revoken kunde vilken
+-- klient som helst läsa hela listan (grupper.sql/KOR-ALLT stänger den i
+-- drift; upprepas här så en omkörning av bara den här filen inte öppnar den).
+-- Topplistan läses via publish_score/reporter_scores, inte via den här vyn.
+revoke all on public.monthly_winners from anon, authenticated;
+
+-- select * from monthly_winners limit 10;   (som postgres/service_role)
 
 /* ====================== INTRESSE FÖR TILLBEHÖR ====================== */
 -- Innan vi beställer femhundra mobilhållare från Kina vill vi veta hur många

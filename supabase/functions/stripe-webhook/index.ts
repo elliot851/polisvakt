@@ -54,8 +54,18 @@ const SERVICE_ROLE =
  */
 const RESPIT_TIMMAR = 24;
 
-/** Statusar där prenumerationen ska ge tillgång. */
-const AKTIVA_STATUSAR = new Set(['active', 'trialing', 'past_due']);
+/**
+ * Statusar där prenumerationen ska FÖRLÄNGAS.
+ *
+ * past_due är med flit INTE här längre. Vid en misslyckad förnyelse har Stripe
+ * redan flyttat fram current_period_end till den OBETALDA perioden, och att
+ * ta den som periodslut i 'forlang'-läge gav kunden hela den obetalda månaden
+ * (+ respiten) gratis, varje gång kortet nekades. Respiten mot betalväggen
+ * (RESPIT_TIMMAR) ligger redan i set_paid_until — den räcker för fakturor som
+ * är "på väg". Under past_due ska paid_until helt enkelt löpa ut av sig
+ * själv, precis som kommentaren vid subscription.deleted säger.
+ */
+const AKTIVA_STATUSAR = new Set(['active', 'trialing']);
 
 /* ============================== KLIENTER ============================ */
 
@@ -371,11 +381,12 @@ async function hanteraSubUppdatering(sub: Stripe.Subscription): Promise<Utfall> 
   const plan = planFranMetadata(sub.items?.data?.[0]?.price ?? null);
 
   if (!AKTIVA_STATUSAR.has(sub.status)) {
-    // canceled, unpaid, incomplete_expired: Stripe har gett upp. Statusen
-    // noteras men paid_until rörs inte här — den riktiga sluttiden kommer
-    // med customer.subscription.deleted, och att stänga av i förtid på en
-    // status som kan gå tillbaka är värre än att släppa igenom ett dygn för
-    // mycket.
+    // canceled, unpaid, incomplete_expired: Stripe har gett upp. past_due:
+    // kortet nekades, period_end pekar på en OBETALD period — får inte
+    // förlängas (se AKTIVA_STATUSAR). Statusen noteras men paid_until rörs
+    // inte här — den riktiga sluttiden kommer med customer.subscription.deleted,
+    // och att stänga av i förtid på en status som kan gå tillbaka är värre än
+    // att släppa igenom ett dygn för mycket.
     await rpc('set_sub_status', { p_device: device, p_status: sub.status });
     return { status: 'processed', device, customer, sub: sub.id };
   }

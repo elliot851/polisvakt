@@ -61,6 +61,10 @@ create index if not exists login_lookups_idx
   on public.login_lookups (username, at desc);
 
 revoke all on public.login_lookups from anon, authenticated;
+-- RLS som andra lager: ett revoke ensamt överlever inte en senare grant eller
+-- ändrade default-privilegier. Med RLS på och noll policys är tabellen stängd
+-- för klienter oavsett vad som händer med grants.
+alter table public.login_lookups enable row level security;
 
 /* ------------------------- Namnreglerna ----------------------------- */
 
