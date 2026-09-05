@@ -2,8 +2,18 @@
 -- MEJLBRYGGAN — Facebooks egna notismejl, serversidan
 -- =====================================================================
 --
--- Kör hela filen i Supabase SQL Editor. Den är idempotent och går att köra
--- om hur många gånger som helst; ingenting här raderar rapporter.
+-- Kör hela filen i Supabase SQL Editor. Den är idempotent; ingenting här
+-- raderar rapporter.
+--
+-- !! VARNING — KÖR INTE OM DEN HÄR FILEN EFTER MIGRATIONERNA !!
+-- migrationer/2026-08-22-notisradie.sql och 2026-08-22-aldersgrind-for-
+-- notiser.sql create-or-replace:ar fbmejl_notis_ut() och
+-- fbmejl_push_mottagare() med SAMMA signaturer som här, men med radiefiltret
+-- och åldersgrinden inuti. Kroppen i den här filen saknar båda. En omkörning
+-- efter migrationerna skriver alltså TYST tillbaka till "alla prenumeranter
+-- får allt, timgamla repriser inräknade" — utan att något loggar skillnaden.
+-- Måste något här ändras: kör den här filen OCH migrationerna efteråt, i den
+-- ordningen. (Granskningsfynd 2026-09-05, före lansering.)
 --
 -- Beroenden, i ordning:
 --   supabase/schema.sql          reports, RLS, purge_old_reports
@@ -2867,7 +2877,7 @@ end $$;
 --    Kön ska nu innehålla en rad med status 'ny' och en med 'vagrad':
 --
 --      select message_id, status, skal from public.fbmejl_ko
---       where message_id like '<test-%';
+--       where message_id like 'test-%'   -- fbmejl_ko_in normaliserar: strippar <> och gemenar;
 --
 -- 6. Avdubblingen, på riktigt. Kör två gånger — andra gången ska ge
 --    skapade 0 och dubbletter 1:
@@ -2893,7 +2903,7 @@ end $$;
 --
 --    Städa upp efter 5, 6 och 7:
 --
---      delete from public.fbmejl_ko    where message_id like '<test-%';
+--      delete from public.fbmejl_ko    where message_id like 'test-%'   -- fbmejl_ko_in normaliserar: strippar <> och gemenar;
 --      delete from public.fbmejl_lasta where nyckel like 'fbm:test:%';
 --      delete from public.reports      where external_id like 'fbm:test:%';
 --

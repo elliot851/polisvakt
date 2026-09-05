@@ -3625,8 +3625,17 @@ function Kor-Startprob {
     }
   } catch {
     $allt = $false
-    Logga 'PROB' ('RÖD  databasen svarar inte på fbmejl_notis_konfig: ' + $_.Exception.Message) Red
-    Logga 'PROB' '     ÅTGÄRD: fel nyckel, eller migrationerna är inte körda. Kör tools\satt-nyckel.ps1.' Yellow
+    $m = $_.Exception.Message
+    Logga 'PROB' ('RÖD  databasen svarar inte på fbmejl_notis_konfig: ' + $m) Red
+    # DNS-fel = projektet är PAUSAT (gratis-tier tar bort subdomänen ur DNS).
+    # Då hjälper varken ny nyckel eller migrationer — bara Restore i dashboarden.
+    # Rådet nedan pekade förr alltid på nyckeln, så en paus jagades som ett
+    # nyckelfel. ASCII-only regex med flit (BOM-fällan i PS 5.1).
+    if ($m -match 'matcha|resolve|NameResolution|No such host|known') {
+      Logga 'PROB' '     ÅTGÄRD: projektet är PAUSAT (svarar inte på DNS). Logga in på supabase.com och tryck Restore. Nyckel/migrationer är INTE felet.' Yellow
+    } else {
+      Logga 'PROB' '     ÅTGÄRD: fel nyckel, eller migrationerna är inte körda. Kör tools\satt-nyckel.ps1.' Yellow
+    }
   }
 
   # ---- 2. Edge-funktionen -------------------------------------------------

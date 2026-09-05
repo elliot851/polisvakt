@@ -2,9 +2,16 @@
    CHATT — ett gemensamt rum
    =====================================================================
 
-   Kör hela filen i Supabase SQL Editor. Den går att köra om hur många
-   gånger som helst; ingenting här raderar data utom städfunktionen, och
-   den rör bara meddelanden äldre än sju dygn.
+   Kör hela filen i Supabase SQL Editor. Ingenting här raderar data utom
+   städfunktionen, och den rör bara meddelanden äldre än sju dygn.
+
+   !! VARNING — KÖR INTE OM DEN HÄR FILEN EFTER chatt-omrade.sql !!
+   Den här filen gör drop view + create view chatt_flode UTAN kolumnen
+   omrade. chatt-omrade.sql lägger till den. En omkörning här efteråt tar
+   bort kolumnen igen — klientens omrade=in.(...)-filter träffar då en
+   kolumn som inte finns, PostgREST svarar 400 och chatten är död för alla
+   tills chatt-omrade.sql körs om. Ändra här → kör chatt-omrade.sql efteråt.
+   (Granskningsfynd 2026-09-05, före lansering.)
 
    Beroenden: anvandarnamn.sql bör vara körd (tabellen public.usernames
    används för att hämta smeknamn). Är den inte det fungerar chatten ändå

@@ -557,7 +557,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return new Response('Databasen svarar inte', { status: 500 });
   }
 
-  if (!bokad) {
+  if (bokad === null || bokad === undefined) {
+    // Tomt svar från claim_payment_event (t.ex. 204/void efter en signatur-
+    // eller schemaändring) gjorde förr `!bokad` sant → VARJE händelse
+    // kvitterades 200 som "dubblett" och behandlades aldrig: tyst total
+    // betalningsförlust med gröna leveranser i Stripe. Ett tomt svar är ett
+    // fel — 500 så Stripe skickar om, inte en kvittens.
+    console.error('claim_payment_event gav tomt svar — bokar INTE som dubblett.');
+    return new Response('Bokningen gav tomt svar', { status: 500 });
+  }
+  if (bokad === false) {
     // Redan hanterad. 200, annars fortsätter Stripe skicka om.
     return new Response(JSON.stringify({ ok: true, dubblett: true }), {
       status: 200, headers: { 'Content-Type': 'application/json' },

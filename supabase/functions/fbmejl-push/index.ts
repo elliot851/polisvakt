@@ -322,6 +322,15 @@ async function hanteraFel(p: Prenumeration, e: unknown): Promise<Utfall> {
   // konfigurationsfel som gäller ALLA, inte den här raden.
   if (status === 400 || status === 403) {
     console.error(`KONFIGURATIONSFEL ${status} från ${new URL(p.endpoint).host}: ${text}. Kolla VAPID_KEYS och VAPID_SUBJECT.`);
+    // Globalt fel — räkna INTE upp radens felräknare (p_count:false, som
+    // 429-grenen). Förr räknades det per prenumerant: en enda felaktig
+    // nyckel-deploy × fem cron-varv (~25 min) tryckte ALLA prenumerationer
+    // förbi uteslutningströskeln och tystade samtliga användare tills de
+    // öppnade appen igen. Felet loggas, raden lämnas orörd.
+    await rpc('note_push_failure', {
+      p_endpoint: p.endpoint, p_error: `${status}: ${text}`, p_count: false,
+    });
+    return 'fel';
   }
 
   await rpc('note_push_failure', {

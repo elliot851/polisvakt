@@ -3,6 +3,15 @@
 -- Kör hela filen i Supabase SQL Editor. Efteråt: kopiera projektets URL och
 -- anon-nyckeln till appens inställningar (Delning -> Delat med alla).
 --
+-- !! VARNING — KÖR INTE OM DEN HÄR FILEN FRISTÅENDE EFTER KOR-ALLT.sql !!
+-- grupper.sql (via KOR-ALLT) sätter security_invoker=on på vyn reports_active,
+-- byter reports_read till gruppscopad policy och ger archive_report group_id.
+-- CREATE OR REPLACE VIEW nollställer reloptions och policyn/funktionen här är
+-- de gamla — en omkörning av bara den här filen läcker TYST device_id till
+-- anon igen (då kan vem som helst radera/rösta i andras namn via remove_report)
+-- och gör privata gruppers rapporter publika. Ändra här → kör KOR-ALLT.sql.
+-- (Granskningsfynd 2026-09-05, före lansering.)
+--
 -- Om säkerhetsmodellen: appen har ingen inloggning. Alla klienter använder
 -- samma anon-nyckel, och enheten identifierar sig med ett slumpat device_id.
 -- Det räcker för en varningstjänst men gör inte anon-nyckeln hemlig — allt

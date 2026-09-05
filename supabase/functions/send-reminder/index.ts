@@ -252,6 +252,13 @@ async function hanteraFel(p: Prenumeration, e: unknown): Promise<Utfall> {
   // loggen så det går att skilja från en enskild trasig telefon.
   if (status === 400 || status === 403) {
     console.error(`KONFIGURATIONSFEL ${status} från ${new URL(p.endpoint).host}: ${text}. Kolla VAPID_KEYS och VAPID_SUBJECT.`);
+    // Globalt fel — räkna INTE upp radens felräknare. Förr räknades det per
+    // prenumerant: en felaktig nyckel-deploy × fem varv tystade ALLA användare
+    // tills de öppnade appen igen. Loggas, raden lämnas orörd.
+    await rpc('note_push_failure', {
+      p_endpoint: p.endpoint, p_error: `${status}: ${text}`, p_count: false,
+    });
+    return 'fel';
   }
 
   // Allt annat — 500, 503, timeout, nätet: tillfälligt. Räknaren höjs, och
@@ -307,11 +314,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
    * trigga ett massutskick till samtliga användare, om och om igen.
    * CRON_SECRET är det som faktiskt skiljer schemaläggaren från allmänheten.
    */
-  if (CRON_SECRET && req.headers.get('x-cron-secret') !== CRON_SECRET) {
-    return new Response('Nekad', { status: 401 });
-  }
+  // STÄNGT som förval. Förr var grinden ÖPPEN när CRON_SECRET saknades (bara
+  // en varning i loggen) — då kunde vem som helst med anon-nyckeln ur
+  // js/config.js trigga påminnelser tidigt (lead 0–60) och med dry:true läsa
+  // ut slot/timme/tidszon för upp till 500 användare. Systerfunktionen
+  // fbmejl-push har alltid stängt; nu gör den här det också. 503 = fel
+  // konfiguration, inte fel anropare.
   if (!CRON_SECRET) {
-    console.warn('CRON_SECRET är inte satt — vem som helst med anon-nyckeln kan trigga utskick.');
+    console.error('CRON_SECRET är inte satt — utskick vägras tills den finns.');
+    return new Response('Nekad: CRON_SECRET saknas', { status: 503 });
+  }
+  if (req.headers.get('x-cron-secret') !== CRON_SECRET) {
+    return new Response('Nekad', { status: 401 });
   }
 
   let kropp: { dry?: boolean; endpoint?: string; lead?: number } = {};
