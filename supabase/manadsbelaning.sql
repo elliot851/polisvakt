@@ -284,6 +284,19 @@ create or replace function public.notera_bidrag()
 returns trigger
 language plpgsql security definer set search_path = public, pg_temp as $notera$
 begin
+  /*
+   * BARA INLOGGADE ÄGARE HAMNAR I LIGGAREN.
+   *
+   * Belöningen är riktiga pengar (paid_until förlängs), och liggarens indata
+   * var klientstyrd: actor() litar på p_device för gäster, så ett gäst-id går
+   * att hitta på fritt. Utan spärren kunde vem som helst med anon-nyckeln
+   * skriva tusentals rapporter under ett eget id och vinna topplistan — eller
+   * skriva skräp under någon annans id. Ett konto är det enda som inte går
+   * att fejka i massor. auth.uid() är den som skriver raden just nu.
+   * Gästrapporter är fortfarande varningar på kartan — de tävlar bara inte.
+   * (Granskningsfynd 2026-09-05, före lansering.)
+   */
+  if auth.uid() is null then return new; end if;
   begin
     insert into public.manads_bidrag (
       report_id, agare, manad, grupp, kalla,
@@ -294,8 +307,15 @@ begin
       to_char(timezone('Europe/Stockholm', now()), 'YYYY-MM'),
       (to_jsonb(new) ->> 'group_id')::uuid,
       coalesce(new.source, 'app'),
-      greatest(0, coalesce(new.confirms, 1) - 1),
-      greatest(0, coalesce(new.denials, 0)),
+      -- Bara röster från riktiga konton räknas mot pengar. confirm_report
+      -- litar på p_device för gäster, så gäströster går att tillverka (+3 per
+      -- fejkad bekräftelse). Ett uuid som finns i auth.users går inte att gissa.
+      (select count(*) from public.report_votes v
+        where v.report_id = new.id and v.vote = 1
+          and exists (select 1 from auth.users u where u.id::text = v.device_id)),
+      (select count(*) from public.report_votes v
+        where v.report_id = new.id and v.vote = -1
+          and exists (select 1 from auth.users u where u.id::text = v.device_id)),
       coalesce(new.removed, false))
     on conflict (report_id) do nothing;
   exception when others then
@@ -317,9 +337,16 @@ returns trigger
 language plpgsql security definer set search_path = public, pg_temp as $uppdatera$
 begin
   begin
+    -- Samma regel som i notera_bidrag: bara röster från riktiga konton räknas
+    -- mot belöningen. reports.confirms/denials (som appen visar) är orörda —
+    -- det här är enbart tävlingsliggaren. Gästers fejkade +3/-4 biter inte.
     update public.manads_bidrag
-       set bekraftelser  = greatest(0, coalesce(new.confirms, 1) - 1),
-           nedrostningar = greatest(0, coalesce(new.denials, 0)),
+       set bekraftelser  = (select count(*) from public.report_votes v
+                             where v.report_id = new.id and v.vote = 1
+                               and exists (select 1 from auth.users u where u.id::text = v.device_id)),
+           nedrostningar = (select count(*) from public.report_votes v
+                             where v.report_id = new.id and v.vote = -1
+                               and exists (select 1 from auth.users u where u.id::text = v.device_id)),
            borttagen     = coalesce(new.removed, false),
            uppdaterad    = now()
      where report_id = new.id;
