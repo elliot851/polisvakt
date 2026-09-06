@@ -138,6 +138,21 @@ export function capabilities() {
       return { ...base, supported: false, fix: 'server',
         reason: 'Notiser är inte påslagna i den här versionen av appen än.' };
     }
+    /*
+     * En nyckel som finns men inte går att avkoda är samma sak för föraren som
+     * ingen nyckel alls, och ska sägas på samma sätt.
+     *
+     * Förut upptäcktes det först nere i enable(), där urlBase64ToUint8Array()
+     * kastar InvalidCharacterError rakt ur atob. Den kastningen fångades av
+     * ingen: enable() lovar att returnera {ok:false, reason} och gjorde i
+     * stället ett avvisat löfte, så anroparens await kastade vidare och
+     * knappen blev stående i "laddar" utan text. Ett fel som bara syns i
+     * konsolen är osynligt på en telefon.
+     */
+    if (!giltigVapid(vapidKey)) {
+      return { ...base, supported: false, fix: 'server',
+        reason: 'Notiser är felkonfigurerade i den här versionen av appen. Servernyckeln går inte att läsa.' };
+    }
     return { ...base, supported: true, fix: null, reason: '' };
   }
 
@@ -185,6 +200,21 @@ function urlBase64ToUint8Array(b64) {
   return out;
 }
 
+/**
+ * Går nyckeln att avkoda, och är den rätt lång?
+ *
+ * En rå P-256-punkt är 65 byte och börjar på 0x04 (okomprimerad form). Alla
+ * tre kraven kollas, för de fångar olika misstag: klippt nyckel (fel längd),
+ * inklistrad DER/PEM-nyckel (fel första byte) och blanksteg eller radbrytning
+ * från en kopiering (kastar i atob).
+ */
+function giltigVapid(b64) {
+  try {
+    const u = urlBase64ToUint8Array(String(b64 || '').trim());
+    return u.length === 65 && u[0] === 4;
+  } catch { return false; }
+}
+
 /** ArrayBuffer → base64url, för p256dh och auth ur prenumerationen. */
 function toBase64Url(buf) {
   const b = new Uint8Array(buf);
@@ -230,17 +260,74 @@ export function slotsFromHabits(habits, minCount = 3) {
 
 /* ============================= SERVERN ============================= */
 
-async function rpc(fn, args) {
-  if (!hasBackend()) throw new Error('Ingen server konfigurerad');
-  const r = await fetch(`${CONFIG.supabaseUrl}/rest/v1/rpc/${fn}`, {
-    method: 'POST',
-    headers: { ...apiHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify(args),
-  });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`${fn} gav ${r.status}: ${text.slice(0, 200)}`);
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { return text; }
+/**
+ * Hur länge ett anrop får ta innan vi ger upp.
+ *
+ * Utan tidsgräns kan fetch hänga i minuter. Det är inte hypotetiskt här:
+ * databasen har legat pausad i två veckor, och en pausad Supabase svarar inte
+ * med ett fel — den svarar inte alls. Varje await i den här filen hade då
+ * stannat för alltid, och eftersom knapparna i inställningarna väntar in
+ * svaret hade de blivit stående i "laddar" tills appen startades om. En
+ * tidsgräns gör ett evigt hänge till ett vanligt fel, och ett vanligt fel har
+ * varenda anropare redan hantering för.
+ */
+const RPC_TIMEOUT_MS = 12000;
+
+/**
+ * Nådde vi servern eller inte?
+ *
+ * Skillnaden avgör om vi får dra en slutsats av tystnaden. Ett HTTP-svar är
+ * ett besked — svarar servern "ingen sådan rad" är det sant. Ett avbrott,
+ * flygplansläge eller en timeout är INTE ett besked, och att behandla det som
+ * ett nej hade fått appen att skrika "notiserna når inte fram" varje gång
+ * telefonen åkte genom en tunnel.
+ */
+function natverksfel(text) {
+  const e = new Error(text);
+  e.nadde = false;
+  return e;
+}
+
+function svarsfel(text, status) {
+  const e = new Error(text);
+  e.nadde = true;
+  e.status = status;
+  return e;
+}
+
+async function rpc(fn, args, { timeoutMs = RPC_TIMEOUT_MS } = {}) {
+  if (!hasBackend()) throw natverksfel('Ingen server konfigurerad');
+
+  const ctrl = new AbortController();
+  const klocka = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    let r;
+    try {
+      r = await fetch(`${CONFIG.supabaseUrl}/rest/v1/rpc/${fn}`, {
+        method: 'POST',
+        headers: { ...apiHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(args),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      throw natverksfel(e?.name === 'AbortError'
+        ? `${fn} svarade inte inom ${Math.round(timeoutMs / 1000)} sekunder`
+        : `${fn} gick inte att nå: ${e?.message ?? e}`);
+    }
+
+    let text;
+    try { text = await r.text(); }
+    catch { throw natverksfel(`${fn} bröts av mitt i svaret`); }
+
+    // Formatet på meddelandet är med flit oförändrat: skickaHemruta letar
+    // efter "404" och "does not exist" i texten för att se om servern saknar
+    // funktionen än.
+    if (!r.ok) throw svarsfel(`${fn} gav ${r.status}: ${text.slice(0, 200)}`, r.status);
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { return text; }
+  } finally {
+    clearTimeout(klocka);
+  }
 }
 
 /**
@@ -284,14 +371,112 @@ function timezone() {
  */
 async function upload(sub, deviceId, slots) {
   const json = sub.toJSON();
+  const p256dh = json.keys?.p256dh || toBase64Url(sub.getKey('p256dh'));
+  const auth = json.keys?.auth || toBase64Url(sub.getKey('auth'));
+
+  /*
+   * Kolla nycklarna här, inte bara på servern.
+   *
+   * getKey() kan ge null i en webbläsare som gett oss en prenumeration ändå,
+   * och toBase64Url(null) blir tyst tomma strängen — inget kastar. Utan den
+   * här spärren skickades två tomma fält upp, save_push_subscription svarade
+   * "ogiltiga nycklar" och föraren fick se den texten rå. Värre: hade
+   * längdkontrollen på servern varit lite lösare hade raden sparats, och då
+   * finns en prenumeration som ingen någonsin kan kryptera ett meddelande
+   * till. Den ser fullt frisk ut i databasen och är i praktiken tyst.
+   */
+  if (!p256dh || !auth) {
+    throw svarsfel('webbläsaren lämnade inte ut prenumerationens krypteringsnycklar', 0);
+  }
   await rpc('save_push_subscription', {
     p_endpoint: json.endpoint,
-    p_p256dh: json.keys?.p256dh ?? toBase64Url(sub.getKey('p256dh')),
-    p_auth: json.keys?.auth ?? toBase64Url(sub.getKey('auth')),
+    p_p256dh: p256dh,
+    p_auth: auth,
     p_device: deviceId,
     p_timezone: timezone(),
     p_slots: slots ?? [],
   });
+}
+
+/* ==================== FINNS RADEN PÅ SERVERN? ====================== */
+/*
+ * Det enda felet i den här filen som gör aktiv skada i stället för att bara
+ * vara obekvämt: appen säger att notiser är på, och ingenting kommer fram.
+ *
+ * push_subscriptions har med flit ingen läsregel — endpoint och auth är
+ * nycklarna som krypterar pushen, och en läsregel hade lämnat ut dem till
+ * varenda anon-nyckel i appens källkod. Klienten kan alltså inte titta i
+ * tabellen. Men fbmejl_har_gruppnotiser() är en security definer-funktion som
+ * bara svarar ja/nej om EN endpoint, och den är redan utdelad till anon. Den
+ * duger utmärkt som livstecken, och kräver ingen ny SQL.
+ *
+ * Två skilda nej med två skilda botemedel:
+ *
+ *   finns = false   Raden är borta. Pushtjänsten har svarat 410 Gone och
+ *                   drop_push_subscription() har städat bort den, eller så
+ *                   har databasen varit pausad och rensad. Är det dessutom
+ *                   samma endpoint som vi en gång skickade upp är endpointen
+ *                   med största sannolikhet död — då räcker det inte att
+ *                   ladda upp den igen, den måste göras om från grunden.
+ *
+ *   aktiv = false   Raden finns men failures har nått 5, alltså har
+ *                   pushtjänsten avvisat den om och om igen. Både
+ *                   due_push_reminders och fbmejl_push_mottagare hoppar över
+ *                   den. Den är död på riktigt, fast den syns.
+ */
+
+/** Hur länge ett livstecken får återanvändas innan vi frågar igen. */
+const PROBE_CACHE_MS = 60000;
+let _probe = { at: 0, endpoint: null, svar: null };
+
+function glomProbe() { _probe = { at: 0, endpoint: null, svar: null }; }
+
+/**
+ * @returns {Promise<{nadde:boolean, finns:boolean, aktiv:boolean}>}
+ *   nadde false = vi fick inget besked. Dra ingen slutsats av det.
+ */
+async function fragaServern(endpoint, device, { fraskt = false } = {}) {
+  if (!endpoint || !device) return { nadde: true, finns: false, aktiv: false };
+  if (!hasBackend()) return { nadde: false, finns: false, aktiv: false };
+
+  if (!fraskt && _probe.svar && _probe.endpoint === endpoint &&
+      Date.now() - _probe.at < PROBE_CACHE_MS) {
+    return _probe.svar;
+  }
+
+  let svar;
+  try {
+    const s = await rpc('fbmejl_har_gruppnotiser',
+      { p_endpoint: endpoint, p_device: device }, { timeoutMs: 8000 });
+    svar = (s && typeof s === 'object')
+      ? { nadde: true, finns: !!s.finns, aktiv: !!s.aktiv }
+      // Ett svar vi inte känner igen är inget besked. Saknar servern
+      // funktionen svarar PostgREST 404, och det fångas nedan.
+      : { nadde: false, finns: false, aktiv: false };
+  } catch {
+    svar = { nadde: false, finns: false, aktiv: false };
+  }
+
+  _probe = { at: Date.now(), endpoint, svar };
+  return svar;
+}
+
+/**
+ * Kvittot, men bara när det fortfarande betyder något.
+ *
+ * Varenda skrivande funktion nedan gick förut enbart på att det låg en
+ * endpoint i localStorage. Ett kvitto överlever att föraren stänger av
+ * notiser i telefonens systeminställningar, och överlever att webbläsaren
+ * kastat prenumerationen — så appen fortsatte skriva till en rad ingen kunde
+ * nås via, och gränssnittet ritade reglagen som påslagna. Tillståndet frågas
+ * därför om varje gång; det är en synkron egenskap och kostar ingenting.
+ *
+ * @returns {object|null} kvittot, eller null när det inte går att lita på.
+ */
+function kvitto() {
+  if (permission() !== 'granted') return null;
+  const st = load();
+  return (st.endpoint && st.device) ? st : null;
 }
 
 /* ============================== API ================================ */
@@ -305,10 +490,14 @@ async function upload(sub, deviceId, slots) {
  * hinner gesten gå ut och rutan visas aldrig. Därför står permission-frågan
  * först av allt här, och allt asynkront efter.
  *
- * @param {{deviceId:string, habits?:object, minCount?:number}} opts
- * @returns {Promise<{ok:boolean, reason?:string, fix?:string, endpoint?:string}>}
+ * @param {{deviceId:string, habits?:object, minCount?:number, fornya?:boolean}} opts
+ *   fornya  tvinga fram en helt ny prenumeration i stället för att återanvända
+ *           den som redan finns. Sätts automatiskt när status() sett att
+ *           servern avvisat den gamla; se BEHÖVER FÖRNYAS nedan.
+ * @returns {Promise<{ok:boolean, reason?:string, fix?:string, endpoint?:string,
+ *                    fornyad?:boolean}>}
  */
-export async function enable({ deviceId, habits, minCount = 3 } = {}) {
+export async function enable({ deviceId, habits, minCount = 3, fornya = false } = {}) {
   const cap = capabilities();
   if (!cap.supported) return { ok: false, reason: cap.reason, fix: cap.fix };
   if (!deviceId) return { ok: false, reason: 'Saknar enhets-id.' };
@@ -330,8 +519,39 @@ export async function enable({ deviceId, habits, minCount = 3 } = {}) {
   const reg = await swReady();
   if (!reg) return { ok: false, reason: 'Appens bakgrundstjänst startade inte. Ladda om sidan och försök igen.' };
 
-  const wanted = urlBase64ToUint8Array(vapidKey);
-  let sub = await reg.pushManager.getSubscription();
+  // capabilities() har redan avvisat en nyckel som inte går att avkoda, men
+  // configure() kan ha pekat om den efteråt. Ett kast här hade blivit ett
+  // avvisat löfte i stället för ett {ok:false}, och knappen hade hängt.
+  let wanted;
+  try { wanted = urlBase64ToUint8Array(vapidKey); }
+  catch { return { ok: false, fix: 'server', reason: 'Servernyckeln för notiser går inte att läsa. Appen behöver uppdateras.' }; }
+
+  const fore = load();
+  const gammalEndpoint = fore.endpoint || null;
+
+  let sub;
+  try { sub = await reg.pushManager.getSubscription(); }
+  catch { sub = null; }
+
+  /*
+   * BEHÖVER FÖRNYAS
+   *
+   * status() sätter flaggan när servern sagt att just den här endpointen är
+   * borta eller utslagen. Då är det inte nog att ladda upp den igen: samma
+   * döda adress skulle skrivas tillbaka i tabellen, cron skulle pusha till
+   * den, pushtjänsten skulle svara 410 och raden städas bort på nytt — varv
+   * efter varv, utan att en enda notis kommer fram. Den enda utvägen är att
+   * be webbläsaren om en ny prenumeration, alltså en ny endpoint.
+   *
+   * Det är precis det läge två veckors pausad databas lämnar efter sig.
+   */
+  const maasteFornyas = fornya === true || fore.behoverFornyas === true;
+  let fornyad = false;
+  if (sub && maasteFornyas) {
+    try { await sub.unsubscribe(); } catch {}
+    sub = null;
+    fornyad = true;
+  }
 
   /**
    * En prenumeration är låst till den VAPID-nyckel den skapades med. Har vi
@@ -379,13 +599,73 @@ export async function enable({ deviceId, habits, minCount = 3 } = {}) {
   }
 
   const slots = slotsFromHabits(habits, minCount);
+  glomProbe();
   try {
     await upload(sub, deviceId, slots);
   } catch (e) {
-    // Prenumerationen finns i webbläsaren men servern vet inte om den, och då
-    // kommer inga notiser. Städa upp istället för att låtsas att det gick.
-    try { await sub.unsubscribe(); } catch {}
-    return { ok: false, reason: `Servern tog inte emot prenumerationen: ${e.message}` };
+    /*
+     * Två skilda misslyckanden som förut behandlades lika.
+     *
+     * Avvisade servern prenumerationen (ett riktigt HTTP-svar) är den inte
+     * användbar, och då städas den bort — annars ligger den kvar i
+     * webbläsaren och ser påslagen ut utan att någon rad finns bakom.
+     *
+     * Men nådde vi aldrig fram — pausad databas, tunnel, flygplansläge — är
+     * prenumerationen troligen alldeles utmärkt. Att kasta den då är rent
+     * självskadande: föraren får en ny endpoint varje gång hen trycker, den
+     * gamla raden blir kvar på servern som en dubblett, och när nätet kommer
+     * tillbaka är allt sämre än innan. Behåll den, säg som det är, och låt
+     * status() upptäcka att den ännu inte är registrerad.
+     */
+    if (e?.nadde) {
+      try { await sub.unsubscribe(); } catch {}
+      return { ok: false, reason: `Servern tog inte emot prenumerationen: ${e.message}` };
+    }
+    return { ok: false, fix: 'natet',
+      reason: 'Servern gick inte att nå. Prenumerationen är kvar i telefonen — försök igen när du har täckning.' };
+  }
+
+  /*
+   * Kontrollera att raden FAKTISKT finns, i stället för att lita på att
+   * anropet inte kastade.
+   *
+   * save_push_subscription är en void-funktion vars upsert slutar med
+   * "where push_subscriptions.device_id = v_actor or auth.uid() is not null".
+   * Träffar det villkoret noll rader händer ingenting alls — PostgREST svarar
+   * 200, funktionen returnerar void, och den här filen hade tolkat det som
+   * att allt gick vägen. Exakt samma tysta klass av fel som redan är
+   * dokumenterad i sattGruppnotiser nedan, och den uppstår på riktigt när en
+   * endpoint redan ägs av ett annat device_id (prenumerera utloggad, logga
+   * sedan in). Resultatet är det värsta av alla utfall: appen skriver
+   * "Påslaget", och det finns ingenting att skicka till.
+   *
+   * Bara ett uttalat nej räknas. Kan vi inte fråga får uppladdningen stå
+   * kvar som lyckad — den svarade ju 200.
+   */
+  const bevis = await fragaServern(sub.endpoint, deviceId, { fraskt: true });
+  if (bevis.nadde && !bevis.finns) {
+    save({ ...load(), behoverFornyas: true });
+    return { ok: false, fix: 'konto',
+      reason: 'Servern sparade inte prenumerationen. Den här telefonen är troligen registrerad på ett annat konto — logga ut och in igen, eller stäng av och på notiserna.' };
+  }
+
+  /*
+   * Städa bort den förra raden när endpointen bytts.
+   *
+   * endpoint är primärnyckel i push_subscriptions, så samma adress kan aldrig
+   * bli två rader. Men device_id har bara ett vanligt index, och en telefon
+   * får en NY endpoint varje gång prenumerationen görs om — vid nyckelbyte,
+   * vid förnyelse efter 410, när webbläsaren själv roterar den. Den gamla
+   * raden blev kvar med samma device_id, och både due_push_reminders och
+   * fbmejl_push_mottagare går på rad, inte på telefon. Följden är dubbla
+   * notiser för samma förare, och en död rad som pushas till tills
+   * pushtjänsten hinner svara 410.
+   */
+  if (gammalEndpoint && gammalEndpoint !== sub.endpoint) {
+    try {
+      await rpc('delete_push_subscription',
+        { p_endpoint: gammalEndpoint, p_device: fore.device || deviceId });
+    } catch { /* cron städar på 410 om det inte gick */ }
   }
 
   // device sparas med, eftersom varje senare anrop måste kunna visa att raden
@@ -412,7 +692,7 @@ export async function enable({ deviceId, habits, minCount = 3 } = {}) {
    */
   hamtaNotisomfang().catch(() => {});
 
-  return { ok: true, endpoint: sub.endpoint };
+  return { ok: true, endpoint: sub.endpoint, fornyad };
 }
 
 /**
@@ -421,16 +701,36 @@ export async function enable({ deviceId, habits, minCount = 3 } = {}) {
  * död rad kvar och pushas till tills pushtjänsten svarar 410.
  */
 export async function disable() {
+  const st = load();
   const reg = await swReady();
-  const sub = await reg?.pushManager.getSubscription();
+  let sub = null;
+  try { sub = reg ? await reg.pushManager.getSubscription() : null; }
+  catch { sub = null; }
 
-  if (sub) {
-    const st = load();
-    try { await rpc('delete_push_subscription', { p_endpoint: sub.endpoint, p_device: st.device }); }
+  /*
+   * Radera varje endpoint vi vet om, inte bara den webbläsaren råkar visa.
+   *
+   * Förut hängde hela avstängningen på att getSubscription() gav något. Gör
+   * den inte det — webbläsaren har kastat prenumerationen, lagringen är rensad,
+   * service workern kom inte igång inom tidsgränsen — hoppades raderingen över
+   * helt, samtidigt som kvittot nollställdes. Raden på servern blev kvar och
+   * levde vidare: cron fortsatte skicka påminnelser till en telefon vars ägare
+   * just stängt av dem, ända tills pushtjänsten råkade svara 410. Föraren
+   * trycker "av", får notiser ändå, och har ingen väg att stoppa det eftersom
+   * appen tror att den redan är avstängd.
+   *
+   * Kvittots endpoint är dessutom den enda vi känner till när webbläsaren
+   * tigit, så den måste med i sin egen rätt.
+   */
+  const attRadera = [...new Set([sub?.endpoint, st.endpoint].filter(Boolean))];
+  for (const endpoint of attRadera) {
+    try { await rpc('delete_push_subscription', { p_endpoint: endpoint, p_device: st.device }); }
     catch { /* servern nere — vi tar bort lokalt ändå, cron städar på 410 */ }
-    try { await sub.unsubscribe(); } catch {}
   }
+  if (sub) { try { await sub.unsubscribe(); } catch {} }
+
   save({});
+  glomProbe();
 
   /*
    * Även den lokala hemruteräkningen. Den finns bara för att mata
@@ -446,28 +746,162 @@ export async function disable() {
 }
 
 /**
- * Nuvarande läge, för att rita inställningsrutan.
- * Sanningen läses ur webbläsaren, inte ur localStorage — användaren kan ha
- * återkallat tillståndet i systeminställningarna sedan sist.
+ * Får jag notiser just nu — ja eller nej?
+ *
+ * Hela kedjan måste hålla, och den har fyra led som kan gå sönder var för
+ * sig. Förut kollades bara två av dem:
+ *
+ *   1. plattformen stödjer push          capabilities()
+ *   2. föraren har sagt ja               Notification.permission
+ *   3. webbläsaren har en prenumeration  pushManager.getSubscription()
+ *   4. servern har en rad att skicka på  fbmejl_har_gruppnotiser()
+ *
+ * Led 4 fanns inte alls, och det är det som brister oftast. `subscribed` var
+ * `!!sub` — alltså enbart webbläsarens ord. En prenumeration i telefonen
+ * säger ingenting om huruvida någon rad finns kvar i databasen, och det är
+ * raden som avgör om det kommer en notis. Efter två veckors pausad databas är
+ * det precis den halvan som saknas: telefonen har kvar sin prenumeration,
+ * servern har inget att skicka till, och appen svarade "Påslaget".
+ *
+ * Det svaret läses av js/behorigheter.js på två ställen — notisStatus() ritar
+ * kortet på det, och lagaNotiser() hoppar över lagningen när det är sant. Ett
+ * `subscribed` som ljuger stänger alltså av självlagningen också, vilket är
+ * varför det här är filens allvarligaste fel och inte bara ett kosmetiskt.
+ *
+ * DET FÅR INTE SLÅ ÅT ANDRA HÅLLET
+ *
+ * Att svara nej så fort servern inte går att nå vore lika oärligt, och
+ * dessutom irriterande: varje tunnel hade gett "notiserna når inte fram" och
+ * en uppmaning att registrera om telefonen. Bara ett uttalat besked från
+ * servern räknas som nej. Utan besked står webbläsarens ord kvar, och
+ * `nadde: false` talar om att svaret är osäkert.
+ *
+ * @param {{serverkoll?:boolean}} opts  serverkoll:false hoppar över led 4
+ *        (inget nätanrop) — för en första ritning som ska rättas sen.
+ * @returns {Promise<object>} bl.a. subscribed, fungerar, nadde, forklaring
  */
-export async function status() {
+export async function status({ serverkoll = true } = {}) {
   const cap = capabilities();
+  const perm = permission();
+  const st = load();
   const out = {
     ...cap,
-    permission: permission(),
-    subscribed: false,
+    permission: perm,
+    subscribed: false,      // hela kedjan håller, så långt vi kan se
+    iWebblasaren: false,    // led 3 ensamt
+    paServern: null,        // led 4: true/false, null = vet inte
+    aktiv: null,            // raden lever (inte utslagen av upprepade fel)
+    nadde: null,            // fick vi besked av servern?
+    fungerar: false,        // samma som subscribed, men utan tvekan i namnet
+    behoverAtgard: null,    // 'fraga'|'installningar'|'registrera'|'fornya'|cap.fix
+    forklaring: '',
     endpoint: null,
-    slots: load().slots ?? [],
+    slots: st.slots ?? [],
   };
-  if (!cap.supported) return out;
 
+  const svara = () => { out.fungerar = out.subscribed; return out; };
+
+  // Led 1.
+  if (!cap.supported) {
+    out.behoverAtgard = cap.fix;
+    out.forklaring = cap.reason;
+    return svara();
+  }
+
+  // Led 2. Notification.permission är inte ett ja förrän det står 'granted' —
+  // 'default' betyder att ingen frågat än, och 'denied' att svaret var nej.
+  if (perm !== 'granted') {
+    out.behoverAtgard = perm === 'denied' ? 'installningar' : 'fraga';
+    out.forklaring = perm === 'denied'
+      ? 'Notiser är blockerade för appen. Slå på dem i telefonens inställningar — i webbläsaren går det inte att fråga igen.'
+      : 'Ingen har frågat om lov än. Tryck "Tillåt notiser".';
+    return svara();
+  }
+
+  // Led 3.
+  let sub = null;
+  let reg;
   try {
-    const reg = await swReady();
-    const sub = await reg?.pushManager.getSubscription();
-    out.subscribed = !!sub;
-    out.endpoint = sub?.endpoint ?? null;
-  } catch {}
-  return out;
+    reg = await swReady();
+    if (reg) sub = await reg.pushManager.getSubscription();
+  } catch { sub = null; }
+
+  if (!reg) {
+    out.behoverAtgard = 'ladda-om';
+    out.forklaring = 'Appens bakgrundstjänst startade inte. Ladda om sidan.';
+    return svara();
+  }
+
+  out.iWebblasaren = !!sub;
+  out.endpoint = sub?.endpoint ?? null;
+
+  if (!sub) {
+    out.behoverAtgard = 'registrera';
+    out.forklaring = 'Notiser är tillåtna, men telefonen har ingen prenumeration. Inget kommer fram när appen är stängd.';
+    return svara();
+  }
+
+  /*
+   * Prenumeration i webbläsaren, men inget kvitto på att den någonsin skickats
+   * upp. Då har den nästan alltid aldrig blivit en rad: uppladdningen kan ha
+   * misslyckats, eller så är lagringen rensad medan service workern behöll
+   * sin prenumeration. Utan kvitto finns dessutom inget enhets-id att fråga
+   * servern med, så det går inte ens att kontrollera.
+   *
+   * Att kalla det påslaget vore att gissa åt det hållet som gör mest skada.
+   * Lagningen är billig och ofarlig att köra i onödan — enable() laddar bara
+   * upp samma prenumeration igen.
+   */
+  if (!st.device || !st.endpoint) {
+    out.behoverAtgard = 'registrera';
+    out.forklaring = 'Telefonen har en prenumeration som aldrig registrerats hos servern. Registrera telefonen så kommer notiserna fram.';
+    return svara();
+  }
+
+  // Led 4. Kan vi inte fråga står webbläsarens ord kvar.
+  if (!serverkoll || !hasBackend()) {
+    out.subscribed = true;
+    out.forklaring = 'Notiser är påslagna i telefonen.';
+    return svara();
+  }
+
+  const p = await fragaServern(sub.endpoint, st.device);
+  out.nadde = p.nadde;
+
+  if (!p.nadde) {
+    // Ingen kontakt är inget besked. Säg att det är osäkert, nagga inte.
+    out.subscribed = true;
+    out.forklaring = 'Notiser ser påslagna ut, men servern gick inte att nå just nu.';
+    return svara();
+  }
+
+  out.paServern = p.finns;
+  out.aktiv = p.aktiv;
+
+  if (p.finns && p.aktiv) {
+    out.subscribed = true;
+    out.forklaring = 'Notiser är på. Servern har en rad för den här telefonen.';
+    // Livstecken. En tidigare misstanke är inte längre sann.
+    if (st.behoverFornyas) { const n = load(); delete n.behoverFornyas; save(n); }
+    return svara();
+  }
+
+  /*
+   * Härifrån och ner: servern har sagt nej, och prenumerationen i telefonen
+   * är inte att lita på. Märk kvittot, så vet enable() att den ska begära en
+   * NY endpoint i stället för att skriva tillbaka den döda. Utan märket
+   * lagas felet med exakt det som orsakade det.
+   */
+  save({ ...load(), behoverFornyas: true });
+
+  if (!p.finns) {
+    out.behoverAtgard = 'registrera';
+    out.forklaring = 'Telefonen tror att notiser är på, men servern har ingen rad för den. Inget kommer fram när appen är stängd — registrera telefonen igen.';
+  } else {
+    out.behoverAtgard = 'fornya';
+    out.forklaring = 'Servern har gett upp om den här prenumerationen efter upprepade misslyckade utskick. Slå av och på notiserna så görs en ny.';
+  }
+  return svara();
 }
 
 /**
@@ -479,8 +913,8 @@ export async function status() {
  * körning i onödan.
  */
 export async function syncSlots(habits, minCount = 3) {
-  const st = load();
-  if (!st.endpoint || !st.device) return false;
+  const st = kvitto();
+  if (!st) return false;
 
   /*
    * Tar emot antingen den gamla vanekartan eller en färdig lucklista.
@@ -518,8 +952,8 @@ export async function syncSlots(habits, minCount = 3) {
  * stängs de av. Servern hoppar över alla luckor samma dygn efter det här.
  */
 export async function markDroveToday() {
-  const st = load();
-  if (!st.endpoint || !st.device) return false;
+  const st = kvitto();
+  if (!st) return false;
 
   // En gång per dygn räcker. Datumet är telefonens lokala, samma som servern
   // räknar i eftersom den använder tidszonen vi skickade upp.
@@ -568,8 +1002,8 @@ export async function testLocal(title = 'Polisvakt', body = 'Så här ser en på
  * att anroparen kollar först.
  */
 export async function sattGruppnotiser(pa) {
-  const st = load();
-  if (!st.endpoint || !st.device) return false;
+  const st = kvitto();
+  if (!st) return false;
   try {
     /*
      * Svaret läses numera. Förut kastades det.
@@ -609,7 +1043,19 @@ export async function sattGruppnotiser(pa) {
  * spelar roll; den här finns för att kunna rita något direkt vid start.
  */
 export function harGruppnotiser() {
-  const st = load();
+  /*
+   * Ingen prenumeration, inget påslag.
+   *
+   * Förvalet nedan är true, och utan den här raden gällde det även för en
+   * telefon som aldrig prenumererat eller vars tillstånd återkallats i
+   * systeminställningarna. Då ritade appen "På. Du får en notis när det
+   * kommit nya inlägg." åt någon som omöjligen kan få en enda — ett löfte
+   * utan något bakom sig. Ett förval speglar serverns kolumn, men bara när
+   * det finns en rad på servern att spegla.
+   */
+  const kv = kvitto();
+  if (!kv) return false;
+  const st = kv;
   /*
    * Påslaget som förval, för att spegla servern.
    *
@@ -636,8 +1082,8 @@ export function harGruppnotiser() {
  *   nadde  — vi fick svar. false = offline, säg inget tvärsäkert då.
  */
 export async function hamtaGruppnotiser() {
-  const st = load();
-  if (!st.endpoint || !st.device) {
+  const st = kvitto();
+  if (!st) {
     return { finns: false, pa: false, aktiv: false, nadde: true };
   }
   try {
@@ -678,8 +1124,8 @@ const REGIONER_KEY_CACHE = 'regionerCache';
  * @returns {Promise<{ok:boolean, regioner:(string[]|null)}>}
  */
 export async function settRegioner(nycklar) {
-  const st = load();
-  if (!st.endpoint || !st.device) return { ok: false, regioner: null };
+  const st = kvitto();
+  if (!st) return { ok: false, regioner: null };
   try {
     const svar = await rpc('fbmejl_satt_regioner', {
       p_endpoint: st.endpoint, p_device: st.device,
@@ -710,8 +1156,8 @@ export function harRegioner() {
  *   regioner = null betyder "alla".
  */
 export async function hamtaRegioner() {
-  const st = load();
-  if (!st.endpoint || !st.device) return { finns: false, regioner: null, nadde: true };
+  const st = kvitto();
+  if (!st) return { finns: false, regioner: null, nadde: true };
   try {
     const s = await rpc('fbmejl_har_regioner', {
       p_endpoint: st.endpoint, p_device: st.device,
@@ -1002,8 +1448,8 @@ function sparaOmfang(svar, reservFolj) {
  */
 async function skickaHemruta(kod) {
   if (_skickarNu || _foljerInte) return false;
-  const st = load();
-  if (!st.endpoint || !st.device) return false;
+  const st = kvitto();
+  if (!st) return false;
   const mitt = rutansMitt(kod);
   if (!mitt) return false;
 
@@ -1076,8 +1522,8 @@ export function noteraPosition(lat, lon) {
  * en void-funktion hade fått appen att påstå att inställningen sparats.
  */
 export async function sattNotisomfang(folj, radieM) {
-  const st = load();
-  if (!st.endpoint || !st.device) {
+  const st = kvitto();
+  if (!st) {
     return { ok: false, folj: false, radieM: NOTIS_RADIE.forval, antalPlatser: 0, skal: 'ingen-prenumeration' };
   }
 
@@ -1165,9 +1611,9 @@ export function harNotisomfang() {
  * någon behöver göra något i appen.
  */
 export async function hamtaNotisomfang() {
-  const st = load();
+  const st = kvitto();
   const cache = harNotisomfang();
-  if (!st.endpoint || !st.device) {
+  if (!st) {
     return { finns: false, folj: false, radieM: cache.radieM, antalPlatser: 0, aktiv: false, nadde: true };
   }
 
