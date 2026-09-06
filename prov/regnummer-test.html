@@ -1,0 +1,320 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polisvakt — regnummer i fritext</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px 18px 60px; background: #0b0f14; color: #eef4fa;
+         font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #93a4b6; font-size: 13px; margin-bottom: 18px; }
+  #summa { position: sticky; top: 0; background: #0b0f14; padding: 10px 0 12px;
+           border-bottom: 1px solid #26323f; font-weight: 700; font-size: 17px; }
+  .grupp { margin-top: 22px; }
+  .grupp h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+              color: #93a4b6; margin: 0 0 8px; }
+  .rad { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a232d;
+         align-items: baseline; }
+  .ok   { color: #2fd07a; }
+  .fel  { color: #ff4d4f; }
+  .hopp { color: #ffb020; }
+  .namn { flex: 1; min-width: 0; }
+  .info { color: #6d7d8e; font-size: 12.5px; white-space: pre-wrap; }
+  code { color: #8fcaff; }
+</style>
+
+<h1>Polisvakt — regnummer i fritext</h1>
+<p class="sub">
+  Provar <code>js/regnummer.js</code>, modulen som hittar registreringsnummer i
+  det folk skriver — så att ett nummer i chatten kan bli en knapp och tio
+  nummer kan bli ett enda ja.<br>
+  Hälften av påståendena nedan handlar om vad som <em>inte</em> får hittas.
+  Det är avsiktligt: ett missat nummer kostar tio sekunder, ett falskt nummer
+  kostar förtroendet — och i bulkläget åker det dessutom in i registret utan
+  att någon hinner titta på det.
+</p>
+<div id="summa">Kör…</div>
+<div id="ut"></div>
+
+<script type="module">
+const ut = document.getElementById('ut');
+let ok = 0, fel = 0, hopp = 0;
+let grupp = null;
+
+function G(namn) {
+  grupp = document.createElement('div');
+  grupp.className = 'grupp';
+  grupp.innerHTML = `<h2>${namn}</h2>`;
+  ut.appendChild(grupp);
+}
+function rad(status, namn, info) {
+  const d = document.createElement('div');
+  d.className = 'rad';
+  const ikon = { ok: '✓', fel: '✗', hopp: '–' }[status];
+  d.innerHTML = `<span class="${status}">${ikon}</span>` +
+                `<span class="namn">${namn}</span>` +
+                `<span class="info">${info ?? ''}</span>`;
+  (grupp || ut).appendChild(d);
+}
+async function T(namn, fn) {
+  try {
+    const r = await fn();
+    if (r === 'hopp') { hopp++; rad('hopp', namn, 'hoppad'); return; }
+    if (r === true || r === undefined) { ok++; rad('ok', namn); return; }
+    fel++; rad('fel', namn, String(r));
+  } catch (e) { fel++; rad('fel', namn, e.message); }
+}
+
+/* =================================================================== */
+const reg = await import('../js/regnummer.js');
+const { hittaRegnummer, normaliseraPlatKopia } = reg;
+
+/** Bara numren, i ordning. Det är det bulkknappen skulle skicka vidare. */
+const funna = (text, val) => hittaRegnummer(text, val).map(t => t.normaliserat);
+const lika = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Ska hittas: exakt den här listan, i den här ordningen. */
+const SKA = (namn, text, vantat) => T(namn, () => {
+  const f = funna(text);
+  return lika(f, vantat) || `${JSON.stringify(text)} gav ${JSON.stringify(f)}, väntade ${JSON.stringify(vantat)}`;
+});
+/** Får inte hittas: ingenting alls. */
+const TYST = (namn, text) => T(namn, () => {
+  const f = funna(text);
+  return f.length === 0 || `${JSON.stringify(text)} gav ${JSON.stringify(f)} — falsklarm`;
+});
+
+/* ---- Ska hittas ---------------------------------------------------- */
+G('Ska hittas — de skrivningar folk faktiskt använder');
+
+await SKA('ABC123 utan mellanslag', 'ABC123', ['ABC123']);
+await SKA('ABC 123 med mellanslag', 'ABC 123', ['ABC123']);
+await SKA('gemener utan mellanslag', 'abc123', ['ABC123']);
+await SKA('gemener med mellanslag', 'abc 123', ['ABC123']);
+await SKA('blandad versalisering', 'AbC 123', ['ABC123']);
+await SKA('bindestreck', 'ABC-123', ['ABC123']);
+await SKA('tankstreck', 'ABC–123', ['ABC123']);
+await SKA('hårt mellanslag (mobiltangentbord)', 'ABC 123', ['ABC123']);
+await SKA('nya formatet ABC12A', 'ABC12A', ['ABC12A']);
+await SKA('nya formatet med mellanslag', 'ABC 12A', ['ABC12A']);
+await SKA('nya formatet i gemener', 'xyz 45a', ['XYZ45A']);
+await SKA('sista tecknet får vara siffra', 'ABC120', ['ABC120']);
+await SKA('först i meningen', 'ABC123 körde mot Erikslund', ['ABC123']);
+await SKA('sist i meningen', 'jag såg ABC123', ['ABC123']);
+await SKA('punkt efter numret', 'Bilen heter ABC123.', ['ABC123']);
+await SKA('frågetecken efter numret', 'Vem äger ABC123?', ['ABC123']);
+await SKA('inom kommatecken', 'Bilen, ABC123, stod kvar.', ['ABC123']);
+await SKA('inom parentes', 'silverfärgad (ABC123) mot E18', ['ABC123']);
+await SKA('inom citattecken', 'han sa "ABC123" i telefon', ['ABC123']);
+await SKA('efter kolon', 'regnr:ABC123', ['ABC123']);
+await SKA('efter etikett med punkt', 'Reg. nr ABC 123 är efterlyst', ['ABC123']);
+await SKA('fetstil i chatt (*ABC123*)', 'kolla *ABC123* nu', ['ABC123']);
+await SKA('kursiv i chatt (_abc123_)', 'kolla _abc123_ nu', ['ABC123']);
+await SKA('radbrytning runt numret', 'Bilen:\nABC123\nkörde vidare', ['ABC123']);
+await SKA('emoji direkt efter', 'ABC123 🚗', ['ABC123']);
+
+/* ---- Får inte hittas ----------------------------------------------- */
+G('Får inte hittas — falsklarmen är det farliga');
+
+await TYST('klockslag', 'Vi ses 14:30 vid rondellen');
+await TYST('klockslag med kl.', 'kl. 07:05 imorgon');
+await TYST('datum', 'Hände 2026-09-06 på morgonen');
+await TYST('datum med snedstreck', 'Hände 6/9-2026');
+await TYST('månad och år', 'maj 2026 blev det klart');
+await TYST('telefonnummer', 'ring 070-123 45 67 om du ser den');
+await TYST('telefonnummer med landskod', '+46 70 123 45 67');
+await TYST('hastighet km/h', 'körde 70 km/h i tätorten');
+await TYST('hastighet kmh', 'minst 80 kmh på Vallbyleden');
+await TYST('vägnummer E18', 'stod still på E18 mot Enköping');
+await TYST('väg 56', 'olycka på väg 56');
+await TYST('riksväg 66', 'riksväg 66 är avstängd');
+await TYST('länsväg 250', 'kö på länsväg 250 norrut');
+await TYST('postnummer', 'adressen är 721 30 Västerås');
+await TYST('belopp i kronor', 'böter 500 kr direkt');
+await TYST('ord + belopp', 'den kostade mot 500 kr');
+await TYST('okänt ord men enhet efter (efterordsgrinden)', 'xyz 500 kr');
+await TYST('ABC ensamt utan siffror', 'ABC är bara tre bokstäver');
+await TYST('rumsnummer', 'vi sitter i rum 101');
+await TYST('husnummer med bokstav', 'hus 12A på gården');
+await TYST('lägenhetsnummer', 'lgh 120 i uppgång B');
+await TYST('felkod', 'sidan gav fel 404');
+await TYST('valuta', 'kostar sek 500 styck');
+await TYST('artikelnummer', 'art 123 är slut');
+await TYST('webbadress', 'https://exempel.se/abc123');
+await TYST('domännamn', 'testa test.abc123.se');
+await TYST('filnamn med understreck', 'skickade bild_abc123.jpg');
+await TYST('frågesträng', 'öppna sidan?id=abc123');
+await TYST('fyra siffror', 'koden ABC1234 stod på lappen');
+await TYST('fyra bokstäver', 'modellen ABCD123');
+await TYST('mitt inne i ett ord', 'strängen abcABC123def');
+await TYST('för kort', 'bara ABC12 stod det');
+await TYST('förbjudna bokstäver (I, Q, V)', 'IQV123 finns inte');
+await TYST('O på sista platsen finns inte', 'ABC12O');
+await TYST('svenskt tecken i bokstavsgruppen', 'ÅBC123');
+
+G('Ingen OCR-rättning i text — kameran rättar, tangentbordet gör det inte');
+await TYST('BOSTAD blir inte BOS74D', 'ledig BOSTAD 74 kvm');
+await TYST('SLOTTS blir inte SLO77S', 'vid SLOTTS gamla mur');
+await T('rättade nummer förkastas även om normaliseringen godtar dem', () => {
+  // ABC1Z3 -> normaliseringen kan rätta Z till 2, men då var det inte det
+  // som stod i texten. Modulen kräver att svaret är oförändrat.
+  const rattat = normaliseraPlatKopia('ABC1Z3');
+  if (rattat !== 'ABC123') return `normaliseringen rättade inte som väntat: ${rattat}`;
+  return funna('ABC1Z3').length === 0 || 'texträttning slank igenom';
+});
+
+/* ---- Flera nummer, dubbletter, skiljetecken ------------------------ */
+G('Flera nummer, dubbletter, skiljetecken');
+
+await SKA('två nummer i ordning', 'ABC123 följde efter DEF456', ['ABC123', 'DEF456']);
+await SKA('tre nummer med kommatecken', 'ABC123, DEF456, GHJ789', ['ABC123', 'DEF456', 'GHJ789']);
+await SKA('blandade skrivningar', 'abc123 och DEF-456 och ghj 789', ['ABC123', 'DEF456', 'GHJ789']);
+await SKA('samma nummer två gånger, samma skrivning', 'ABC123 ... ABC123', ['ABC123']);
+await SKA('samma nummer två gånger, olika skrivning', 'ABC123 alltså abc 123', ['ABC123']);
+await SKA('nummer blandat med falsklarm',
+  'Vi såg abc123 vid väg 56 och def 45a kl 14:30', ['ABC123', 'DEF45A']);
+await SKA('nummer på var sin rad', 'ABC123\nDEF456\nGHJ789', ['ABC123', 'DEF456', 'GHJ789']);
+
+await T('råtexten behålls precis som den skrevs', () => {
+  const t = hittaRegnummer('kolla abc-123 nu');
+  return t[0]?.ratext === 'abc-123' || `fick ${JSON.stringify(t[0]?.ratext)}`;
+});
+await T('index och längd pekar tillbaka i texten', () => {
+  const text = 'Bilen ABC 123 och sen DEF456.';
+  for (const t of hittaRegnummer(text)) {
+    if (text.slice(t.index, t.index + t.langd) !== t.ratext) {
+      return `index ${t.index} gav ${JSON.stringify(text.slice(t.index, t.index + t.langd))}`;
+    }
+  }
+  return true;
+});
+await T('ordningen följer texten, inte alfabetet', () => {
+  const f = funna('ZYX987 sedan ABC123');
+  return lika(f, ['ZYX987', 'ABC123']) || `fick ${JSON.stringify(f)}`;
+});
+await T('första skrivningen är den som behålls vid dubblett', () => {
+  const t = hittaRegnummer('abc 123 och ABC-123');
+  return (t.length === 1 && t[0].ratext === 'abc 123') || `fick ${JSON.stringify(t)}`;
+});
+
+/* ---- Bulk ----------------------------------------------------------- */
+G('Bulk — ett ja för hela listan');
+
+const BULK = `Hej, här är bilarna från grinden i går:
+ABC123, DEF456 och GHJ789.
+Sen kom KLM012 kl 07:15 och NOP345 kl 07:20.
+RST678 stod kvar hela dagen (500 kr i böter).
+UWX901 och YZA234 kom tillsammans på väg 56.
+Kvällspasset: BCD567, EFG890, HJK123 och LMN456.
+Ring 021-123 45 67 om något är fel.`;
+const BULK_FACIT = ['ABC123', 'DEF456', 'GHJ789', 'KLM012', 'NOP345', 'RST678',
+                    'UWX901', 'YZA234', 'BCD567', 'EFG890', 'HJK123', 'LMN456'];
+
+await T('bulktexten ger tolv nummer', () => {
+  const f = funna(BULK);
+  return f.length === 12 || `fick ${f.length}: ${JSON.stringify(f)}`;
+});
+await T('bulktexten ger rätt tolv nummer i rätt ordning', () => {
+  const f = funna(BULK);
+  return lika(f, BULK_FACIT) || `fick ${JSON.stringify(f)}`;
+});
+await T('bulktexten drar inte in klockslag, böter, väg eller telefonnummer', () => {
+  const f = funna(BULK);
+  const skrap = f.filter(p => !BULK_FACIT.includes(p));
+  return skrap.length === 0 || `falsklarm: ${JSON.stringify(skrap)}`;
+});
+await T('dubbletter i en bulklista räknas en gång', () => {
+  const f = funna(BULK + '\nOch igen: abc 123, DEF-456.');
+  return f.length === 12 || `fick ${f.length}: ${JSON.stringify(f)}`;
+});
+await T('varje träff i bulken går att markera i texten', () => {
+  for (const t of hittaRegnummer(BULK)) {
+    if (BULK.slice(t.index, t.index + t.langd) !== t.ratext) return `fel index för ${t.normaliserat}`;
+  }
+  return true;
+});
+
+/* ---- Robusthet ------------------------------------------------------ */
+G('Robusthet och renhet');
+
+await T('null ger tom lista', () => lika(hittaRegnummer(null), []) || 'kastade eller gav träffar');
+await T('undefined ger tom lista', () => lika(hittaRegnummer(undefined), []) || 'kastade eller gav träffar');
+await T('siffra i stället för sträng ger tom lista', () => lika(hittaRegnummer(123456), []) || 'kastade');
+await T('tom sträng ger tom lista', () => lika(hittaRegnummer(''), []) || 'fick träffar');
+await T('två anrop i rad ger samma svar (inget läckt lastIndex)', () => {
+  const a = funna('ABC123 och DEF456');
+  const b = funna('ABC123 och DEF456');
+  return lika(a, b) || `första ${JSON.stringify(a)}, andra ${JSON.stringify(b)}`;
+});
+await T('träffen har exakt de fyra fälten', () => {
+  const t = hittaRegnummer('ABC123')[0];
+  const nycklar = Object.keys(t).sort();
+  return lika(nycklar, ['index', 'langd', 'normaliserat', 'ratext'])
+    || `fick ${JSON.stringify(nycklar)}`;
+});
+await T('lång text utan nummer ger tom lista', () => {
+  const text = ('Polisen rapporterar om en händelse på Vasagatan klockan 14:30. ').repeat(40);
+  return funna(text).length === 0 || `falsklarm i löptext: ${JSON.stringify(funna(text))}`;
+});
+
+/* ---- Injicerad normalisering ---------------------------------------- */
+G('Normaliseringen går att injicera');
+
+await T('en normalisering som säger nej till allt ger tom lista', () => {
+  return hittaRegnummer('ABC123 DEF456', { normalisera: () => null }).length === 0
+    || 'modulen litade inte på normaliseringen';
+});
+await T('en normalisering som svarar något annat än den fick in förkastas', () => {
+  // Skyddet mot rättade svar sitter i modulen, inte i normaliseringen.
+  return hittaRegnummer('XYZ999', { normalisera: () => 'ABC123' }).length === 0
+    || 'ett påhittat nummer slank igenom';
+});
+
+/* ---- Kopian mot plate.js -------------------------------------------- */
+G('Kopian mot plate.js — samma regler, inte ungefär samma');
+
+const BATTERI = ['ABC123', 'abc123', 'ABC 123', 'abc-123', 'ABC12A', 'ABC12O',
+                 'IQV123', 'ÅBC123', 'ABC1Z3', 'BOSTAD', 'SLOTTS', '888888',
+                 'OOO000', 'ZZZ99Z', 'A1B2C3', 'ABC12', 'ABC1234', 'AABC123',
+                 'S ABC123', 'SABC123', 'ABU2773', 'YBK70UN', 'FAP18MJ',
+                 '1ZPD710', 'JURK924', '12345', '1234567', 'ABCDEFGH', '', 'ABC120'];
+
+let plate = null;
+try { plate = await import('../js/plate.js'); } catch (e) { plate = null; }
+
+await T('plate.js går att ladda i den här miljön', () =>
+  plate ? true : 'hopp');
+
+await T('normaliseraPlatKopia svarar likadant som plate.js normaliseraPlat', () => {
+  if (!plate) return 'hopp';
+  const isar = BATTERI
+    .map(s => [s, plate.normaliseraPlat(s), normaliseraPlatKopia(s)])
+    .filter(([, a, b]) => a !== b);
+  return isar.length === 0
+    || 'går isär: ' + isar.map(([s, a, b]) => `${JSON.stringify(s)}: ${a} ≠ ${b}`).join(', ');
+});
+
+await T('hittaRegnummer ger samma svar med den riktiga normaliseringen injicerad', () => {
+  if (!plate) return 'hopp';
+  const texter = [BULK, 'ABC123 och abc 123', 'hus 12A på gården', 'ABC12O',
+                  'ledig BOSTAD 74 kvm', 'Vi såg abc123 vid väg 56 och def 45a'];
+  for (const t of texter) {
+    const a = funna(t);
+    const b = funna(t, { normalisera: plate.normaliseraPlat });
+    if (!lika(a, b)) return `${JSON.stringify(t.slice(0, 30))}: kopia ${JSON.stringify(a)} ≠ plate.js ${JSON.stringify(b)}`;
+  }
+  return true;
+});
+
+await T('PLAT_RE i plate.js godtar allt modulen släpper igenom', () => {
+  if (!plate) return 'hopp';
+  const dåliga = hittaRegnummer(BULK).filter(t => !plate.PLAT_RE.test(t.normaliserat));
+  return dåliga.length === 0 || `${JSON.stringify(dåliga.map(t => t.normaliserat))} passerar inte PLAT_RE`;
+});
+
+/* =================================================================== */
+const s = document.getElementById('summa');
+s.textContent = `${ok} godkända · ${fel} fel · ${hopp} hoppade`;
+s.className = fel ? 'fel' : 'ok';
+window.__resultat = { ok, fel, hopp, total: ok + fel + hopp };
+</script>

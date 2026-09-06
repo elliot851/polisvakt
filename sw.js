@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-09-06-134';
+const VERSION = '2026-09-06-135';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -85,6 +85,10 @@ const SHELL = [
   // här — 13 MB ska inte förhandshämtas, de tas cache-först vid första
   // användning (se MODELLCACHE).
   './js/skyltmodell.js',
+  // js/app.js importerar regnummer.js STATISKT (chattens regnr-knapp).
+  // Samma kallstartsfalla som skyltmodell.js ovan: saknas filen i cachen
+  // faller importen tillbaka pa index.html och ingen app startar alls.
+  './js/regnummer.js',
   './js/chatt.js',
   './js/ljud.js',
   './js/notiser.js',

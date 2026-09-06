@@ -37,6 +37,7 @@ import { Varmevakt } from './varme.js';
 import * as Kvalitet from './kvalitet.js';
 import * as Betalning from './betalning.js';
 import { PlateReader, plateSupported, visaPlat, normaliseraPlat, haFordonsregister, migreraKlartext } from './plate.js';
+import { hittaRegnummer } from './regnummer.js';
 import { Chatt, UTAN_OMRADE_TEXT } from './chatt.js';
 import { Ljud } from './ljud.js';
 import * as Notiser from './notiser.js';
@@ -6852,6 +6853,48 @@ function renderChatt() {
     text.textContent = m.text;
 
     li.append(huvud, text);
+
+    /*
+     * Registreringsnummer i meddelandet blir ett erbjudande, aldrig en tyst
+     * inläggning. Någon som skriver "ABC 123 kör som en dåre" har inte bett
+     * om att få bilen bevakad — men vill man det ska det vara ETT tryck.
+     *
+     * Modulen js/regnummer.js är byggd för att hellre missa än hitta på:
+     * klockslag, vägnummer, hastigheter och postnummer får aldrig bli bilar.
+     * Knappen öppnar samma dialog som överallt annars, förifylld, så man kan
+     * ge bilen ett namn innan den sparas — det är ja/nej-steget.
+     */
+    const nummer = hittaRegnummer(m.text);
+    if (nummer.length) {
+      const rad = document.createElement('div');
+      rad.className = 'chatt-regnr';
+      const etikett = document.createElement('span');
+      etikett.innerHTML = nummer.length === 1
+        ? `Hittade <b>${escapeHtml(visaPlat(nummer[0].normaliserat))}</b> — vill du bevaka bilen?`
+        : `Hittade <b>${nummer.length} registreringsnummer</b> — vill du bevaka dem?`;
+      const knapp = document.createElement('button');
+      knapp.type = 'button';
+      knapp.className = 'btn-ghost small';
+      knapp.textContent = nummer.length === 1 ? 'Lägg till' : `Lägg till alla (${nummer.length})`;
+      knapp.onclick = () => {
+        const text = nummer.map(n => visaPlat(n.normaliserat)).join('\n');
+        window.polisvakt?.oppnaBilModal?.(text,
+          nummer.length === 1 ? 'Bevaka bilen?' : `Bevaka ${nummer.length} bilar?`);
+      };
+      rad.append(etikett, knapp);
+      li.appendChild(rad);
+
+      /*
+       * Redan bevakade nummer ska inte tjata. Uppslaget är asynkront (hashning),
+       * så raden ritas först och tas bort efteråt om ALLA numren redan finns.
+       * Att vänta med att rita hade gjort chatten hackig vid varje omritning.
+       */
+      (async () => {
+        const reg = haFordonsregister();
+        const kanda = await Promise.all(nummer.map(n => reg.slaUpp(n.normaliserat)));
+        if (kanda.every(Boolean)) rad.remove();
+      })();
+    }
 
     const knappar = document.createElement('div');
     knappar.className = 'chatt-knappar';
