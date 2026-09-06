@@ -2518,3 +2518,48 @@ body.pv-ps-remsa-uppe .view.scroll {
 @media (prefers-reduced-motion: reduce) {
   .prod-skeleton .sk::after { animation: none; }
 }
+
+/* ---------- Bevakade bilar: bekräftelse och snabbinmatning ----------
+   Ägaren: "gör så att det är enklare att se när man lagt till en bil och att
+   det bekräftas så man vet att man lagt till den." Tre saker bär det:
+   en grön kvittorad, en kort blinkning på de rader som just lades till, och
+   ett antal i rubriken. Blinkningen är den som gör att ögat hittar RÄTT rad i
+   en lista med tio bilar — en toast säger bara att något hände, inte vad. */
+.bil-antal {
+  font-size: var(--t-sm); color: var(--fg-2); font-weight: 500;
+}
+.bil-kvitto {
+  margin: var(--sp-2) 0 0; padding: 10px 12px;
+  border-radius: var(--radius-3); font-size: var(--t-md);
+  background: rgba(110,226,166,.10); border: 1px solid rgba(110,226,166,.35);
+  color: var(--ok-2);
+}
+.bil-kvitto[hidden] { display: none; }
+.bil-kvitto.fel {
+  background: rgba(255,156,157,.10); border-color: rgba(255,156,157,.35);
+  color: var(--danger-2);
+}
+/* Blinkningen körs på en klass som tas bort igen, så den kan spelas om när
+   samma rad läggs till på nytt. prefers-reduced-motion respekteras: då står
+   ramen kvar en stund i stället för att pulsera. */
+@keyframes bil-blink {
+  0%   { background: rgba(110,226,166,.28); }
+  100% { background: transparent; }
+}
+.pl-rad.pl-rad-ny {
+  animation: bil-blink 1600ms ease-out;
+  border-radius: var(--radius-3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pl-rad.pl-rad-ny { animation: none; box-shadow: inset 0 0 0 2px rgba(110,226,166,.5); }
+}
+/* Knappen i chatten som erbjuder att spara ett nummer någon skrivit. */
+.chatt-regnr {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 6px; padding: 8px 10px;
+  background: var(--bg-2, rgba(255,255,255,.04));
+  border: 1px solid var(--line); border-radius: var(--radius-3);
+  font-size: var(--t-sm); color: var(--fg-2);
+}
+.chatt-regnr b { color: var(--fg); font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+.chatt-regnr .btn-ghost.small { margin-left: auto; }

@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-09-04-133';
+const VERSION = '2026-09-06-134';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -312,7 +312,7 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
 
   // Aldrig cacha rapporter, geokodning, ruttning eller kartbrickor
-  const live = /supabase\.co|nominatim|overpass|project-osrm|basemaps\.cartocdn|tile\./.test(url.host);
+  const live = /supabase\.co|nominatim|overpass|project-osrm|basemaps\.cartocdn|arcgisonline|tile\./.test(url.host);
   if (live) return;
 
   /*

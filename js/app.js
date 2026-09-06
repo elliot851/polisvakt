@@ -5549,6 +5549,11 @@ function wireSettingsUI() {
     return b;
   }
 
+  /* Id:n som lades till i den SENASTE inläggningen. renderFordon blinkar just
+     de raderna. Mängden töms när listan ritats en gång, så blinkningen inte
+     spelas om vid varje omritning (t.ex. när man döper om en annan bil). */
+  let senastTillagda = new Set();
+
   function renderFordon() {
     const ul = $('plFordonLista');
     if (!ul) return;
@@ -5567,7 +5572,7 @@ function wireSettingsUI() {
       const v = visning[f.id] || null;
       const smek = (v?.smeknamn || '').trim() || (!arAutoEtikett(f.etikett) ? f.etikett : '');
       const li = document.createElement('li');
-      li.className = 'pl-rad';
+      li.className = 'pl-rad' + (senastTillagda.has(f.id) ? ' pl-rad-ny' : '');
 
       if (fordonNamnRedigeras === f.id) {
         // Smeknamnet ändras på plats — numret ska aldrig behöva skrivas om.
@@ -5670,6 +5675,14 @@ function wireSettingsUI() {
     }
 
     $('plFordonTom').hidden = fordon.antal > 0 || !!fordonBorttaget;
+
+    // Antalet i rubriken. Ett tomt register visar ingen siffra alls — "(0)"
+    // ser ut som ett fel, tomtexten under listan säger redan samma sak.
+    const antalEl = $('plFordonAntal');
+    if (antalEl) antalEl.textContent = fordon.antal ? `(${fordon.antal})` : '';
+
+    // Blinkningen är en engångshändelse per inläggning.
+    if (senastTillagda.size) senastTillagda = new Set();
   }
 
   /*
@@ -5700,14 +5713,21 @@ function wireSettingsUI() {
     return { regnr: normaliseraPlat(nrDel), smeknamn: (namnDel || '').trim(), rad: t };
   }
 
-  $('btnPlLagg').onclick = async () => {
-    const falt = $('plNyaFordon');
-    const rader = String(falt.value || '').split('\n');
+  /**
+   * Lägger in en klump text som bevakade bilar. EN väg in, oavsett om texten
+   * kom från inställningarna, snabbmodalen eller en knapp i chatten — annars
+   * glider tolkningen och kvittona isär mellan ställena.
+   *
+   * @returns {{nya:number, fanns:number, ejLasta:string[], lagringFull:boolean,
+   *            kvar:string, nyaIds:string[]}}
+   */
+  async function laggTillBilar(text) {
+    const rader = String(text || '').split('\n');
     let nya = 0, fanns = 0, lagringFull = false;
-    const ejLasta = [];   // rader som inte gick att tolka — de får ligga kvar
-    const kvar = [];      // allt som ska stå kvar i fältet efteråt
+    const ejLasta = [];   // rader som inte gick att tolka
+    const kvar = [];      // det som ska stå kvar i fältet efteråt
+    const nyaIds = [];
     const visn = lasFordonVisning();
-
     for (const rad of rader) {
       const p = tolkaFordonsrad(rad);
       if (!p) continue;
@@ -5716,7 +5736,6 @@ function wireSettingsUI() {
       if (r.status === 'ogiltig') { ejLasta.push(p.rad); kvar.push(p.rad); continue; }
       if (r.status === 'fanns') {
         fanns++;
-        // Passa på att fylla i visningsdata som saknas för en gammal post.
         if (!visn[r.id]?.regnr) {
           visn[r.id] = { regnr: p.regnr, smeknamn: visn[r.id]?.smeknamn || p.smeknamn };
         }
@@ -5724,25 +5743,100 @@ function wireSettingsUI() {
       }
       if (r.sparad === false) { lagringFull = true; kvar.push(p.rad); continue; }
       visn[r.id] = { regnr: p.regnr, smeknamn: p.smeknamn };
+      nyaIds.push(r.id);
       nya++;
     }
     sparaFordonVisning(visn);
-
-    // Ogiltiga rader försvinner inte — de står kvar i fältet så de går att rätta.
-    falt.value = kvar.join('\n');
-
-    const kvitto = [];
-    if (nya) kvitto.push(nya === 1 ? '1 tillagd' : `${nya} tillagda`);
-    if (fanns) kvitto.push(fanns === 1 ? '1 fanns redan' : `${fanns} fanns redan`);
-    if (ejLasta.length === 1) kvitto.push(`1 gick inte att läsa: "${ejLasta[0]}"`);
-    else if (ejLasta.length > 1) kvitto.push(`${ejLasta.length} gick inte att läsa — de står kvar i fältet`);
-    if (lagringFull) kvitto.push('kunde inte spara allt — telefonens lagring är full eller avstängd');
-    $('plLaggKvitto').textContent = kvitto.length
-      ? kvitto.join(' · ')
-      : 'Skriv ett registreringsnummer först, till exempel ABC 123.';
-
+    senastTillagda = new Set(nyaIds);
     renderFordon();
+    return { nya, fanns, ejLasta, lagringFull, kvar: kvar.join('\n'), nyaIds };
+  }
+
+  /**
+   * Bekräftelsen. Ägaren ska aldrig behöva undra om bilen kom in.
+   *
+   * Tre kanaler samtidigt, för de svarar på olika frågor: ljudet säger ATT
+   * något hände (man tittar kanske inte på skärmen), kvittoraden säger VAD
+   * som hände, och blinkningen i listan säger VILKEN rad det blev. En toast
+   * ensam räckte inte — den försvinner innan man hunnit leta i listan.
+   */
+  function visaBilKvitto(el, r) {
+    const delar = [];
+    if (r.nya)   delar.push(r.nya === 1 ? '1 bil tillagd' : `${r.nya} bilar tillagda`);
+    if (r.fanns) delar.push(r.fanns === 1 ? '1 fanns redan' : `${r.fanns} fanns redan`);
+    if (r.ejLasta.length === 1) delar.push(`1 gick inte att läsa: "${r.ejLasta[0]}"`);
+    else if (r.ejLasta.length > 1) delar.push(`${r.ejLasta.length} gick inte att läsa — de står kvar i fältet`);
+    if (r.lagringFull) delar.push('kunde inte spara allt — telefonens lagring är full eller avstängd');
+
+    const lyckades = r.nya > 0;
+    const intet = !r.nya && !r.fanns && !r.ejLasta.length;
+    const text = intet
+      ? 'Skriv ett registreringsnummer först, till exempel ABC 123.'
+      : (lyckades ? '✓ ' : '') + delar.join(' · ');
+
+    if (el) {
+      el.textContent = text;
+      el.hidden = false;
+      el.classList.toggle('fel', !lyckades && !intet ? true : false);
+    }
+    // Toast + ljud bara när något faktiskt lades in.
+    if (lyckades) {
+      toast(r.nya === 1
+        ? 'Bilen är tillagd — läsaren larmar när den syns.'
+        : `${r.nya} bilar tillagda — läsaren larmar när de syns.`, 4000);
+      try { ljud.bekrafta(); } catch {}
+    } else if (!intet) {
+      try { ljud.fel(); } catch {}
+    }
+    return lyckades;
+  }
+
+  $('btnPlLagg').onclick = async () => {
+    const falt = $('plNyaFordon');
+    const r = await laggTillBilar(falt.value);
+    falt.value = r.kvar;                       // ogiltiga rader står kvar för rättning
+    visaBilKvitto($('plLaggKvitto'), r);
   };
+
+  /* ---- Snabbmodalen: samma inläggning, nåbar överallt ---- */
+
+  /**
+   * Öppnar "Lägg till bil" med valfri förifylld text.
+   * @param {string} forifyllt  t.ex. numret någon skrev i chatten
+   * @param {string} rubrik     egen rubrik när sammanhanget är ett annat
+   */
+  function oppnaBilModal(forifyllt = '', rubrik = '') {
+    const falt = $('bilModalFalt');
+    const kvitto = $('bilModalKvitto');
+    falt.value = forifyllt;
+    kvitto.hidden = true;
+    kvitto.classList.remove('fel');
+    $('bilModalRubrik').textContent = rubrik || 'Lägg till bil';
+    $('modalBil').hidden = false;
+    // Markera texten så man kan skriva över den direkt om numret var fel läst.
+    queueMicrotask(() => { falt.focus({ preventScroll: true }); falt.select(); });
+  }
+  function stangBilModal() { $('modalBil').hidden = true; }
+  // Görs nåbar för chatten och andra vyer, som redan görs för andra hjälpare.
+  window.polisvakt = window.polisvakt || {};
+  window.polisvakt.oppnaBilModal = oppnaBilModal;
+
+  $('bilModalAvbryt').onclick = stangBilModal;
+  $('modalBil').addEventListener('click', e => {
+    if (e.target === $('modalBil')) stangBilModal();   // klick utanför kortet
+  });
+  $('bilModalSpara').onclick = async () => {
+    const falt = $('bilModalFalt');
+    const r = await laggTillBilar(falt.value);
+    falt.value = r.kvar;
+    const ok = visaBilKvitto($('bilModalKvitto'), r);
+    // Stäng bara när allt gick in. Blev något kvar att rätta står dialogen
+    // öppen med raden kvar i fältet — annars försvinner felet ur synhåll.
+    if (ok && !r.ejLasta.length && !r.lagringFull) setTimeout(stangBilModal, 700);
+  };
+
+  const snabb = $('btnSnabbBil');
+  if (snabb) snabb.onclick = () => oppnaBilModal('');
 
   // Prova-knappen är kvar för att kunna kontrollera igenkänningen — och för
   // gamla poster där numret aldrig sparades för visning.

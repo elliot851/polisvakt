@@ -330,6 +330,13 @@
                 aria-haspopup="dialog"
                 title="Dagens rapporter, även de som gått ut"
                 style="padding:0; color:var(--accent); font-weight:650;">Idag</button>
+        <!-- Snabbvägen till att bevaka en bil. Ligger här för att det är den
+             enda vyn föraren har uppe hela tiden; låg det bara i
+             inställningarna skulle det aldrig användas. -->
+        <button class="sheet-count" id="btnSnabbBil" type="button"
+                aria-haspopup="dialog"
+                title="Lägg till en bil att bevaka"
+                style="padding:0; color:var(--accent); font-weight:650;">+ Bil</button>
       </span>
     </div>
     <ul class="hazard-list" id="hazardList"></ul>
@@ -1212,7 +1219,7 @@
 
     <!-- id:t minaFordonRubrik är rullmålet för knappen btnPlMinaFordon i
          dashcam-vyn. Ändras det slutar hoppet mellan vyerna fungera. -->
-    <h4 class="sub-head" id="minaFordonRubrik">Bevakade bilar</h4>
+    <h4 class="sub-head" id="minaFordonRubrik">Bevakade bilar <span class="bil-antal" id="plFordonAntal"></span></h4>
     <p class="hint">Skriv registreringsnummer på bilar att hålla koll på, ett
       nummer per rad — du kan klistra in en hel lista. Vill du kan du skriva en
       notering efter numret, till exempel <i>ABC 123 grå skåpbil</i>. Känner
@@ -1645,6 +1652,27 @@
      Listan återanvänder .hotspot-list, samma stil som mönsterlistan i
      inställningarna. Ingen ny css: raderna har samma form (ikon, rubrik,
      underrad, ett tal till höger) och skulle ha fått exakt samma regler. -->
+<!-- LÄGG TILL BIL — en modal, många ingångar.
+     Den öppnas från inställningarna, från snabbknappen i kartvyn och från
+     chatten när någon skrivit ett registreringsnummer. Att ha EN dialog i
+     stället för ett formulär per plats är hela poängen: bekräftelsen,
+     tolkningen och felmeddelandena blir likadana var man än lägger in bilen.
+     Förifylls via oppnaBilModal(text) i js/app.js. -->
+<div class="modal" id="modalBil" hidden>
+  <div class="modal-card">
+    <h2 id="bilModalRubrik">Lägg till bil</h2>
+    <p class="hint" id="bilModalText">Skriv registreringsnummer, ett per rad. Du kan
+      skriva en notering efter numret, till exempel <i>ABC 123 grå skåpbil</i>.</p>
+    <textarea id="bilModalFalt" rows="4" autocomplete="off" autocapitalize="characters"
+              spellcheck="false" placeholder="ABC 123 Volvon&#10;DEF 456"></textarea>
+    <p class="bil-kvitto" id="bilModalKvitto" role="status" hidden></p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="bilModalAvbryt" type="button">Avbryt</button>
+      <button class="btn-primary" id="bilModalSpara" type="button">Lägg till</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="modalDagen" hidden>
   <div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="dagenTitel">
     <h2 id="dagenTitel">Idag</h2>
