@@ -35,6 +35,7 @@
 // enbart på rättigheterna i billing.sql.
 
 import Stripe from 'npm:stripe@^22';
+import { lasKropp } from '../_shared/grind.ts';
 
 /* ========================== KONFIGURATION =========================== */
 
@@ -66,6 +67,42 @@ const RESPIT_TIMMAR = 24;
  * själv, precis som kommentaren vid subscription.deleted säger.
  */
 const AKTIVA_STATUSAR = new Set(['active', 'trialing']);
+
+/**
+ * Hur gammal får en signatur vara? Sekunder.
+ *
+ * REPLAY-SKYDDET, och det står här i klartext i stället för att ligga som ett
+ * `undefined` i anropet nedan. Stripe signerar tidsstämpeln tillsammans med
+ * kroppen, så en gammal signerad leverans som någon snappat upp och skickar om
+ * avvisas när tidsstämpeln är äldre än det här. Utan tolerans vore en giltig
+ * signatur giltig för alltid: den som en gång kommer över en kropp kan spela
+ * upp den hur många gånger som helst. Idempotensen i claim_payment_event
+ * fångar visserligen samma event_id, men det är ett andra lås — det första
+ * ska hålla av sig självt.
+ *
+ * Fem minuter är Stripes egen rekommendation och deras standardvärde.
+ */
+const SIGNATUR_TOLERANS_SEK = 300;
+
+/**
+ * Största kropp vi ens läser in. Stripe-händelser ligger normalt under 50 kB.
+ *
+ * Kroppen MÅSTE läsas innan signaturen kan verifieras — signaturen räknas på
+ * den. Det gör den här endpointen till den enda i projektet där en helt
+ * oautentiserad främling kan få oss att allokera minne, och utan tak är det
+ * bara att skicka en gigabyte.
+ */
+const MAX_KROPP = 1024 * 1024;
+
+/**
+ * Tillåten form på client_reference_id.
+ *
+ * Stripe Payment Links tillåter bara alfanumeriskt, bindestreck och
+ * understreck, max 200 tecken — se kassareferens() i js/billing.js. Värdet går
+ * rakt in i subscribers.device_id och används sedan som uppslagsnyckel i varje
+ * betalfunktion, så det ska kontrolleras här och inte antas.
+ */
+const DEVICE_FORM = /^[A-Za-z0-9_-]{1,200}$/;
 
 /* ============================== KLIENTER ============================ */
 
@@ -99,7 +136,10 @@ async function rpc<T = unknown>(fn: string, args: Record<string, unknown>): Prom
     body: JSON.stringify(args),
   });
   const text = await r.text();
-  if (!r.ok) throw new Error(`rpc ${fn} gav ${r.status}: ${text}`);
+  // Kapat: PostgREST svarar med hint, detail och ibland hela frågan. Det ska
+  // stå i vår logg, inte växa till en roman, och framför allt aldrig ut i ett
+  // HTTP-svar — se felhanteringen längst ner.
+  if (!r.ok) throw new Error(`rpc ${fn} gav ${r.status}: ${text.slice(0, 300)}`);
   if (!text) return null;              // void-funktioner svarar 204 utan kropp
   try { return JSON.parse(text) as T; } catch { return text as unknown as T; }
 }
@@ -238,6 +278,27 @@ async function hanteraCheckout(session: Stripe.Checkout.Session): Promise<Utfall
     return {
       status: 'orphan', customer,
       error: 'checkout utan client_reference_id — betallänken saknar URL-parametern',
+    };
+  }
+
+  if (!DEVICE_FORM.test(device)) {
+    /**
+     * Fältet har fel FORM och får inte gå vidare in i databasen.
+     *
+     * client_reference_id sätts i URL:en, och betallänken är publik — vem som
+     * helst kan öppna den med vad de vill i parametern. Stripe filtrerar
+     * visserligen bort ogiltiga tecken, men "Stripe brukar" är inte samma sak
+     * som en kontroll, och värdet används som uppslagsnyckel i sex olika
+     * databasfunktioner. Samma behandling som ett saknat id: orphan, kvitteras
+     * med 200, syns i payment_problems och kopplas för hand.
+     *
+     * Värdet självt loggas INTE. Det är angriparstyrd text på väg in i en
+     * loggrad som en människa sedan läser.
+     */
+    return {
+      status: 'orphan', customer,
+      error: `client_reference_id har otillåten form (${device.length} tecken) — `
+           + 'bara A-Z, a-z, 0-9, bindestreck och understreck, max 200',
     };
   }
 
@@ -542,19 +603,34 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // Rå text, inte req.json(). Signaturen räknas på exakta byte — går kroppen
   // genom en JSON-tolkning och tillbaka stämmer den aldrig.
-  const rått = await req.text();
+  //
+  // Med tak, se MAX_KROPP: det här är den enda punkten i hela projektet där en
+  // oautentiserad främling får oss att läsa in data, och den kan inte flyttas
+  // efter legitimeringen eftersom legitimeringen ÄR en signatur på kroppen.
+  const rått = await lasKropp(req, MAX_KROPP);
+  if (rått === null) {
+    console.error(`Kropp över ${MAX_KROPP} byte avvisad utan att läsas färdigt.`);
+    return new Response('Kroppen är för stor', { status: 413 });
+  }
 
   let event: Stripe.Event;
   try {
     event = await stripe.webhooks.constructEventAsync(
-      rått, signatur, STRIPE_WEBHOOK_SECRET, undefined, cryptoProvider,
+      rått, signatur, STRIPE_WEBHOOK_SECRET, SIGNATUR_TOLERANS_SEK, cryptoProvider,
     );
   } catch (e) {
     // 400: signaturen är fel eller för gammal. Att svara 500 hade fått
     // Stripe att skicka om i tre dygn på något som aldrig kan bli rätt.
     // Vanligaste orsaken är fel whsec — test och live har olika.
+    //
+    // Detaljen stannar i LOGGEN. Den som får det här svaret har per definition
+    // inte kunnat legitimera sig, och Stripes felmeddelanden skiljer på "ingen
+    // signatur matchade", "tidsstämpeln är för gammal" och "huvudet går inte
+    // att tolka. Det är tre olika ledtrådar gratis till den som sitter och
+    // provar sig fram, och Stripe själva behöver dem inte — de läser sin egen
+    // panel, inte vår svarstext.
     console.error('Signaturen gick inte att verifiera:', (e as Error).message);
-    return new Response(`Ogiltig signatur: ${(e as Error).message}`, { status: 400 });
+    return new Response('Ogiltig signatur', { status: 400 });
   }
 
   // Från och med här är händelsen bevisligen från Stripe och får loggas.
@@ -600,9 +676,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
         // kontrollen i hanteraCheckout), så det finns inget att dra tillbaka —
         // men det ska synas i loggen att någon försökte och misslyckades.
         const s = event.data.object as Stripe.Checkout.Session;
+        const ref = s.client_reference_id;
         utfall = {
           status: 'processed',
-          device: s.client_reference_id, customer: kundId(s.customer),
+          // Samma formkontroll som i hanteraCheckout: fältet är publikt
+          // styrbart och går rakt in i payment_events.device_id.
+          device: ref && DEVICE_FORM.test(ref) ? ref : null,
+          customer: kundId(s.customer),
           amount: s.amount_total, currency: s.currency,
           error: 'fördröjd betalning misslyckades — ingen tillgång gavs',
         };
@@ -664,6 +744,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // 500 med flit: händelsen ska bli röd i Stripe-panelen och skickas om.
     // Nästan alla fel här är tillfälliga (databasen nere, Stripe-API långsamt),
     // och nästa försök lyckas.
-    return new Response(`Fel vid hantering: ${msg}`, { status: 500 });
+    //
+    // Utan detaljen i svaret. msg är ofta ett PostgREST-fel rakt av — funktions-
+    // namn, kolumnnamn, hint och ibland en bit av frågan. Det hörde hemma i
+    // loggen ovan och i payment_events.error, inte i en HTTP-kropp. Att den
+    // bara går till Stripe i lyckoscenariot ändrar ingenting: en svarskropp
+    // ska inte innehålla något som inte tål att läsas av någon annan.
+    return new Response('Fel vid hantering', { status: 500 });
   }
 });

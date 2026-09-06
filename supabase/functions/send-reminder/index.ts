@@ -59,6 +59,7 @@
 // SUPABASE_URL och SUPABASE_SERVICE_ROLE_KEY injiceras av plattformen.
 
 import * as webpush from 'jsr:@negrel/webpush@0.5.0';
+import { likaHemlighet, lasKroppObjekt } from '../_shared/grind.ts';
 
 /* ========================== KONFIGURATION =========================== */
 
@@ -106,6 +107,13 @@ const MAX_PER_KORNING = 500;
  * till ett fält och undrar varför pushen börjar ge 413.
  */
 const MAX_PAYLOAD = 3800;
+
+/**
+ * Största kropp vi läser. Den enda som skickas är {dry, endpoint, lead} —
+ * några hundra byte. Taket finns för att `await req.json()` annars sväljer
+ * vad som helst innan grinden ens hunnit avvisa anroparen.
+ */
+const MAX_KROPP = 64 * 1024;
 
 /* ============================== TYPER =============================== */
 
@@ -322,18 +330,40 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // konfiguration, inte fel anropare.
   if (!CRON_SECRET) {
     console.error('CRON_SECRET är inte satt — utskick vägras tills den finns.');
-    return new Response('Nekad: CRON_SECRET saknas', { status: 503 });
+    // Statuskoden bär diagnosen (503 = felkonfigurerad, 401 = fel anropare).
+    // Texten gjorde det förr också, och den lästes av vem som helst: "det här
+    // låset är inte påsatt" är inte en upplysning som ska stå i ett svar.
+    return new Response('Nekad', { status: 503 });
   }
-  if (req.headers.get('x-cron-secret') !== CRON_SECRET) {
+  // KONSTANTTIDSJÄMFÖRELSE, inte !==. Se likaHemlighet i _shared/grind.ts:
+  // strängjämförelsen avbryter vid första tecknet som skiljer, och den
+  // skillnaden går att mäta. Endpointen ligger öppen på internet och tål hur
+  // många gissningar som helst, så oraklet räcker för att plocka fram
+  // CRON_SECRET tecken för tecken i stället för att behöva gissa den hel.
+  if (!(await likaHemlighet(req.headers.get('x-cron-secret') ?? '', CRON_SECRET))) {
     return new Response('Nekad', { status: 401 });
   }
 
-  let kropp: { dry?: boolean; endpoint?: string; lead?: number } = {};
-  try { kropp = await req.json(); } catch { /* tom kropp är normalfallet */ }
-  // JSON-kroppen `null` (eller en sträng/lista) passerar req.json() men gör
-  // kropp.lead till ett TypeError → ohanterad 500. Allt som inte är ett objekt
-  // behandlas som tom kropp.
-  if (!kropp || typeof kropp !== 'object' || Array.isArray(kropp)) kropp = {};
+  // Först EFTER grinden läses kroppen, och aldrig mer än MAX_KROPP.
+  const rå = await lasKroppObjekt(req, MAX_KROPP);
+  if (rå === null) return new Response('Kroppen är för stor', { status: 413 });
+
+  /**
+   * Fälten valideras, de tas inte som de kommer.
+   *
+   * p_lead_minutes gick förr rakt genom Math.min/Math.max, som inte försvarar
+   * sig mot annat än tal: `Math.max(0, "abc")` är NaN, Math.min(60, NaN) är
+   * NaN, och JSON.stringify skriver NaN som `null`. Då fick databasfunktionen
+   * null där den väntade ett heltal — antingen ett fel eller, värre, tyst
+   * default. Number.isFinite är kontrollen som saknades.
+   */
+  const kropp: { dry: boolean; endpoint: string | null; lead: number } = {
+    dry: rå.dry === true,
+    endpoint: typeof rå.endpoint === 'string' && rå.endpoint ? rå.endpoint : null,
+    lead: Number.isFinite(rå.lead as number)
+      ? Math.min(60, Math.max(0, Math.round(rå.lead as number)))
+      : FORVARNING_MIN,
+  };
 
   // Nytt ECDH-nyckelpar per körning. Se noten om RFC 8291 §2 överst i filen.
   let server: webpush.ApplicationServer | null = null;
@@ -353,7 +383,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let rader: Prenumeration[] = [];
   try {
     rader = (await rpc<Prenumeration[]>('due_push_reminders', {
-      p_lead_minutes: Math.min(60, Math.max(0, kropp.lead ?? FORVARNING_MIN)),
+      // Redan klämt till 0–60 och garanterat ett heltal, se valideringen ovan.
+      p_lead_minutes: kropp.lead,
       p_limit: MAX_PER_KORNING,
     })) ?? [];
   } catch (e) {

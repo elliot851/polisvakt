@@ -70,10 +70,54 @@ const COURSE_MIN_KMH = 12;     // under detta är GPS-kursen skräp
 const COURSE_DEADBAND_DEG = 3; // små kursryck ska inte röra kartan alls
 const STOP_KMH = 5;
 const STOP_RESUME_MS = 60000;  // stillastående så länge = ny körning, kör-upp får komma tillbaka
-const TAU_COURSE_MS = 260;     // mjukhet i kör-upp
 const TAU_NORTH_MS = 380;      // mjukhet när man trycker på kompassen
-const LOOKAHEAD = 0.15;        // hur långt ner på skärmen bilen ligger i kör-upp
 const LONGPRESS_MS = 550;
+
+/**
+ * MJUKHETEN I KÖR-UPP ÄR INTE ETT TAL UTAN ETT SPANN.
+ *
+ * Låg förut på ett fast tau på 260 ms, och ett fast tal kan inte vara rätt två
+ * gånger. På en rak väg kommer kursen in med ett par graders brus per sekund
+ * och 260 ms gör att kartan hela tiden vaggar några grader fram och tillbaka —
+ * det är den rörelsen som gör en passagerare åksjuk. I en avfart eller en
+ * rondell ska samma karta vrida sig sjuttio grader, och då är 260 ms i
+ * långsammaste laget: kartan pekar fortfarande åt förra vägen just när
+ * föraren behöver den.
+ *
+ * Nu skalas mjukheten efter hur mycket som ska vridas: nästan omärkligt vid
+ * små ändringar, kvickt vid stora. Samma princip som en människa har på
+ * ratten — man rättar inte en kurva och en avfart med samma handrörelse.
+ */
+const TAU_KURS_LUGN_MS = 620;    // liten kursändring: låt den knappt synas
+const TAU_KURS_SNABB_MS = 210;   // stor kursändring: hinn med
+const KURS_FULLT_UTSLAG = 50;    // graders ändring som ger snabbaste svaret
+
+/**
+ * HUR LÅNGT NER PÅ SKÄRMEN BILEN LIGGER I KÖR-UPP, som andel av skärmhöjden.
+ *
+ * Waze skjuter ner bilen mer ju fortare man kör, och det är inte pynt: i 30
+ * km/h är det korsningen man står i som är intressant, i 110 km/h är det en
+ * kilometer framåt. Ett fast tal (det var 0,15) blir för mycket i stan och för
+ * lite på motorvägen.
+ */
+const LOOKAHEAD_MIN = 0.10;      // stillastående och krypkörning
+/**
+ * Taket är inte satt efter vad som ser häftigast ut utan efter var nålen
+ * hamnar. Förskjutningen mäts från skärmens MITT, så 0,20 lägger bilen 70 %
+ * ner i bild. Mer än så och den kryper in under hastighetsmätaren och
+ * knappraden längst ner — en egen-nål man inte ser är sämre än en som ligger
+ * lite för högt.
+ */
+const LOOKAHEAD_MAX = 0.20;      // motorvägsfart
+const LOOKAHEAD_FULL_KMH = 90;   // farten där maxförskjutningen nåtts
+/**
+ * Hur snabbt förskjutningen får ändra sig, per fix. Låg med flit: ändras den
+ * fort blir varje inbromsning en extra panorering uppåt i bild, alltså precis
+ * det ryck hela ändringen finns för att ta bort. 0,15 vid en fix i sekunden
+ * ger ungefär sex sekunder att växla mellan stadsläge och motorvägsläge, vilket
+ * är i samma härad som det tar att faktiskt byta fart.
+ */
+const LOOKAHEAD_TAU = 0.15;
 
 const norm360 = d => ((d % 360) + 360) % 360;
 const norm180 = d => { const x = norm360(d); return x > 180 ? x - 360 : x; };
@@ -113,7 +157,9 @@ export class MapRotation extends EventTarget {
     this.mode = 'north';             // 'north' | 'manual' | 'course'
 
     this._target = 0;
-    this._tau = TAU_COURSE_MS;
+    this._tau = TAU_KURS_LUGN_MS;
+    this._lookahead = LOOKAHEAD_MIN;  // glider mot farten, se updateFromFix
+    this._sistSagd = null;            // senast utskickade bearing, se #settle
     this._animating = false;
     this._raf = 0;
     this._lastTs = 0;
@@ -236,6 +282,11 @@ export class MapRotation extends EventTarget {
     const show = this.rotated || this.mode === 'course';
     this.compass.classList.toggle('show', show);
     this.compass.classList.toggle('course', this.mode === 'course');
+    // css/karta.css hänger horisontdiset på den här klassen. Den sitter på host
+    // och alltså UTANFÖR rotorn med flit: diset ska stå still mot skärmen medan
+    // kartan snurrar under det, precis som en vindruta står still medan vägen
+    // svänger. Satt på rotorn hade det snurrat med och sett ut som en fläck.
+    this.host.classList.toggle('pv-korupp', this.mode === 'course' && this._active);
   }
 
   /* ================= Leaflet-lagningarna ================= */
@@ -362,7 +413,22 @@ export class MapRotation extends EventTarget {
       cc.style.bottom = this._pad.y + 'px';
     }
 
-    if (this.tileLayer) this.tileLayer.options.keepBuffer = on ? 1 : 2;
+    // BRICKBUFFERTEN medan behållaren är förstorad.
+    //
+    // Stod förut på 1. Det var för snålt och gav exakt det fel som skulle
+    // undvikas: brickor precis utanför den förstorade rutan slängdes och fick
+    // hämtas om så fort vinkeln ändrades någon grad. Alltså grå fyrkanter
+    // längs kanterna under själva vridningen — i den enda rörelse som skulle
+    // se mjukast ut av alla.
+    //
+    // Den förstorade behållaren laddar redan ungefär dubbelt så många brickor,
+    // så bufferten ska vara mindre än i oroterat läge — men inte så liten att
+    // den arbetar emot. Basvärdet sätts av map.js och läses härifrån, så att
+    // det bara står på ett ställe.
+    if (this.tileLayer) {
+      const bas = this.tileLayer._pvBasBuffert ?? 4;
+      this.tileLayer.options.keepBuffer = on ? Math.max(2, bas - 2) : bas;
+    }
 
     // Symmetrisk förstoring → invalidateSize håller kvar samma mittpunkt.
     this.map.invalidateSize({ pan: true, animate: false });
@@ -467,7 +533,15 @@ export class MapRotation extends EventTarget {
         if (!this.rotated && this.mode === 'north' && !this._animating) this.#setActive(false);
       }, 600);
     }
-    this.dispatchEvent(new CustomEvent('bearingchange', { detail: this.bearing }));
+    // Bara när vinkeln faktiskt ändrats. #settle() körs i slutet av varje
+    // bildruta som inte animerar — även varje touchmove under tvåfingergesten
+    // och varje gång deadbandet stoppat en kursändring. Att skicka ut en
+    // händelse som säger samma sak som förra gången är ren körning i tomgång
+    // för alla som lyssnar.
+    if (this._sistSagd === null || Math.abs(norm180(this.bearing - this._sistSagd)) > 0.05) {
+      this._sistSagd = this.bearing;
+      this.dispatchEvent(new CustomEvent('bearingchange', { detail: this.bearing }));
+    }
   }
 
   #setMode(m) {
@@ -515,6 +589,14 @@ export class MapRotation extends EventTarget {
     if (kmh < STOP_KMH) { if (!this._stillSince) this._stillSince = now; }
     else this._stillSince = 0;
 
+    // Förskjutningen ner på skärmen följer farten, och den glider dit i stället
+    // för att hoppa. Räknas FÖRE alla returer nedan: den beror bara på farten,
+    // inte på om kartan råkar vridas just nu, och ska vara rätt även för den
+    // som kört med norr uppåt en stund och sedan slår på kör-upp igen.
+    const malAndel = LOOKAHEAD_MIN + (LOOKAHEAD_MAX - LOOKAHEAD_MIN) *
+      Math.min(1, Math.max(0, kmh / LOOKAHEAD_FULL_KMH));
+    this._lookahead += (malAndel - this._lookahead) * LOOKAHEAD_TAU;
+
     // Bilen har stått still en minut: nästa igångkörning är en ny körning, och
     // då får kör-upp komma tillbaka av sig självt.
     if (this._paused && this._stillSince && now - this._stillSince > STOP_RESUME_MS) {
@@ -537,8 +619,25 @@ export class MapRotation extends EventTarget {
     if (fix.accuracy != null && fix.accuracy > 60) return;
 
     if (this.mode !== 'course') this.#setMode('course');
-    if (Math.abs(norm180(h - this._target)) < COURSE_DEADBAND_DEG) return;
-    this.#animateTo(h, TAU_COURSE_MS);
+
+    const skillnad = Math.abs(norm180(h - this._target));
+
+    // DÖDBANDET VÄXER NÄR FARTEN SJUNKER.
+    //
+    // GPS-kursen räknas ur två positioner. Ju långsammare man kör desto kortare
+    // är sträckan mellan dem och desto större andel av den är mätfel — i 15
+    // km/h kan kursen svaja tio grader medan bilen kör spikrakt. Ett fast
+    // dödband på tre grader släppte igenom allt det bruset och lät kartan
+    // vagga fram och tillbaka i stadstrafik. I motorvägsfart är kursen däremot
+    // stabil, och då ÄR tre graders ändring en verklig kurva som ska synas.
+    const dodband = kmh < 25 ? COURSE_DEADBAND_DEG * 2.6
+                  : kmh < 60 ? COURSE_DEADBAND_DEG * 1.6
+                  : COURSE_DEADBAND_DEG;
+    if (skillnad < dodband) return;
+
+    // Mjukheten efter hur mycket som ska vridas. Se TAU_KURS_* överst.
+    const del = Math.min(1, skillnad / KURS_FULLT_UTSLAG);
+    this.#animateTo(h, TAU_KURS_LUGN_MS + (TAU_KURS_SNABB_MS - TAU_KURS_LUGN_MS) * del);
   }
 
   /**
@@ -549,10 +648,19 @@ export class MapRotation extends EventTarget {
    */
   followTarget(lat, lon) {
     if (this.mode !== 'course' || !this._active) return null;
-    const d = Math.round(this.view.h * LOOKAHEAD);
+    const andel = Number.isFinite(this._lookahead) ? this._lookahead : LOOKAHEAD_MIN;
+    const d = Math.round(this.view.h * andel);
     if (!d) return null;
     const z = this.map.getZoom();
-    const b = this.bearing * Math.PI / 180;
+    // MÅLvinkeln medan vi vrider, inte den nuvarande.
+    //
+    // Kartan panorerar och roterar samtidigt, och de två tar ungefär lika lång
+    // tid. Räknas förskjutningen på den vinkel kartan har JUST NU pekar den åt
+    // det håll bilen körde före svängen, och bilen dras åt sidan under hela
+    // svängen för att rätas upp först när rotationen hunnit ikapp. Det är
+    // precis det sidoryck man ser i en dåligt gjord kör-upp. Med målvinkeln
+    // landar panoreringen där kartan kommer att peka när den är framme.
+    const b = (this._animating ? this._target : this.bearing) * Math.PI / 180;
     // Skärmens "nedåt" uttryckt i lagerkoordinater.
     const off = L.point(-d * Math.sin(b), d * Math.cos(b));
     try {

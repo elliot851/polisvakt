@@ -21,7 +21,7 @@
 // hörn och "Sök efter uppdatering" läser BÅDA den här strängen, så en glömd
 // bump gör att appen intygar att telefonen kör det senaste medan den kör det
 // gamla. Två mätinstrument som ljuger likadant är sämre än inga.
-const VERSION = '2026-09-06-135';
+const VERSION = '2026-09-06-136';
 
 // Kod hämtas alltid förbi webbläsarens egen HTTP-cache.
 //
@@ -54,6 +54,7 @@ const SHELL = [
   './',
   './index.html',
   './css/app.css',
+  './css/karta.css',
   // Leaflet (kartmotorn) ligger LOKALT, inte på unpkg. Från CDN kunde den
   // aldrig cachas (fetch-hanteraren cachar bara samma origin) och en kallstart
   // utan nät — i en tunnel, i ett garage, det scenario cachen finns FÖR — fick

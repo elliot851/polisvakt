@@ -7,7 +7,13 @@
 //     "text":  "Ny rapport från gruppen. Öppna Polisvakt för att se var.",
 //     "tag":   "polisvakt-grupp",
 //     "url":   "./",
-//     "antal": 1 }
+//     "antal": 1,
+//     "platser": [{ "lat": 59.61, "lon": 16.51 }] }
+//
+// 'platser' är ett URVALSKRITERIUM, inte innehåll: koordinaterna för omgångens
+// rapporter, som skickas vidare till fbmejl_push_mottagare(int, jsonb) så att
+// bara de vars hemplats ligger inom deras egen notisradie får notisen. De får
+// ALDRIG in i byggNyttolast — se hamtaMottagare() nedan.
 //
 // -------------------------------------------------------------------------
 // DET VIKTIGASTE I HELA FILEN: översättningen av fältnamnen
@@ -89,6 +95,7 @@
 // docs/notiskedjan.md.
 
 import * as webpush from 'jsr:@negrel/webpush@0.5.0';
+import { nagonLikaHemlighet, lasKroppObjekt } from '../_shared/grind.ts';
 
 /* ========================== KONFIGURATION =========================== */
 
@@ -154,6 +161,35 @@ if (TILLATNA_ANROPSNYCKLAR.length === 0) {
 }
 
 /**
+ * Nyckelinventeringen. En gång vid uppstart, ALDRIG per anrop.
+ *
+ * Den stod förr i 401-svarets loggrad, med formen och den exakta LÄNGDEN på
+ * varje nyckel vi godtar. Två fel i det:
+ *
+ *   1. Det är en hemlighet i en logg. Längden på en nyckel är inte nyckeln,
+ *      men den är halva jobbet för den som ska gissa den, och loggarna följer
+ *      med i varje export och varje skärmdump av dashboarden.
+ *   2. Raden skrevs av ANROPAREN. Vem som helst som når endpointen kunde
+ *      trycka fram den genom att skicka en felaktig nyckel, och på köpet fylla
+ *      loggen. Ett orakel som en främling får ringa i.
+ *
+ * Här körs den en gång per kallstart, av oss, utan att någon bett om det. Och
+ * bara FORMEN — de tre tecken som skiljer 'eyJ' (JWT) från 'sb_' (ny hemlig
+ * nyckel), vilket är hela det diagnostiska värdet — plus hur många nycklar som
+ * godtas. Ingen längd, inget innehåll.
+ */
+function nyckelform(k: string): string {
+  if (k.startsWith('eyJ')) return 'JWT';
+  if (k.startsWith('sb_')) return 'sb_ (ny hemlig nyckel)';
+  return 'annan form';
+}
+console.log(
+  `Anropsgrind: ${TILLATNA_ANROPSNYCKLAR.length} godtagen nyckel/nycklar av formen ` +
+    (TILLATNA_ANROPSNYCKLAR.map(nyckelform).join(', ') || '—') +
+    '. Nekas ett anrop står formen på den mottagna nyckeln i den raden.',
+);
+
+/**
  * Livslängd på pushen hos pushtjänsten.
  *
  * Trettio minuter, mot varningarnas egen livslängd i js/store.js: polis 45
@@ -171,6 +207,23 @@ const MAX_PER_KORNING = 2000;
 
 /** Största nyttolast innan kryptering. Se send-reminder för uträkningen. */
 const MAX_PAYLOAD = 3800;
+
+/**
+ * Största kropp vi läser. Kroppen är titel, text, tag, url, antal och
+ * platslistan — några kilobyte i värsta fall. Taket finns för att
+ * `await req.json()` annars sväljer vad som helst.
+ */
+const MAX_KROPP = 256 * 1024;
+
+/**
+ * Hur många punkter i platslistan som får skickas vidare till databasen.
+ *
+ * En omgång är i praktiken en handfull rapporter. Taket finns för att listan
+ * korsjoinas mot varje prenumerants hemplatser i avståndsgrinden — se
+ * fbmejl_push_mottagare(int, jsonb). En lång lista där är inte ett fel, det är
+ * en kvadratisk fråga.
+ */
+const MAX_PLATSER = 100;
 
 /** Vad sw.js visar om vi skickar en tom titel. Aldrig önskvärt. */
 const TITEL_RESERV = 'Ny varning i gruppen';
@@ -190,12 +243,19 @@ type Kropp = {
   tag?: unknown;
   url?: unknown;
   antal?: unknown;
+  // URVALSKRITERIUM, INTE INNEHÅLL. Koordinaterna för omgångens rapporter.
+  // Skickas vidare till fbmejl_push_mottagare och får ALDRIG in i
+  // byggNyttolast — koordinater på en låsskärm är inte vad någon bad om.
+  platser?: unknown;
   // Skickar någon redan rätt fältnamn tas de emot också. Kostar en rad och
   // gör funktionen möjlig att testa med curl utan att gissa svenska.
   title?: unknown;
   body?: unknown;
   dry?: unknown;
 };
+
+/** En punkt som avståndsgrinden kan räkna på. */
+type Punkt = { lat: number; lon: number };
 
 type Utfall = 'skickad' | 'borttagen' | 'fel' | 'hoppad';
 
@@ -254,6 +314,85 @@ function byggNyttolast(k: Kropp) {
     tag: (str(k.tag) ?? 'polisvakt-grupp').slice(0, 60),
     url: (str(k.url) ?? './').slice(0, 300),
   };
+}
+
+/* ============================ MOTTAGARNA ============================ */
+
+/**
+ * Plocka ut giltiga koordinater ur kroppen. Allt annat kastas.
+ *
+ * Listan går rakt in i en databasfunktion som jsonb, och den funktionen matar
+ * den genom jsonb_to_recordset och räknar avstånd på varje punkt. Skickas en
+ * NaN, en sträng eller en latitud på 900 in dit blir svaret inte ett fel —
+ * det blir en avståndsberäkning som tyst ger fel svar, alltså mottagare som
+ * inte får sin notis. Valideringen sker HÄR, innan värdet lämnar oss.
+ *
+ * Är listan tom eller obrukbar returneras null, och då faller vi tillbaka på
+ * "alla mottagare" precis som förut. Filtret får bara SÄNKA vad som når
+ * föraren när vi vet att det gör det på riktiga koordinater — aldrig tysta
+ * någon på grund av skräp i indata.
+ */
+function giltigaPlatser(v: unknown): Punkt[] | null {
+  if (!Array.isArray(v)) return null;
+  const ut: Punkt[] = [];
+  for (const p of v) {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) continue;
+    const { lat, lon } = p as { lat?: unknown; lon?: unknown };
+    if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
+    ut.push({ lat, lon });
+    if (ut.length >= MAX_PLATSER) break;
+  }
+  return ut.length ? ut : null;
+}
+
+/**
+ * Hämta mottagarna, med avståndsgrinden när den finns.
+ *
+ * DE TVÅ SIGNATURERNA. public.fbmejl_push_mottagare finns i två utgåvor:
+ *
+ *   (p_limit int)                 — skalet. Alla som slagit på gruppnotiser.
+ *   (p_limit int, p_platser jsonb) — samma urval PLUS avståndsgrinden, alltså
+ *                                    bara de vars hemplats ligger inom deras
+ *                                    egen notisradie från någon rapport i
+ *                                    omgången.
+ *
+ * Den andra kom med supabase/migrationer/2026-08-22-notisradie.sql, och
+ * fbmejl_notis_ut() har sedan dess skickat med fältet 'platser' i kroppen. Den
+ * här funktionen LÄSTE det aldrig — den anropade skalet med bara p_limit, och
+ * därmed var hela avståndsgrinden inert: varje prenumerant fick varje notis
+ * från hela landet, tvärtemot radien de själva ställt in i appen. Inget
+ * felade, ingenting syntes i någon logg. (Granskningsfynd 2026-09-06.)
+ *
+ * FALLBACKEN ÄR INTE PYNT. Är notisradie-migrationen inte körd på databasen
+ * finns bara skalet, och PostgREST svarar då 404 med koden PGRST202 på ett
+ * anrop som bär p_platser — "ingen funktion med de argumenten". Utan
+ * återfallet nedan hade en deploy av den här filen mot en databas som ligger
+ * efter tystat gruppnotisen helt. Nu blir en halv utrullning en rad i loggen
+ * i stället för en tyst notiskedja.
+ */
+async function hamtaMottagare(platser: Punkt[] | null): Promise<Prenumeration[]> {
+  if (platser) {
+    try {
+      return (await rpc<Prenumeration[]>('fbmejl_push_mottagare', {
+        p_limit: MAX_PER_KORNING,
+        p_platser: platser,
+      })) ?? [];
+    } catch (e) {
+      const msg = (e as Error).message ?? '';
+      const saknas = msg.includes('PGRST202') || msg.includes(' 404');
+      if (!saknas) throw e;
+      console.warn(
+        'fbmejl_push_mottagare(int, jsonb) finns inte i databasen — avståndsgrinden ' +
+          'hoppas över och ALLA mottagare får notisen. Kör ' +
+          'supabase/migrationer/2026-08-22-notisradie.sql.',
+      );
+    }
+  }
+  return (await rpc<Prenumeration[]>('fbmejl_push_mottagare', {
+    p_limit: MAX_PER_KORNING,
+  })) ?? [];
 }
 
 /* ============================ UTSKICKET ============================= */
@@ -387,31 +526,31 @@ Deno.serve(async (req: Request): Promise<Response> => {
    */
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-  if (!token || !TILLATNA_ANROPSNYCKLAR.some((k) => k === token)) {
+
+  // KONSTANTTIDSJÄMFÖRELSE över hela listan, inte .some(k => k === token).
+  // Se _shared/grind.ts: `===` avbryter vid första tecknet som skiljer, och
+  // .some() avbryter dessutom vid första träffen — två olika tidsläckor i
+  // samma rad, på en endpoint som kan skicka en notis till varje telefon.
+  if (!token || !(await nagonLikaHemlighet(token, TILLATNA_ANROPSNYCKLAR))) {
     // Diagnosen, utan att logga en hemlighet.
     //
     // Ett 401 utan förklaring ser exakt likadant ut oavsett om anroparen är
     // en främling eller om ägaren råkat lägga fel utgåva av sin egen nyckel i
-    // valvet. Det ena kräver ingenting, det andra kräver
-    // en rättning — och skillnaden syns i FORMEN och LÄNGDEN, inte i
-    // innehållet. Nycklarnas tre första tecken skiljer 'eyJ' (JWT) från
-    // 'sb_' (ny hemlig nyckel), och det räcker för att se felet.
+    // valvet. Det ena kräver ingenting, det andra kräver en rättning — och
+    // skillnaden syns i FORMEN. Vad vi godtar står i uppstartsraden ovan; här
+    // står bara vad som kom in, för det är inte vår hemlighet.
     console.error(
       'Nekat anrop. Fick nyckel av formen "' + (token.slice(0, 3) || 'ingen') +
-      '" med längd ' + token.length + '. Godtar ' + TILLATNA_ANROPSNYCKLAR.length +
-      ' nyckel/nycklar av formen ' +
-      TILLATNA_ANROPSNYCKLAR.map((k) => '"' + k.slice(0, 3) + '" (' + k.length + ')').join(', ') +
-      '. Stämmer längden men inte nyckeln är det en annan nyckel; skiljer formen är det fel ' +
-      'utgåva — se docs/notiskedjan.md.',
+      '". Jämför med uppstartsraden "Anropsgrind:" — skiljer formen är det fel ' +
+      'utgåva av nyckeln, se docs/notiskedjan.md.',
     );
     return new Response('Nekad', { status: 401 });
   }
 
-  let kropp: Kropp = {};
-  try { kropp = await req.json(); } catch { /* tom kropp hanteras nedan */ }
-  // JSON-kroppen `null` (eller sträng/lista) passerar req.json() men gör
-  // kropp.titel till ett TypeError → ohanterad 500. Icke-objekt = tom kropp.
-  if (!kropp || typeof kropp !== 'object' || Array.isArray(kropp)) kropp = {};
+  // Först EFTER grinden läses kroppen, och aldrig mer än MAX_KROPP.
+  const rå = await lasKroppObjekt(req, MAX_KROPP);
+  if (rå === null) return new Response('Kroppen är för stor', { status: 413 });
+  const kropp = rå as Kropp;
 
   const data = byggNyttolast(kropp);
   const nyttolast = JSON.stringify(data);
@@ -423,20 +562,24 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return Response.json({ ok: false, fel: 'nyttolast for stor' }, { status: 400 });
   }
 
+  const platser = giltigaPlatser(kropp.platser);
+
   let rader: Prenumeration[] = [];
   try {
-    rader = (await rpc<Prenumeration[]>('fbmejl_push_mottagare', {
-      p_limit: MAX_PER_KORNING,
-    })) ?? [];
+    rader = await hamtaMottagare(platser);
   } catch (e) {
     console.error('Kunde inte hämta mottagare:', (e as Error).message);
     return new Response('Databasen svarar inte', { status: 500 });
   }
 
   // Torrkörning: svara med VAD som skulle skickats och till hur många, utan
-  // endpoints — de är hemligheter och ska aldrig ut ur funktionen.
+  // endpoints — de är hemligheter och ska aldrig ut ur funktionen. Antalet
+  // platser, inte platserna: koordinater hör inte hemma i ett svar heller.
   if (kropp.dry) {
-    return Response.json({ ok: true, dry: true, mottagare: rader.length, notis: data });
+    return Response.json({
+      ok: true, dry: true, mottagare: rader.length,
+      platser: platser?.length ?? 0, notis: data,
+    });
   }
 
   if (!rader.length) {
@@ -484,5 +627,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     skickade: summa.skickad,
     borttagna: summa.borttagen,
     fel: summa.fel,
+    // Antalet punkter grinden filtrerade på, inte punkterna. 0 betyder att
+    // alla med gruppnotiser fick den — den enda platsen där det går att se om
+    // avståndsgrinden var med i körningen.
+    platser: platser?.length ?? 0,
   });
 });

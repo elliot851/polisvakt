@@ -44,6 +44,7 @@
  */
 import { bearbeta, normaliseraMessageId, SKAL }
   from 'https://cdn.jsdelivr.net/gh/elliot851/polisvakt@63260bc/js/fbmejl.js';
+import { likaHemlighet } from '../_shared/grind.ts';
 
 /* ========================== KONFIGURATION =========================== */
 
@@ -116,9 +117,40 @@ const rpc = async <T = unknown>(fn: string, args: unknown = {}): Promise<T | nul
 // ingen — den kan inte, till skillnad från nykterhetsfiltret, bli farlig av
 // att finnas i två exemplar.
 
-let alias: Record<string, string> | null = null;
+let alias: Map<string, string> | null = null;
 const cache = new Map<string, Traff>();
 let sistaUppslag = 0;
+
+/** Sekunder innan ett externt anrop ges upp. Utan tak hänger körningen. */
+const UPPSLAG_TIMEOUT_MS = 10_000;
+
+/**
+ * Hämta aliaslistan och lägg den i en Map, inte i ett objekt.
+ *
+ * Listan är JSON från en URL — data utifrån. Med ett vanligt objekt blir
+ * `alias['__proto__']` Object.prototype och `alias['constructor']` en
+ * funktion, alltså två platsnamn som tyst ger något som inte är en sträng.
+ * `${fraga}, Västerås` blir då "[object Object], Västerås" och uppslaget
+ * misslyckas utan att något säger varför. En Map har inga ärvda nycklar, och
+ * varje värde typkontrolleras innan det tas emot.
+ */
+async function hamtaAlias(): Promise<Map<string, string>> {
+  const m = new Map<string, string>();
+  try {
+    const r = await fetch(`${APP}/data/aliases.vasteras.json`, {
+      signal: AbortSignal.timeout(UPPSLAG_TIMEOUT_MS),
+    });
+    if (!r.ok) return m;
+    const v: unknown = await r.json();
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return m;
+    for (const [k, varde] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof varde === 'string' && varde.trim()) m.set(k.toLowerCase(), varde.trim());
+    }
+  } catch (e) {
+    console.warn('Aliaslistan kunde inte hämtas:', (e as Error).message);
+  }
+  return m;
+}
 
 async function geokoda(plats: string): Promise<Traff> {
   const nyckel = String(plats || '').toLowerCase().trim();
@@ -127,12 +159,8 @@ async function geokoda(plats: string): Promise<Traff> {
 
   // Aliaslistan hämtas från appen så slang och smeknamn bara finns på ett
   // ställe: data/aliases.vasteras.json.
-  if (!alias) {
-    alias = await fetch(`${APP}/data/aliases.vasteras.json`)
-      .then((r) => r.json())
-      .catch(() => ({}));
-  }
-  const fraga = alias![nyckel] ?? plats;
+  const karta = alias ?? (alias = await hamtaAlias());
+  const fraga = karta.get(nyckel) ?? plats;
 
   // Nominatim tillåter ett anrop per sekund. Kön är enkel men räcker.
   const vanta = 1100 - (Date.now() - sistaUppslag);
@@ -150,13 +178,38 @@ async function geokoda(plats: string): Promise<Traff> {
 
   const rader = await fetch(u, {
     headers: { 'User-Agent': 'Polisvakt/1.0 (fbmejl-tom; polisvakt.se)' },
-  }).then((r) => r.json()).catch(() => []);
+    signal: AbortSignal.timeout(UPPSLAG_TIMEOUT_MS),
+  }).then((r) => (r.ok ? r.json() : [])).catch(() => []);
 
-  const traff: Traff = rader?.[0]
+  /**
+   * Svaret är data från en främmande server och kontrolleras därefter.
+   *
+   * parseFloat på något som inte är ett tal ger NaN, och NaN gick förr rakt in
+   * i rapporten: en varning utan position, eller — sedan notisradien kom — en
+   * koordinat som avståndsgrinden räknar på och tyst räknar fel. Ingenting i
+   * kedjan hade sagt ifrån. Både formen och läget kontrolleras: en träff
+   * utanför VIEWBOX kan inte vara rätt även om Nominatim tror det, för mejlen
+   * handlar om Västmanland.
+   *
+   * Etiketten kapas: den skrivs av OpenStreetMaps bidragsgivare, hamnar i en
+   * rapport och kan nå en låsskärm via platsfrasen i fbmejl.sql.
+   */
+  const rå = Array.isArray(rader) ? rader[0] : null;
+  const lat = rå ? parseFloat(rå.lat) : NaN;
+  const lon = rå ? parseFloat(rå.lon) : NaN;
+  const inomRutan = Number.isFinite(lat) && Number.isFinite(lon)
+    && lon >= VIEWBOX[0] && lon <= VIEWBOX[2]
+    && lat >= VIEWBOX[1] && lat <= VIEWBOX[3];
+
+  if (rå && !inomRutan) {
+    console.warn(`Nominatim gav en obrukbar träff för "${nyckel}" — hoppas över.`);
+  }
+
+  const traff: Traff = inomRutan
     ? {
-        lat: parseFloat(rader[0].lat),
-        lon: parseFloat(rader[0].lon),
-        label: String(rader[0].name || plats),
+        lat,
+        lon,
+        label: String(rå.name || plats).slice(0, 120),
         source: 'nominatim',
       }
     : null;
@@ -189,10 +242,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
    * lägga till samma huvud där, eller sätta CRON_SECRET och skicka det som
    * x-cron-secret.
    */
+  //
+  // KONSTANTTIDSJÄMFÖRELSE, inte ===. Se likaHemlighet i _shared/grind.ts.
+  // Båda vägarna jämförs alltid, utan kortslutning: hade den andra hoppats
+  // över när den första gav träff hade svarstiden avslöjat VILKEN väg som är i
+  // bruk, och det är halva svaret på hur man tar sig in.
   const auth = req.headers.get('authorization') ?? '';
-  const hemlighet = req.headers.get('x-cron-secret') ?? '';
-  const slapp = auth === `Bearer ${SERVICE}` || (!!CRON_SECRET && hemlighet === CRON_SECRET);
-  if (!slapp) return new Response('Nekad', { status: 401 });
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const [viaService, viaCron] = await Promise.all([
+    likaHemlighet(token, SERVICE),
+    likaHemlighet(req.headers.get('x-cron-secret') ?? '', CRON_SECRET),
+  ]);
+  if (!viaService && !viaCron) return new Response('Nekad', { status: 401 });
 
   if (!GRUPP_ID && !GRUPP) {
     // bearbeta() vägrar tolka utan gruppfilter (SKAL.INGET_GRUPPFILTER), och
@@ -323,7 +384,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Det är den vyn pekar ut i sin egen kommentar, och den ljuger inte.
     const fel = e instanceof Error ? e.message : String(e);
     console.error(fel);
-    return Response.json({ ok: false, fel }, { status: 500 });
+    // Detaljen stannar i loggen. rpc() kastar med PostgREST-svaret rakt av —
+    // funktionsnamn, kolumnnamn, hint, ibland en bit av frågan — och det ska
+    // inte ut i en HTTP-kropp bara för att anroparen råkade legitimera sig.
+    // Loggen är platsen att felsöka från, inte svaret.
+    return Response.json({ ok: false, fel: 'internt fel — se funktionsloggen' }, { status: 500 });
   }
 });
 

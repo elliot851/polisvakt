@@ -599,16 +599,88 @@ export function kallMatt(kalla) {
 }
 
 /*
- * En enda arbetsyta återanvänds i hela modulen. Sökningen kör åtta gånger i
+ * Arbetsytan återanvänds i hela modulen. Sökningen kör åtta gånger i
  * sekunden, och en ny canvas per varv lämnar hundratals döda ytor åt
  * skräpsamlaren varje minut — på en telefon syns det som ryck i sökaren.
  * Allt som använder ytan gör det synkront, så det finns ingen att krocka med.
  */
-let arbetsyta = null;
+/*
+ * OCH INGET `willReadFrequently`, TROTS ATT VI LÄSER TILLBAKA VARJE PIXEL.
+ *
+ * Flaggan ser ut att höra hemma precis här, och den stod här. Men den betyder
+ * "lägg duken i huvudminnet", och då måste videons bildruta först hämtas hem
+ * från grafikkortet och skalas ner i programvara. UPPMÄTT i repots egen bänk,
+ * prov/skyltar/bildkostnad.html, mot en 2560 × 1440-film:
+ *
+ *   drawImage från video, willReadFrequently .... 19,8 ms
+ *   drawImage från video, utan ................... under 0,1 ms
+ *   getImageData, med .............................. 0,9 ms
+ *   getImageData, utan ............................. 0,7 ms
+ *
+ * Bänken mätte en 640 × 640-duk; sökningens duk är 400 px bred och kostnaden
+ * följer målytan, alltså i storleksordningen 4–5 ms per sökning i stället för
+ * 20. Vid 8,3 sökningar i sekunden är det ändå mer än hela den handskrivna
+ * sökningen kostar i sig (median 7,7 ms), och flaggan gjorde dessutom
+ * återläsningen långsammare, inte snabbare. Det var ren förlust — exakt samma
+ * dom som modellvägen redan fällt, se `dukar` i skyltmodell.js.
+ *
+ * SJÄLVLÄKNINGEN. En GPU-backad duk läser tillbaka över grafikkortet, och det
+ * finns enheter och videoformat där den återläsningen kommer tillbaka TOM. Det
+ * syns inte som ett fel någonstans: sökningen får en jämngrå bild och svarar
+ * helt korrekt att den inte ser någon skylt. Därför mäts varje svep, och en
+ * enda tom bildruta byter permanent till den säkra duken på just den enheten.
+ * Blir den fortfarande tom är det bilden som är jämngrå (en vit vägg, ett
+ * mörkt garage) och då byter vi tillbaka. Samma mekanism, samma skäl och
+ * samma tröskel som `sakerLasning` i skyltmodell.js.
+ */
+let sakerAvlasning = false;
+/*
+ * Frågan ställs bara tills den är avgjord.
+ *
+ * false = vi vet ännu inte om den snabba duken går att läsa tillbaka på den
+ * här enheten. true = avgjort, åt något håll: antingen kom en bildruta med
+ * variation ur den snabba duken (då fungerar den), eller så bytte vi till den
+ * säkra. Utan latchen skulle en jämngrå SCEN — en vit vägg, ett mörkt garage —
+ * kosta två ritningar och två återläsningar per sökning i all evighet, alltså
+ * dyrare än flaggan någonsin var. Ett jämngrått motiv är dessutom inte
+ * bevisande: då står frågan öppen, och `provaTidigast` gör att omprovet kostar
+ * en gång i sekunden i stället för åtta.
+ */
+let avlasningAvgjord = false;
+let provaTidigast = 0;
+
+/* En arbetsyta per läsläge återanvänds i hela modulen. Två i stället för en,
+ * så att ett omprov inte kastar och bygger om duken varje bildruta. */
+const arbetsytor = { g: null, s: null };
 function haArbetsyta(b, h) {
-  if (!arbetsyta) arbetsyta = document.createElement('canvas');
-  if (arbetsyta.width !== b || arbetsyta.height !== h) { arbetsyta.width = b; arbetsyta.height = h; }
-  return arbetsyta;
+  const nyckel = sakerAvlasning ? 's' : 'g';
+  let c = arbetsytor[nyckel];
+  if (!c) {
+    c = document.createElement('canvas');
+    c.width = b; c.height = h;
+    c.ctx = sakerAvlasning
+      ? c.getContext('2d', { willReadFrequently: true })
+      : c.getContext('2d');
+    arbetsytor[nyckel] = c;
+  }
+  if (c.width !== b || c.height !== h) { c.width = b; c.height = h; }
+  return c;
+}
+
+/**
+ * Saknar svepet all variation? Då är det inte en bild, det är en tom
+ * återläsning. Stickprov var 97:e pixel — ett primtal, så steget inte råkar
+ * följa bildens raster — och bara den röda kanalen: en tom platta är tom i
+ * alla tre.
+ */
+function arTomtSvep(px, n) {
+  let min = 256, max = -1;
+  for (let i = 0; i < n; i += 97) {
+    const v = px[i * 4];
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return (max - min) < 6;
 }
 
 /* ---- Lutning ------------------------------------------------------------
@@ -812,13 +884,32 @@ function skannaLjusa(kalla, omrade, arbetsbredd,
   const b = Math.max(8, Math.round(omrade.w * skala));
   const h = Math.max(4, Math.round(omrade.h * skala));
 
-  const c = haArbetsyta(b, h);
-  const g = c.getContext('2d', { willReadFrequently: true });
-  g.clearRect(0, 0, b, h);
-  g.drawImage(kalla, omrade.x, omrade.y, omrade.w, omrade.h, 0, 0, b, h);
-  const px = g.getImageData(0, 0, b, h).data;
-
   const n = b * h;
+  const rita = () => {
+    const c = haArbetsyta(b, h);
+    c.ctx.clearRect(0, 0, b, h);
+    c.ctx.drawImage(kalla, omrade.x, omrade.y, omrade.w, omrade.h, 0, 0, b, h);
+    return c.ctx.getImageData(0, 0, b, h).data;
+  };
+  let px = rita();
+  // Tom återläsning? Byt till den säkra duken en gång och gör om. Se
+  // `sakerAvlasning`.
+  if (!avlasningAvgjord) {
+    if (!arTomtSvep(px, n)) {
+      avlasningAvgjord = true;              // den snabba duken läser tillbaka
+    } else if (Date.now() >= provaTidigast) {
+      sakerAvlasning = true;
+      const px2 = rita();
+      if (!arTomtSvep(px2, n)) {
+        avlasningAvgjord = true;            // det var duken; den säkra får stå kvar
+        px = px2;
+      } else {
+        sakerAvlasning = false;             // motivet var jämngrått, inte duken
+        provaTidigast = Date.now() + 1000;
+      }
+    }
+  }
+
   const gra = new Uint8ClampedArray(n);
   /*
    * Blåmasken byggs i samma svep som gråskalan. Det är enda stället i modulen
@@ -5870,6 +5961,8 @@ export class PlateReader extends EventTarget {
     this.#nollstallMatning();
     this._sistLast = 0;
     this._sisteStatus = null;
+    // Vilket lås som redan fått sin första läsning. Se `#lasSnarast`.
+    this._sistLastaLas = null;
 
     /*
      * Reservsalt för det fall registret inte gick att läsa. Då kan läsaren
@@ -6073,14 +6166,65 @@ export class PlateReader extends EventTarget {
    */
   #startaOcrSlinga() {
     const varv = async () => {
+      this._ocrTimer = null;
       if (!this.running) return;
       const t0 = performance.now();
       try { await this.#steg(); } catch (e) { this.#fel(e); }
       if (!this.running) return;
-      const gick = performance.now() - t0;
-      this._ocrTimer = setTimeout(varv, Math.max(0, this.settings.intervalMs - gick));
+      this.#planeraOcr(Math.max(0, this.settings.intervalMs - (performance.now() - t0)));
     };
-    this._ocrTimer = setTimeout(varv, 0);
+    this._ocrVarv = varv;
+    /*
+     * När den senaste LÄSNINGEN började — inte det senaste varvet.
+     *
+     * Skillnaden är hela poängen med `#lasSnarast`. Slingan tickar var
+     * `intervalMs` oavsett om det finns något att läsa, och ett varv utan lås
+     * kostar ingenting och ger ingen röst. Mäts golvet från varje tick är det
+     * alltid nyss passerat, och en framdragning kan per definition aldrig ske.
+     * Golvet finns för att begränsa hur tätt vi LÄSER.
+     */
+    this._sisteLasningAt = -Infinity;
+    this.#planeraOcr(0);
+  }
+
+  /** Lägger nästa OCR-varv om `ms` millisekunder och river en tidigare tid. */
+  #planeraOcr(ms) {
+    clearTimeout(this._ocrTimer);
+    this._ocrNastaAt = performance.now() + ms;
+    this._ocrTimer = setTimeout(this._ocrVarv, ms);
+  }
+
+  /**
+   * DRA FRAM NÄSTA LÄSNING TILL SÅ TIDIGT GOLVET TILLÅTER.
+   *
+   * OCR-slingan går på sin egen klocka och låset sätts av sökningen, som går
+   * på en annan. De två har ingen fas gemensamt: när ett lås landar ligger
+   * nästa lästick någonstans mellan 0 och `intervalMs` bort, alltså i snitt
+   * 350 ms med dagens 700. Den tiden är ren väntan — spåret är låst, rutan är
+   * uppmätt, läsarnätet är ledigt, och ingenting händer.
+   *
+   * Det är dyrare än det låter, för det är inte EN läsning som skjuts fram
+   * utan hela röstkedjan efter den: rösträkningen kräver minst två läsningar,
+   * och de kommer ett `intervalMs` isär. En skylt som syns i 1,7 sekunder
+   * (MGG708 i femfilmsprovet syntes i 14 sökbildrutor) hinner med två
+   * läsningar bara om den första kommer direkt.
+   *
+   * DET HÄR ÖKAR INTE LÄSTAKTEN. `intervalMs` står kvar som golv mellan två
+   * lässteg — det som ändras är FASEN, inte frekvensen. Antalet läsningar per
+   * sekund är detsamma, de ligger bara rätt i förhållande till låset. Därför
+   * rör den inte heller `rostning.k.varvMs`, och alltså inte målvikten.
+   *
+   * (Den mätta slutsatsen att "tredubbla lästakten ändrade ingenting" står
+   * alltså kvar orörd — det var frekvensen som prövades, inte fasen.)
+   */
+  #lasSnarast() {
+    if (!this.running || !this._ocrVarv || this.arbetar) return;
+    const nu = performance.now();
+    const tidigast =
+      Math.max(nu, (this._sisteLasningAt ?? -Infinity) + this.settings.intervalMs);
+    // Ligger tiden redan tidigare än så, låt den vara.
+    if (!((this._ocrNastaAt ?? Infinity) > tidigast)) return;
+    this.#planeraOcr(tidigast - nu);
   }
 
   stop() {
@@ -6090,6 +6234,8 @@ export class PlateReader extends EventTarget {
     this._startGen = (this._startGen || 0) + 1;
     clearTimeout(this._ocrTimer); clearInterval(this._ritTimer); clearInterval(this._sokTimer);
     this._ocrTimer = this._ritTimer = this._sokTimer = null;
+    this._ocrVarv = null;
+    this._sistLastaLas = null;
     this.malsokare.nollstall();
     this.kandidater = [];
     this.lutningsgivare.stop();
@@ -6429,6 +6575,18 @@ export class PlateReader extends EventTarget {
         this.matning.forstaLasMs = performance.now() - this.matning.startAt;
       }
     }
+    /*
+     * ETT LÅS SOM ÄNNU INTE LÄSTS EN ENDA GÅNG SKA LÄSAS NU, INTE NÄR
+     * LÄSKLOCKAN RÅKAR SLÅ. Se `#lasSnarast` — golvet `intervalMs` står kvar,
+     * det är bara fasen som rättas.
+     *
+     * Villkoret är "har det HÄR låset lästs", inte "bytte låset just nu".
+     * Skillnaden är att det första självrättar: skulle framdragningen missas
+     * (låsslingan hann skriva om tiden i samma tick) försöker nästa sökning
+     * igen 120 ms senare, i stället för att låset står oläst i en halv sekund
+     * för att en flagga redan var förbrukad.
+     */
+    if (last && last.id !== this._sistLastaLas) this.#lasSnarast();
     // "Ser ABC 123 — bekräftar…" ska hinna läsas. Utan spärren skriver
     // sökningen över den 120 ms senare och texten blinkar förbi.
     if (Date.now() > (this._statusLas || 0)) this.#status(this.#lagesText());
@@ -6737,7 +6895,10 @@ export class PlateReader extends EventTarget {
   #rita() {
     const v = this.video;
     if (!v.videoWidth) return;
-    const c = this.canvas, g = c.getContext('2d');
+    // Kontexten hämtas en gång och sparas. getContext ger samma objekt varje
+    // gång, men uppslaget kördes tio gånger i sekunden i hela sessionen.
+    const c = this.canvas;
+    const g = this._ritCtx || (this._ritCtx = c.getContext('2d'));
     // getContext kan ge null (canvas frånkopplad, kontext förlorad). Utan den
     // här raden kastade #rita var 100:e ms förbi #fel och spammade konsolen.
     if (!g) return;
@@ -6903,6 +7064,11 @@ export class PlateReader extends EventTarget {
 
     this.arbetar = true;
     const tVarv = performance.now();
+    // Golvet i `#lasSnarast` mäts härifrån: det här är det senaste varv som
+    // faktiskt LÄSTE, inte bara tickade. Och vilket lås som därmed fått sin
+    // första läsning — det är villkoret för framdragningen i `#efterSok`.
+    this._sisteLasningAt = tVarv;
+    this._sistLastaLas = jobb[0].lasId;
     try {
       // Skyltens storlek styr autozoomen, oavsett om den gick att läsa. En
       // skylt som hittas men är för liten är precis det fall zoomen finns för.

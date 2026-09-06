@@ -370,10 +370,54 @@ function arTomBildruta(data) {
   return (max - min) < 0.02;
 }
 
-function detektTensor(d) {
+/*
+ * EN ÅTERANVÄND TENSORBUFFERT, MED TVÅ SPÄRRAR.
+ *
+ * Indatan till detektorn är 3 × 640 × 640 flyttal — 4,9 MB. Vid åtta sökningar
+ * i sekunden är det 39 MB skräp i sekunden, alltså en storsophämtning med
+ * några sekunders mellanrum. Den pausen syns inte som "sökningen blev
+ * långsam", den syns som att hela sökaren hackar, och den ligger rakt i vägen
+ * för det som faktiskt mäts: tiden från att skylten syns till att numret sägs.
+ *
+ * Två saker gör återanvändningen farlig, och båda är spärrade i stället för
+ * antagna bort:
+ *
+ *   1. ONNXRUNTIME KAN ÖVERLÅTA BUFFERTEN. Med `wasm.proxy` går tensoren till
+ *      en arbetartråd via postMessage, och ett postMessage kan flytta över
+ *      ArrayBufferten i stället för att kopiera den. En överlåten buffert är
+ *      TÖMD hos oss: `length` blir 0. Det syns, och då tas en ny — alltså
+ *      exakt dagens beteende. Vi behöver inte veta vilket ORT gör.
+ *   2. TVÅ TENSORER I LUFTEN SAMTIDIGT skulle skriva i samma minne. Bufferten
+ *      lånas därför ut en i taget: `detektBuffertLedig` sätts när körningen är
+ *      klar (eller övergiven), och den som ber om en buffert medan lånet löper
+ *      får en egen.
+ */
+let detektBuffert = null;
+let detektBuffertLedig = true;
+
+/** Släpper lånet, om tensoren är den som lånade. */
+function slappDetektBuffert(t) {
+  if (t && t.data === detektBuffert) detektBuffertLedig = true;
+}
+
+/**
+ * @param {boolean} lana true = försök låna den delade bufferten. Falskt för
+ *        engångstensorer (tomrutekontrollens omtag), som kastas direkt.
+ */
+function detektTensor(d, lana = false) {
+  const antal = DS * DS, langd = 3 * antal;
+  let ut;
+  if (lana && detektBuffertLedig) {
+    // length 0 = bufferten är överlåten till arbetartråden och tömd här.
+    if (!detektBuffert || detektBuffert.length !== langd) {
+      detektBuffert = new Float32Array(langd);
+    }
+    ut = detektBuffert;
+    detektBuffertLedig = false;
+  } else {
+    ut = new Float32Array(langd);
+  }
   const px = d.ctx.getImageData(0, 0, DS, DS).data;
-  const antal = DS * DS;
-  const ut = new Float32Array(3 * antal);
   for (let i = 0, p = 0; i < antal; i++, p += 4) {
     ut[i]             = DELAT_255[px[p]];
     ut[i + antal]     = DELAT_255[px[p + 1]];
@@ -400,7 +444,7 @@ export async function sokMedModell(kalla, yta) {
    * videoelementet läser vi en nyare bildruta än den vi trodde, och lådorna
    * beskriver då ett annat ögonblick än det som mättes. */
   const bl = brevlada(kalla, yta);
-  const indata = detektTensor(bl.d);
+  const indata = detektTensor(bl.d, true);
   /*
    * Är bildrutan tom? Mäts på ett stickprov, inte på alla 409 600 pixlarna —
    * en bildruta som blev tom är tom överallt. Fyra rader räcker för att skilja
@@ -423,11 +467,19 @@ export async function sokMedModell(kalla, yta) {
         sakerLasning = false;          // inte duken som var problemet
       } else {
         rakning.bytteTillSaker = true;
+        // Lånet måste lämnas tillbaka innan omtaget, annars tar omtaget en
+        // egen buffert och den delade blir aldrig ledig igen.
+        slappDetektBuffert(indata);
         return sokMedModell(kalla, yta);
       }
     }
   }
-  const svar = await iTur(() => dSess.run({ images: indata }), false);
+  let svar;
+  try {
+    svar = await iTur(() => dSess.run({ images: indata }), false);
+  } finally {
+    slappDetektBuffert(indata);
+  }
   const ut = svar[dSess.outputNames[0]];
   const kolumner = ut.dims[1] || 7;
   const kandidater = [];
@@ -482,7 +534,44 @@ export async function sokMedModell(kalla, yta) {
  */
 function lasarTensor(kalla, r) {
   const d = duk(LB, LH);
-  d.ctx.drawImage(kalla, r.x, r.y, r.w, r.h, 0, 0, LB, LH);
+  /*
+   * KANTFALLET, OCH DET ÄR INTE TEORETISKT.
+   *
+   * `r` är detektorns låda plus marginalen i `rw`/`rh` (3 % på bredden, 8 % på
+   * höjden), och den lådan ligger ofta i bildkanten — bilen framför i en
+   * dashcam är just den bil som fyller ut rutan. Sticker källrektangeln utanför
+   * bildrutan ritar `drawImage` BARA den del som finns och lämnar resten av
+   * duken orörd. Duken är återanvänd. Det som ligger kvar där är alltså FÖRRA
+   * skyltens pixlar.
+   *
+   * En indatabild med två skyltars tecken i är precis den sortens indata som
+   * får läsarnätet att svara med ett nummer som ingen av dem har — och till
+   * skillnad från en oläslig bild ger den inte nödvändigtvis låg säkerhet, för
+   * varje enskilt tecken kan se skarpt ut. Det passerar grinden och blir en
+   * röst.
+   *
+   * Därför: måla duken jämngrå först, och klipp källrektangeln mot bilden med
+   * målrektangeln proportionellt beskuren, så att skylten behåller sin
+   * geometri i stället för att sträckas ut över hela duken. Det som saknas blir
+   * grått — samma svar varje bildruta, och inte en annan bils nummer.
+   */
+  const kb = kalla.videoWidth || kalla.naturalWidth || kalla.width || 0;
+  const kh = kalla.videoHeight || kalla.naturalHeight || kalla.height || 0;
+  let sx = r.x, sy = r.y, sw = r.w, sh = r.h;
+  let dx = 0, dy = 0, db = LB, dh = LH;
+  if (kb && kh) {
+    const x1 = Math.max(0, Math.min(kb, r.x)), y1 = Math.max(0, Math.min(kh, r.y));
+    const x2 = Math.max(0, Math.min(kb, r.x + r.w)), y2 = Math.max(0, Math.min(kh, r.y + r.h));
+    if (!(x2 - x1 > 1 && y2 - y1 > 1)) return null;      // helt utanför bild
+    dx = (x1 - r.x) / r.w * LB;  db = (x2 - x1) / r.w * LB;
+    dy = (y1 - r.y) / r.h * LH;  dh = (y2 - y1) / r.h * LH;
+    sx = x1; sy = y1; sw = x2 - x1; sh = y2 - y1;
+  }
+  if (db < LB - 0.5 || dh < LH - 0.5) {
+    d.ctx.fillStyle = '#808080';
+    d.ctx.fillRect(0, 0, LB, LH);
+  }
+  d.ctx.drawImage(kalla, sx, sy, sw, sh, dx, dy, db, dh);
   const px = d.ctx.getImageData(0, 0, LB, LH).data;
   const ut = new Uint8Array(LB * LH);
   for (let i = 0, p = 0; i < ut.length; i++, p += 4) {
@@ -548,6 +637,9 @@ export async function lasMedModell(kalla, kandidat, tolkaRatext) {
   }
 
   const indata = lasarTensor(kalla, r);   // ur videon före kön, se `sokMedModell`
+  // Rutan låg helt utanför bildrutan. Ingen bild, inget svar — och framför
+  // allt ingen läsning av vad som råkade ligga kvar på duken.
+  if (!indata) return { plat: null, sakerhet: 0, exaktSex: false, ratext: '' };
   const svar = await iTur(() => lSess.run({ [lSess.inputNames[0]]: indata }), true);
   const { text, sakerhet } = avkoda(svar[lSess.outputNames[0]].data);
   const ocrMs = performance.now() - t0;

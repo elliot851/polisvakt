@@ -60,6 +60,61 @@ const TILES = {
   night: { url: ESRI + '/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',  attribution: ATTR },
 };
 
+/**
+ * En helt genomskinlig 1×1-gif. En bricka som inte gick att hämta visar den i
+ * stället för webbläsarens trasig-bild-ikon — och därmed det som ligger under,
+ * vilket sedan bottenlagret finns alltid är karta.
+ */
+const TOM_BRICKA =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+/**
+ * Finaste zoomnivå bottenlagret hämtar. 9 är vald med flit: en enda z9-bricka
+ * täcker ungefär 80 km, så vid körzoom (15–17) räcker en handfull brickor för
+ * hela skärmen och de ligger kvar mil efter mil. Sätter man den högre blir
+ * bottenlagret ett andra fullstort brickskikt och dubblar nättrafiken; sätter
+ * man den lägre blir den uppskalade bilden så grov att den ser trasig ut.
+ */
+const BOTTEN_ZOOM = 9;
+
+/**
+ * Hur många brickrader utanför bild som får ligga kvar i minnet.
+ * 4 är avvägningen mellan "brickan finns redan när du drar dit" och DOM-vikt.
+ */
+const BUFFERT = 4;
+
+// ── FÖLJNINGEN ───────────────────────────────────────────────────────────────
+//
+// GPS ger en position i sekunden. Kartan ritar 60 bilder i sekunden. Skillnaden
+// däremellan är hela skillnaden mellan en karta som hoppar och en karta som
+// glider — och det är den ägaren menar med att Waze "känner av att du åker".
+//
+// Lösningen är inte att panorera oftare (det kostar en fullständig omritning
+// per bildruta), utan att låta VARJE panorering vara lite längre än glappet
+// mellan två fixar, köra den LINJÄRT, och sikta lite framför bilen. Då tar
+// nästa panorering vid innan den förra hunnit stanna, och rörelsen blir
+// obruten utan att kartan ritas om mer än en gång per fix.
+const FOLJ_MIN_MS = 550;      // golv: en riktigt tät fixtakt ska inte ge ryck
+const FOLJ_MAX_MS = 2200;     // tak: vid glesa fixar hellre lite lagg än frys
+const FOLJ_MARGINAL = 1.25;   // animeringen görs 25 % längre än fixglappet
+const FOLJ_MIN_KMH = 7;       // under detta räknas det som stillastående
+/**
+ * Hur stor del av animeringstiden kartan får sikta FRAMFÖR bilen.
+ *
+ * Utan framförhållning ligger kartan alltid ett halvt fixglapp efter, för den
+ * börjar åka mot en punkt bilen redan lämnat. Med full framförhållning skjuter
+ * den i stället över i varje kurva. 0,55 ligger där lagget är omärkligt och
+ * översköjningen i en normal kurva är någon meter.
+ */
+const FRAMFORHALLNING = 0.55;
+const FRAMFOR_MAX_M = 45;     // spärr mot en enstaka galen fartavläsning
+/**
+ * Hopp längre än så här många skärmdiagonaler animeras inte alls.
+ * En GPS-teleportering (tunnel, kallstart, spoofad position) ska inte visas som
+ * en tio sekunder lång glidning tvärs över Sverige.
+ */
+const HOPP_SKARMAR = 2.2;
+
 export class HazardMap extends EventTarget {
   constructor(el) {
     super();
@@ -78,14 +133,108 @@ export class HazardMap extends EventTarget {
       attributionControl: true,
       preferCanvas: true,
       tap: true,
+
+      // ZOOMEN SKA GLIDA, INTE SNÄPPA.
+      //
+      // zoomSnap 0.25 låter nypzoomen landa mellan heltalsnivåerna. Med
+      // standardvärdet 1 rycker kartan till närmaste hela nivå i samma sekund
+      // som fingrarna släpper, och just det rycket är en stor del av varför
+      // kartan känns billig jämfört med Waze.
+      //
+      // zoomDelta hålls kvar på 1: det styr +/−-knapparna och tangentbordet,
+      // och en knapp som bara flyttar en fjärdedels nivå känns trasig.
+      //
+      // zoomAnimationThreshold höjs från 4 till 6. Leaflet vägrar animera
+      // zoomhopp som är större än tröskeln och gör en hård omritning i stället.
+      // centerOn() hoppar ofta tre–fyra nivåer (tryck på en nål i listan), och
+      // det är just de hoppen som syns mest.
+      zoomSnap: 0.25,
+      zoomDelta: 1,
+      wheelPxPerZoomLevel: 100,
+      zoomAnimationThreshold: 6,
+
+      // GOLV OCH TAK PÅ ZOOMEN.
+      //
+      // minZoom 4 är den halva av "bara fyrkanter"-problemet som inte går att
+      // ladda bort. Utan golv kan man dra ut till z0–3 där jorden är några få
+      // enorma brickor som droppar in en och en över en nästan tom skärm. Vid
+      // z4 ryms hela Norden i bild och varje bildruta är full av karta. Appen
+      // varnar för faror i Sverige — en världsvy har ingenting att visa.
+      minZoom: 4,
+      maxZoom: 19,
+
+      // Tröghetsutkastet efter ett svep. Lägre inbromsning = längre glid, mer
+      // som en fysisk yta man knuffat iväg än en ruta som stannar tvärt.
+      inertiaDeceleration: 2600,
     }).setView([VASTERAS.lat, VASTERAS.lon], 13);
 
+    // ── BOTTENLAGRET ────────────────────────────────────────────────────────
+    //
+    // Det här är svaret på "när jag zoomar ut är det bara fyrkanter".
+    //
+    // En bricka som inte hunnit laddas visar det som ligger UNDER den. Förut låg
+    // det ingenting där, alltså behållarens bottenfärg — en grå/svart fyrkant.
+    // Nu ligger ett andra brickskikt där som aldrig ritar finare än zoom 9 och
+    // därför alltid är laddat: en enda z9-bricka täcker ~80 km, den hämtas en
+    // gång och ligger kvar mil efter mil. Vid varje glapp i huvudlagret — snabb
+    // utzoomning, hård panorering, dålig täckning, en bricka som svarar 404 —
+    // ser man en grov karta i stället för ett hål.
+    //
+    // Kostnaden är nära noll: URL:en är densamma som huvudlagrets, så på zoom
+    // 4–9 begär bottenlagret exakt de brickor huvudlagret redan begärt och
+    // webbläsarens cache svarar direkt.
+    //
+    // Egen ruta (pane) med z-index 190, alltså under Leaflets tilePane (200).
+    // pointerEvents av — lagret ska aldrig fånga ett tryck.
+    this.map.createPane('pvBotten');
+    const bottenRuta = this.map.getPane('pvBotten');
+    bottenRuta.style.zIndex = '190';
+    bottenRuta.style.pointerEvents = 'none';
+
     this.theme = 'night';
+    // Skrivs redan här. css/karta.css läser attributet för att sätta kartans
+    // bottenfärg, och den färgen behövs som mest vid uppstart — det är då flest
+    // brickor saknas. Förut sattes attributet först vid ett TEMABYTE, och
+    // eftersom nattläge är utgångsläget hann det aldrig sättas alls.
+    document.body.dataset.mapTheme = this.theme;
+
+    this.bottenLager = L.tileLayer(TILES.night.url, {
+      pane: 'pvBotten',
+      className: 'pv-botten',
+      maxZoom: 19, maxNativeZoom: BOTTEN_ZOOM, minNativeZoom: 0,
+      errorTileUrl: TOM_BRICKA,
+      updateWhenIdle: false,
+      updateWhenZooming: false,
+      keepBuffer: BUFFERT,
+      // Ingen attribution: samma källa som huvudlagret, och samma rad två
+      // gånger i hörnet ser ut som en bugg.
+    }).addTo(this.map);
+
     this.tileLayer = L.tileLayer(TILES.night.url, {
       // maxNativeZoom 16: Esri Canvas har inga brickor bortom det. maxZoom 19
       // behålls så inzoomningen känns likadan — Leaflet skalar upp 17–19.
       attribution: TILES.night.attribution, maxZoom: 19, maxNativeZoom: 16,
+      minNativeZoom: 0,
+      // Genomskinlig felbricka: en bricka som inte hann laddas visar
+      // bottenlagret i stället för en grå fyrkant.
+      errorTileUrl: TOM_BRICKA,
+
+      // updateWhenIdle är Leaflets default TRUE på mobil — och det är den
+      // enskilt värsta inställningen för en bilapp. Den betyder "ladda inga
+      // nya brickor förrän kartan STÅR STILL". När man kör står kartan aldrig
+      // still, så nya brickor började laddas först när man stannade. Det var
+      // därför fyrkanterna följde med i färdriktningen.
+      updateWhenIdle: false,
+      // Men inte mitt i en zoomanimering: där hinner nivån ändå ändras igen
+      // innan svaret kommer, och varje sådan hämtning är bortkastad. Med
+      // bottenlagret under syns tomrummet ändå inte under själva animeringen.
+      updateWhenZooming: false,
+      keepBuffer: BUFFERT,
     }).addTo(this.map);
+    // Basvärdet sparas på lagret: kartrotationen sänker bufferten medan
+    // behållaren är förstorad och måste kunna lägga tillbaka rätt tal efteråt
+    // i stället för att gissa.
+    this.tileLayer._pvBasBuffert = BUFFERT;
 
     L.control.zoom({ position: 'bottomleft' }).addTo(this.map);
 
@@ -129,6 +278,22 @@ export class HazardMap extends EventTarget {
       this._omritTimer = setTimeout(() => this.omrita(), 120);
     });
 
+    // Medan användaren nyper zoom ska följningen hålla tyst. En panorering
+    // mitt i en zoomanimering anropar map._stop(), vilket kapar zoomen halvvägs
+    // — kartan rycker till precis när fingrarna rör den. Samma sak gäller
+    // omritningen av nålar: inget ska räknas om under fingret.
+    this.map.on('zoomstart', () => {
+      this._zoomar = true;
+      this.#glidAv();
+      clearTimeout(this._omritTimer);
+    });
+    this.map.on('zoomend', () => { this._zoomar = false; });
+
+    // _resetView flyttar varenda markör på en gång, i samma bildruta. Glidningen
+    // på egen-nålen måste vara avstängd då — annars ser det ut som att bilen
+    // halkar iväg över kartan efter varje hård omritning.
+    this.map.on('viewreset', () => this.#glidAv());
+
     this.markers = new Map();
     this.manoverMarkers = new Map();
     this.meMarker = null;
@@ -152,11 +317,36 @@ export class HazardMap extends EventTarget {
   }
 
   setTheme(theme) {
-    if (theme === this.theme) return;
-    this.theme = theme;
-    const t = TILES[theme] || TILES.night;
+    const namn = theme in TILES ? theme : 'night';
+    const t = TILES[namn];
+
+    // Skrivs ALLTID, även när temat inte ändrats. css/karta.css läser attributet
+    // för att sätta kartans bottenfärg, och den som anropar setTheme med samma
+    // tema som redan gäller (vilket app.js gör vid varje temaomräkning) ska
+    // ändå kunna lita på att attributet stämmer.
+    document.body.dataset.mapTheme = namn;
+    if (namn === this.theme) return;
+    this.theme = namn;
+
     this.tileLayer.setUrl(t.url);
-    document.body.dataset.mapTheme = theme;
+
+    // Bottenlagret byts FÖRST när huvudlagret har laddat om.
+    //
+    // setUrl tömmer lagret på samtliga brickor och laddar om från noll. Under de
+    // tiondelarna är bottenlagret det enda som syns. Byttes båda samtidigt vore
+    // hela skärmen tom vid varje skymning — alltså en vit eller svart blinkning
+    // rakt i ansiktet på någon som kör. Nu ligger den gamla grova kartan kvar
+    // tills den nya finns, och bytet blir en övertoning i stället för ett hål.
+    //
+    // Timern är säkerhetsnätet: 'load' fyras inte om varje bricka fallerar.
+    clearTimeout(this._temaTimer);
+    const byt = () => {
+      clearTimeout(this._temaTimer);
+      this.tileLayer.off('load', byt);
+      if (this.bottenLager) this.bottenLager.setUrl(t.url);
+    };
+    this.tileLayer.once('load', byt);
+    this._temaTimer = setTimeout(byt, 2000);
   }
 
   setPickMode(on) {
@@ -166,12 +356,53 @@ export class HazardMap extends EventTarget {
 
   setFollow(on) {
     this.follow = on;
+    // Slutar vi följa ska egen-nålen inte längre glida mjukt: nästa gång den
+    // flyttar sig är det för att GPS:en sa något nytt, inte för att kartan
+    // åker med, och då ska den bara vara där.
+    if (!on) this.#glidAv();
     if (on && this._lastFix) this.centerOn(this._lastFix.lat, this._lastFix.lon);
     this.dispatchEvent(new CustomEvent('followchange', { detail: on }));
   }
 
+  /**
+   * Flytta kartan till en punkt. Anropas när någon trycker på en nål, ett
+   * sökträff eller på "följ mig igen".
+   *
+   * Låg förut på setView({animate:true}). Det ser mjukt ut i koden men är det
+   * inte: Leaflet vägrar animera ett hopp som inte ryms inom skärmen, och
+   * faller då tillbaka på en hård omritning. Ett tryck på en nål tio kilometer
+   * bort blev alltså alltid ett hopp — kartan bytte plats utan att man såg vart
+   * den tog vägen, och man tappade orienteringen.
+   *
+   * Nu skiljer vi på nära och långt. Nära: en kort panorering. Långt: flyTo,
+   * som zoomar ut, glider dit och zoomar in igen i en enda båge. Den finns
+   * inbyggd i Leaflet 1.9 — inget nytt beroende, ingen extern kod.
+   */
   centerOn(lat, lon, zoom) {
-    this.map.setView([lat, lon], zoom ?? Math.max(this.map.getZoom(), 15), { animate: true });
+    const mal = L.latLng(lat, lon);
+    const nyZoom = zoom ?? Math.max(this.map.getZoom(), 15);
+    this.#glidAv();
+
+    const storlek = this.map.getSize();
+    const diag = Math.hypot(storlek.x, storlek.y) || 1;
+    let langt = true;
+    try {
+      const p = this.map.latLngToContainerPoint(mal);
+      langt = Math.hypot(p.x - storlek.x / 2, p.y - storlek.y / 2) > diag * 0.6
+           || Math.abs(nyZoom - this.map.getZoom()) > 1.5;
+    } catch {}
+
+    // Fönstret då följningen håller sig undan. Utan det kapar nästa GPS-fix
+    // (som kommer inom en sekund) animeringen på mitten via map._stop(), och
+    // resan dit blir ett ryck ändå.
+    if (langt && typeof this.map.flyTo === 'function') {
+      const sek = 1.1;
+      this._flygerTill = Date.now() + sek * 1000;
+      this.map.flyTo(mal, nyZoom, { duration: sek, easeLinearity: 0.3 });
+    } else {
+      this._flygerTill = Date.now() + 620;
+      this.map.setView(mal, nyZoom, { animate: true, duration: 0.55, easeLinearity: 0.35 });
+    }
   }
 
   /* ---------- Rotation ---------- */
@@ -193,40 +424,185 @@ export class HazardMap extends EventTarget {
     // gör något extra — i kör-upp pekar den alltid rakt upp, som den ska.
     const heading = fix.headingSmoothed ?? 0;
 
+    // Räknas EN gång per fix och används av både nålen och kartan, så att de
+    // rör sig i exakt samma takt. Gör de inte det glider bilen i förhållande
+    // till vägen, vilket är värre än att inget glider alls.
+    const glidMs = this.#foljTakt(fix);
+
     if (!this.meMarker) {
       this.meMarker = L.marker(pos, {
-        icon: this.#meIcon(heading),
+        // Ikonen byggs EN gång. Se #riktaPil().
+        icon: L.divIcon({
+          className: 'me-icon',
+          html: '<div class="me-arrow"></div>',
+          iconSize: [34, 34],
+          iconAnchor: [17, 17],
+        }),
         interactive: false,
         zIndexOffset: 1000,
       }).addTo(this.map);
+      this._sistaNoggrannhet = fix.accuracy || 20;
       this.accuracyCircle = L.circle(pos, {
-        radius: fix.accuracy || 20,
+        radius: this._sistaNoggrannhet,
         color: '#4aa8ff', weight: 1, opacity: .35,
         fillColor: '#4aa8ff', fillOpacity: .1, interactive: false,
       }).addTo(this.map);
     } else {
+      // Armera övergången INNAN positionen skrivs. Leaflet sätter en transform
+      // på markörens element; med --pv-glid satt låter css/karta.css den
+      // transformen tona över exakt lika länge som kartans egen panorering.
+      // Ordningen spelar roll — sätts variabeln efteråt gäller den först nästa
+      // gång, och nålen hoppar en sista gång per fix.
+      if (this.follow && !this.pickMode) this.#glidPa(glidMs); else this.#glidAv();
       this.meMarker.setLatLng(pos);
-      this.meMarker.setIcon(this.#meIcon(heading));
-      this.accuracyCircle.setLatLng(pos).setRadius(fix.accuracy || 20);
+      this.accuracyCircle.setLatLng(pos);
+      // Radien ritar om HELA canvasytan, alltså även ruttlinjen och alla
+      // hotspot-cirklar. Noggrannheten står oftast stilla mellan fixar, så gör
+      // det bara när den faktiskt ändrat sig något att tala om.
+      const r = fix.accuracy || 20;
+      if (Math.abs(r - this._sistaNoggrannhet) > 2) {
+        this.accuracyCircle.setRadius(r);
+        this._sistaNoggrannhet = r;
+      }
     }
+
+    this.#riktaPil(heading);
 
     // Kursen matas in här, från samma fix som allt annat. Ingen andra
     // kurskälla — två källor som säger olika saker är värre än en osäker.
     this.rotation.updateFromFix(fix);
 
-    if (this.follow) {
-      // I kör-upp ligger bilen en bit ner på skärmen så man ser vägen framåt.
-      const target = this.rotation.followTarget(fix.lat, fix.lon);
-      this.map.panTo(target || pos, { animate: true, duration: .5 });
-    }
+    if (this.follow && !this.pickMode && !this._zoomar) this.#foljMjukt(fix, glidMs);
   }
 
-  #meIcon(heading) {
-    return L.divIcon({
-      className: 'me-icon',
-      html: `<div class="me-arrow" style="transform:rotate(${heading}deg)"></div>`,
-      iconSize: [34, 34],
-      iconAnchor: [17, 17],
+  /**
+   * Hur lång nästa glidning ska vara, i millisekunder.
+   *
+   * Bygger på det UPPMÄTTA glappet mellan fixar i stället för ett antaget. En
+   * telefon som ger position två gånger i sekunden och en som ger en var tredje
+   * sekund ska båda se mjuka ut, och bara enheten själv vet vilken den är.
+   *
+   * Löpande medelvärde, inte senaste glappet: en enstaka sen fix (tunnel,
+   * skärmen släcks en stund) ska inte göra nästa panorering dubbelt så lång och
+   * kartan sirapig i tio sekunder efteråt.
+   */
+  #foljTakt(fix) {
+    const nu = Number.isFinite(fix?.ts) ? fix.ts : Date.now();
+    const ratt = Math.min(4000, Math.max(200, this._forraFixTs ? nu - this._forraFixTs : 1000));
+    this._forraFixTs = nu;
+    this._fixTakt = Number.isFinite(this._fixTakt) ? this._fixTakt * 0.7 + ratt * 0.3 : ratt;
+    return Math.min(FOLJ_MAX_MS, Math.max(FOLJ_MIN_MS, this._fixTakt * FOLJ_MARGINAL));
+  }
+
+  /** Sätt/nollställ övergångstiden som css/karta.css använder på egen-nålen. */
+  #glidPa(ms) { this.el.style.setProperty('--pv-glid', Math.round(ms) + 'ms'); }
+  #glidAv()   { this.el.style.setProperty('--pv-glid', '0ms'); }
+
+  /**
+   * Vrid pilen utan att bygga om den.
+   *
+   * Förut anropades setIcon() vid VARJE fix. setIcon river markörens DOM-element
+   * och skapar ett nytt — en gång i sekunden, för alltid. Ett element som byts
+   * ut kan per definition inte tona någonstans; det poppar. Det gjorde också
+   * varje CSS-övergång på .me-arrow omöjlig, och kostade en layout per fix mitt
+   * i det enda ögonblick per sekund då kartan också panorerar.
+   *
+   * Nu finns pilen kvar och får bara en ny vinkel. isConnected-kontrollen är
+   * för det fall Leaflet ändå byggt om markören (t.ex. om någon lägger till och
+   * tar bort lagret) — då letas elementet upp på nytt i stället för att pilen
+   * tyst slutar röra sig.
+   */
+  #riktaPil(deg) {
+    if (!this._mePil || !this._mePil.isConnected) {
+      this._mePil = this.meMarker?._icon?.querySelector?.('.me-arrow') || null;
+      this._sistaKurs = null;
+    }
+    if (!this._mePil) return;
+    const v = Math.round(deg);
+    if (v === this._sistaKurs) return;
+    this._sistaKurs = v;
+    this._mePil.style.transform = `rotate(${v}deg)`;
+  }
+
+  /**
+   * KARTAN SKA GLIDA MED BILEN, INTE HOPPA EFTER DEN.
+   *
+   * Det gamla anropet var panTo(pos, { animate: true, duration: .5 }) en gång
+   * per GPS-fix. Tre saker var fel med det, och tillsammans är de hela
+   * skillnaden mot Waze:
+   *
+   *  1. En halv sekunds animering på ett glapp som är en hel sekund betyder att
+   *     kartan rör sig halva tiden och står still halva tiden. Ett halvt hopp,
+   *     en gång i sekunden, för evigt.
+   *
+   *  2. Leaflets standardlättnad (easeLinearity .25) bromsar in i slutet av
+   *     varje animering. En bil som håller jämn fart ska INTE bromsa in en gång
+   *     i sekunden — den ska glida linjärt. Det här är den enskilt mest
+   *     kännbara raden i filen.
+   *
+   *  3. Den siktade dit bilen VAR när fixen togs, alltså redan i det ögonblick
+   *     animeringen började ett halvt fixglapp för långt bak. Kartan låg
+   *     permanent efter och "kom ikapp" i ryck.
+   *
+   * Nu: animeringstiden är fixglappet plus marginal, så nästa panorering tar
+   * vid innan den förra hunnit stanna; lättnaden är linjär medan man kör; och
+   * målet ligger en bit framför bilen, räknat på dess egen fart och kurs.
+   *
+   * Detta slåss inte med användaren: 'dragstart' släcker this.follow innan
+   * någon fix hinner emellan, och Leaflets dragghanterare kallar map._stop()
+   * som avbryter vår animering i samma ögonblick fingret tar i kartan.
+   */
+  #foljMjukt(fix, glidMs) {
+    // Håll händerna borta medan centerOn() flyger. Annars kapar den här
+    // panoreringen den animeringen på mitten — se _flygerTill i centerOn().
+    if (this._flygerTill && Date.now() < this._flygerTill) return;
+
+    // 1. Sikta dit bilen är på väg.
+    let lat = fix.lat, lon = fix.lon;
+    const kmh = fix.speedKmh ?? 0;
+    const kurs = fix.headingSmoothed;
+    const kor = kmh >= FOLJ_MIN_KMH && Number.isFinite(kurs);
+    if (kor) {
+      const meter = Math.min(FRAMFOR_MAX_M, (kmh / 3.6) * (glidMs / 1000) * FRAMFORHALLNING);
+      const r = kurs * Math.PI / 180;
+      // En longitudgrad är kortare än en latitudgrad på våra breddgrader. Utan
+      // cos(lat)-vikten skulle framförhållningen bli ~1,9 gånger för lång i
+      // öst–västlig riktning och kartan skjuta över i varje sväng.
+      const kx = Math.cos(fix.lat * Math.PI / 180) || 1;
+      lat += (meter * Math.cos(r)) / 111320;
+      lon += (meter * Math.sin(r)) / (111320 * kx);
+    }
+
+    // 2. I kör-upp ligger bilen en bit ner på skärmen så man ser vägen framåt.
+    const mal = this.rotation.followTarget(lat, lon) || L.latLng(lat, lon);
+
+    // 3. Är hoppet orimligt stort är det inte en bil som kört, det är GPS:en
+    //    som bytt åsikt (tunnel, kallstart, spoofning). Då ska kartan bara vara
+    //    på rätt plats, inte glida dit i tio sekunder.
+    const storlek = this.map.getSize();
+    const diag = Math.hypot(storlek.x, storlek.y) || 1;
+    try {
+      const p = this.map.latLngToContainerPoint(mal);
+      const d = Math.hypot(p.x - storlek.x / 2, p.y - storlek.y / 2);
+      // Under en pixel: rör inte kartan alls. Leaflet avrundar ändå bort det,
+      // men anropet i sig river igång movestart/moveend och därmed omritningen.
+      if (d < 1) return;
+      if (d > diag * HOPP_SKARMAR) {
+        this.map.setView(mal, this.map.getZoom(), { animate: false });
+        return;
+      }
+    } catch {}
+
+    // 4. easeLinearity 1 = helt linjärt. Vid stillastående får den däremot
+    //    lätta ut: då är rörelsen GPS-brus, och brus som bromsar in ser mindre
+    //    nervöst ut än brus som far fram och tillbaka i konstant fart.
+    this.map.panTo(mal, {
+      animate: true,
+      duration: glidMs / 1000,
+      easeLinearity: kor ? 1 : 0.4,
+      // Ingen movestart per fix. Ingen lyssnar på den, och den enda effekten
+      // vore ett extra varv i Leaflets händelsekedja en gång i sekunden.
+      noMoveStart: true,
     });
   }
 
@@ -247,6 +623,9 @@ export class HazardMap extends EventTarget {
     // uppströms.
     this._sistaHazards = hazards;
     this._sistaPos = myPos;
+    // Vyn vi ritade för. omrita() jämför mot den och hoppar över omritningar
+    // som ändå inte kan ge ett annat resultat.
+    this._sistaVy = { c: this.map.getCenter(), z: this.map.getZoom() };
 
     // Bara det som är i bild, med marginal så nålar hinner finnas när man
     // drar. Kameror är fasta punkter över hela Sverige — resten av landet
@@ -368,9 +747,32 @@ export class HazardMap extends EventTarget {
     } catch {}
   }
 
-  /** Ritar om med senast kända lista. Används när kartan panorerats. */
+  /**
+   * Ritar om med senast kända lista. Används när kartan panorerats.
+   *
+   * Hoppar över omritningen när kartan knappt rört sig. Urvalet i render() görs
+   * med 40 % marginal runt vyn (bounds.pad(0.4)), så varje nål som kan komma i
+   * bild inom en tiondels skärm FINNS redan — att räkna om samma sak igen ger
+   * exakt samma markörer och kostar bara batteri. Och den gör det en gång i
+   * sekunden så länge man kör, vilket är precis när batteriet behövs.
+   *
+   * Tröskeln är avsiktligt mycket mindre än marginalen. Blir de för lika hinner
+   * en nål glida in i bild innan omritningen sker.
+   *
+   * Gäller bara omritning som viewporten utlöst. En NY farolista går alltid via
+   * render() direkt och passerar aldrig här.
+   */
   omrita() {
-    if (this._sistaHazards) this.render(this._sistaHazards, this._sistaPos);
+    if (!this._sistaHazards) return;
+    const f = this._sistaVy;
+    if (f && f.z === this.map.getZoom()) {
+      try {
+        const b = this.map.getBounds();
+        const diag = this.map.distance(b.getNorthWest(), b.getSouthEast());
+        if (this.map.distance(this.map.getCenter(), f.c) < diag * 0.10) return;
+      } catch {}
+    }
+    this.render(this._sistaHazards, this._sistaPos);
   }
 
   /**

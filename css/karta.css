@@ -1,0 +1,210 @@
+/* ============================================================================
+   KARTAN — det som gör den mjuk i stället för fyrkantig.
+   ============================================================================
+
+   Hör ihop med js/map.js och js/kartrotation.js. Allt här är antingen en färg
+   som täpper till ett hål, en övergång som gör ett hopp till en glidning, eller
+   en kompositorantydan. Ingenting här ändrar var något LIGGER — layouten på
+   kartan ägs fortfarande av css/app.css och av Leaflet.
+
+   Läses av två klasser och en variabel som skrivs från JS:
+     body[data-map-theme]   ← js/map.js, setTheme(). 'night' eller 'day'.
+     .pv-korupp             ← js/kartrotation.js, på host medan kör-upp är aktivt.
+     --pv-glid              ← js/map.js. Hur länge egen-nålen ska glida.
+     --pv-tile              ← js/kartrotation.js. Brickstorlek + 1 px.
+   ---------------------------------------------------------------------------- */
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   1. BOTTENFÄRGEN — den ena halvan av "bara fyrkanter"
+   ────────────────────────────────────────────────────────────────────────────
+
+   Kartrutan hade en enda bottenfärg, #0b0f14, alltså appens nästan svarta
+   bakgrund. Varje bricka som inte hunnit fram ritades därför som ett svart hål
+   i kartan — och i DAGLÄGE, med ljusgrå brickor, som ett kolsvart hål i en vit
+   karta. Det var det som lästes som "fyrkanter".
+
+   Nu ligger bottenfärgen nära brickornas egen medelton. En bricka som saknas
+   syns fortfarande, men som ett tomt fält i kartan i stället för som ett hål i
+   skärmen. Tillsammans med bottenlagret i js/map.js (som nästan alltid hinner
+   ladda) betyder det att man i praktiken aldrig ser bottenfärgen alls — det här
+   är andra försvarslinjen, inte den första.
+
+   Färgerna bor i variabler eftersom både bottenfärgen och horisontdiset längre
+   ner måste vara exakt samma ton. Skiljer de sig syns skarven som en kant. */
+
+body[data-map-theme="night"] {
+  /* Esri World_Dark_Gray_Base ligger runt #2f3438 på land och något mörkare på
+     vatten. Vald mot land: det är land man kör på. */
+  --pv-mark: #2e3339;
+  --pv-mark-0: rgba(46, 51, 57, 0);
+}
+
+body[data-map-theme="day"] {
+  /* Esri World_Light_Gray_Base, land. */
+  --pv-mark: #e9e7e2;
+  --pv-mark-0: rgba(233, 231, 226, 0);
+}
+
+/* Väljarna är avsiktligt starkare än app.css egna (#map, .leaflet-container),
+   så att den här filen vinner oavsett i vilken ordning stilmallarna länkas in. */
+body[data-map-theme] #map,
+body[data-map-theme] #map .leaflet-container,
+body[data-map-theme] #map .pv-map {
+  background: var(--pv-mark, #2e3339);
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   2. BOTTENLAGRET
+   ────────────────────────────────────────────────────────────────────────────
+
+   Det grova brickskiktet (zoom ≤ 9) som js/map.js lägger i egen ruta under
+   huvudlagret. Det ska aldrig tona in: det finns till för att fylla hål, och en
+   fyllnad som tonar in under 200 ms är ett hål under 200 ms. Leaflet sätter
+   opaciteten inline vid intoningen, därför !important. */
+
+.pv-botten .leaflet-tile {
+  opacity: 1 !important;
+  /* Uppskalad grov karta ska se mjuk ut, inte pixlig. Standardvärdet duger i
+     alla moderna motorer; raden står här för att det är ett medvetet val och
+     inte en glömska. */
+  image-rendering: auto;
+}
+
+/* Rutan hänger med kartan men fångar aldrig ett tryck. Sätts också i JS —
+   dubbelt, för att en bricka som råkar hamna över en nål aldrig ska kunna äta
+   ett tryck på den. */
+.leaflet-pane.leaflet-pvBotten-pane { pointer-events: none; }
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   3. SÖMMARNA MELLAN BRICKORNA
+   ────────────────────────────────────────────────────────────────────────────
+
+   js/map.js kör med zoomSnap 0.25, alltså zoomnivåer mellan heltalen. Leaflet
+   löser det genom att skala hela brickbehållaren med en transform, och vid en
+   skalfaktor som inte går jämnt ut hamnar brickornas kanter på bråkdelar av en
+   pixel. Då ritar webbläsaren hårfina ljusa linjer mellan dem — ett rutnät över
+   hela kartan, alltså exakt det intryck ändringen ska ta bort.
+
+   En pixels överlapp döljer det. Samma knep som kartrotationen redan använder
+   för sina roterade brickor; --pv-tile sätts där, en gång, till brickstorleken
+   plus ett. Rotationens egen regel har högre specificitet och tar över när
+   kartan är vriden — samma värde, så det syns inte att den gör det. */
+
+.leaflet-container .leaflet-tile {
+  width: var(--pv-tile, 257px) !important;
+  height: var(--pv-tile, 257px) !important;
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   4. EGEN-NÅLEN SKA GLIDA, INTE HOPPA
+   ────────────────────────────────────────────────────────────────────────────
+
+   GPS ger en position i sekunden. Kartan under nålen panorerar däremot
+   kontinuerligt (js/map.js #foljMjukt). Utan den här övergången står nålen
+   still en hel sekund medan vägen glider under den, och hoppar sedan framåt —
+   bilen ser ut att halka. Med den rör sig nålen i samma takt som kartan och de
+   två blir en enda rörelse.
+
+   --pv-glid sätts av js/map.js till exakt samma tid som kartans panorering, och
+   nollställs vid zoom, vid hård omritning och när man slutat följa. Linjärt,
+   aldrig ease: en bil som håller jämn fart bromsar inte in en gång i sekunden.
+
+   Leaflet skriver translate3d på markörens element; det är den transformen som
+   tonar. Rotationen av själva pilen bor på barnet .me-arrow och stör inte. */
+
+.leaflet-marker-icon.me-icon {
+  transition: transform var(--pv-glid, 0ms) linear;
+}
+
+/* Kursen glider mellan avläsningarna av samma skäl. Kortare än positionen med
+   flit: en pil som kommer efter kartans vridning pekar synbart fel i en sväng,
+   och en pil som pekar fel är sämre än en pil som rycker. */
+.me-arrow {
+  transition: transform 320ms cubic-bezier(.22, .61, .36, 1);
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   5. HORISONTEN I KÖR-UPP
+   ────────────────────────────────────────────────────────────────────────────
+
+   VARFÖR DET INTE ÄR EN RIKTIG LUTNING.
+
+   Ett äkta perspektiv (transform: perspective() rotateX()) på kartrutan går att
+   skriva på en rad, och det var första idén. Den är förkastad. Kartrotationen
+   lagar redan Leaflets skärm↔karta-matte för en ren VRIDNING, vilket är en
+   rotationsmatris man inverterar med en rad trigonometri. En lutning är en
+   projektiv transform, och då stämmer ingenting längre: att peka ut en plats på
+   kartan (pickMode), att trycka på en nål, popup-bubblornas placering,
+   ruttlinjens canvasyta och vilka brickor som behöver laddas — allt utgår från
+   att en pixel på skärmen svarar mot en punkt på kartan via en vridning.
+   Nålarna skulle dessutom plattas till, och motrotationen (--pv-anti) kan inte
+   rätta upp en tillplattning.
+
+   Det som ÄR kvar av intrycket, och som kostar ingenting, är att kartan tonar
+   mot horisonten längst upp. Det är den delen ögat läser som djup.
+
+   Diset ligger tyvärr ÖVER nålarna. Leaflets rutor bor allihop inne i
+   .leaflet-map-pane, så det finns ingen plats i CSS att skjuta in ett
+   skärmfast lager mellan brickor och markörer — det är kontrollerat, inte
+   förbisett. Därför är det svagt (30 %) och bara översta 15 %: en farosymbol
+   har mörk botten och färgad ram och tål det utan att bli svårläst, och en nål
+   så högt upp i bild ligger ändå en bit bort. Blir det någonsin ett problem är
+   hela det här stycket det första som ska strykas.
+
+   Pseudoelementet finns alltid, med opaciteten noll. Det är därför diset kan
+   tona både in och ut när man slår om kör-upp mitt i en körning — ett element
+   som skapas och tas bort kan bara poppa. */
+
+#map::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 15%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .35s ease;
+  background: linear-gradient(
+    to bottom,
+    var(--pv-mark, #2e3339) 0%,
+    var(--pv-mark-0, rgba(46, 51, 57, 0)) 100%
+  );
+}
+
+.pv-korupp #map::after { opacity: .3; }
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   6. SMÅTT
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* Den grå blixten när man trycker på kartan i mobilwebbläsare. Kartan är inte
+   en knapp. */
+#map .leaflet-container { -webkit-tap-highlight-color: transparent; }
+
+/* Brickrutan flyttas vid varje panorering. Att säga det i förväg låter
+   webbläsaren hålla den på kompositorn i stället för att befordra och degradera
+   lagret om och om igen medan man kör. Ett lager för hela rutan, inte ett per
+   bricka — därför är det billigt. */
+#map .leaflet-tile-pane { will-change: transform; }
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   7. MINDRE RÖRELSE
+   ────────────────────────────────────────────────────────────────────────────
+
+   Den som bett om mindre rörelse ska inte få en karta som glider och tonar. Att
+   nålen då hoppar en gång i sekunden är rätt: hoppet är information om att en
+   ny position kommit in, glidningen var bara till för att det skulle kännas
+   trevligt. Kartans egen panorering ligger i Leaflets JS och styrs inte
+   härifrån. */
+
+@media (prefers-reduced-motion: reduce) {
+  .leaflet-marker-icon.me-icon,
+  .me-arrow,
+  #map::after { transition: none; }
+}
