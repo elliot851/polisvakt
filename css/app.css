@@ -142,7 +142,10 @@ input[type=range] { accent-color: var(--accent); height: 44px; }
 .view[hidden] { display: none; }
 .view.scroll {
   overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: calc(var(--safe-top) + var(--sp-4)) var(--sp-4) var(--sp-6);
+  /* --pv-remsor-h ar underkanten pa de fasta varningsremsorna hogst upp (se
+     matRemsor i js/app.js). Utan den la sig vyn UNDER dem och overkanten -
+     i Dashcam hela steg 1 - gick aldrig att scrolla fram. */
+  padding: calc(var(--safe-top) + var(--pv-remsor-h, 0px) + var(--sp-4)) var(--sp-4) var(--sp-6);
 }
 
 #map { position: absolute; inset: 0; background: #0b0f14; z-index: 0; }
@@ -778,8 +781,15 @@ input[type=range] { accent-color: var(--accent); height: 44px; }
 /* ---------- Toast ---------- */
 
 .toast {
+  /* BLOCKERANDE BUGG, hittad i UX-granskningen 6 sep: toasten lag over
+     Kontroll- och Civil-knapparna. Trycker man for kort pa Polis kommer
+     toasten "Hall knappen intryckt en stund", och under de 2,6 sekunderna
+     gick tva av tre rapportknappar inte att trycka pa - i en bil, i rorelse.
+     Tva atgarder: den slapper alltid igenom tryck, OCH den lyfts ovanfor
+     atgardsraden sa den inte ens skymmer dem. */
+  pointer-events: none;
   position: fixed; z-index: 1200; left: 50%; transform: translateX(-50%);
-  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 18px);
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + var(--act-h) + 30px);
   background: var(--bg-3); border: 1px solid var(--line-stark); border-radius: var(--radius-2);
   padding: var(--sp-3) var(--sp-4); font-size: var(--t-base); max-width: 88vw; text-align: center;
   box-shadow: var(--skugga-2);
@@ -2563,3 +2573,31 @@ body.pv-ps-remsa-uppe .view.scroll {
 }
 .chatt-regnr b { color: var(--fg); font-variant-numeric: tabular-nums; letter-spacing: .5px; }
 .chatt-regnr .btn-ghost.small { margin-left: auto; }
+
+/* Textrutan i "Lagg till bil"-dialogen. Utan egen regel foll den tillbaka pa
+   webblasarens vita standard - den enda vita ytan i hela appen, och ett blank
+   rakt i ansiktet nattetid. Samma stil som #plNyaFordon i installningarna, sa
+   samma funktion ser likadan ut pa bada stallen. */
+#bilModalFalt {
+  width: 100%; box-sizing: border-box;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line); border-radius: var(--radius-3);
+  background: var(--bg-3); color: var(--fg);
+  font: 600 17px/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .05em;
+  resize: vertical;
+  min-height: 110px;
+}
+#bilModalFalt::placeholder { color: var(--fg-dim); font-weight: 400; }
+
+/* Dashcam och Chatt ar .view men INTE .view.scroll - de har egna
+   scrollstrukturer (dashcam scrollar sig sjalv, chatten har en inre lista och
+   en fast botten). De behover samma utrymme at varningsremsorna, annars ligger
+   overkanten kvar under dem: i Dashcam var rubriken "Kameralage" och hela
+   steg 1 permanent dolda, sa skarmen borjade pa "2. Tryck har".
+   box-sizing: border-box galler globalt, sa paddingen ater av hojden i stallet
+   for att trycka ut botten - chattens skrivfalt star kvar dar det ska. */
+#view-dashcam, #view-chatt {
+  padding-top: calc(var(--safe-top) + var(--pv-remsor-h, 0px));
+}

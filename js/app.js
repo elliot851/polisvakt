@@ -535,6 +535,7 @@ async function boot() {
 
   // Säg till räddningsnätet i index.html att allt gick bra. Uteblir den här
   // signalen visas en knapp som hämtar om appen — se kommentaren där.
+  startaRemsmatning();
   dispatchEvent(new Event('polisvakt:ready'));
 }
 
@@ -7466,6 +7467,55 @@ function wireDemos() {
 }
 
 let toastTimer = null;
+/* ================= Remsornas hojd =================
+ *
+ * Tre moduler kan lagga en fast varningsremsa hogst upp: behorighetsraden
+ * (#pv-beh-rad har), platsremsan (.pv-ps-remsa i platsstart.js) och
+ * uppstartsraden (.pv-up-rad i uppstart.js). De stackas pa varandra.
+ *
+ * Vyerna borjade pa y=0 och la sig UNDER dem. I Dashcam betydde det att
+ * rubriken "Kameralage" och hela steg 1 var permanent dolda - vyn scrollar
+ * bara nedat, sa de gick aldrig att fa fram, och pa skarmen stod "2. Tryck
+ * har" utan nagot forsta steg. Samma sak i Chatt, Butik och Installningar.
+ * Inte ett kantfall: manga nekar notiser, och da star remsan kvar for alltid.
+ *
+ * Losningen ar en enda variabel som alla tre bidrar till, sa vyerna kan ge
+ * plats utan att kanna till vem som ritat vad. Matter underkanten (inte
+ * summan av hojder) - da blir stackning ratt av sig sjalv.
+ */
+function matRemsor() {
+  let botten = 0;
+  for (const v of ['#pv-beh-rad', '.pv-ps-remsa', '.pv-up-rad']) {
+    for (const el of document.querySelectorAll(v)) {
+      if (el.hidden || !el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      // Bara remsor som faktiskt sitter i overkanten raknas.
+      if (r.height > 0 && r.top < 4) botten = Math.max(botten, r.bottom);
+    }
+  }
+  document.documentElement.style.setProperty('--pv-remsor-h', Math.round(botten) + 'px');
+}
+
+/* Remsorna dyker upp och forsvinner nar behorigheter andras, sa matningen far
+ * inte vara en engangshandelse. MutationObserver pa body fangar att de laggs
+ * till/tas bort; ResizeObserver fangar att texten radbryts pa smal skarm. */
+function startaRemsmatning() {
+  matRemsor();
+  const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(matRemsor) : null;
+  const koppla = () => {
+    if (!ro) return;
+    ro.disconnect();
+    for (const v of ['#pv-beh-rad', '.pv-ps-remsa', '.pv-up-rad']) {
+      for (const el of document.querySelectorAll(v)) ro.observe(el);
+    }
+  };
+  koppla();
+  new MutationObserver(() => { matRemsor(); koppla(); })
+    .observe(document.body, { childList: true, subtree: false });
+  addEventListener('resize', matRemsor);
+  addEventListener('orientationchange', () => setTimeout(matRemsor, 250));
+}
+
 function toast(msg, ms = 3200) {
   const el = $('toast');
   el.textContent = msg;
